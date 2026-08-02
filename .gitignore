@@ -1,0 +1,87 @@
+# Monhorus monorepo.
+#
+# The per-app .gitignore files under apps/backend, apps/mobile and apps/mobile-employee
+# cover their own build output. This one covers the workspace root and the paths those
+# files do not reach — in particular apps/web and packages/shared, which have none of
+# their own, and the 5.7 GB of Flutter build output and node_modules that would otherwise
+# land in the first commit.
+
+# -- Dependencies -------------------------------------------------------------
+node_modules/
+.pnp
+.pnp.js
+
+# -- Build output -------------------------------------------------------------
+dist/
+build/
+out/
+.turbo/
+*.tsbuildinfo
+
+# Flutter/Dart, for both mobile apps.
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+*.apk
+*.aab
+*.ipa
+*.app.dSYM.zip
+
+# iOS/Android local artefacts that are generated rather than authored.
+apps/*/ios/Pods/
+apps/*/ios/.symlinks/
+apps/*/ios/Flutter/Flutter.framework
+apps/*/ios/Flutter/Flutter.podspec
+apps/*/android/.gradle/
+apps/*/android/local.properties
+apps/*/android/app/debug/
+apps/*/android/app/profile/
+apps/*/android/app/release/
+
+# -- Secrets ------------------------------------------------------------------
+#
+# .env carries the JWT secret, the Mongo URI and SEED_DEV_PASSWORD. .env.example is the
+# documented template and IS tracked, so a checkout still says what must be provided.
+.env
+.env.*
+!.env.example
+
+# -- Local uploads ------------------------------------------------------------
+#
+# The storage module writes attachments to disk in development. They are tenant data,
+# not source.
+apps/backend/var/
+apps/backend/uploads/
+
+# -- Agent configuration ------------------------------------------------------
+#
+# settings.json is shared project configuration and IS tracked. settings.local.json is
+# per-machine and is not.
+.claude/settings.local.json
+.claude/worktrees/
+
+# -- Oversized source documents -----------------------------------------------
+#
+# "Үзлэгийн тайлан (2).docx" is 96 MB. Git stores every version of a binary forever, and
+# GitHub refuses a push containing a file over 100 MB, so committing it would both bloat
+# the clone permanently and risk making the remote unpushable. The two requirement PDFs
+# (338 KB and 474 KB) are small and ARE tracked. If this document needs to be versioned,
+# Git LFS is the mechanism for it.
+*.docx
+
+# -- Editor and OS ------------------------------------------------------------
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+*.iml
+!apps/*/monhorus_*.iml
+.vscode/*
+!.vscode/extensions.json
+
+# -- Logs and coverage --------------------------------------------------------
+*.log
+npm-debug.log*
+coverage/
+.nyc_output/

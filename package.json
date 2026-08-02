@@ -1,0 +1,27 @@
+{
+  "name": "monhorus",
+  "private": true,
+  "packageManager": "npm@10.9.4",
+  "version": "0.1.0",
+  "description": "Monhorus - centralised electrical services, planned work and inspection platform",
+  "workspaces": [
+    "apps/backend",
+    "apps/web",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=20.11.0"
+  },
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "lint": "turbo run lint",
+    "bootstrap:admin": "npm run bootstrap:admin --workspace @monhorus/backend",
+    "test": "turbo run test"
+  },
+  "devDependencies": {
+    "turbo": "^2.3.3",
+    "typescript": "^5.7.2"
+  }
+}

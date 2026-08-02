@@ -1,0 +1,57 @@
+/* React Flow's own stylesheet. Imported here rather than in a component so the canvas
+   picks it up wherever it is mounted. CSS requires @import to precede every other
+   statement, so it sits above the Tailwind directives. */
+@import '@xyflow/react/dist/style.css';
+@import 'leaflet/dist/leaflet.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-slate-100 text-slate-900 antialiased;
+  }
+}
+
+@layer components {
+  /**
+   * The chevron on a dropdown.
+   *
+   * Lives here rather than in a Tailwind arbitrary value because the data URI contains
+   * quotes, commas and angle brackets, none of which survive the class-name parser
+   * intact. Paired with `appearance-none` and right padding by the SELECT constants in
+   * `components/ui/control-styles.ts`; the colour is slate-400.
+   */
+  .select-chevron {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='%2394a3b8'%3E%3Cpath fill-rule='evenodd' d='M5.23 7.21a.75.75 0 011.06.02L10 11.17l3.71-3.94a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z' clip-rule='evenodd'/%3E%3C/svg%3E");
+    background-position: right 0.625rem center;
+    background-repeat: no-repeat;
+    background-size: 1.15rem 1.15rem;
+  }
+}
+
+/* Edge flow animation.
+   React Flow's built-in `animated` flag hardcodes its own dash pattern, which would fight
+   the dash style chosen on the edge, so motion is expressed here instead and composes
+   with whatever dasharray the edge carries. */
+@keyframes monhorus-edge-dash {
+  to {
+    stroke-dashoffset: -32;
+  }
+}
+
+.monhorus-edge-flow {
+  animation: monhorus-edge-dash 1s linear infinite;
+}
+
+/* Motion is decoration; a reader who asked for less of it gets a static line. */
+@media (prefers-reduced-motion: reduce) {
+  .monhorus-edge-flow {
+    animation: none;
+  }
+}

@@ -1,0 +1,56 @@
+name: monhorus_employee
+description: Monhorus mobile client for field employees.
+publish_to: "none"
+version: 0.1.0+1
+
+environment:
+  sdk: ">=3.5.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # State management
+  flutter_riverpod: ^2.6.1
+
+  # Networking
+  dio: ^5.7.0
+
+  # Credential storage
+  flutter_secure_storage: ^9.2.2
+
+  # Value equality for entities
+  equatable: ^2.0.7
+
+  # Camera and gallery access for evidence photos.
+  #
+  # Chosen over `camera` because every flow here wants one still image, and the
+  # platform picker is what gives the technician the system camera UI plus the
+  # gallery in a single call. `camera` would mean owning a preview, a shutter and a
+  # lifecycle for no gain.
+  #
+  # Needs NSCameraUsageDescription and NSPhotoLibraryUsageDescription in
+  # ios/Runner/Info.plist — iOS terminates the app on first use without them.
+  image_picker: ^1.1.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+  # On-device tests, in integration_test/.
+  #
+  # The widget tests under test/ are hermetic by design and can only prove the app
+  # behaves correctly against a payload someone typed. They cannot prove the app talks
+  # to the real API correctly, and the two flows that hurt most when that is wrong —
+  # resolving which employee you are, and the forced password change every provisioned
+  # account meets first — are exactly the ones with no server in a widget test.
+  #
+  # These run against a live backend and are excluded from `flutter test`, which only
+  # picks up test/. Run them explicitly:
+  #   flutter test integration_test -d <device>
+  integration_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true
