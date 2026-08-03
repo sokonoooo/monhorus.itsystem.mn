@@ -29,6 +29,15 @@ interface AuthContextValue {
   permissions: PermissionKey[];
   /** True until the initial session restore settles. Gate routing on this. */
   initialising: boolean;
+  /**
+   * True when the session could not be confirmed for a reason that is not the session's
+   * fault — the server is down or unreachable. Distinct from being logged out: the
+   * credentials are still held and are probably still valid. Routing must block on this
+   * rather than render a shell whose permission set never arrived.
+   */
+  sessionUnavailable: boolean;
+  /** Re-runs the restore behind `sessionUnavailable`. */
+  retrySessionRestore: () => void;
   isAuthenticated: boolean;
   isAdmin: boolean;
   mustChangePassword: boolean;
@@ -48,11 +57,21 @@ export function AuthProvider({ children }: { children: ReactNode }): ReactElemen
   // survive a page reload. They are re-fetched from /auth/me on every restore.
   const [permissions, setPermissions] = useState<PermissionKey[]>([]);
   const [initialising, setInitialising] = useState(true);
+  const [sessionUnavailable, setSessionUnavailable] = useState(false);
+  // Bumped by a retry to re-run the restore effect.
+  const [restoreAttempt, setRestoreAttempt] = useState(0);
 
   const clearSession = useCallback(() => {
     tokenStorage.clear();
     setUser(null);
     setPermissions([]);
+    setSessionUnavailable(false);
+  }, []);
+
+  const retrySessionRestore = useCallback(() => {
+    setSessionUnavailable(false);
+    setInitialising(true);
+    setRestoreAttempt((attempt) => attempt + 1);
   }, []);
 
   // Lets the axios interceptor drop React state when a refresh finally fails.
@@ -77,12 +96,19 @@ export function AuthProvider({ children }: { children: ReactNode }): ReactElemen
         tokenStorage.setUser(fresh);
         setUser(fresh);
         setPermissions(fresh.permissions);
+        setSessionUnavailable(false);
       } catch (error) {
         if (cancelled) return;
         // /auth/me is reachable even while a password change is pending, so a 401 or
         // 403 here means the session is genuinely dead rather than merely restricted.
         if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
           clearSession();
+        } else {
+          // The server is unreachable or erroring. The cached user would otherwise render
+          // an authenticated shell whose permission set is still empty, and since the
+          // sidebar hides every entry the caller lacks, that shows an admin an app with no
+          // navigation and no explanation. Surface the outage instead of a hollow app.
+          setSessionUnavailable(true);
         }
       } finally {
         if (!cancelled) setInitialising(false);
@@ -93,7 +119,7 @@ export function AuthProvider({ children }: { children: ReactNode }): ReactElemen
     return () => {
       cancelled = true;
     };
-  }, [clearSession]);
+  }, [clearSession, restoreAttempt]);
 
   const login = useCallback(async (credentials: LoginRequest): Promise<UserDto> => {
     const session = await authService.login(credentials);
@@ -105,8 +131,13 @@ export function AuthProvider({ children }: { children: ReactNode }): ReactElemen
     try {
       const current = await authService.me();
       setPermissions(current.permissions);
+      setSessionUnavailable(false);
     } catch {
+      // Credentials were just accepted, so a failure here is the server faltering
+      // between the two calls rather than a rejected session. Signalling the outage
+      // keeps the caller out of a navigation-less shell, exactly as on restore.
       setPermissions([]);
+      setSessionUnavailable(true);
     }
 
     return session.user;
@@ -151,6 +182,8 @@ export function AuthProvider({ children }: { children: ReactNode }): ReactElemen
       user,
       permissions,
       initialising,
+      sessionUnavailable,
+      retrySessionRestore,
       isAuthenticated: user !== null,
       isAdmin: user !== null && isAdminRole(user.role),
       mustChangePassword: user?.status === 'must_change_password',
@@ -161,7 +194,19 @@ export function AuthProvider({ children }: { children: ReactNode }): ReactElemen
       can,
       canAny,
     }),
-    [user, permissions, initialising, login, logout, changePassword, hasRole, can, canAny],
+    [
+      user,
+      permissions,
+      initialising,
+      sessionUnavailable,
+      retrySessionRestore,
+      login,
+      logout,
+      changePassword,
+      hasRole,
+      can,
+      canAny,
+    ],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

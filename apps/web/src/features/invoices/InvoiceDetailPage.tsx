@@ -24,6 +24,7 @@ import { useToast } from '../../components/ui/ToastProvider';
 import { FIELD_TEXTAREA, FILTER_LABEL } from '../../components/ui/control-styles';
 import { useAuth } from '../../contexts/auth-context';
 import { ApiError } from '../../lib/api-client';
+import { todayDateInput } from '../../lib/calendar-date';
 import { invoiceService } from '../../services/invoice.service';
 import { Field, SelectInput, TextInput } from '../employees/FormControls';
 import { BillingTypeBadge, InvoiceStatusBadge, Money } from './InvoiceBadges';
@@ -65,7 +66,7 @@ function PaymentDrawer({
   onSaved: () => void;
 }): ReactElement {
   const { notify } = useToast();
-  const [paidAt, setPaidAt] = useState(() => new Date().toISOString().slice(0, 10));
+  const [paidAt, setPaidAt] = useState(() => todayDateInput());
   const [method, setMethod] = useState<PaymentMethod>('BANK_TRANSFER');
   const [reference, setReference] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -74,7 +75,7 @@ function PaymentDrawer({
 
   useEffect(() => {
     if (!open) return;
-    setPaidAt(new Date().toISOString().slice(0, 10));
+    setPaidAt(todayDateInput());
     setMethod('BANK_TRANSFER');
     setReference('');
     setFormError(null);

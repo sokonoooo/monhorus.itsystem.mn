@@ -11,14 +11,9 @@ import { Drawer } from '../../components/ui/Drawer';
 import { Skeleton } from '../../components/ui/States';
 import { useToast } from '../../components/ui/ToastProvider';
 import { ApiError } from '../../lib/api-client';
+import { addDaysToToday, currentMonthInput, todayDateInput } from '../../lib/calendar-date';
 import { invoiceService } from '../../services/invoice.service';
 import { Field, TextInput } from '../employees/FormControls';
-
-function addDays(days: number): string {
-  const date = new Date();
-  date.setDate(date.getDate() + days);
-  return date.toISOString().slice(0, 10);
-}
 
 /**
  * Monthly invoice run (requirements 12.1).
@@ -38,9 +33,9 @@ export function GenerateInvoicesDrawer({
 }): ReactElement {
   const { notify } = useToast();
 
-  const [billingPeriod, setBillingPeriod] = useState(() => new Date().toISOString().slice(0, 7));
-  const [issueDate, setIssueDate] = useState(() => new Date().toISOString().slice(0, 10));
-  const [dueDate, setDueDate] = useState(() => addDays(30));
+  const [billingPeriod, setBillingPeriod] = useState(() => currentMonthInput());
+  const [issueDate, setIssueDate] = useState(() => todayDateInput());
+  const [dueDate, setDueDate] = useState(() => addDaysToToday(30));
 
   const [candidates, setCandidates] = useState<InvoiceGenerationCandidateDto[]>([]);
   const [taxPercent, setTaxPercent] = useState(0);

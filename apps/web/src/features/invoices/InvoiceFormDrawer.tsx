@@ -14,6 +14,8 @@ import { Drawer } from '../../components/ui/Drawer';
 import { useToast } from '../../components/ui/ToastProvider';
 import { FIELD_TEXTAREA, FILTER_LABEL } from '../../components/ui/control-styles';
 import { ApiError } from '../../lib/api-client';
+import { addDaysToToday, currentMonthInput, todayDateInput } from '../../lib/calendar-date';
+import { invoiceTotals } from '../../lib/invoice-totals';
 import { invoiceService } from '../../services/invoice.service';
 import { settingsService } from '../../services/settings.service';
 import { Field, SelectInput, TextInput } from '../employees/FormControls';
@@ -35,9 +37,7 @@ function toNumber(value: string): number {
 
 /** Today plus the configured due-day count, as a `yyyy-mm-dd` value for a date input. */
 function addDays(days: number): string {
-  const date = new Date();
-  date.setDate(date.getDate() + days);
-  return date.toISOString().slice(0, 10);
+  return addDaysToToday(days);
 }
 
 /**
@@ -62,8 +62,8 @@ export function InvoiceFormDrawer({
 
   const [customerId, setCustomerId] = useState('');
   const [billingType, setBillingType] = useState<InvoiceBillingType>('ADDITIONAL_SERVICE');
-  const [billingPeriod, setBillingPeriod] = useState(() => new Date().toISOString().slice(0, 7));
-  const [issueDate, setIssueDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [billingPeriod, setBillingPeriod] = useState(() => currentMonthInput());
+  const [issueDate, setIssueDate] = useState(() => todayDateInput());
   const [dueDate, setDueDate] = useState(() => addDays(30));
   const [notes, setNotes] = useState('');
   const [lines, setLines] = useState<LineDraft[]>([emptyLine()]);
@@ -77,8 +77,8 @@ export function InvoiceFormDrawer({
     if (!open) return;
     setCustomerId('');
     setBillingType('ADDITIONAL_SERVICE');
-    setBillingPeriod(new Date().toISOString().slice(0, 7));
-    setIssueDate(new Date().toISOString().slice(0, 10));
+    setBillingPeriod(currentMonthInput());
+    setIssueDate(todayDateInput());
     setNotes('');
     setLines([emptyLine()]);
     setFormError(null);
@@ -104,11 +104,13 @@ export function InvoiceFormDrawer({
     );
   }
 
-  const subtotal = lines.reduce((sum, line) => {
-    const amount = toNumber(line.quantity) * toNumber(line.unitPrice);
-    return sum + (Number.isFinite(amount) ? amount : 0);
-  }, 0);
-  const taxAmount = Math.round((subtotal * taxPercent) / 100);
+  const { subtotal, taxAmount, total } = invoiceTotals(
+    lines.map((line) => ({
+      quantity: toNumber(line.quantity),
+      unitPrice: toNumber(line.unitPrice),
+    })),
+    taxPercent,
+  );
 
   async function handleSubmit(): Promise<void> {
     setFormError(null);
@@ -278,7 +280,7 @@ export function InvoiceFormDrawer({
           <div>
             <dt className="text-xs text-slate-500">Нийт</dt>
             <dd className="font-semibold tabular-nums text-slate-900">
-              {(subtotal + taxAmount).toLocaleString('mn-MN')}
+              {total.toLocaleString('mn-MN')}
             </dd>
           </div>
         </dl>

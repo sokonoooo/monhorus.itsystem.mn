@@ -28,16 +28,16 @@ import {
 } from '../../components/ui/control-styles';
 import { useAuth } from '../../contexts/auth-context';
 import { ApiError } from '../../lib/api-client';
+import { monthStartDateInput, todayDateInput } from '../../lib/calendar-date';
 import { reportService } from '../../services/report.service';
 
 /** First day of the current month, as a `yyyy-mm-dd` value for a date input. */
 function monthStart(): string {
-  const date = new Date();
-  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1)).toISOString().slice(0, 10);
+  return monthStartDateInput();
 }
 
 function today(): string {
-  return new Date().toISOString().slice(0, 10);
+  return todayDateInput();
 }
 
 /**
