@@ -17,6 +17,11 @@ import { authorisedFileUrl } from '../../../lib/file-url';
 import { objectMasterService } from '../../../services/object-master.service';
 import { dispatchService } from '../../../services/service-request.service';
 import { Field, SelectInput, TextInput } from '../../employees/FormControls';
+import {
+  LoadMeasurementEditor,
+  toMeasurementPayload,
+  type LoadMeasurementDraft,
+} from './LoadMeasurements';
 
 interface AssessmentDrawerProps {
   object: ObjectDetailDto | null;
@@ -59,6 +64,7 @@ export function AssessmentDrawer({
   const [recommendation, setRecommendation] = useState('');
   const [actionTaken, setActionTaken] = useState('');
   const [measuredLoadKw, setMeasuredLoadKw] = useState('');
+  const [measurements, setMeasurements] = useState<LoadMeasurementDraft[]>([]);
   const [repairRequired, setRepairRequired] = useState(false);
   const [revisitRequired, setRevisitRequired] = useState(false);
   const [revisitDate, setRevisitDate] = useState('');
@@ -97,6 +103,7 @@ export function AssessmentDrawer({
     setRecommendation('');
     setActionTaken('');
     setMeasuredLoadKw('');
+    setMeasurements([]);
     setRepairRequired(false);
     setRevisitRequired(false);
     setRevisitDate('');
@@ -152,6 +159,9 @@ export function AssessmentDrawer({
       recommendation: recommendation.trim() || null,
       actionTaken: actionTaken.trim() || null,
       measuredLoadKw: measuredLoadKw.trim() === '' ? null : Number(measuredLoadKw),
+      // Omitted entirely when no row was added, so an untouched form sends exactly what it
+      // sent before the field existed.
+      ...(measurements.length > 0 ? { measurements: toMeasurementPayload(measurements) } : {}),
       repairRequired,
       revisitRequired,
       revisitDate: revisitDate ? `${revisitDate}T00:00:00.000Z` : null,
@@ -330,6 +340,16 @@ export function AssessmentDrawer({
                 />
               </Field>
             </div>
+
+            {/* Amps and volts sit beside the kW box rather than inside it: only the kW
+                figure is summed into a floor total, and a 42 A reading written into that
+                box would become 42 kW of load that was never there. */}
+            <LoadMeasurementEditor
+              rows={measurements}
+              onChange={setMeasurements}
+              fieldErrors={fieldErrors}
+              disabled={submitting}
+            />
 
             <div>
               <label htmlFor="assess-conclusion" className={FILTER_LABEL}>

@@ -20,6 +20,7 @@ import {
   effectiveStatusOf,
   reconcileOverdueForWorks,
 } from '../planned-work/planned-work.overdue.service';
+import { resolveAssignedWorkFilter } from '../planned-work/planned-work.scope';
 import { ServiceRequest, type IServiceRequest } from '../service-request/service-request.model';
 
 /**
@@ -56,6 +57,7 @@ function employeeNames(value: unknown): string[] {
 
 async function plannedWorkEvents(
   query: CalendarQueryInput,
+  actor: AuthContext,
   from: Date,
   to: Date,
   now: Date,
@@ -67,6 +69,10 @@ async function plannedWorkEvents(
     // Cancelled work is not a schedule commitment and would only add noise.
     status: { $ne: 'CANCELLED' },
   };
+
+  // The same predicate `GET /planned-work` is bounded by. See the note on [buildCalendar].
+  const assignmentFilter = await resolveAssignedWorkFilter<IPlannedWork>(actor);
+  if (assignmentFilter) filter.$and = [assignmentFilter];
 
   if (query.customerId) filter.customer = new Types.ObjectId(query.customerId);
   if (query.projectId) filter.project = new Types.ObjectId(query.projectId);
@@ -111,6 +117,7 @@ async function plannedWorkEvents(
 
 async function serviceRequestEvents(
   query: CalendarQueryInput,
+  actor: AuthContext,
   from: Date,
   to: Date,
   now: Date,
@@ -124,6 +131,18 @@ async function serviceRequestEvents(
     slaDueAt: { $ne: null, $gte: from },
     createdAt: { $lte: to },
   };
+
+  /**
+   * `includeUnclaimed`, exactly as `listServiceRequests` passes it. A request nobody holds
+   * is the open queue rather than a colleague's business, and the employee app offers it
+   * for the taking under "Нээлттэй"; dropping it here would make the calendar disagree with
+   * the list it is a projection of. The moment somebody claims a request it leaves the
+   * queue and becomes visible only to them, their team and oversight.
+   */
+  const assignmentFilter = await resolveAssignedWorkFilter<IServiceRequest>(actor, {
+    includeUnclaimed: true,
+  });
+  if (assignmentFilter) filter.$and = [assignmentFilter];
 
   if (query.customerId) filter.customer = new Types.ObjectId(query.customerId);
   if (query.projectId) filter.project = new Types.ObjectId(query.projectId);
@@ -172,6 +191,25 @@ async function serviceRequestEvents(
  *
  * Each source is included only when the caller may read that module, so a user without
  * planned-work access sees their requests and nothing else rather than a 403.
+ *
+ * TWO INDEPENDENT QUESTIONS, AND THIS USED TO ASK ONLY THE FIRST. `hasPermission` below
+ * answers "may this caller read this KIND of record"; `resolveAssignedWorkFilter`, applied
+ * inside both source queries, answers "which of those records are theirs at all". The
+ * calendar asked only the permission question, and its filters were built purely from
+ * client query parameters — so a technician who simply omitted `employeeId` received up to
+ * 500 planned works and 500 requests per window covering the entire company, each row
+ * carrying `assignedNames`, the customer and the building. The list endpoints had the same
+ * hole and were closed; the calendar is a projection of exactly those two collections, so
+ * leaving it open left the closed doors pointless. There is deliberately no second copy of
+ * the rule here: the predicate comes from planned-work.scope.ts, the one place that owns it.
+ *
+ * A caller holding an oversight key is unaffected — `resolveAssignedWorkFilter` returns
+ * null for them and nothing is added to the filter — so a dispatcher, a manager and an
+ * accountant still see the whole organisation's schedule.
+ *
+ * `employeeId` and `teamId` survive as ADDITIONAL narrowing: they are ANDed with a
+ * predicate the client cannot influence, so a dispatcher can still filter the board to one
+ * person while a scoped caller naming a colleague gets nothing rather than that colleague.
  */
 export async function buildCalendar(
   query: CalendarQueryInput,
@@ -195,8 +233,8 @@ export async function buildCalendar(
   const groups = await Promise.all(
     permitted.map((source) =>
       source === 'PLANNED_WORK'
-        ? plannedWorkEvents(query, from, to, now)
-        : serviceRequestEvents(query, from, to, now),
+        ? plannedWorkEvents(query, actor, from, to, now)
+        : serviceRequestEvents(query, actor, from, to, now),
     ),
   );
 

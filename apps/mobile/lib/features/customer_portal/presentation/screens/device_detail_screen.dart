@@ -106,7 +106,6 @@ class _Body extends ConsumerWidget {
                   assessment.conclusion ??
                   'Сүүлийн үнэлгээ: ${formatDate(assessment.assessedAt)}',
         ),
-        const RiskLegend(),
 
         const SectionCaption('Ачааллын үзүүлэлт'),
         MetricGrid(
@@ -218,8 +217,14 @@ class _Body extends ConsumerWidget {
           ),
         ],
 
-        const SectionCaption('Объектын түүх'),
-        _HistorySection(objectId: object.id),
+        // Hidden entirely, rather than shown and refused, for an account without
+        // `object_master.view`. The timeline endpoint is staff-only by decision -
+        // it folds in audit rows, planned-work tasks and internal request detail -
+        // so for a customer this section could only ever render its error state.
+        if (ref.watch(canViewObjectHistoryProvider)) ...<Widget>[
+          const SectionCaption('Объектын түүх'),
+          _HistorySection(objectId: object.id),
+        ],
       ],
     );
   }

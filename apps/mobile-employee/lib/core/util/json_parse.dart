@@ -84,11 +84,36 @@ class NamedRef {
   final String id;
   final String name;
 
+  /// Accepts both reference shapes the API sends.
+  ///
+  /// A team reference carries `name`. An **employee** reference does not:
+  /// `EmployeeRefDto` is `{id, employeeCode, firstName, lastName, photoUrl}`
+  /// (`packages/shared/src/types/employee.types.ts:15-21`), so reading `name` alone
+  /// parsed every assignee as the empty string and any screen printing them showed a
+  /// blank - or a bare ", " once there were two.
+  ///
+  /// Surname first, matching how the app composes a full name everywhere else
+  /// (`home/data/models/employee_model.dart`). `employeeCode` is the last resort:
+  /// an identifier is worth more to a technician than an empty row.
   static NamedRef? fromJson(Object? raw) {
     if (raw is! Map<String, dynamic>) return null;
     final String? id = parseString(raw['id']);
     if (id == null) return null;
-    return NamedRef(id: id, name: parseString(raw['name']) ?? '');
+
+    final String? name = parseString(raw['name']);
+    if (name != null && name.isNotEmpty) return NamedRef(id: id, name: name);
+
+    final String last = parseString(raw['lastName']) ?? '';
+    final String first = parseString(raw['firstName']) ?? '';
+    final String composed = <String>[
+      if (last.isNotEmpty) last,
+      if (first.isNotEmpty) first,
+    ].join(' ');
+
+    return NamedRef(
+      id: id,
+      name: composed.isNotEmpty ? composed : (parseString(raw['employeeCode']) ?? ''),
+    );
   }
 
   static List<NamedRef> listFrom(Object? raw) {

@@ -50,8 +50,8 @@ class NotificationsSheet extends ConsumerWidget {
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
             const SheetHandle(),
-            const Padding(
-              padding: EdgeInsets.fromLTRB(
+            Padding(
+              padding: const EdgeInsets.fromLTRB(
                 CustomerTokens.labelGutter,
                 12,
                 CustomerTokens.labelGutter,
@@ -61,7 +61,7 @@ class NotificationsSheet extends ConsumerWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
                   Text('Мэдэгдэл', style: CustomerTokens.screenTitle),
-                  SizedBox(height: 4),
+                  const SizedBox(height: 4),
                   Text(
                     'Эрсдэл, хүсэлт, тайлангийн шинэчлэл',
                     style: CustomerTokens.rowSub,

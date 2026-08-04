@@ -22,6 +22,7 @@ import { FIELD_TEXTAREA, FILTER_LABEL } from '../../components/ui/control-styles
 import { useAuth } from '../../contexts/auth-context';
 import { useTableColumns } from '../../hooks/use-table-columns';
 import { ApiError } from '../../lib/api-client';
+import { formatMinutes } from '../../lib/duration';
 import { plannedWorkService } from '../../services/planned-work.service';
 import { ScoreBar } from '../projects/objects/ObjectBadges';
 import { ProgressBar, ReportStatusBadge, TaskStatusBadge } from './PlannedWorkBadges';
@@ -337,7 +338,7 @@ export function PlannedWorkReportPage(): ReactElement {
             <Alert variant="warning" title="Хугацаа хэтэрсэн">
               Эх төлөвлөсөн дуусах огноо {preview.originalPlannedEndDate.slice(0, 10)}, бодит
               дууссан {formatDateTime(preview.actualEndDate)}. Хоцролт{' '}
-              {Math.floor((preview.delayMinutes ?? 0) / 1440)} өдөр.
+              {formatMinutes(preview.delayMinutes)}.
             </Alert>
           )}
         </div>

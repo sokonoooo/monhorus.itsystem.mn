@@ -5,6 +5,8 @@
 // per object, never one visit-level figure copied across them. That is asserted directly.
 //
 // No network anywhere: the repository and the two picker reads are overridden.
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -15,10 +17,12 @@ import 'package:monhorus_employee/features/auth/domain/entities/app_user.dart';
 import 'package:monhorus_employee/features/auth/presentation/providers/auth_provider.dart';
 import 'package:monhorus_employee/features/employee/project/data/models/object_models.dart';
 import 'package:monhorus_employee/features/employee/project/data/models/project_models.dart';
+import 'package:monhorus_employee/features/employee/shared/service_request_models.dart';
 import 'package:monhorus_employee/features/employee/work/data/models/work_report_model.dart';
 import 'package:monhorus_employee/features/employee/work/domain/repositories/work_repository.dart';
 import 'package:monhorus_employee/features/employee/work/presentation/providers/conclusion_providers.dart';
 import 'package:monhorus_employee/features/employee/work/presentation/providers/work_providers.dart';
+import 'package:monhorus_employee/features/employee/work/presentation/widgets/equipment_assessment_card.dart';
 import 'package:monhorus_employee/features/employee/work/presentation/screens/conclusion_editor_screen.dart';
 import 'package:monhorus_employee/features/employee/work/presentation/screens/service_request_detail_screen.dart';
 
@@ -49,23 +53,57 @@ Map<String, dynamic> _report({
   String status = 'DRAFT',
   List<Map<String, dynamic>> objects = const <Map<String, dynamic>>[],
   List<Map<String, dynamic>> assessments = const <Map<String, dynamic>>[],
+  int? score,
   String? conclusion,
   String? recommendation,
+  List<String> beforePhotoIds = const <String>[],
+  List<String> afterPhotoIds = const <String>[],
+  List<String> missing = const <String>[],
 }) {
+  List<Map<String, dynamic>> photos(List<String> ids) => ids
+      .map((String id) => <String, dynamic>{'id': id, 'name': '$id.jpg'})
+      .toList();
+
   return <String, dynamic>{
     'id': 'rep1',
     'serviceRequestId': kRequestId,
     'status': status,
+    'score': score,
     'conclusion': conclusion,
     'recommendation': recommendation,
-    'beforePhotos': <dynamic>[],
-    'afterPhotos': <dynamic>[],
+    'beforePhotos': photos(beforePhotoIds),
+    'afterPhotos': photos(afterPhotoIds),
     'objects': objects,
     'objectAssessments': assessments,
-    'missing': <dynamic>[],
-    'isComplete': false,
+    'missing': missing,
+    'isComplete': missing.isEmpty,
   };
 }
+
+/// The detail read the screen now makes, stubbed.
+///
+/// These two cases are about the conclusion ACTIONS, not about the record, so the
+/// record is the smallest honest one. Overridden rather than left to the real
+/// repository because the screen shows a spinner while the read is in flight and
+/// `pumpAndSettle` never returns on one.
+Override _detailOverride([ServiceRequestDetailModel? detail]) {
+  return serviceRequestDetailProvider(kRequestId)
+      .overrideWith((Ref ref) async => detail);
+}
+
+ServiceRequestDetailModel _detail() =>
+    ServiceRequestDetailModel.fromJson(<String, dynamic>{
+      'id': kRequestId,
+      'requestNumber': 'SR-202608-0001',
+      'requestType': 'REPAIR',
+      'status': 'ASSIGNED',
+      'isUrgent': false,
+      'description': 'Гэрэлтүүлэг унтарсан.',
+      'contactName': 'Бат',
+      'contactPhone': '99112233',
+      'attachments': <dynamic>[],
+      'building': <String, dynamic>{'id': kBuildingId, 'name': 'Төв байр'},
+    });
 
 Map<String, dynamic> _object(String id, String code, String name) => <String, dynamic>{
       'id': id,
@@ -78,14 +116,17 @@ class _ReportRepository implements WorkRepository {
   _ReportRepository({
     Map<String, dynamic>? initial,
     this.saveFailure,
+    this.submitFailure,
   }) : report = initial ?? _report();
 
   Map<String, dynamic> report;
   final Failure? saveFailure;
+  final Failure? submitFailure;
 
   final List<SaveWorkReportRequest> saved = <SaveWorkReportRequest>[];
   int submits = 0;
   int reads = 0;
+  int uploads = 0;
 
   @override
   Future<ApiResult<WorkReportModel>> getWorkReport(String requestId) async {
@@ -107,6 +148,8 @@ class _ReportRepository implements WorkRepository {
   @override
   Future<ApiResult<WorkReportModel>> submitWorkReport(String requestId) async {
     submits += 1;
+    final Failure? failure = submitFailure;
+    if (failure != null) return FailureResult<WorkReportModel>(failure);
     return Success<WorkReportModel>(
       WorkReportModel.fromJson(<String, dynamic>{...report, 'status': 'SUBMITTED'}),
     );
@@ -114,8 +157,11 @@ class _ReportRepository implements WorkRepository {
 
   @override
   Future<ApiResult<WorkReportPhotoModel>> uploadWorkReportPhoto(CapturedPhoto photo) async {
+    uploads += 1;
+    // A distinct id per upload: two strips both receiving "p1" would let a test pass on a
+    // payload that had put the same photograph in both slots.
     return Success<WorkReportPhotoModel>(
-      WorkReportPhotoModel.fromJson(<String, dynamic>{'id': 'p1', 'name': 'a.jpg'}),
+      WorkReportPhotoModel.fromJson(<String, dynamic>{'id': 'p$uploads', 'name': 'a.jpg'}),
     );
   }
 
@@ -153,7 +199,10 @@ Future<void> _pumpEditor(
   List<FloorModel> floors = const <FloorModel>[],
   List<ObjectListItemModel> equipment = const <ObjectListItemModel>[],
 }) async {
-  await tester.binding.setSurfaceSize(const Size(390, 1400));
+  // Tall enough to build the whole form. The editor now also carries the visit's own
+  // score and its two mandatory photo strips above the equipment, so a shorter surface
+  // leaves the cards' own controls unbuilt — a ListView does not build what is off-screen.
+  await tester.binding.setSurfaceSize(const Size(390, 2200));
   addTearDown(() => tester.binding.setSurfaceSize(null));
 
   await tester.pumpWidget(
@@ -183,6 +232,17 @@ Future<void> _pumpEditor(
 /// strings so the test still reads as the words the UI was asked for.
 Finder _label(String text) => find.text(text.toUpperCase());
 
+/// The score field of an EQUIPMENT CARD, never the visit's own.
+///
+/// The editor now carries a visit-level score as well — it is one of the five fields
+/// `workReportCompleteness` requires — and it uses the same 0-100 hint, so an unscoped
+/// finder would reach it first and these assertions would silently move off the per-object
+/// scores they exist to protect.
+Finder _cardScores() => find.descendant(
+      of: find.byType(EquipmentAssessmentCard),
+      matching: find.widgetWithText(TextField, '0-100'),
+    );
+
 /// Scrolls the editor to an action and taps it.
 ///
 /// The save and submit pills sit below every equipment card, so on a phone-sized surface
@@ -202,9 +262,18 @@ void main() {
   testWidgets('the detail screen offers the editor and does not embed the form', (
     WidgetTester tester,
   ) async {
+    // Taller than the 800px default: the screen now carries the description, the site
+    // contact and the attachments above this action, so on a default surface the pill
+    // is off-screen and a ListView does not build what is not visible.
+    await tester.binding.setSurfaceSize(const Size(390, 1600));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
     await tester.pumpWidget(
       ProviderScope(
-        overrides: <Override>[currentUserProvider.overrideWithValue(_author)],
+        overrides: <Override>[
+          currentUserProvider.overrideWithValue(_author),
+          _detailOverride(_detail()),
+        ],
         child: const MaterialApp(
           home: ServiceRequestDetailScreen(
             requestId: kRequestId,
@@ -227,9 +296,15 @@ void main() {
   testWidgets('a read-only account is offered viewing rather than authoring', (
     WidgetTester tester,
   ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 1600));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
     await tester.pumpWidget(
       ProviderScope(
-        overrides: <Override>[currentUserProvider.overrideWithValue(_reader)],
+        overrides: <Override>[
+          currentUserProvider.overrideWithValue(_reader),
+          _detailOverride(_detail()),
+        ],
         child: const MaterialApp(
           home: ServiceRequestDetailScreen(
             requestId: kRequestId,
@@ -332,7 +407,7 @@ void main() {
     await tester.tap(find.text('DB-02 · Самбар 2'));
     await tester.pumpAndSettle();
 
-    final Finder scores = find.widgetWithText(TextField, '0-100');
+    final Finder scores = _cardScores();
     expect(scores, findsNWidgets(2));
 
     await tester.enterText(scores.at(0), '95');
@@ -371,7 +446,7 @@ void main() {
 
     await tester.tap(find.text('DB-01 · Самбар 1'));
     await tester.pumpAndSettle();
-    await tester.enterText(find.widgetWithText(TextField, '0-100').at(0), '77');
+    await tester.enterText(_cardScores().at(0), '77');
     await tester.pumpAndSettle();
 
     // Collapse the first card, then reopen it.
@@ -458,7 +533,7 @@ void main() {
 
     await tester.tap(find.text('DB-01 · Самбар 1'));
     await tester.pumpAndSettle();
-    await tester.enterText(find.widgetWithText(TextField, '0-100').first, '50');
+    await tester.enterText(_cardScores().first, '50');
     await tester.pumpAndSettle();
 
     await tester.tap(find.text('Энэ тоноглолыг хасах'));
@@ -516,7 +591,7 @@ void main() {
 
     await tester.tap(find.text('DB-01 · Самбар 1'));
     await tester.pumpAndSettle();
-    await tester.enterText(find.widgetWithText(TextField, '0-100').first, '80');
+    await tester.enterText(_cardScores().first, '80');
     await tester.pumpAndSettle();
     await _tapAction(tester, 'Хянуулахаар илгээх');
 
@@ -624,7 +699,7 @@ void main() {
 
     await tester.tap(find.text('DB-01 · Самбар 1'));
     await tester.pumpAndSettle();
-    await tester.enterText(find.widgetWithText(TextField, '0-100').first, '64');
+    await tester.enterText(_cardScores().first, '64');
     await tester.pumpAndSettle();
 
     // Switch floors.
@@ -662,6 +737,219 @@ void main() {
 
     expect(find.text('Ноорогт хадгалах'), findsOneWidget);
     expect(tester.takeException(), isNull);
+  });
+
+  // -- What is missing, said out loud ----------------------------------------
+  //
+  // `workReportCompleteness` refuses a submission over five VISIT-LEVEL fields — score,
+  // conclusion, recommendation, one before photo and one after photo — and none of them is
+  // satisfied by a filled-in equipment card. The server names every empty one in `missing`
+  // and in the `issues` of its refusal; the app parsed both and rendered neither, so a
+  // technician who had written up every device was told only "Дүгнэлт дутуу тул илгээх
+  // боломжгүй." with nothing to act on. These cases hold the naming.
+
+  testWidgets('a report missing one field names THAT field', (WidgetTester tester) async {
+    await _pumpEditor(
+      tester,
+      repository: _ReportRepository(
+        initial: _report(missing: <String>['RECOMMENDATION']),
+      ),
+    );
+
+    expect(find.text('Илгээхэд дутуу байна (1)'), findsOneWidget);
+    expect(find.textContaining('• Зөвлөмж'), findsOneWidget);
+    // And nothing else is claimed to be missing.
+    expect(find.textContaining('• Ерөнхий үнэлгээ'), findsNothing);
+    expect(find.textContaining('• Ажлын өмнөх зураг'), findsNothing);
+  });
+
+  testWidgets('every missing field is named, including the invisible ones', (
+    WidgetTester tester,
+  ) async {
+    await _pumpEditor(
+      tester,
+      repository: _ReportRepository(
+        initial: _report(
+          missing: <String>['SCORE', 'BEFORE_PHOTO', 'AFTER_PHOTO'],
+          objects: <Map<String, dynamic>>[_object('o1', 'DB-01', 'Самбар 1')],
+          assessments: <Map<String, dynamic>>[
+            <String, dynamic>{
+              'objectId': 'o1',
+              'code': 'DB-01',
+              'name': 'Самбар 1',
+              'score': 90,
+              'conclusion': 'Хэвийн.',
+              'photoIds': <dynamic>['q1'],
+            },
+          ],
+        ),
+      ),
+    );
+
+    // A fully written-up device does not satisfy any of the three, and the banner says so
+    // in the same Mongolian the web console uses.
+    expect(find.text('Илгээхэд дутуу байна (3)'), findsOneWidget);
+    expect(find.textContaining('• Ерөнхий үнэлгээ (0-100)'), findsOneWidget);
+    expect(find.textContaining('• Ажлын өмнөх зураг'), findsOneWidget);
+    expect(find.textContaining('• Ажлын дараах зураг'), findsOneWidget);
+  });
+
+  testWidgets('a refused submission repeats the server\'s field list, not "дутуу"', (
+    WidgetTester tester,
+  ) async {
+    final _ReportRepository repository = _ReportRepository(
+      submitFailure: const ServerFailure(
+        'Дүгнэлт дутуу тул илгээх боломжгүй.',
+        code: 'VALIDATION_ERROR',
+        fieldErrors: <String, String>{
+          'SCORE': 'Заавал бөглөнө.',
+          'AFTER_PHOTO': 'Заавал бөглөнө.',
+        },
+      ),
+    );
+    await _pumpEditor(tester, repository: repository);
+
+    await _tapAction(tester, 'Хянуулахаар илгээх');
+
+    // The generic sentence on its own was the bug: it restates the refusal instead of
+    // naming what to do about it.
+    expect(
+      find.textContaining('Дутуу байна: Ерөнхий үнэлгээ (0-100), Ажлын дараах зураг'),
+      findsOneWidget,
+    );
+    // And the same two are marked on the form itself.
+    expect(find.text('Илгээхэд дутуу байна (2)'), findsOneWidget);
+  });
+
+  testWidgets('a requirement refusal is not silently filed against an equipment card', (
+    WidgetTester tester,
+  ) async {
+    final _ReportRepository repository = _ReportRepository(
+      initial: _report(objects: <Map<String, dynamic>>[_object('o1', 'DB-01', 'Самбар 1')]),
+      submitFailure: const ServerFailure(
+        'Дүгнэлт дутуу тул илгээх боломжгүй.',
+        code: 'VALIDATION_ERROR',
+        fieldErrors: <String, String>{'SCORE': 'Заавал бөглөнө.'},
+      ),
+    );
+    await _pumpEditor(tester, repository: repository);
+
+    await _tapAction(tester, 'Хянуулахаар илгээх');
+
+    // `itemErrors` is keyed by object id, so a SCORE entry matched no card and vanished.
+    // It belongs to the visit, and is now shown there.
+    expect(find.textContaining('• Ерөнхий үнэлгээ (0-100)'), findsOneWidget);
+  });
+
+  // -- The three fields the app could not send --------------------------------
+
+  testWidgets('the visit score is enterable and reaches the payload', (
+    WidgetTester tester,
+  ) async {
+    final _ReportRepository repository = _ReportRepository(
+      initial: _report(missing: <String>['SCORE']),
+    );
+    await _pumpEditor(tester, repository: repository);
+
+    // No equipment on this report, so the only 0-100 field is the visit's own.
+    await tester.enterText(find.widgetWithText(TextField, '0-100'), '88');
+    await tester.pumpAndSettle();
+    await _tapAction(tester, 'Ноорогт хадгалах');
+
+    // Was hard-coded null, which made SCORE permanently unsatisfiable from this app.
+    expect(repository.saved.single.score, 88);
+  });
+
+  test('visit photographs are held and sent as the visit\'s, not an object\'s', () async {
+    final _ReportRepository repository = _ReportRepository();
+    final ProviderContainer container = ProviderContainer(
+      overrides: <Override>[
+        currentUserProvider.overrideWithValue(_author),
+        workRepositoryProvider.overrideWithValue(repository),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    const ConclusionRef ref = (requestId: kRequestId, buildingId: kBuildingId);
+    await container.read(conclusionEditorProvider(ref).future);
+    final ConclusionEditor editor = container.read(conclusionEditorProvider(ref).notifier);
+
+    final CapturedPhoto photo = CapturedPhoto(
+      bytes: Uint8List.fromList(<int>[1, 2, 3]),
+      filename: 'a.jpg',
+      mimeType: 'image/jpeg',
+    );
+    expect(await editor.attachVisitPhoto(VisitPhotoSlot.before, photo), isNull);
+    expect(await editor.attachVisitPhoto(VisitPhotoSlot.after, photo), isNull);
+    await editor.save();
+
+    final SaveWorkReportRequest payload = repository.saved.single;
+    // Distinct slots, distinct ids — and NOT on any equipment assessment.
+    expect(payload.beforePhotoIds, <String>['p1']);
+    expect(payload.afterPhotoIds, <String>['p2']);
+    expect(payload.objectAssessments, isEmpty);
+  });
+
+  test('removing a visit photograph actually removes it from the payload', () async {
+    final _ReportRepository repository = _ReportRepository(
+      initial: _report(beforePhotoIds: <String>['old1', 'old2']),
+    );
+    final ProviderContainer container = ProviderContainer(
+      overrides: <Override>[
+        currentUserProvider.overrideWithValue(_author),
+        workRepositoryProvider.overrideWithValue(repository),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    const ConclusionRef ref = (requestId: kRequestId, buildingId: kBuildingId);
+    await container.read(conclusionEditorProvider(ref).future);
+    final ConclusionEditor editor = container.read(conclusionEditorProvider(ref).notifier);
+
+    editor.removeVisitPhoto(VisitPhotoSlot.before, 'old1');
+    await editor.save();
+
+    // The payload used to echo `report.beforePhotos` back, so a removal here came straight
+    // back on the next read.
+    expect(repository.saved.single.beforePhotoIds, <String>['old2']);
+  });
+
+  testWidgets('both visit photo slots are drawn and labelled', (WidgetTester tester) async {
+    await _pumpEditor(tester, repository: _ReportRepository());
+
+    expect(_label('Ажлын өмнөх зураг (0)'), findsOneWidget);
+    expect(_label('Ажлын дараах зураг (0)'), findsOneWidget);
+    expect(_label('Ерөнхий үнэлгээ (0-100)'), findsOneWidget);
+  });
+
+  testWidgets('a complete conclusion submits with nothing reported missing', (
+    WidgetTester tester,
+  ) async {
+    final _ReportRepository repository = _ReportRepository(
+      initial: _report(
+        score: 84,
+        conclusion: 'Ажил дууссан.',
+        recommendation: '3 сарын дараа дахин үзэх.',
+        beforePhotoIds: <String>['b1'],
+        afterPhotoIds: <String>['a1'],
+        objects: <Map<String, dynamic>>[_object('o1', 'DB-01', 'Самбар 1')],
+      ),
+    );
+    await _pumpEditor(tester, repository: repository);
+
+    expect(find.textContaining('Илгээхэд дутуу байна'), findsNothing);
+
+    await _tapAction(tester, 'Хянуулахаар илгээх');
+
+    expect(repository.submits, 1);
+    // Every visit-level requirement travels with the save that precedes the submission.
+    final SaveWorkReportRequest payload = repository.saved.single;
+    expect(payload.score, 84);
+    expect(payload.conclusion, 'Ажил дууссан.');
+    expect(payload.recommendation, '3 сарын дараа дахин үзэх.');
+    expect(payload.beforePhotoIds, <String>['b1']);
+    expect(payload.afterPhotoIds, <String>['a1']);
+    expect(find.text('Хянуулахаар илгээлээ.'), findsOneWidget);
   });
 }
 

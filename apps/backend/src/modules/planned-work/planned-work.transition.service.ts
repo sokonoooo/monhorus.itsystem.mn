@@ -344,10 +344,11 @@ export async function transitionPlannedWork(
  *
  * One report per work, per (customer, sourceType, sourceId): the unique index on Report
  * is what makes a retried completion or a re-approval correct this row rather than write
- * a second, so no lookup happens here. Items are one per sub-task related object — the
- * finding on each piece of equipment is the sub-task's score and note, while the Дүгнэлт
- * and Зөвлөмж stay on the consolidated report. A sub-task naming no equipment contributes
- * no item, and a work with none still gets a searchable report carrying its own
+ * a second, so no lookup happens here. Items are one per sub-task related object, carrying
+ * that sub-task's score, note, Дүгнэлт and Зөвлөмж — one score fanned to all its objects,
+ * never a score per object. The consolidated report keeps its own conclusion and
+ * recommendation alongside these. A sub-task naming no equipment contributes no item, and
+ * a work with none still gets a searchable report carrying its own
  * customer/project/building.
  *
  * Written in DRAFT at COMPLETE and corrected to APPROVED by report approval; the scores
@@ -372,10 +373,20 @@ export async function writeCanonicalPlannedWorkReport(
       items.push({
         object: objectId,
         score: task.score,
-        // A sub-task carries a Тайлбар, never a Дүгнэлт: the conclusion belongs to the
-        // consolidated report, so the note is what describes this piece of equipment.
+        // The sub-task's Тайлбар is what was seen on this piece of equipment; its Дүгнэлт
+        // is the verdict drawn from it. Both travel to the item, which is what fills the
+        // Ажиглалт and Дүгнэлт columns of Үзлэг ба дүгнэлт for a planned-work row.
         observation: task.note,
+        conclusion: task.conclusion,
         recommendation: task.recommendation,
+        // The technician who wrote that Дүгнэлт, stamped on the sub-task when its text
+        // last changed. It travels with the verdict so the equipment's history can name
+        // the person who judged it instead of only the manager who approved the report —
+        // and one work's sub-tasks may have been concluded by different technicians, which
+        // is exactly why this is per item and not per report. Null on a sub-task whose
+        // conclusion was never written.
+        judgedBy: task.conclusionBy,
+        judgedByName: task.conclusionByName,
         evidenceAttachments: [...task.beforePhotos, ...task.afterPhotos],
       });
     }

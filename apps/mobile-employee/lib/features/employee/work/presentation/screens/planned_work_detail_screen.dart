@@ -444,72 +444,10 @@ class _LifecycleActionsState extends ConsumerState<_LifecycleActions> {
   }
 
   Future<String?> _askReason(String actionLabel) {
-    final TextEditingController controller = TextEditingController();
-
     return showDialog<String>(
       context: context,
-      builder: (BuildContext dialogContext) {
-        return AlertDialog(
-          backgroundColor: EmployeeTokens.white,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(EmployeeTokens.radiusCard),
-          ),
-          title: Text(
-            actionLabel,
-            style: EmployeeTokens.cardTitle,
-          ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: <Widget>[
-              Text(
-                'Шалтгаанаа бичнэ үү. Энэ тэмдэглэл ажлын түүхэд үлдэнэ.',
-                style: EmployeeTokens.noticeBody.copyWith(fontWeight: FontWeight.w400),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: controller,
-                autofocus: true,
-                maxLines: 3,
-                style: EmployeeTokens.body.copyWith(color: EmployeeTokens.ink),
-                decoration: InputDecoration(
-                  hintText: 'Шалтгаан...',
-                  border: OutlineInputBorder(
-                    borderRadius:
-                        BorderRadius.circular(EmployeeTokens.radiusInput),
-                  ),
-                ),
-              ),
-            ],
-          ),
-          actions: <Widget>[
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const Text(
-                'Болих',
-                style: TextStyle(color: EmployeeTokens.muted),
-              ),
-            ),
-            TextButton(
-              onPressed: () {
-                final String value = controller.text.trim();
-                // The backend rejects a short reason on CANCEL with a 400; refusing
-                // here keeps that round trip out of a field connection.
-                if (value.length < 5) return;
-                Navigator.of(dialogContext).pop(value);
-              },
-              child: const Text(
-                'Үргэлжлүүлэх',
-                style: TextStyle(
-                  color: EmployeeTokens.ink,
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-            ),
-          ],
-        );
-      },
-    ).whenComplete(controller.dispose);
+      builder: (BuildContext dialogContext) => _ReasonDialog(label: actionLabel),
+    );
   }
 
   @override
@@ -572,6 +510,96 @@ class _LifecycleActionsState extends ConsumerState<_LifecycleActions> {
       case PlannedWorkAction.cancel:
         return Icons.close;
     }
+  }
+}
+
+/// The reason prompt for a transition that demands one.
+///
+/// A widget rather than a bare `builder:` closure over a controller held by
+/// [_LifecycleActionsState], because the controller's life has to end when the DIALOG
+/// does and nothing else marks that moment. `showDialog`'s future completes the instant
+/// `Navigator.pop` is called — the route is still on screen, still animating out and
+/// still rebuilding — so disposing from `.whenComplete` killed a controller two live
+/// [TextField]s were using. See the note on [_ReportEditorSheet]; this dialog autofocuses
+/// its field, which is exactly the condition that guarantees a rebuild after the pop.
+class _ReasonDialog extends StatefulWidget {
+  const _ReasonDialog({required this.label});
+
+  final String label;
+
+  @override
+  State<_ReasonDialog> createState() => _ReasonDialogState();
+}
+
+class _ReasonDialogState extends State<_ReasonDialog> {
+  final TextEditingController _reason = TextEditingController();
+
+  @override
+  void dispose() {
+    _reason.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: EmployeeTokens.white,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(EmployeeTokens.radiusCard),
+      ),
+      title: Text(
+        widget.label,
+        style: EmployeeTokens.cardTitle,
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Text(
+            'Шалтгаанаа бичнэ үү. Энэ тэмдэглэл ажлын түүхэд үлдэнэ.',
+            style: EmployeeTokens.noticeBody.copyWith(fontWeight: FontWeight.w400),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _reason,
+            autofocus: true,
+            maxLines: 3,
+            style: EmployeeTokens.body.copyWith(color: EmployeeTokens.ink),
+            decoration: InputDecoration(
+              hintText: 'Шалтгаан...',
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(EmployeeTokens.radiusInput),
+              ),
+            ),
+          ),
+        ],
+      ),
+      actions: <Widget>[
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text(
+            'Болих',
+            style: TextStyle(color: EmployeeTokens.muted),
+          ),
+        ),
+        TextButton(
+          onPressed: () {
+            final String value = _reason.text.trim();
+            // The backend rejects a short reason on CANCEL with a 400; refusing
+            // here keeps that round trip out of a field connection.
+            if (value.length < 5) return;
+            Navigator.of(context).pop(value);
+          },
+          child: const Text(
+            'Үргэлжлүүлэх',
+            style: TextStyle(
+              color: EmployeeTokens.ink,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+        ),
+      ],
+    );
   }
 }
 
@@ -1159,7 +1187,7 @@ class _InspectionReportCardState extends ConsumerState<_InspectionReportCard> {
               runSpacing: 6,
               crossAxisAlignment: WrapCrossAlignment.center,
               children: <Widget>[
-                const Text('Ерөнхий түвшин', style: EmployeeTokens.rowSub),
+                Text('Ерөнхий түвшин', style: EmployeeTokens.rowSub),
                 EmployeePill(
                   label: report.overallLabel!,
                   tone: riskTone(report.overallLevel),
@@ -1352,88 +1380,141 @@ Future<_ReportDraft?> _showReportEditor(
   required String conclusion,
   required String recommendation,
 }) {
-  final TextEditingController conclusionController =
-      TextEditingController(text: conclusion);
-  final TextEditingController recommendationController =
-      TextEditingController(text: recommendation);
-
   return showModalBottomSheet<_ReportDraft>(
     context: context,
     isScrollControlled: true,
     backgroundColor: Colors.transparent,
     barrierColor: Colors.black.withValues(alpha: 0.45),
-    builder: (BuildContext sheetContext) {
-      return Padding(
-        padding: EdgeInsets.only(
-          bottom: MediaQuery.viewInsetsOf(sheetContext).bottom,
+    builder: (BuildContext sheetContext) => _ReportEditorSheet(
+      conclusion: conclusion,
+      recommendation: recommendation,
+    ),
+  );
+}
+
+/// Дүгнэлт тайлан — the two narrative fields, and the two controllers behind them.
+///
+/// THE CONTROLLERS BELONG TO THIS STATE AND NOWHERE ELSE.
+///
+/// `showModalBottomSheet` hands back a future that completes the moment `Navigator.pop`
+/// runs, NOT when the sheet leaves the screen: the route is still mounted, still playing
+/// its exit animation, and still rebuilding for another few hundred milliseconds. This
+/// sheet used to be a plain `builder:` closure over two controllers owned by the caller
+/// and disposed from `.whenComplete`, which therefore killed them mid-flight, while both
+/// [TextField]s were still live.
+///
+/// The failure was not hypothetical and not quiet. Dismissing the keyboard as the sheet
+/// popped rebuilt the field — `_AnimatedState.didUpdateWidget` re-subscribing to the
+/// controller it merges with the focus node — and threw "A TextEditingController was
+/// used after being disposed". The thrown build left the route half-torn-down, and the
+/// Overlay's teardown then tripped `InheritedElement.debugDeactivated`'s
+/// `_dependents.isEmpty`: the red screen, whose assertion named the framework rather
+/// than this file. Typing into a field was enough to make it certain, because a focused
+/// field is one the pop is guaranteed to rebuild.
+///
+/// A [State] fixes the ordering by construction. `dispose()` runs when the element is
+/// unmounted — after the animation, after the last rebuild — which is the only moment at
+/// which nothing can still read the controllers.
+class _ReportEditorSheet extends StatefulWidget {
+  const _ReportEditorSheet({
+    required this.conclusion,
+    required this.recommendation,
+  });
+
+  final String conclusion;
+  final String recommendation;
+
+  @override
+  State<_ReportEditorSheet> createState() => _ReportEditorSheetState();
+}
+
+class _ReportEditorSheetState extends State<_ReportEditorSheet> {
+  late final TextEditingController _conclusion;
+  late final TextEditingController _recommendation;
+
+  @override
+  void initState() {
+    super.initState();
+    _conclusion = TextEditingController(text: widget.conclusion);
+    _recommendation = TextEditingController(text: widget.recommendation);
+  }
+
+  @override
+  void dispose() {
+    _conclusion.dispose();
+    _recommendation.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.viewInsetsOf(context).bottom,
+      ),
+      child: Container(
+        decoration: const BoxDecoration(
+          color: EmployeeTokens.white,
+          borderRadius: BorderRadius.vertical(
+            top: Radius.circular(EmployeeTokens.radiusSheet),
+          ),
         ),
-        child: Container(
-          decoration: const BoxDecoration(
-            color: EmployeeTokens.white,
-            borderRadius: BorderRadius.vertical(
-              top: Radius.circular(EmployeeTokens.radiusSheet),
+        padding: EdgeInsets.fromLTRB(
+          16,
+          16,
+          16,
+          16 + MediaQuery.viewPaddingOf(context).bottom,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            Text(
+              'Дүгнэлт тайлан',
+              style: EmployeeTokens.screenTitle,
             ),
-          ),
-          padding: EdgeInsets.fromLTRB(
-            16,
-            16,
-            16,
-            16 + MediaQuery.viewPaddingOf(sheetContext).bottom,
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: <Widget>[
-              const Text(
-                'Дүгнэлт тайлан',
-                style: EmployeeTokens.screenTitle,
-              ),
-              const SizedBox(height: 16),
-              _EditorField(
-                label: 'Дүгнэлт',
-                controller: conclusionController,
-                hint: 'Хийсэн ажлын нэгдсэн дүгнэлт...',
-              ),
-              const SizedBox(height: 14),
-              _EditorField(
-                label: 'Зөвлөмж',
-                controller: recommendationController,
-                hint: 'Эрсдэлийг бууруулах зөвлөмж...',
-              ),
-              const SizedBox(height: 18),
-              Row(
-                children: <Widget>[
-                  Expanded(
-                    child: WorkButton.secondary(
-                      label: 'Болих',
-                      onPressed: () => Navigator.of(sheetContext).pop(),
-                    ),
+            const SizedBox(height: 16),
+            _EditorField(
+              label: 'Дүгнэлт',
+              controller: _conclusion,
+              hint: 'Хийсэн ажлын нэгдсэн дүгнэлт...',
+            ),
+            const SizedBox(height: 14),
+            _EditorField(
+              label: 'Зөвлөмж',
+              controller: _recommendation,
+              hint: 'Эрсдэлийг бууруулах зөвлөмж...',
+            ),
+            const SizedBox(height: 18),
+            Row(
+              children: <Widget>[
+                Expanded(
+                  child: WorkButton.secondary(
+                    label: 'Болих',
+                    onPressed: () => Navigator.of(context).pop(),
                   ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    flex: 2,
-                    child: WorkButton(
-                      label: 'Тайлан хадгалах',
-                      icon: Icons.check,
-                      onPressed: () => Navigator.of(sheetContext).pop(
-                        _ReportDraft(
-                          conclusion: conclusionController.text.trim(),
-                          recommendation: recommendationController.text.trim(),
-                        ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  flex: 2,
+                  child: WorkButton(
+                    label: 'Тайлан хадгалах',
+                    icon: Icons.check,
+                    onPressed: () => Navigator.of(context).pop(
+                      _ReportDraft(
+                        conclusion: _conclusion.text.trim(),
+                        recommendation: _recommendation.text.trim(),
                       ),
                     ),
                   ),
-                ],
-              ),
-            ],
-          ),
+                ),
+              ],
+            ),
+          ],
         ),
-      );
-    },
-  ).whenComplete(() {
-    conclusionController.dispose();
-    recommendationController.dispose();
-  });
+      ),
+    );
+  }
 }
 
 class _EditorField extends StatelessWidget {

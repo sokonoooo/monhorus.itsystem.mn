@@ -551,22 +551,53 @@ describe('permission and data scope are independent', () => {
 });
 
 describe('availableActions never offers a button the write endpoint refuses', () => {
-  it('is empty for a stranger and populated for the assignee', async () => {
+  it('is populated for the assignee', async () => {
+    const workId = await plannedWorkForAssignee();
+
+    const assignee = await request(app)
+      .get(`${API}/planned-work/${workId}`)
+      .set('Authorization', `Bearer ${assignedToken}`);
+    expect(assignee.status).toBe(200);
+    const actions = (assignee.body.data.availableActions as { action: string }[]).map(
+      (entry) => entry.action,
+    );
+    expect(actions).toContain('START');
+  });
+
+  /**
+   * The stranger half of this used to assert 200 with an empty `availableActions`: the
+   * detail read was open to anyone holding `planned_work.view`, and withholding the
+   * buttons was the only defence the screen had.
+   *
+   * It is 404 now, and the empty-action assertion has nowhere left to live, because the
+   * record itself is no longer reachable. That is the stronger outcome — a caller who
+   * cannot see a job cannot be offered a button on it — and the reason this case is kept
+   * rather than deleted: it pins WHICH of the two behaviours is current, so a future
+   * change that reopens the read has to come back here and say so.
+   *
+   * Not-found and not forbidden, matching `assertInCustomerScope`: a 403 would confirm
+   * the id is real and turn this endpoint into an oracle for probing identifiers.
+   */
+  it('answers a stranger not-found rather than a record with the buttons removed', async () => {
     const workId = await plannedWorkForAssignee();
 
     const stranger = await request(app)
       .get(`${API}/planned-work/${workId}`)
       .set('Authorization', `Bearer ${strangerToken}`);
-    expect(stranger.status).toBe(200);
-    expect(stranger.body.data.availableActions).toEqual([]);
 
-    const assignee = await request(app)
+    expect(stranger.status).toBe(404);
+    // Indistinguishable from an id that was never real, which is the whole point.
+    const invented = await request(app)
+      .get(`${API}/planned-work/${'0'.repeat(24)}`)
+      .set('Authorization', `Bearer ${strangerToken}`);
+    expect(invented.status).toBe(404);
+    expect(stranger.body.message).toBe(invented.body.message);
+
+    // The dispatcher still opens it, so this is scope and not a broken fixture.
+    const dispatcher = await request(app)
       .get(`${API}/planned-work/${workId}`)
-      .set('Authorization', `Bearer ${assignedToken}`);
-    const actions = (assignee.body.data.availableActions as { action: string }[]).map(
-      (entry) => entry.action,
-    );
-    expect(actions).toContain('START');
+      .set('Authorization', `Bearer ${dispatcherToken}`);
+    expect(dispatcher.status).toBe(200);
   });
 });
 

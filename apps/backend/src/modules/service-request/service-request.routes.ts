@@ -40,6 +40,10 @@ serviceRequestRouter.use(authenticate, enforcePasswordChange);
  * the resolved scope; `customerId` in the query stays a filter for staff and is discarded
  * for a customer. Permission and scope are both required: the guard says who may call the
  * endpoint, the scope says which records the answer may contain.
+ *
+ * A staff caller is bounded a second way, which is why the auth context is passed alongside
+ * the scope: without an oversight permission the answer is confined to their own and their
+ * team's requests plus the unclaimed queue. See `listServiceRequests`.
  */
 serviceRequestRouter.get(
   '/',
@@ -48,8 +52,9 @@ serviceRequestRouter.get(
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const query = req.query as unknown as ServiceRequestListQueryInput;
-      const scope = resolveCustomerScope(requireAuth(req), query.customerId);
-      ok(res, await service.listServiceRequests(query, scope));
+      const auth = requireAuth(req);
+      const scope = resolveCustomerScope(auth, query.customerId);
+      ok(res, await service.listServiceRequests(query, scope, auth));
     } catch (error) {
       next(error);
     }
@@ -87,8 +92,9 @@ serviceRequestRouter.get(
   validate({ params: requestIdParamSchema }),
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const scope = resolveCustomerScope(requireAuth(req));
-      ok(res, await service.getServiceRequestById(pathParam(req, 'requestId'), scope));
+      const auth = requireAuth(req);
+      const scope = resolveCustomerScope(auth);
+      ok(res, await service.getServiceRequestById(pathParam(req, 'requestId'), scope, auth));
     } catch (error) {
       next(error);
     }
@@ -144,9 +150,25 @@ serviceRequestRouter.post(
   },
 );
 
+/**
+ * The status transition.
+ *
+ * TWO KEYS, ONE ENDPOINT. `service_request.change_status` is the office's full authority
+ * over the workflow and is unchanged. `service_request.self_progress` admits the person
+ * doing the work to a strict subset of it — the six states in `SELF_PROGRESS_STATUSES`, on
+ * a request assigned to them or their team.
+ *
+ * The guard here only decides who may KNOCK. Which of the two populations a caller is in,
+ * and therefore how far they may go, is decided inside `changeServiceRequestStatus` by
+ * `assertSelfProgressAllowed` — in the service rather than the route, so that another
+ * caller reaching the same mutation cannot arrive without it.
+ */
 serviceRequestRouter.post(
   '/:requestId/status',
-  requirePermission(PERMISSIONS.SERVICE_REQUEST_CHANGE_STATUS),
+  requireAnyPermission(
+    PERMISSIONS.SERVICE_REQUEST_CHANGE_STATUS,
+    PERMISSIONS.SERVICE_REQUEST_SELF_PROGRESS,
+  ),
   validate({ params: requestIdParamSchema, body: changeServiceRequestStatusSchema }),
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
@@ -258,9 +280,22 @@ serviceRequestRouter.post(
   },
 );
 
+/**
+ * Approving and returning are SEPARATE AUTHORITIES, and this is where they part company.
+ *
+ * They used to be one: both asked for `service_request.change_status`, so nobody could be
+ * given the power to settle a conclusion without also being given the power to reject
+ * somebody else's. Approving is now reachable on `service_request.approve_report` as well,
+ * assignment-scoped in the service; returning below is deliberately left on
+ * `service_request.change_status` alone, because a return is a judgement passed on another
+ * person's work and that is the office's to pass.
+ */
 serviceRequestRouter.post(
   '/:requestId/report/approve',
-  requirePermission(PERMISSIONS.SERVICE_REQUEST_CHANGE_STATUS),
+  requireAnyPermission(
+    PERMISSIONS.SERVICE_REQUEST_CHANGE_STATUS,
+    PERMISSIONS.SERVICE_REQUEST_APPROVE_REPORT,
+  ),
   validate({ params: requestIdParamSchema }),
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
@@ -278,6 +313,8 @@ serviceRequestRouter.post(
   },
 );
 
+/** Office only. See the note above `report/approve`; `service_request.approve_report` is
+ * deliberately NOT accepted here. */
 serviceRequestRouter.post(
   '/:requestId/report/return',
   requirePermission(PERMISSIONS.SERVICE_REQUEST_CHANGE_STATUS),

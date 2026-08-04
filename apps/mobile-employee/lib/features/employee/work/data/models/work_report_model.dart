@@ -37,6 +37,53 @@ enum WorkReportStatus {
   bool get isEditable => this == WorkReportStatus.draft || this == WorkReportStatus.returned;
 }
 
+/// A field the server refuses to submit without.
+///
+/// A transcription of `WORK_REPORT_REQUIREMENTS` and `WORK_REPORT_REQUIREMENT_LABELS` in
+/// `packages/shared/src/constants/work-report.ts`. The wire values are what
+/// `POST /report/submit` returns in `missing` and in the `issues[].field` of its refusal;
+/// the labels are the same Mongolian words the web console prints, so a technician told
+/// "Үнэлгээ (0-100)" on one client is told the same on the other.
+///
+/// THE REQUIREMENTS ARE VISIT-LEVEL AND ARE NOT SATISFIED BY PER-EQUIPMENT FINDINGS. A
+/// conclusion whose every equipment card is filled in is still refused without the visit's
+/// own score and its two photographs, which is why the editor draws a control for each of
+/// them rather than leaving them as rules with nowhere to be obeyed.
+enum WorkReportRequirement {
+  score('SCORE', 'Ерөнхий үнэлгээ (0-100)'),
+  conclusion('CONCLUSION', 'Ерөнхий дүгнэлт'),
+  recommendation('RECOMMENDATION', 'Зөвлөмж'),
+  beforePhoto('BEFORE_PHOTO', 'Ажлын өмнөх зураг'),
+  afterPhoto('AFTER_PHOTO', 'Ажлын дараах зураг');
+
+  const WorkReportRequirement(this.wireValue, this.label);
+
+  final String wireValue;
+  final String label;
+
+  /// Null for anything that is not a requirement key.
+  ///
+  /// Deliberately not defaulted: `issues[].field` also carries per-object refusals keyed by
+  /// object id, and mapping one of those onto a requirement would name a field the
+  /// technician has actually filled in.
+  static WorkReportRequirement? fromWire(String? value) {
+    for (final WorkReportRequirement requirement in WorkReportRequirement.values) {
+      if (requirement.wireValue == value) return requirement;
+    }
+    return null;
+  }
+
+  /// The Mongolian labels for a wire list, unknown keys passed through verbatim.
+  ///
+  /// A key this build does not know about is still shown: a silently dropped requirement is
+  /// exactly the failure this whole path is fixing.
+  static List<String> labelsOf(Iterable<String> wire) {
+    return wire
+        .map((String value) => WorkReportRequirement.fromWire(value)?.label ?? value)
+        .toList();
+  }
+}
+
 /// One evidence file already attached to the conclusion.
 class WorkReportPhotoModel {
   const WorkReportPhotoModel({

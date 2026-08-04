@@ -2,23 +2,26 @@ import 'package:equatable/equatable.dart';
 
 /// Which employee record the signed-in account belongs to.
 ///
-/// This is the pivot of the whole tab: `GET /planned-work` has no server-side
-/// "assigned to me" scoping — `listPlannedWork(query)` takes no auth context at all —
-/// so the only way to show a technician their own work is to send
-/// `employeeId=<my employee record>`.
+/// NO LONGER THE THING THAT MAKES "МИНИЙ" WORK. It used to be: `GET /planned-work`
+/// took no auth context, so the only way to show a technician their own work was to
+/// send `employeeId=<my employee record>` — and that filter could not express the
+/// server's actual rule, which admits a caller named individually OR on the assigned
+/// team. `listPlannedWork` now takes the caller and bounds the query itself, so the
+/// list asks for nothing and gets the right answer.
+///
+/// What the identity is still for, and it is enough to keep it:
+///
+///   - Telling an account with NO employee card that this is why it sees nothing. A
+///     scoped caller the server cannot match to an employee is answered the empty
+///     list, which is correct and unreadable without this.
+///   - [ResolvedWorkIdentity.teamId], which the "Багийн" segment narrows by and which
+///     `resolvePlannedWorkAssignment` compares against a record's `assignedTeam` to
+///     decide which controls it is honest to offer.
 ///
 /// The id comes from `GET /employees/me`, which the server resolves from the current
 /// `Employee.systemUser` link on the authenticated session. It is a read, not a
 /// search: the request carries no identifier, so there is no candidate to confirm and
 /// no way for the app to land on somebody else's card.
-///
-/// [ResolvedWorkIdentity.teamId] is load-bearing beyond the "Багийн" filter — the
-/// backend's planned-work assignment scope admits a caller whose team matches the
-/// work's `assignedTeam`, and the Ажил tab mirrors that rule to decide which controls
-/// it is honest to offer.
-///
-/// When it cannot be resolved the tab says so and stops filtering, rather than
-/// silently listing every planned work in the system as though it were the user's.
 sealed class WorkIdentity extends Equatable {
   const WorkIdentity();
 }

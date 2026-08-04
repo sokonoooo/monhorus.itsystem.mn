@@ -40,12 +40,15 @@ function makeAssessment(overrides: Partial<ObjectAssessmentDto> = {}): ObjectAss
     riskLevel: 'NORMAL',
     assessedById: 'u1',
     assessedByName: 'Бат Дорж',
+    judgedById: null,
+    judgedByName: null,
     assessedAt: '2026-07-01T00:00:00.000Z',
     photos: [],
     conclusion: null,
     recommendation: null,
     actionTaken: null,
     measuredLoadKw: null,
+    measurements: [],
     repairRequired: false,
     revisitRequired: false,
     revisitDate: null,
@@ -201,12 +204,15 @@ describe('ObjectDetailPage', () => {
             riskLevel: 'ATTENTION',
             assessedById: 'u1',
             assessedByName: 'Бат Дорж',
+            judgedById: null,
+            judgedByName: null,
             assessedAt: '2026-07-10T00:00:00.000Z',
             photos: [],
             conclusion: 'Холболт сулласан',
             recommendation: 'Чангалах',
             actionTaken: null,
             measuredLoadKw: 5.2,
+            measurements: [],
             repairRequired: true,
             revisitRequired: false,
             revisitDate: null,
@@ -229,7 +235,10 @@ describe('ObjectDetailPage', () => {
       'Өмнөх оноо',
       'Тайлбар',
       'Зөвлөмж',
-      'Үнэлсэн',
+      // Two actor columns, not one: who wrote the verdict and who signed it off are
+      // different questions and the table answers both rather than blending them.
+      'Дүгнэлт бичсэн',
+      'Баталгаажуулсан',
       'Огноо',
     ]) {
       expect(within(table).getByRole('columnheader', { name: header })).toBeInTheDocument();
@@ -242,6 +251,40 @@ describe('ObjectDetailPage', () => {
         new RegExp(`^${value}$`),
       );
     }
+  });
+
+  /**
+   * The defect this pair of columns exists for: a Дүгнэлт written by a technician and
+   * approved by their manager used to show only the manager, because the history had one
+   * actor field and the report path filled it from the approval.
+   */
+  it('names the technician who wrote the verdict beside the person who signed it off', async () => {
+    vi.spyOn(objectMasterService, 'getById').mockResolvedValue(makeObjectDetail());
+    vi.spyOn(objectMasterService, 'history').mockResolvedValue(
+      makeObjectHistory({
+        assessments: [
+          makeAssessment({
+            id: 'a-judged',
+            assessedById: 'u-manager',
+            assessedByName: 'Менежер Болд',
+            judgedById: 'u-tech',
+            judgedByName: 'Техникч Ганаа',
+          }),
+        ],
+      }),
+    );
+
+    renderDetail([PERMISSIONS.OBJECT_MASTER_VIEW]);
+
+    const table = await screen.findByRole('table', { name: 'Үнэлгээний түүх' });
+    const row = within(table).getAllByRole('row')[1]!;
+    // Each name in a cell of its own: neither is presented as the other.
+    expect(within(row).getByText('Техникч Ганаа').closest('td')).toHaveTextContent(
+      /^Техникч Ганаа$/,
+    );
+    expect(within(row).getByText('Менежер Болд').closest('td')).toHaveTextContent(
+      /^Менежер Болд$/,
+    );
   });
 
   it('offers no way to edit or delete a stored assessment', async () => {
@@ -257,12 +300,15 @@ describe('ObjectDetailPage', () => {
             riskLevel: 'NORMAL',
             assessedById: 'u1',
             assessedByName: 'Бат Дорж',
+            judgedById: null,
+            judgedByName: null,
             assessedAt: '2026-07-01T00:00:00.000Z',
             photos: [makeEvidence()],
             conclusion: null,
             recommendation: null,
             actionTaken: null,
             measuredLoadKw: null,
+            measurements: [],
             repairRequired: false,
             revisitRequired: false,
             revisitDate: null,
@@ -336,7 +382,14 @@ describe('ObjectDetailPage', () => {
     const detail = await screen.findByRole('dialog', { name: 'Үнэлгээний дэлгэрэнгүй' });
     // Named against its own label: the same person also uploaded the evidence, so the
     // assertion has to say which of the two mentions it means.
-    expect(within(detail).getByText('Үнэлсэн').closest('div')).toHaveTextContent('Бат Дорж');
+    expect(within(detail).getByText('Баталгаажуулсан').closest('div')).toHaveTextContent(
+      'Бат Дорж',
+    );
+    // This fixture carries no per-equipment author, and the drawer says so rather than
+    // repeating the approver's name under a label that would then be a lie.
+    expect(within(detail).getByText('Дүгнэлт бичсэн').closest('div')).toHaveTextContent(
+      'Бүртгэгдээгүй',
+    );
     // The exact rendering of the stamp is the locale's business; that it is the recorded
     // day is this test's.
     expect(within(detail).getByText('Үнэлсэн огноо').closest('div')).toHaveTextContent(/2026/);
@@ -453,12 +506,15 @@ describe('ObjectDetailPage', () => {
       riskLevel: 'NORMAL',
       assessedById: 'u1',
       assessedByName: 'Тест',
+      judgedById: null,
+      judgedByName: null,
       assessedAt: '2026-07-01T00:00:00.000Z',
       photos: [],
       conclusion: null,
       recommendation: null,
       actionTaken: null,
       measuredLoadKw: null,
+      measurements: [],
       repairRequired: false,
       revisitRequired: false,
       revisitDate: null,
@@ -482,6 +538,117 @@ describe('ObjectDetailPage', () => {
         expect.objectContaining({ newScore: 95, photoIds: [PHOTO_ID] }),
       );
     });
+  });
+
+  /**
+   * Multiple load units: a repeatable row editor beside the kW box.
+   *
+   * Two rows added, one taken off again, and what reaches the service is checked in full —
+   * the unit has to be resolved from the kind, and the amps must not have leaked into
+   * `measuredLoadKw`, which is the field the floor totals add up.
+   */
+  it('adds and removes load measurement rows and sends them with the assessment', async () => {
+    vi.spyOn(objectMasterService, 'getById').mockResolvedValue(makeObjectDetail());
+    const record = vi
+      .spyOn(objectMasterService, 'recordAssessment')
+      .mockResolvedValue(makeAssessment());
+    const user = userEvent.setup();
+
+    renderDetail([PERMISSIONS.OBJECT_MASTER_VIEW, PERMISSIONS.OBJECT_MASTER_ASSESS]);
+
+    await user.click(await screen.findByRole('button', { name: 'Үнэлгээ бүртгэх' }));
+    const dialog = await screen.findByRole('dialog');
+    await user.type(within(dialog).getByLabelText(/^Шинэ оноо/), '95');
+    await user.type(within(dialog).getByLabelText(/Хэмжсэн ачаалал/), '8.4');
+    await attachEvidence(user, dialog);
+
+    const add = within(dialog).getByRole('button', { name: 'Хэмжилт нэмэх' });
+    await user.click(add);
+    await user.click(add);
+    await user.click(add);
+
+    // A fresh row never collides with one already on the form, so the three defaults are
+    // "no phase", L1, L2 — and the third is the one taken off again below.
+    await user.type(within(dialog).getByLabelText('1-р хэмжилтийн утга'), '41.2');
+    await user.selectOptions(within(dialog).getByLabelText('2-р хэмжилтийн фаз'), 'L2');
+    await user.type(within(dialog).getByLabelText('2-р хэмжилтийн утга'), '38.9');
+    await user.selectOptions(within(dialog).getByLabelText('3-р хэмжилтийн төрөл'), 'VOLTAGE');
+    await user.type(within(dialog).getByLabelText('3-р хэмжилтийн утга'), '231');
+
+    await user.click(within(dialog).getByRole('button', { name: '3-р хэмжилт хасах' }));
+    expect(within(dialog).queryByLabelText('3-р хэмжилтийн утга')).not.toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole('button', { name: 'Бүртгэх' }));
+
+    await waitFor(() => {
+      expect(record).toHaveBeenCalledWith(OBJECT_ID, {
+        newScore: 95,
+        conclusion: null,
+        recommendation: null,
+        actionTaken: null,
+        // The amps are their own readings; the kW box is untouched by them.
+        measuredLoadKw: 8.4,
+        measurements: [
+          { kind: 'CURRENT', value: 41.2, unit: 'AMPERE', phase: null },
+          { kind: 'CURRENT', value: 38.9, unit: 'AMPERE', phase: 'L2' },
+        ],
+        repairRequired: false,
+        revisitRequired: false,
+        revisitDate: null,
+        revisitOwnerEmployeeId: null,
+        photoIds: [PHOTO_ID],
+      });
+    });
+  });
+
+  /** An untouched editor sends exactly what the form sent before the field existed. */
+  it('omits measurements entirely when no row was added', async () => {
+    vi.spyOn(objectMasterService, 'getById').mockResolvedValue(makeObjectDetail());
+    const record = vi
+      .spyOn(objectMasterService, 'recordAssessment')
+      .mockResolvedValue(makeAssessment());
+    const user = userEvent.setup();
+
+    renderDetail([PERMISSIONS.OBJECT_MASTER_VIEW, PERMISSIONS.OBJECT_MASTER_ASSESS]);
+
+    await user.click(await screen.findByRole('button', { name: 'Үнэлгээ бүртгэх' }));
+    const dialog = await screen.findByRole('dialog');
+    await user.type(within(dialog).getByLabelText(/^Шинэ оноо/), '95');
+    await attachEvidence(user, dialog);
+    await user.click(within(dialog).getByRole('button', { name: 'Бүртгэх' }));
+
+    await waitFor(() => expect(record).toHaveBeenCalled());
+    expect(record.mock.calls[0]?.[1]).not.toHaveProperty('measurements');
+  });
+
+  /** The stored readings are read beside the assessment they were taken during. */
+  it('shows the recorded readings on the assessment detail panel', async () => {
+    vi.spyOn(objectMasterService, 'getById').mockResolvedValue(makeObjectDetail());
+    vi.spyOn(objectMasterService, 'history').mockResolvedValue(
+      makeObjectHistory({
+        assessments: [
+          makeAssessment({
+            measuredLoadKw: 8.4,
+            measurements: [
+              { kind: 'CURRENT', value: 41.2, unit: 'AMPERE', phase: 'L1' },
+              { kind: 'VOLTAGE', value: 231, unit: 'VOLT', phase: null },
+            ],
+          }),
+        ],
+      }),
+    );
+    const user = userEvent.setup();
+
+    renderDetail([PERMISSIONS.OBJECT_MASTER_VIEW]);
+
+    const table = await screen.findByRole('table', { name: 'Үнэлгээний түүх' });
+    await user.click(within(table).getAllByRole('row')[1]!);
+    const dialog = await screen.findByRole('dialog', { name: 'Үнэлгээний дэлгэрэнгүй' });
+
+    expect(within(dialog).getByText('41.2 А (L1)')).toBeInTheDocument();
+    expect(within(dialog).getByText('231 В')).toBeInTheDocument();
+    // The kW head is still shown as itself, not folded into the list.
+    expect(within(dialog).getByText('8.4 kW')).toBeInTheDocument();
   });
 
   /**

@@ -384,6 +384,68 @@ void main() {
     });
   });
 
+  /// Multiple load units: the assessment now carries a `measurements` array.
+  ///
+  /// This app does not show the readings — a customer is told what the equipment is
+  /// worth, not what a clamp meter said on the day — but it reads the same
+  /// `ObjectAssessmentDto`, so the field must pass through it without a word. The
+  /// summable figure a customer does see, `measuredLoadKw`, must be untouched by it.
+  group('ObjectAssessmentModel with load measurements', () {
+    Map<String, dynamic> assessment({Object? measurements}) => <String, dynamic>{
+          'id': '760000000000000000000001',
+          'objectId': '750000000000000000000001',
+          'previousScore': 62,
+          'newScore': 38,
+          'riskLevel': 'CRITICAL',
+          'assessedByName': 'Б. Энхтөр',
+          'assessedAt': '2026-07-20T04:12:00.000Z',
+          'photos': <Map<String, dynamic>>[],
+          'conclusion': 'Гурван фазын ачаалал жигд бус.',
+          'recommendation': 'Ачааллыг тэнцвэржүүлнэ.',
+          'actionTaken': null,
+          'measuredLoadKw': 55.1,
+          if (measurements != null) 'measurements': measurements,
+          'repairRequired': true,
+          'revisitRequired': false,
+          'revisitDate': null,
+          'revisitOwnerName': null,
+          'sourceLabel': null,
+        };
+
+    test('an assessment carrying readings still parses, unchanged', () {
+      final ObjectAssessmentModel parsed = ObjectAssessmentModel.fromJson(
+        assessment(measurements: <Map<String, dynamic>>[
+          <String, dynamic>{
+            'kind': 'CURRENT',
+            'value': 41.2,
+            'unit': 'AMPERE',
+            'phase': 'L1',
+          },
+          <String, dynamic>{
+            'kind': 'VOLTAGE',
+            'value': 231,
+            'unit': 'VOLT',
+            'phase': null,
+          },
+        ]),
+      );
+
+      expect(parsed.newScore, 38);
+      expect(parsed.riskLevel, RiskLevel.critical);
+      // The amps did not leak into the one figure this app does render.
+      expect(parsed.measuredLoadKw, 55.1);
+      expect(parsed.repairRequired, isTrue);
+    });
+
+    test('an assessment without the field parses exactly as before', () {
+      final ObjectAssessmentModel parsed =
+          ObjectAssessmentModel.fromJson(assessment());
+
+      expect(parsed.newScore, 38);
+      expect(parsed.measuredLoadKw, 55.1);
+    });
+  });
+
   group('ServiceRequestDetailModel', () {
     test('parses location refs, employees and status history', () {
       final ServiceRequestDetailModel request = serviceRequestFixture();
@@ -478,6 +540,87 @@ void main() {
       );
       expect(broken.items, isEmpty);
       expect(broken.page, 1);
+    });
+  });
+
+  group('planPosition', () {
+    Map<String, dynamic> objectWith(Object? position, {Object? showOnPlan = true}) =>
+        <String, dynamic>{
+          'id': 'o1',
+          'code': 'LDB-1',
+          'name': 'Самбар',
+          'category': 'PANEL',
+          'objectType': <String, dynamic>{
+            'id': 'ot1',
+            'code': 'DB',
+            'name': 'Хуваарилах самбар',
+            'icon': 'PANEL',
+            'showOnPlan': showOnPlan,
+          },
+          'customerId': testCustomerId,
+          'floorId': 'f1',
+          'planPosition': position,
+          'status': 'ACTIVE',
+          'latestAssessment': null,
+          'calculatedLoad': <String, dynamic>{
+            'valueKw': null,
+            'complete': false,
+            'reasons': <dynamic>[],
+          },
+          'measuredLoadKw': null,
+          'loadVariance': <String, dynamic>{
+            'valueKw': null,
+            'complete': false,
+            'reasons': <dynamic>[],
+          },
+          'createdAt': '2026-01-04T00:00:00.000Z',
+        };
+
+    test('parses the normalised fraction the plan editor stored', () {
+      final ObjectListItemModel object = ObjectListItemModel.fromJson(
+        objectWith(<String, dynamic>{'x': 0.25, 'y': 0.75}),
+      );
+
+      expect(object.planPosition, const PlanPositionModel(x: 0.25, y: 0.75));
+      expect(object.objectType!.showOnPlan, isTrue);
+    });
+
+    test('accepts the exact corners, which are legal positions', () {
+      expect(
+        PlanPositionModel.fromJson(<String, dynamic>{'x': 0, 'y': 1}),
+        const PlanPositionModel(x: 0, y: 1),
+      );
+    });
+
+    test('rejects a malformed or out-of-range coordinate instead of crashing', () {
+      // Each of these is a value the app must survive: it costs one unplaced marker.
+      const List<Object?> refused = <Object?>[
+        null,
+        'nowhere',
+        <String, dynamic>{'x': 0.5},
+        <String, dynamic>{'x': '0.5', 'y': '0.5'},
+        <String, dynamic>{'x': 1.4, 'y': 0.5},
+        <String, dynamic>{'x': -0.01, 'y': 0.5},
+        <String, dynamic>{'x': double.nan, 'y': 0.5},
+        <String, dynamic>{'x': double.infinity, 'y': 0.5},
+      ];
+
+      for (final Object? value in refused) {
+        expect(
+          ObjectListItemModel.fromJson(objectWith(value)).planPosition,
+          isNull,
+          reason: 'expected \$value to be refused',
+        );
+      }
+    });
+
+    test('showOnPlan reads false when the server did not send it', () {
+      final ObjectListItemModel object = ObjectListItemModel.fromJson(
+        objectWith(<String, dynamic>{'x': 0.5, 'y': 0.5}, showOnPlan: null),
+      );
+
+      // An older server means "not on the plan", never "draw it anyway".
+      expect(object.objectType!.showOnPlan, isFalse);
     });
   });
 

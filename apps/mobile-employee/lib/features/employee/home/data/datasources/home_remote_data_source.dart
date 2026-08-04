@@ -7,12 +7,13 @@ import '../models/work_models.dart';
 /// Transport for the Нүүр tab. Throws `ServerException` or `NetworkException`; the
 /// repository converts those into failures.
 ///
-/// Every "my work" read passes `employeeId` explicitly. That is not a formality: the
-/// backend applies NO self-scoping to `/planned-work` or `/service-requests` — the
-/// list services take no auth context at all — so a call without the filter returns
-/// every colleague's work. The id therefore has to be resolved first, and if it
-/// cannot be, the correct behaviour is to show nothing rather than to show
-/// everything.
+/// No "my work" read passes `employeeId` any more, and the reason is the opposite of
+/// what it once was. This used to say the backend applied NO self-scoping to
+/// `/planned-work` or `/service-requests`, so a call without the filter returned every
+/// colleague's work. Both list services take the auth context now and bound a
+/// non-oversight caller to their own and their team's records, so the filter is not
+/// merely redundant — it is harmful, because it ANDs with the enforced predicate and
+/// silently drops work assigned to the reader's team.
 class HomeRemoteDataSource {
   const HomeRemoteDataSource(this._client);
 
@@ -33,20 +34,23 @@ class HomeRemoteDataSource {
 
   // -- Assigned work ----------------------------------------------------------
 
-  /// GET /planned-work, narrowed to one employee.
+  /// GET /planned-work, as the server scopes it.
+  ///
+  /// No `employeeId` is sent. The backend now narrows a non-oversight caller to work
+  /// assigned to them **or to their team**, and `employeeId` can only subtract from
+  /// that - sending it would drop every job assigned to the reader's team without
+  /// naming them individually, which is work they may legitimately start and report.
   ///
   /// `includeArchived` is left off so finished-and-filed work does not inflate the
   /// home counters. `limit` is the schema's maximum; a technician with more than a
   /// hundred live planned works is outside what this screen tries to summarise.
   Future<PaginatedData<PlannedWorkListItemModel>> listPlannedWork({
-    required String employeeId,
     int limit = 100,
   }) {
     return _client.request<PaginatedData<PlannedWorkListItemModel>>(
       path: '/planned-work',
       method: 'GET',
       queryParameters: <String, dynamic>{
-        'employeeId': employeeId,
         'page': 1,
         'limit': limit,
         'sortBy': 'plannedEndDate',
@@ -59,21 +63,21 @@ class HomeRemoteDataSource {
     );
   }
 
-  /// GET /service-requests, narrowed to one employee.
+  /// GET /service-requests, as the server scopes it.
+  ///
+  /// No `employeeId` is sent, for the same reason as [listPlannedWork].
   ///
   /// `slaState` is deliberately not sent as a filter even though the home screen
   /// cares about it: the backend applies that one in memory after paginating, so
   /// `total` stops agreeing with the page. The banding is done here instead, on the
   /// `slaState` each row already carries.
   Future<PaginatedData<ServiceRequestListItemModel>> listServiceRequests({
-    required String employeeId,
     int limit = 100,
   }) {
     return _client.request<PaginatedData<ServiceRequestListItemModel>>(
       path: '/service-requests',
       method: 'GET',
       queryParameters: <String, dynamic>{
-        'employeeId': employeeId,
         'page': 1,
         'limit': limit,
         'sortBy': 'createdAt',

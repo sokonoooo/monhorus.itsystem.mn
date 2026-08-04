@@ -179,6 +179,19 @@ export interface IReportItem {
   measuredLoadKw: number | null;
   evidenceAttachments: Types.ObjectId[];
 
+  /**
+   * Who wrote THIS item's Дүгнэлт, when the producer knows per equipment.
+   *
+   * Distinct from the report's `createdBy` (who raised the report) and its `approvedBy`
+   * (who signed it off): one planned work can carry sub-tasks concluded by different
+   * technicians, and the equipment's history is entitled to name the one who judged it.
+   * Null where the producer has no per-item author — a service-request conclusion, a
+   * consolidation of items that carried none — and never backfilled from the report-level
+   * actor, because that would make the field mean two things at once.
+   */
+  judgedBy: Types.ObjectId | null;
+  judgedByName: string | null;
+
   /** Set on a consolidated report's items: where the finding was carried from. */
   sourceReport: Types.ObjectId | null;
   sourceReportItem: Types.ObjectId | null;
@@ -204,6 +217,9 @@ const reportItemSchema = new Schema<IReportItem>(
       type: [{ type: Schema.Types.ObjectId, ref: 'StoredFile' }],
       default: [],
     },
+
+    judgedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+    judgedByName: { type: String, default: null },
 
     sourceReport: { type: Schema.Types.ObjectId, ref: 'Report', default: null },
     sourceReportItem: { type: Schema.Types.ObjectId, ref: 'ReportItem', default: null },

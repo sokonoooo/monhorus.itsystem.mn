@@ -35,7 +35,7 @@ class AppTheme {
         thickness: CustomerTokens.hairline,
         space: CustomerTokens.hairline,
       ),
-      appBarTheme: const AppBarTheme(
+      appBarTheme: AppBarTheme(
         backgroundColor: CustomerTokens.bg,
         foregroundColor: CustomerTokens.ink,
         surfaceTintColor: Colors.transparent,

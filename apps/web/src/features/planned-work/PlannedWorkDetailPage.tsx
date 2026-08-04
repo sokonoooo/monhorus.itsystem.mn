@@ -5,7 +5,14 @@ import {
   type PlannedWorkMaterialDto,
   type PlannedWorkTaskDto,
 } from '@monhorus/shared';
-import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactElement,
+} from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
 import { Alert } from '../../components/ui/Alert';
@@ -20,6 +27,7 @@ import { useToast } from '../../components/ui/ToastProvider';
 import { useAuth } from '../../contexts/auth-context';
 import { useTableColumns } from '../../hooks/use-table-columns';
 import { ApiError } from '../../lib/api-client';
+import { formatMinutes } from '../../lib/duration';
 import { plannedWorkService } from '../../services/planned-work.service';
 import { ScoreBar } from '../projects/objects/ObjectBadges';
 import { PlannedMaterialsDrawer } from './PlannedMaterialsDrawer';
@@ -30,6 +38,7 @@ import {
   ReportStatusBadge,
   TaskStatusBadge,
 } from './PlannedWorkBadges';
+import { FloorTaskSection, groupTasksByFloor } from './PlannedWorkFloorSections';
 import { RescheduleDrawer } from './RescheduleDrawer';
 import { TaskDetailDrawer } from './TaskDetailDrawer';
 import { TaskFormDrawer } from './TaskFormDrawer';
@@ -44,6 +53,38 @@ function formatDate(iso: string | null): string {
 function formatDateTime(iso: string | null): string {
   if (!iso) return '-';
   return new Date(iso).toLocaleString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
+}
+
+/**
+ * Which floor sections the user has closed.
+ *
+ * Stores the CLOSED ones, so the default with nothing stored is every section open: this
+ * page is the work itself, and opening it to a column of collapsed headers would hide the
+ * content behind a click per floor. Same `monhorus.*` namespace and same reasoning as
+ * `useTableColumns` — a private view preference with no consequence if it is lost, not
+ * worth a round trip.
+ */
+const FLOOR_COLLAPSE_STORAGE_KEY = 'monhorus.section.planned-work-floors';
+
+function readCollapsedFloors(): string[] {
+  try {
+    const raw = localStorage.getItem(FLOOR_COLLAPSE_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((entry): entry is string => typeof entry === 'string');
+  } catch {
+    // A corrupt preference opens everything rather than taking the page down.
+    return [];
+  }
+}
+
+function writeCollapsedFloors(next: readonly string[]): void {
+  try {
+    localStorage.setItem(FLOOR_COLLAPSE_STORAGE_KEY, JSON.stringify(next));
+  } catch {
+    // A full or blocked quota must not stop the section from collapsing.
+  }
 }
 
 function SummaryRow({ label, value }: { label: string; value: ReactElement | string }): ReactElement {
@@ -73,12 +114,31 @@ export function PlannedWorkDetailPage(): ReactElement {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const [collapsedFloors, setCollapsedFloors] = useState<readonly string[]>(() =>
+    readCollapsedFloors(),
+  );
+
   const [taskTarget, setTaskTarget] = useState<PlannedWorkTaskDto | null | 'new'>(null);
   const [progressTarget, setProgressTarget] = useState<PlannedWorkTaskDto | null>(null);
   const [detailTarget, setDetailTarget] = useState<PlannedWorkTaskDto | null>(null);
   const [rescheduleOpen, setRescheduleOpen] = useState(false);
   const [materialsOpen, setMaterialsOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<PlannedWorkTaskDto | null>(null);
+
+  /**
+   * Sub-tasks whose equipment panel is open. Held here rather than per floor section so a
+   * row stays open when its floor group re-renders, and deliberately NOT persisted: unlike
+   * the collapsed-floor preference this is a glance at one row, not a layout choice.
+   */
+  const [expandedTaskIds, setExpandedTaskIds] = useState<readonly string[]>([]);
+
+  const toggleTask = useCallback((taskId: string): void => {
+    setExpandedTaskIds((current) =>
+      current.includes(taskId)
+        ? current.filter((entry) => entry !== taskId)
+        : [...current, taskId],
+    );
+  }, []);
 
   const load = useCallback(async (): Promise<void> => {
     if (!plannedWorkId) return;
@@ -96,6 +156,16 @@ export function PlannedWorkDetailPage(): ReactElement {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const toggleFloor = useCallback((floorKey: string): void => {
+    setCollapsedFloors((current) => {
+      const next = current.includes(floorKey)
+        ? current.filter((entry) => entry !== floorKey)
+        : [...current, floorKey];
+      writeCollapsedFloors(next);
+      return next;
+    });
+  }, []);
 
   // Opening the deep-linked sub-task is done once. `work` is replaced after every progress
   // or edit save, and reacting to that would reopen a drawer the user had closed.
@@ -231,8 +301,15 @@ export function PlannedWorkDetailPage(): ReactElement {
     },
   ];
 
+  // `tableKey` is unchanged from when this was one flat table: the columns are the same
+  // columns, and a new key would throw away every preference already saved.
   const taskColumnState = useTableColumns('planned-work-tasks', taskColumns);
   const materialColumnState = useTableColumns('planned-work-materials', materialColumns);
+
+  const floorGroups = useMemo(
+    () => groupTasksByFloor(work?.tasks ?? [], work?.floorProgress ?? []),
+    [work],
+  );
 
   if (loading) {
     return (
@@ -354,30 +431,15 @@ export function PlannedWorkDetailPage(): ReactElement {
           )}
         </div>
 
-        {work.floorProgress.length > 0 && (
-          <div className="rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
-            <h2 className="mb-3 text-sm font-semibold text-slate-900">Давхрын биелэлт</h2>
-            <ul className="space-y-3">
-              {work.floorProgress.map((floor) => (
-                <li key={floor.floorId} className="flex flex-wrap items-center gap-3">
-                  <span className="min-w-[140px] text-sm text-slate-700">{floor.floorName}</span>
-                  <div className="flex-1">
-                    <ProgressBar
-                      percent={floor.progressPercent}
-                      completedQuantity={floor.completedQuantity}
-                      totalQuantity={floor.totalQuantity}
-                    />
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-
-        <div className="overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-slate-200">
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-5 py-3">
+        {/* Floor, then sub-task, then what the sub-task consumed. The floor rollup that
+            used to be a separate read-only list is the section header itself, so a floor's
+            progress and its sub-tasks are never read in two different places. */}
+        <div className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <h2 className="text-sm font-semibold text-slate-900">Дэд ажил</h2>
             <div className="flex items-center gap-2">
+              {/* ONE controller for the page. A picker per floor would make "which columns
+                  does this table show" a question with a different answer per section. */}
               <ColumnPicker controller={taskColumnState} />
               {canUpdate && !isClosed && (
                 <Button variant="secondary" size="sm" onClick={() => setTaskTarget('new')}>
@@ -386,18 +448,38 @@ export function PlannedWorkDetailPage(): ReactElement {
               )}
             </div>
           </div>
-          <DataTable
-            columns={taskColumnState.visibleColumns}
-            rows={work.tasks}
-            rowKey={(row) => row.id}
-            emptyTitle="Дэд ажил бүртгэгдээгүй"
-            emptyDescription="Биелэлтийг хэмжихийн тулд дэд ажил нэмнэ үү."
-          />
+
+          {floorGroups.length === 0 ? (
+            <div className="overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-slate-200">
+              <DataTable
+                columns={taskColumnState.visibleColumns}
+                rows={[]}
+                rowKey={(row: PlannedWorkTaskDto) => row.id}
+                emptyTitle="Дэд ажил бүртгэгдээгүй"
+                emptyDescription="Биелэлтийг хэмжихийн тулд дэд ажил нэмнэ үү."
+              />
+            </div>
+          ) : (
+            floorGroups.map((group) => (
+              <FloorTaskSection
+                key={group.key}
+                group={group}
+                columns={taskColumnState.visibleColumns}
+                expanded={!collapsedFloors.includes(group.key)}
+                onToggle={() => toggleFloor(group.key)}
+                expandedTaskIds={expandedTaskIds}
+                onToggleTask={toggleTask}
+              />
+            ))
+          )}
         </div>
 
         <div className="overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-slate-200">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-5 py-3">
-            <h2 className="text-sm font-semibold text-slate-900">Материал</h2>
+            {/* The work's PLAN — what the job is expected to need, typed as name and
+                quantity. Named for the plan rather than just "Материал" so it is never
+                read as a record of what was actually issued. */}
+            <h2 className="text-sm font-semibold text-slate-900">Төлөвлөсөн материал</h2>
             <div className="flex items-center gap-2">
               <ColumnPicker controller={materialColumnState} />
               {canUpdate && !isClosed && (
@@ -428,7 +510,7 @@ export function PlannedWorkDetailPage(): ReactElement {
                       <p className="text-xs text-slate-500">
                         {formatDateTime(entry.pausedAt)} - {formatDateTime(entry.resumedAt)}
                         {entry.durationMinutes !== null
-                          ? ` (${Math.floor(entry.durationMinutes / 60)}ц)`
+                          ? ` (${formatMinutes(entry.durationMinutes)})`
                           : ' (үргэлжилж байна)'}
                       </p>
                       <p className="text-xs text-slate-500">{entry.pausedByName ?? '-'}</p>

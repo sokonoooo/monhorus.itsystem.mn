@@ -560,7 +560,7 @@ class Breadcrumb extends StatelessWidget {
         children: <Widget>[
           for (int i = 0; i < parts.length; i++) ...<Widget>[
             if (i > 0)
-              const Text(
+              Text(
                 '›',
                 style: EmployeeTokens.rowSub,
               ),

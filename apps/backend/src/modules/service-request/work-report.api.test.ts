@@ -14,9 +14,16 @@ import {
   type ObjectFixture,
 } from '../../test/helpers';
 import { StoredFile } from '../storage/stored-file.model';
+import { Employee } from '../employee/employee.model';
 import { ServiceRequest, nextRequestNumber } from './service-request.model';
-import { ObjectRecord, ObjectType } from '../object-master/object-master.models';
+import { WorkReport } from './work-report.model';
+import {
+  ObjectAssessment,
+  ObjectRecord,
+  ObjectType,
+} from '../object-master/object-master.models';
 import { Report, ReportItem } from '../report-record/report-record.model';
+import { applyReportToEquipment } from '../report-record/report-record.service';
 
 const API = '/api/v1';
 
@@ -49,6 +56,7 @@ async function seedRequest(): Promise<string> {
 }
 
 let photoSequence = 0;
+let technicianSequence = 0;
 
 async function seedPhoto(name: string): Promise<string> {
   photoSequence += 1;
@@ -340,6 +348,53 @@ describe('Service-request equipment assessment', () => {
       .set('Authorization', `Bearer ${token}`);
   }
 
+  /**
+   * The completeness rule is VISIT-LEVEL and per-equipment findings do not satisfy it.
+   *
+   * A technician can fill every equipment card — score, observation, conclusion,
+   * recommendation, evidence — and still be refused over the visit's own score and its two
+   * photographs, because `workReportCompleteness` reads five report fields and knows
+   * nothing about `objectAssessments`. That is the current product rule and this pins it,
+   * both so the refusal keeps naming the three fields and so a later change to the rule is
+   * a deliberate edit to this expectation rather than a silent drift.
+   */
+  it('is still incomplete when only the per-equipment findings are filled in', async () => {
+    const requestId = await seedRequest();
+    const assessed = await seedObject('DB-20');
+    await request(app).get(`${API}/service-requests/${requestId}/report`).set('Authorization', `Bearer ${token}`);
+
+    const saved = await fillReport(requestId, {
+      score: null,
+      beforePhotoIds: [],
+      afterPhotoIds: [],
+      objectIds: [assessed],
+      objectAssessments: [
+        {
+          objectId: assessed,
+          score: 91,
+          observation: 'Холболт сул байв.',
+          conclusion: 'Хэвийн ажиллагаанд орсон.',
+          recommendation: 'Тогтмол хяналт.',
+          photoIds: [await seedPhoto('device.png')],
+        },
+      ],
+    });
+
+    expect(saved.body.data.objectAssessments).toHaveLength(1);
+    expect(saved.body.data.missing).toEqual(['SCORE', 'BEFORE_PHOTO', 'AFTER_PHOTO']);
+
+    const refused = await request(app)
+      .post(`${API}/service-requests/${requestId}/report/submit`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(refused.status).toBe(400);
+    expect((refused.body.issues ?? []).map((i: { field: string }) => i.field)).toEqual([
+      'SCORE',
+      'BEFORE_PHOTO',
+      'AFTER_PHOTO',
+    ]);
+  });
+
   it('writes one report item per assessed object, each with its own finding', async () => {
     const requestId = await seedRequest();
     const healthy = await seedObject('DB-01');
@@ -376,6 +431,100 @@ describe('Service-request equipment assessment', () => {
     const report = await Report.findOne({ sourceType: 'SERVICE_REQUEST' });
     const item = await ReportItem.findOne({ report: report?._id });
     expect(item?.score).toBe(78);
+  });
+
+  /**
+   * The equipment's HISTORY, not just its head.
+   *
+   * An approved conclusion used to move `latestAssessment` and write no `ObjectAssessment`
+   * row, so the evaluation never appeared in the device detail screen's Үнэлгээний түүх
+   * table — which reads that collection — even though the score had visibly changed.
+   */
+  it('writes one history row per assessed object on approval', async () => {
+    const requestId = await seedRequest();
+    const healthy = await seedObject('DB-10');
+    const failing = await seedObject('DB-11');
+
+    await approvedReportFor(requestId, {
+      objectAssessments: [
+        { objectId: healthy, score: 95, observation: 'Хэвийн.', conclusion: 'Асуудалгүй.' },
+        { objectId: failing, score: 22, observation: 'Хэт халалт.', conclusion: 'Яаралтай засвар.' },
+      ],
+    });
+
+    const report = await Report.findOne({ sourceType: 'SERVICE_REQUEST' });
+
+    const good = await ObjectAssessment.find({ object: healthy });
+    const bad = await ObjectAssessment.find({ object: failing });
+    expect(good).toHaveLength(1);
+    expect(bad).toHaveLength(1);
+
+    expect(good[0]?.newScore).toBe(95);
+    expect(good[0]?.riskLevel).toBe('NORMAL');
+    expect(good[0]?.conclusion).toBe('Асуудалгүй.');
+    // The per-equipment observation, which is what the manual path stores as the action.
+    expect(good[0]?.actionTaken).toBe('Хэвийн.');
+
+    // Each object carries its OWN band, from its own score — not the visit's.
+    expect(bad[0]?.newScore).toBe(22);
+    expect(bad[0]?.riskLevel).not.toBe(good[0]?.riskLevel);
+
+    for (const row of [...good, ...bad]) {
+      // WHO and WHEN come from the report, never invented here.
+      expect(row.assessedByName).toBe(report?.approvedByName);
+      expect(row.assessedAt.toISOString()).toBe(report?.occurredAt.toISOString());
+      expect(String(row.sourceReport)).toBe(String(report?._id));
+      // The request number, so the history row names the visit it came from.
+      expect(row.sourceLabel).toBe(report?.sourceReference);
+    }
+
+    // Each head points at the row that was actually written for it.
+    const object = await ObjectRecord.findById(failing);
+    expect(String(object?.latestAssessment?.assessment)).toBe(String(bad[0]?._id));
+  });
+
+  it('does not duplicate the history row when the conclusion is applied again', async () => {
+    const requestId = await seedRequest();
+    const assessed = await seedObject('DB-12');
+
+    await approvedReportFor(requestId, {
+      objectAssessments: [{ objectId: assessed, score: 64, conclusion: 'Ажиглалтад.' }],
+    });
+
+    expect(await ObjectAssessment.countDocuments({ object: assessed })).toBe(1);
+    const first = await ObjectAssessment.findOne({ object: assessed });
+
+    const report = await Report.findOne({ sourceType: 'SERVICE_REQUEST' });
+    // Re-publishing an already-approved conclusion re-runs the apply over the same
+    // upserted items. History must not gain a row per attempt.
+    await applyReportToEquipment(report!._id);
+    await applyReportToEquipment(report!._id);
+
+    const rows = await ObjectAssessment.find({ object: assessed });
+    expect(rows).toHaveLength(1);
+    expect(String(rows[0]?._id)).toBe(String(first?._id));
+  });
+
+  /**
+   * A DRAFT conclusion is a claim. It must reach neither the head nor the history — the
+   * same rule, applied to both, so the two cannot disagree about what has been settled.
+   */
+  it('writes no history row before the conclusion is approved', async () => {
+    const requestId = await seedRequest();
+    const assessed = await seedObject('DB-13');
+
+    await request(app)
+      .get(`${API}/service-requests/${requestId}/report`)
+      .set('Authorization', `Bearer ${token}`);
+    await fillReport(requestId, {
+      objectAssessments: [{ objectId: assessed, score: 30, conclusion: 'Шалгах шаардлагатай.' }],
+    });
+    await request(app)
+      .post(`${API}/service-requests/${requestId}/report/submit`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(await ObjectAssessment.countDocuments({ object: assessed })).toBe(0);
+    expect((await ObjectRecord.findById(assessed))?.latestAssessment ?? null).toBeNull();
   });
 
   /**
@@ -495,5 +644,176 @@ describe('Service-request equipment assessment', () => {
 
     expect(feed.body.data.items).toHaveLength(1);
     expect(feed.body.data.items[0].objectId).toBe(a);
+  });
+});
+
+/**
+ * The two boundaries a conclusion has to survive, both of which were broken on the live
+ * database rather than in this suite: the shape of a document written before the schema
+ * grew, and the assignment scope the request detail read acquired without its sub-routes.
+ */
+describe('Work conclusion — boundaries', () => {
+  /** A signed-in technician with an ACTIVE employee card linked to their account. */
+  async function makeTechnician(
+    email: string,
+    overrides: Record<string, unknown> = {},
+  ): Promise<{ token: string; employeeId: Types.ObjectId }> {
+    const user = await createUserWithPermissions(email, [
+      PERMISSIONS.SERVICE_REQUEST_VIEW,
+      PERMISSIONS.SERVICE_REQUEST_UPDATE,
+    ]);
+    technicianSequence += 1;
+    const employee = await Employee.create({
+      employeeCode: `WR-E-${technicianSequence}`,
+      firstName: 'Тест',
+      lastName: 'Мастер',
+      registrationNumber: `ЧЧ${String(20_000_000 + technicianSequence)}`,
+      status: 'ACTIVE',
+      employeeType: 'FULL_TIME',
+      employmentStartDate: new Date('2024-01-01'),
+      systemUser: user.userId,
+      ...overrides,
+    });
+    return { token: await login(user.email, user.password), employeeId: employee._id };
+  }
+
+  async function assign(requestId: string, employeeId: Types.ObjectId): Promise<void> {
+    await ServiceRequest.updateOne(
+      { _id: new Types.ObjectId(requestId) },
+      { $set: { assignedEmployees: [employeeId] } },
+    );
+  }
+
+  function getReport(requestId: string, bearer: string) {
+    return request(app)
+      .get(`${API}/service-requests/${requestId}/report`)
+      .set('Authorization', `Bearer ${bearer}`);
+  }
+
+  /**
+   * THE 500 THE APP SHOWED AS "систем алдаа".
+   *
+   * `.lean()` skips hydration and hydration is what applies a schema `default`, so a
+   * conclusion stored before `objectAssessments` existed comes back with the key absent
+   * and `toDto` did `undefined.map()`. The unset goes through the driver collection on
+   * purpose: mongoose would re-add the defaults and the document under test would not be
+   * the one the database actually holds.
+   */
+  it('reads a conclusion written before the list fields existed', async () => {
+    const requestId = await seedRequest();
+    const created = await getReport(requestId, token);
+    expect(created.status).toBe(200);
+
+    await WorkReport.collection.updateOne(
+      { serviceRequest: new Types.ObjectId(requestId) },
+      { $unset: { objectAssessments: '', materials: '', objects: '' } },
+    );
+
+    const reread = await getReport(requestId, token);
+
+    expect(reread.status).toBe(200);
+    expect(reread.body.data.objectAssessments).toEqual([]);
+    expect(reread.body.data.materials).toEqual([]);
+    expect(reread.body.data.objects).toEqual([]);
+  });
+
+  /** The same document reached through the request's own status guard, which also maps it. */
+  it('does not fail the status guard on a legacy conclusion', async () => {
+    const requestId = await seedRequest();
+    await getReport(requestId, token);
+    await fillReport(requestId);
+    await WorkReport.collection.updateOne(
+      { serviceRequest: new Types.ObjectId(requestId) },
+      { $unset: { objectAssessments: '', materials: '', objects: '' } },
+    );
+
+    const moved = await changeStatus(requestId, 'REPORT_SUBMITTED');
+
+    expect(moved.status).toBe(200);
+  });
+
+  it('lets the assigned technician create and save their conclusion', async () => {
+    const requestId = await seedRequest();
+    const tech = await makeTechnician('assigned.tech@test.mn');
+    await assign(requestId, tech.employeeId);
+
+    const opened = await getReport(requestId, tech.token);
+    expect(opened.status).toBe(200);
+    expect(opened.body.data.status).toBe('DRAFT');
+
+    const saved = await request(app)
+      .put(`${API}/service-requests/${requestId}/report`)
+      .set('Authorization', `Bearer ${tech.token}`)
+      .send({
+        score: 71,
+        conclusion: 'Шалгаж дууслаа.',
+        recommendation: 'Дахин шалгах.',
+        repairRequired: false,
+        revisitRequired: false,
+        beforePhotoIds: [],
+        afterPhotoIds: [],
+      });
+
+    expect(saved.status).toBe(200);
+    expect(saved.body.data.score).toBe(71);
+    expect(await getReport(requestId, tech.token).then((r) => r.body.data.score)).toBe(71);
+  });
+
+  /**
+   * The gap this closes: the detail read was assignment-scoped and its conclusion
+   * sub-route was not, so a colleague's request answered 404 while its conclusion answered
+   * 200 — and because the route is `getOrCreate`, reading it MINTED a draft attributed to
+   * the caller on a job that was never theirs.
+   */
+  it('refuses a colleague conclusion and does not mint a draft on it', async () => {
+    const requestId = await seedRequest();
+    const owner = await makeTechnician('owner.tech@test.mn');
+    const outsider = await makeTechnician('outsider.tech@test.mn');
+    await assign(requestId, owner.employeeId);
+
+    const read = await getReport(requestId, outsider.token);
+    expect(read.status).toBe(404);
+
+    const written = await request(app)
+      .put(`${API}/service-requests/${requestId}/report`)
+      .set('Authorization', `Bearer ${outsider.token}`)
+      .send({
+        score: 10,
+        conclusion: 'Хууль бус',
+        recommendation: 'Хууль бус',
+        repairRequired: false,
+        revisitRequired: false,
+        beforePhotoIds: [],
+        afterPhotoIds: [],
+      });
+    expect(written.status).toBe(404);
+
+    expect(
+      await WorkReport.countDocuments({ serviceRequest: new Types.ObjectId(requestId) }),
+    ).toBe(0);
+  });
+
+  /**
+   * The open queue stays writable, matching the request detail read: a technician taps an
+   * unclaimed request from "Нээлттэй" and the conclusion button on that screen must work.
+   */
+  it('still admits an unclaimed request', async () => {
+    const requestId = await seedRequest();
+    const tech = await makeTechnician('queue.tech@test.mn');
+
+    const opened = await getReport(requestId, tech.token);
+
+    expect(opened.status).toBe(200);
+  });
+
+  /** Oversight is unaffected: the reviewer never carries an employee card. */
+  it('leaves an oversight caller unscoped', async () => {
+    const requestId = await seedRequest();
+    const owner = await makeTechnician('scoped.owner@test.mn');
+    await assign(requestId, owner.employeeId);
+
+    const seen = await getReport(requestId, token);
+
+    expect(seen.status).toBe(200);
   });
 });

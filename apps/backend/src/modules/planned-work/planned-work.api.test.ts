@@ -381,6 +381,40 @@ describe('generic update cannot write status or deadline', () => {
 });
 
 describe('sub-tasks', () => {
+  /**
+   * Equipment is optional, and the whole payload the web form builds proves it.
+   *
+   * The form sends every field on every save, including the explicit `relatedObjectIds:
+   * []` and the nulls for the fields left blank. A planner who registers no equipment
+   * must still be able to save; the only cost is that the sub-task's result carries no
+   * object into Үзлэг ба дүгнэлт.
+   */
+  it('accepts a sub-task that names no equipment at all', async () => {
+    const workId = await createWork();
+
+    const response = await request(app)
+      .post(`${API}/planned-work/${workId}/tasks`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        floorId: null,
+        title: 'Тоноглолгүй дэд ажил',
+        description: null,
+        unit: 'PIECE',
+        totalQuantity: 1,
+        plannedStartDate: '2026-07-05T00:00:00.000Z',
+        plannedEndDate: '2026-07-20T00:00:00.000Z',
+        assignedEmployeeId: null,
+        relatedObjectIds: [],
+      });
+
+    expect(response.status).toBe(201);
+    const task = (response.body.data.tasks as { title: string; relatedObjects: unknown[] }[]).find(
+      (entry) => entry.title === 'Тоноглолгүй дэд ажил',
+    );
+    expect(task).toBeDefined();
+    expect(task!.relatedObjects).toEqual([]);
+  });
+
   it('rejects a floor belonging to a different building', async () => {
     const workId = await createWork();
 
@@ -704,21 +738,43 @@ describe('sub-task note and evaluation', () => {
     expect(detail.body.data.tasks[0].score).toBe(88);
   });
 
-  /** Section 10.1 reserves Дүгнэлт for the consolidated report. */
-  it('names the sub-task field Тайлбар and carries no conclusion', async () => {
+  /**
+   * A sub-task carries BOTH a Тайлбар and a Дүгнэлт.
+   *
+   * Section 10.1 used to reserve Дүгнэлт for the consolidated report, and this test
+   * enforced that. The rule is reversed: the rows of Үзлэг ба дүгнэлт are the per-object
+   * items fanned out from a sub-task, so with no conclusion on the sub-task their Дүгнэлт
+   * column was permanently empty while a manual object assessment filled it. The
+   * consolidated report keeps its own conclusion; this is an addition to it.
+   *
+   * What has NOT changed is the evidence gate. Дүгнэлт is optional — a task reaches DONE
+   * without one — so it must never appear in `missingEvidence`, which is asserted below
+   * in both the empty and the written state.
+   */
+  it('carries both a Тайлбар and a Дүгнэлт, and gates only on the Тайлбар', async () => {
     const { workId, taskId } = await startedWorkWithTask();
 
     const empty = await recordProgress(workId, taskId, { completedQuantity: 4 });
     expect(empty.status).toBe(200);
-    expect(empty.body.data.tasks[0]).not.toHaveProperty('conclusion');
+    expect(empty.body.data.tasks[0].conclusion).toBeNull();
     expect(empty.body.data.tasks[0].missingEvidence).toContain('Тайлбар');
     expect(empty.body.data.tasks[0].missingEvidence).not.toContain('Дүгнэлт');
 
     const written = await recordProgress(workId, taskId, {
       completedQuantity: 4,
       note: 'Тайлбар',
+      conclusion: 'Ашиглалтад тэнцэнэ.',
     });
     expect(written.body.data.tasks[0].missingEvidence).not.toContain('Тайлбар');
+    // Still absent from the gate: an optional field cannot start blocking completion.
+    expect(written.body.data.tasks[0].missingEvidence).not.toContain('Дүгнэлт');
+    expect(written.body.data.tasks[0].conclusion).toBe('Ашиглалтад тэнцэнэ.');
+
+    // And it survives a re-read, not just the write's own response.
+    const detail = await request(app)
+      .get(`${API}/planned-work/${workId}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(detail.body.data.tasks[0].conclusion).toBe('Ашиглалтад тэнцэнэ.');
   });
 
   it('derives the band from the score rather than accepting one', async () => {
@@ -773,6 +829,242 @@ describe('sub-task note and evaluation', () => {
     const stored = await PlannedWorkTask.findById(taskId);
     expect(stored?.score).toBeNull();
     expect(stored?.riskLevel).toBeNull();
+  });
+});
+
+/**
+ * Who wrote the Дүгнэлт, and how long the sub-task took.
+ *
+ * Both answers were previously unavailable and both were being guessed at from the wrong
+ * fields — the conclusion from whoever last touched the row, the duration from `completedAt`,
+ * which moves whenever evidence does.
+ */
+describe('sub-task conclusion authorship and duration', () => {
+  async function startedWorkWithTask(
+    overrides: Record<string, unknown> = {},
+  ): Promise<{ workId: string; taskId: string }> {
+    const workId = await createWork();
+    const taskId = await addTask(workId, { totalQuantity: 10, ...overrides });
+    await transition(workId, 'PLAN');
+    await transition(workId, 'START');
+    return { workId, taskId };
+  }
+
+  async function recordProgress(
+    workId: string,
+    taskId: string,
+    body: Record<string, unknown>,
+    bearer = token,
+  ): Promise<request.Response> {
+    return request(app)
+      .post(`${API}/planned-work/${workId}/tasks/${taskId}/progress`)
+      .set('Authorization', `Bearer ${bearer}`)
+      .send(body);
+  }
+
+  it('stamps the writer when the Дүгнэлт text is written', async () => {
+    const { workId, taskId } = await startedWorkWithTask();
+
+    const response = await recordProgress(workId, taskId, {
+      completedQuantity: 3,
+      conclusion: 'Тусгаарлагч хэвийн.',
+    });
+
+    expect(response.status).toBe(200);
+    const task = response.body.data.tasks[0];
+    expect(task.conclusionByName).toBe('Test pw@test.mn');
+    expect(task.conclusionById).toBeTruthy();
+    expect(task.conclusionAt).toBeTruthy();
+  });
+
+  it('does not re-stamp the conclusion on a later progress write that leaves the text alone', async () => {
+    const { workId, taskId } = await startedWorkWithTask();
+    await recordProgress(workId, taskId, {
+      completedQuantity: 3,
+      conclusion: 'Тусгаарлагч хэвийн.',
+    });
+    const first = await PlannedWorkTask.findById(taskId);
+    const stampedAt = first?.conclusionAt?.getTime();
+    expect(stampedAt).toBeTruthy();
+
+    const other = await createUserWithPermissions('pwother@test.mn', ALL_PLANNED_WORK);
+    const otherToken = await login(other.email, other.password);
+
+    // A colleague nudges the quantity, and the sheet resends the conclusion it loaded.
+    // Neither is an act of authorship, so the stamp must not move to them.
+    const quantityOnly = await recordProgress(
+      workId,
+      taskId,
+      { completedQuantity: 6 },
+      otherToken,
+    );
+    expect(quantityOnly.body.data.tasks[0].conclusionByName).toBe('Test pw@test.mn');
+
+    const resent = await recordProgress(
+      workId,
+      taskId,
+      { completedQuantity: 7, conclusion: 'Тусгаарлагч хэвийн.' },
+      otherToken,
+    );
+    expect(resent.body.data.tasks[0].conclusionByName).toBe('Test pw@test.mn');
+
+    const after = await PlannedWorkTask.findById(taskId);
+    expect(after?.conclusionAt?.getTime()).toBe(stampedAt);
+  });
+
+  it('re-stamps the conclusion when a different user changes the text', async () => {
+    const { workId, taskId } = await startedWorkWithTask();
+    await recordProgress(workId, taskId, {
+      completedQuantity: 3,
+      conclusion: 'Тусгаарлагч хэвийн.',
+    });
+
+    const other = await createUserWithPermissions('pwsecond@test.mn', ALL_PLANNED_WORK);
+    const otherToken = await login(other.email, other.password);
+
+    const rewritten = await recordProgress(
+      workId,
+      taskId,
+      { completedQuantity: 4, conclusion: 'Дахин шалгахад халалт илэрсэн.' },
+      otherToken,
+    );
+
+    expect(rewritten.status).toBe(200);
+    expect(rewritten.body.data.tasks[0].conclusionByName).toBe('Test pwsecond@test.mn');
+  });
+
+  it('clears the whole stamp when the Дүгнэлт is cleared', async () => {
+    const { workId, taskId } = await startedWorkWithTask();
+    await recordProgress(workId, taskId, {
+      completedQuantity: 3,
+      conclusion: 'Тусгаарлагч хэвийн.',
+    });
+
+    const cleared = await recordProgress(workId, taskId, {
+      completedQuantity: 3,
+      conclusion: null,
+    });
+
+    const task = cleared.body.data.tasks[0];
+    expect(task.conclusion).toBeNull();
+    expect(task.conclusionById).toBeNull();
+    expect(task.conclusionByName).toBeNull();
+    expect(task.conclusionAt).toBeNull();
+  });
+
+  it('sets startedAt once and never moves it', async () => {
+    const { workId, taskId } = await startedWorkWithTask();
+
+    await recordProgress(workId, taskId, { completedQuantity: 0, started: true });
+    const first = await PlannedWorkTask.findById(taskId);
+    const startedAt = first?.startedAt?.getTime();
+    expect(startedAt).toBeTruthy();
+
+    await recordProgress(workId, taskId, { completedQuantity: 2 });
+    await recordProgress(workId, taskId, { completedQuantity: 5 });
+    // Even a correction back to nothing done leaves the start where it was: the work did
+    // begin, and re-deriving from the current quantity would rewrite history.
+    await recordProgress(workId, taskId, { completedQuantity: 0 });
+
+    const after = await PlannedWorkTask.findById(taskId);
+    expect(after?.startedAt?.getTime()).toBe(startedAt);
+  });
+
+  it('stamps the completion instant at quantity completion, before the evidence gate', async () => {
+    const { workId, taskId } = await startedWorkWithTask();
+
+    const response = await recordProgress(workId, taskId, { completedQuantity: 10 });
+
+    // Quantity is complete but the five evidence items are not, so the task is not DONE.
+    expect(response.body.data.tasks[0].status).toBe('IN_PROGRESS');
+    const stored = await PlannedWorkTask.findById(taskId);
+    expect(stored?.completedAt).toBeNull();
+    expect(stored?.quantityCompletedAt).toBeTruthy();
+  });
+
+  it('keeps the completion instant across a re-derivation that pulls the task out of DONE', async () => {
+    const workId = await createWork();
+    const taskId = await addTask(workId);
+    await transition(workId, 'PLAN');
+    await transition(workId, 'START');
+    await completeTask(workId, taskId);
+
+    const before = await PlannedWorkTask.findById(taskId);
+    const quantityCompletedAt = before?.quantityCompletedAt?.getTime();
+    const startedAt = before?.startedAt?.getTime();
+    expect(quantityCompletedAt).toBeTruthy();
+    expect(before?.status).toBe('DONE');
+
+    const detail = await request(app)
+      .get(`${API}/planned-work/${workId}`)
+      .set('Authorization', `Bearer ${token}`);
+    const photoId = detail.body.data.tasks[0].afterPhotos[0].id as string;
+
+    const removed = await request(app)
+      .delete(`${API}/planned-work/${workId}/tasks/${taskId}/photos/${photoId}`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(removed.status).toBe(200);
+    expect(removed.body.data.tasks[0].status).toBe('IN_PROGRESS');
+
+    const after = await PlannedWorkTask.findById(taskId);
+    // `completedAt` follows the DONE derivation and is cleared, as it always has been.
+    expect(after?.completedAt).toBeNull();
+    // The physical work still finished when it finished. This is the whole point of the
+    // separate field: the duration must not be erased by touching a photo.
+    expect(after?.quantityCompletedAt?.getTime()).toBe(quantityCompletedAt);
+    expect(after?.startedAt?.getTime()).toBe(startedAt);
+    expect(removed.body.data.tasks[0].durationMinutes).not.toBeNull();
+  });
+
+  it('reports no duration while the sub-task is unfinished', async () => {
+    const { workId, taskId } = await startedWorkWithTask();
+
+    const response = await recordProgress(workId, taskId, { completedQuantity: 4 });
+
+    // Null rather than zero: an open sub-task has no duration to state.
+    expect(response.body.data.tasks[0].durationMinutes).toBeNull();
+  });
+
+  it('reports no duration for a skipped sub-task', async () => {
+    const { workId, taskId } = await startedWorkWithTask();
+
+    const response = await recordProgress(workId, taskId, {
+      completedQuantity: 10,
+      skipped: true,
+    });
+
+    expect(response.body.data.tasks[0].status).toBe('SKIPPED');
+    expect(response.body.data.tasks[0].durationMinutes).toBeNull();
+  });
+
+  it('reports the duration in whole minutes once the quantity is complete', async () => {
+    const { workId, taskId } = await startedWorkWithTask();
+
+    // Complete the quantity FIRST, so both sticky instants are already stamped, then
+    // rewind the start to exactly 2h30 before the recorded completion.
+    //
+    // Rewinding before the completing write instead would leave the span at
+    // `150 + (time the test itself took)`, which rounds to 151 the moment those two
+    // calls are more than thirty seconds apart - so the assertion passed locally and
+    // failed under load. Anchoring to the stored completion instant removes the
+    // wall clock from the test entirely.
+    await recordProgress(workId, taskId, { completedQuantity: 10 });
+
+    const stamped = await PlannedWorkTask.findById(taskId);
+    const completedAt = stamped!.quantityCompletedAt!;
+    await PlannedWorkTask.updateOne(
+      { _id: taskId },
+      { $set: { startedAt: new Date(completedAt.getTime() - 150 * 60_000) } },
+    );
+
+    const response = await request(app)
+      .get(`${API}/planned-work/${workId}`)
+      .set('Authorization', `Bearer ${token}`);
+
+    const minutes = response.body.data.tasks[0].durationMinutes as number;
+    expect(Number.isInteger(minutes)).toBe(true);
+    expect(minutes).toBe(150);
   });
 });
 

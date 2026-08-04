@@ -1,7 +1,7 @@
 /**
  * Converges the seeded TECHNICIAN role onto the permission set the employee mobile app
- * actually needs: WITHDRAWS `employee.view`, and adds `planned_work.change_status` if the
- * role predates it.
+ * actually needs: WITHDRAWS `employee.view`, and adds `planned_work.change_status` and
+ * `service_request.claim` if the role predates either.
  *
  * WHY A SCRIPT AND NOT THE SEED
  *
@@ -35,6 +35,17 @@
  *     `planned_work.submit_report`, approving is `planned_work.approve_report`, cancelling
  *     is `planned_work.cancel` — none of which is granted here.
  *
+ *   - `service_request.claim`. The same prune-only failure one release later, with the same
+ *     symptom: the key is in the shipped TECHNICIAN default and
+ *     `POST /service-requests/:id/claim` is routed and guarded on it, but a TECHNICIAN role
+ *     document that predates the key never receives it, so on every upgraded database the
+ *     "Өөртөө авах" button is drawn nowhere. The app reads the effective permission set to
+ *     decide whether to draw it, so the failure is silent — no 403, no message, just an
+ *     open queue the technician cannot take anything from. It is the narrowest key that
+ *     could do the job: the endpoint takes no body and writes only the caller's own
+ *     employee id onto a request that has none, so unlike `dispatch.assign` it cannot move
+ *     a colleague's work.
+ *
  * WHAT IT WILL NOT DO
  *
  *   - It never touches a role other than TECHNICIAN. A custom role an administrator built
@@ -46,8 +57,16 @@
  *     the place for it. Accounts that still resolve a withdrawn key are REPORTED for manual
  *     remediation instead.
  *   - It never grants a key outside the closed `TECHNICIAN_APP_PERMISSIONS` list, so it
- *     cannot quietly widen the role beyond the two things the app cannot run without, and
+ *     cannot quietly widen the role beyond the few things the app cannot run without, and
  *     cannot put back something an administrator removed on purpose.
+ *
+ * ADDING TO THE LIST LATER. This file is the remedy for `seedRbac` being prune-only, so
+ * every future addition to `SYSTEM_ROLE_DEFAULT_PERMISSIONS.TECHNICIAN` that the app cannot
+ * function without belongs in `TECHNICIAN_APP_PERMISSIONS` as well — editing the default
+ * alone fixes only databases seeded from that moment on. The alternative, making `seedRbac`
+ * additive for system roles, is deliberately not taken: it would re-grant on every boot
+ * whatever an administrator had removed on purpose, and there would be no way to remove
+ * anything again.
  *
  * Idempotent: `$pull` and `$addToSet` both converge, so a second run reports zero changes
  * and writes nothing. Safe to run against a database in any state, including a fresh one.
@@ -69,6 +88,7 @@ import { User } from '../modules/user/user.model';
  */
 export const TECHNICIAN_APP_PERMISSIONS: readonly PermissionKey[] = [
   PERMISSIONS.PLANNED_WORK_CHANGE_STATUS,
+  PERMISSIONS.SERVICE_REQUEST_CLAIM,
 ];
 
 /**

@@ -3,6 +3,7 @@ import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import * as fileUrl from '../../lib/file-url';
 import { objectService } from '../../services/object.service';
 import { serviceRequestService } from '../../services/service-request.service';
 import { makeCustomer, makeObjectNode } from '../../test/fixtures';
@@ -120,6 +121,42 @@ describe('ServiceRequestCreatePage', () => {
       const cleared = screen.getAllByRole('combobox') as HTMLSelectElement[];
       expect(cleared.every((element) => element.value !== PROJECT.id)).toBe(true);
     });
+  });
+
+  it('parks an attachment on upload and drops it again on remove', async () => {
+    // Two-phase: the file is stored the moment it is chosen and only claimed by the
+    // request on submit, so the draft holds the stored file rather than the File.
+    const upload = vi.spyOn(serviceRequestService, 'uploadAttachment').mockResolvedValue({
+      id: '507f1f77bcf86cd799439055',
+      name: 'panel.jpg',
+      downloadUrl: '/api/v1/files/507f1f77bcf86cd799439055',
+      mimeType: 'image/jpeg',
+      sizeBytes: 2048,
+      uploadedByName: 'Тест Хэрэглэгч',
+      uploadedAt: '2026-08-01T00:00:00.000Z',
+    });
+    vi.spyOn(fileUrl, 'authorisedFileUrl').mockResolvedValue('blob:attachment');
+    const user = userEvent.setup();
+
+    renderWithAuth(<ServiceRequestCreatePage />, {
+      permissions: [PERMISSIONS.SERVICE_REQUEST_CREATE],
+    });
+
+    expect(await screen.findByText('Хавсралт байхгүй байна.')).toBeInTheDocument();
+
+    await user.upload(
+      screen.getByLabelText('Хавсралт сонгох'),
+      new File(['x'], 'panel.jpg', { type: 'image/jpeg' }),
+    );
+
+    await waitFor(() => expect(upload).toHaveBeenCalled());
+    expect(await screen.findByRole('img', { name: 'panel.jpg' })).toHaveAttribute(
+      'src',
+      'blob:attachment',
+    );
+
+    await user.click(screen.getByRole('button', { name: 'panel.jpg хасах' }));
+    expect(await screen.findByText('Хавсралт байхгүй байна.')).toBeInTheDocument();
   });
 
   it('shows the SLA hint that matches the urgency toggle', async () => {

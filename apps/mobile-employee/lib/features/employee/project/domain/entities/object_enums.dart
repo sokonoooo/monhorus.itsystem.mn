@@ -130,3 +130,76 @@ enum ObjectHistoryKind {
   }
 }
 
+
+/// Mirrors `LoadMeasurementKind` / `LOAD_MEASUREMENT_KIND_LABELS` in
+/// packages/shared/src/constants/load-measurement.ts.
+///
+/// Each kind has exactly one valid unit, carried here so a picker can label itself and
+/// so the request body can fill the unit in from the kind rather than asking a
+/// technician to choose it. The backend re-checks the pair and refuses a mismatch.
+enum LoadMeasurementKind {
+  current('CURRENT', 'Гүйдэл', LoadMeasurementUnit.ampere),
+  voltage('VOLTAGE', 'Хүчдэл', LoadMeasurementUnit.volt),
+  activePower('ACTIVE_POWER', 'Идэвхтэй чадал', LoadMeasurementUnit.kilowatt);
+
+  const LoadMeasurementKind(this.wireValue, this.label, this.unit);
+
+  final String wireValue;
+  final String label;
+  final LoadMeasurementUnit unit;
+
+  /// Only a current and a voltage are read on a single conductor.
+  bool get acceptsPhase => this != LoadMeasurementKind.activePower;
+
+  static LoadMeasurementKind? fromWire(String? value) {
+    if (value == null) return null;
+    for (final LoadMeasurementKind kind in LoadMeasurementKind.values) {
+      if (kind.wireValue == value) return kind;
+    }
+    return null;
+  }
+}
+
+/// Mirrors `LoadMeasurementUnit` / `LOAD_MEASUREMENT_UNIT_LABELS`.
+enum LoadMeasurementUnit {
+  ampere('AMPERE', 'А'),
+  volt('VOLT', 'В'),
+  kilowatt('KILOWATT', 'кВт');
+
+  const LoadMeasurementUnit(this.wireValue, this.label);
+
+  final String wireValue;
+  final String label;
+
+  static LoadMeasurementUnit? fromWire(String? value) {
+    if (value == null) return null;
+    for (final LoadMeasurementUnit unit in LoadMeasurementUnit.values) {
+      if (unit.wireValue == value) return unit;
+    }
+    return null;
+  }
+}
+
+/// Mirrors `LoadMeasurementPhase` / `LOAD_MEASUREMENT_PHASE_LABELS`.
+///
+/// Absent — a null phase — is a valid reading, not a missing one: it means the reading
+/// is not phase-specific, which is the normal case on a single-phase supply.
+enum LoadMeasurementPhase {
+  l1('L1', 'L1 фаз'),
+  l2('L2', 'L2 фаз'),
+  l3('L3', 'L3 фаз'),
+  neutral('N', 'Тэг (N)');
+
+  const LoadMeasurementPhase(this.wireValue, this.label);
+
+  final String wireValue;
+  final String label;
+
+  static LoadMeasurementPhase? fromWire(String? value) {
+    if (value == null) return null;
+    for (final LoadMeasurementPhase phase in LoadMeasurementPhase.values) {
+      if (phase.wireValue == value) return phase;
+    }
+    return null;
+  }
+}

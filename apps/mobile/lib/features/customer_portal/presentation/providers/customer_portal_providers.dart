@@ -74,6 +74,21 @@ final Provider<bool> canCreateServiceRequestProvider = Provider<bool>((Ref ref) 
       user.has(PermissionKeys.serviceRequestCreate);
 });
 
+/// Whether the API would serve this account an object's timeline.
+///
+/// `GET /objects/:objectId/history` is deliberately staff-only and says so in writing:
+/// the timeline folds in audit rows, planned-work tasks and internal service-request
+/// detail, none of which is customer facing. So there is no portal key to accept here -
+/// only the staff `object_master.view` opens it, and a customer holds none.
+///
+/// This reads false for every customer account, which is the correct answer: the section
+/// is hidden rather than rendered and refused.
+final Provider<bool> canViewObjectHistoryProvider = Provider<bool>((Ref ref) {
+  final AppUser? user = ref.watch(currentUserProvider);
+  if (user == null) return false;
+  return user.has(PermissionKeys.objectMasterView);
+});
+
 // -- Helpers -----------------------------------------------------------------
 
 /// Unwraps an [ApiResult] for an async provider, throwing the [Failure] so it lands

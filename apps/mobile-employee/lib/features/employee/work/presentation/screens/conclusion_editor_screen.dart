@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../../core/media/photo_capture.dart';
@@ -9,6 +10,7 @@ import '../../../presentation/widgets/photo_source_sheet.dart';
 import '../../data/models/work_report_model.dart';
 import '../providers/conclusion_providers.dart';
 import '../widgets/equipment_assessment_card.dart';
+import '../widgets/report_photo_strip.dart';
 import '../widgets/work_async_view.dart';
 import '../widgets/work_ui.dart';
 
@@ -61,6 +63,7 @@ class ConclusionEditorScreen extends ConsumerStatefulWidget {
 }
 
 class _ConclusionEditorScreenState extends ConsumerState<ConclusionEditorScreen> {
+  final TextEditingController _score = TextEditingController();
   final TextEditingController _conclusion = TextEditingController();
   final TextEditingController _recommendation = TextEditingController();
   String? _floorId;
@@ -70,6 +73,7 @@ class _ConclusionEditorScreenState extends ConsumerState<ConclusionEditorScreen>
 
   @override
   void dispose() {
+    _score.dispose();
     _conclusion.dispose();
     _recommendation.dispose();
     super.dispose();
@@ -82,6 +86,7 @@ class _ConclusionEditorScreenState extends ConsumerState<ConclusionEditorScreen>
   void _hydrateOnce(ConclusionEditorState state) {
     if (_hydrated) return;
     _hydrated = true;
+    _score.text = state.score;
     _conclusion.text = state.conclusion;
     _recommendation.text = state.recommendation;
   }
@@ -154,6 +159,7 @@ class _ConclusionEditorScreenState extends ConsumerState<ConclusionEditorScreen>
 
   Future<void> _save({required bool andSubmit}) async {
     final ConclusionEditor notifier = ref.read(conclusionEditorProvider(_ref).notifier);
+    notifier.setScore(_score.text);
     notifier.setConclusion(_conclusion.text);
     notifier.setRecommendation(_recommendation.text);
 
@@ -196,6 +202,11 @@ class _ConclusionEditorScreenState extends ConsumerState<ConclusionEditorScreen>
               children: <Widget>[
                 _StatusStrip(state: state, canAuthor: grants.canAuthor),
 
+                if (writable && state.missing.isNotEmpty) ...<Widget>[
+                  const SizedBox(height: 12),
+                  _MissingBanner(missing: state.missing),
+                ],
+
                 if (state.hasNoEquipment) ...<Widget>[
                   const SizedBox(height: 12),
                   const NoticeBanner(
@@ -209,8 +220,42 @@ class _ConclusionEditorScreenState extends ConsumerState<ConclusionEditorScreen>
                   ),
                 ],
 
+                // THE FOUR VISIT-LEVEL REQUIREMENTS, EACH WITH ITS OWN CONTROL.
+                //
+                // `workReportCompleteness` checks the visit's score, conclusion,
+                // recommendation and its two photographs, and none of them is satisfied by
+                // a filled-in equipment card. Three of the four had no control on this
+                // screen at all, so a technician who had written up every device was
+                // refused over fields the app never showed and could not send. They are
+                // drawn together, above the equipment, and each says it is mandatory.
                 const SizedBox(height: 14),
-                const FieldLabel('Ерөнхий дүгнэлт'),
+                _RequiredLabel(
+                  'Ерөнхий үнэлгээ (0-100)',
+                  missing: state.isMissing(WorkReportRequirement.score),
+                ),
+                SheetField(
+                  controller: _score,
+                  hint: '0-100',
+                  keyboardType: const TextInputType.numberWithOptions(),
+                  inputFormatters: <TextInputFormatter>[
+                    FilteringTextInputFormatter.digitsOnly,
+                    LengthLimitingTextInputFormatter(3),
+                  ],
+                  enabled: writable,
+                ),
+                const SizedBox(height: 4),
+                // The scale in words, as every other score field in this app states it. The
+                // band itself is the server's to derive.
+                Text(
+                  'Айлчлалын нэгдсэн үнэлгээ. Тоноглол бүрийн оноо үүнийг орлохгүй.',
+                  style: EmployeeTokens.rowSub,
+                ),
+
+                const SizedBox(height: 10),
+                _RequiredLabel(
+                  'Ерөнхий дүгнэлт',
+                  missing: state.isMissing(WorkReportRequirement.conclusion),
+                ),
                 SheetField(
                   controller: _conclusion,
                   hint: 'Ажлын явц, илэрсэн зүйл',
@@ -218,12 +263,42 @@ class _ConclusionEditorScreenState extends ConsumerState<ConclusionEditorScreen>
                   enabled: writable,
                 ),
                 const SizedBox(height: 10),
-                const FieldLabel('Зөвлөмж'),
+                _RequiredLabel(
+                  'Зөвлөмж',
+                  missing: state.isMissing(WorkReportRequirement.recommendation),
+                ),
                 SheetField(
                   controller: _recommendation,
                   hint: 'Дараагийн алхам',
                   maxLines: 3,
                   enabled: writable,
+                ),
+
+                const SizedBox(height: 14),
+                ReportPhotoStrip(
+                  label: VisitPhotoSlot.before.label,
+                  photoIds: state.beforePhotoIds,
+                  required: true,
+                  busy: state.uploadingFor == VisitPhotoSlot.before.uploadKey,
+                  onAdd: writable ? () => _captureVisit(VisitPhotoSlot.before) : null,
+                  onRemove: writable
+                      ? (String photoId) => ref
+                          .read(conclusionEditorProvider(_ref).notifier)
+                          .removeVisitPhoto(VisitPhotoSlot.before, photoId)
+                      : null,
+                ),
+                const SizedBox(height: 12),
+                ReportPhotoStrip(
+                  label: VisitPhotoSlot.after.label,
+                  photoIds: state.afterPhotoIds,
+                  required: true,
+                  busy: state.uploadingFor == VisitPhotoSlot.after.uploadKey,
+                  onAdd: writable ? () => _captureVisit(VisitPhotoSlot.after) : null,
+                  onRemove: writable
+                      ? (String photoId) => ref
+                          .read(conclusionEditorProvider(_ref).notifier)
+                          .removeVisitPhoto(VisitPhotoSlot.after, photoId)
+                      : null,
                 ),
 
                 const SizedBox(height: 16),
@@ -240,7 +315,7 @@ class _ConclusionEditorScreenState extends ConsumerState<ConclusionEditorScreen>
                 const SizedBox(height: 16),
                 FieldLabel('Үнэлгээ хийсэн тоноглол (${state.drafts.length})'),
                 if (state.drafts.isEmpty)
-                  const Text(
+                  Text(
                     'Давхар сонгоод тоноглол нэмнэ үү.',
                     style: EmployeeTokens.rowSub,
                   )
@@ -323,6 +398,27 @@ class _ConclusionEditorScreenState extends ConsumerState<ConclusionEditorScreen>
     }
   }
 
+  /// The same capture flow, landing on the visit rather than on a device.
+  Future<void> _captureVisit(VisitPhotoSlot slot) async {
+    final PhotoSource? source = await showPhotoSourceSheet(context);
+    if (source == null || !mounted) return;
+
+    final PhotoCaptureResult picked = await capturePhoto(source: source);
+    if (!mounted) return;
+
+    switch (picked) {
+      case PhotoCaptureCancelled():
+        return;
+      case PhotoCaptureFailed(message: final String message):
+        _toast(message, failed: true);
+      case PhotoCaptured(photo: final CapturedPhoto photo):
+        final String? failure = await ref
+            .read(conclusionEditorProvider(_ref).notifier)
+            .attachVisitPhoto(slot, photo);
+        if (failure != null && mounted) _toast(failure, failed: true);
+    }
+  }
+
   void _toast(String message, {bool failed = false}) {
     ScaffoldMessenger.maybeOf(context)
       ?..hideCurrentSnackBar()
@@ -332,6 +428,55 @@ class _ConclusionEditorScreenState extends ConsumerState<ConclusionEditorScreen>
           backgroundColor: failed ? EmployeeTokens.red : EmployeeTokens.ink,
         ),
       );
+  }
+}
+
+/// What the server says is still missing, named field by field.
+///
+/// The list comes from `workReportCompleteness` and arrives on every read, every save and
+/// every refused submission. It used to be parsed and thrown away: the technician saw only
+/// "Дүгнэлт дутуу тул илгээх боломжгүй." — a message that repeats the problem instead of
+/// naming it — while the server had already said exactly which fields were empty.
+class _MissingBanner extends StatelessWidget {
+  const _MissingBanner({required this.missing});
+
+  final List<WorkReportRequirement> missing;
+
+  @override
+  Widget build(BuildContext context) {
+    return NoticeBanner(
+      margin: EdgeInsets.zero,
+      tone: EmployeeTokens.yellow,
+      icon: Icons.checklist,
+      title: 'Илгээхэд дутуу байна (${missing.length})',
+      text: missing
+          .map((WorkReportRequirement requirement) => '• ${requirement.label}')
+          .join('\n'),
+    );
+  }
+}
+
+/// A field label that says the field is mandatory, and shows when it is the thing blocking
+/// submission.
+class _RequiredLabel extends StatelessWidget {
+  const _RequiredLabel(this.text, {required this.missing});
+
+  final String text;
+  final bool missing;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: <Widget>[
+        Expanded(child: FieldLabel(text)),
+        Text(
+          'Заавал',
+          style: EmployeeTokens.rowSub.copyWith(
+            color: missing ? EmployeeTokens.red : EmployeeTokens.muted,
+          ),
+        ),
+      ],
+    );
   }
 }
 
@@ -419,13 +564,13 @@ class _LocationRow extends ConsumerWidget {
         InfoRow(label: 'Барилга', value: buildingName ?? '-'),
         const SizedBox(height: 8),
         floors.when(
-          loading: () => const Text('Давхар ачааллаж байна…', style: EmployeeTokens.rowSub),
-          error: (Object _, StackTrace __) => const Text(
+          loading: () => Text('Давхар ачааллаж байна…', style: EmployeeTokens.rowSub),
+          error: (Object _, StackTrace __) => Text(
             'Давхрын жагсаалт ачаалж чадсангүй.',
             style: EmployeeTokens.rowSub,
           ),
           data: (List<FloorModel> items) => items.isEmpty
-              ? const Text('Энэ барилгад давхар бүртгэгдээгүй байна.',
+              ? Text('Энэ барилгад давхар бүртгэгдээгүй байна.',
                   style: EmployeeTokens.rowSub)
               : DropdownButtonFormField<String>(
                   initialValue: floorId,
@@ -497,13 +642,13 @@ class _EquipmentPickerSheetState extends ConsumerState<_EquipmentPickerSheet> {
                 padding: EdgeInsets.all(24),
                 child: Center(child: CircularProgressIndicator()),
               ),
-              error: (Object _, StackTrace __) => const Padding(
-                padding: EdgeInsets.all(24),
+              error: (Object _, StackTrace __) => Padding(
+                padding: const EdgeInsets.all(24),
                 child: Text('Тоноглол ачаалж чадсангүй.', style: EmployeeTokens.rowSub),
               ),
               data: (List<ObjectListItemModel> items) => items.isEmpty
-                  ? const Padding(
-                      padding: EdgeInsets.all(24),
+                  ? Padding(
+                      padding: const EdgeInsets.all(24),
                       child: Text(
                         'Энэ давхарт ашиглалтад байгаа тоноглол бүртгэгдээгүй байна.',
                         style: EmployeeTokens.rowSub,

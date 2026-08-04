@@ -5,14 +5,16 @@ import {
   PERMISSIONS,
   createObjectAssessmentSchema,
   createObjectSchema,
+  riskLevelFor,
   updateObjectSchema,
+  type CustomerDto,
   type FloorDto,
   type ObjectCategory,
   type ObjectListItemDto,
   type ObjectTypeDto,
 } from '@monhorus/shared';
 import { useEffect, useState, type ReactElement } from 'react';
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
 import { Alert } from '../../../components/ui/Alert';
 import { Button } from '../../../components/ui/Button';
@@ -21,17 +23,23 @@ import { ErrorState, Skeleton } from '../../../components/ui/States';
 import { useToast } from '../../../components/ui/ToastProvider';
 import { FIELD_TEXTAREA, FILTER_LABEL } from '../../../components/ui/control-styles';
 import { useAuth } from '../../../contexts/auth-context';
+import { useRiskBands } from '../../../hooks/use-risk-bands';
 import { ApiError } from '../../../lib/api-client';
+import { objectService } from '../../../services/object.service';
 import { objectMasterService, objectTypeService } from '../../../services/object-master.service';
 import { projectService } from '../../../services/project.service';
 import { Field, SelectInput, TextInput } from '../../employees/FormControls';
 
 /**
- * Object create and edit, always in the context of a floor.
+ * Object create and edit.
  *
- * The object is a placement, so the floor comes from the route and the customer is read off
- * that floor rather than chosen: an object cannot exist without the floor it sits on, and
- * letting the two be picked independently is what allowed a mismatch before.
+ * Two entry points share this form. Under `/floors/:floorId/objects/...` the floor comes
+ * from the route and supplies the customer, which is how an object reached from a floor is
+ * registered. Under `/objects/new` there is no floor in the route: the API has always
+ * accepted a floorless object — `floorId` is nullish in the create schema and the service
+ * skips the floor when it is absent — and forcing everybody through four screens to reach a
+ * specific floor first was the reason registration felt heavy. In that mode the customer is
+ * picked and the floor becomes an optional selection.
  *
  * The form renders only the section 4.2 fields that belong to the chosen category, which
  * is what "do not put every technical field on every Object type" means in practice. The
@@ -45,9 +53,17 @@ export function ObjectFormPage(): ReactElement {
   const { floorId, objectId } = useParams<{ floorId: string; objectId: string }>();
   const [searchParams] = useSearchParams();
   const isEdit = Boolean(objectId);
+  /** No floor in the route: the customer and the floor are chosen on the form instead. */
+  const isFloorless = !floorId;
   const navigate = useNavigate();
   const { notify } = useToast();
   const { can } = useAuth();
+  /**
+   * The bands currently in force, read from Тохиргоо. The red/black conditional fields are
+   * decided against these rather than against a threshold written into this file, so a
+   * re-banding in settings moves the requirement with it — exactly as the backend does.
+   */
+  const bands = useRiskBands();
 
   const canAssess = can(PERMISSIONS.OBJECT_MASTER_ASSESS);
 
@@ -55,6 +71,10 @@ export function ObjectFormPage(): ReactElement {
   const [types, setTypes] = useState<ObjectTypeDto[]>([]);
   const [panels, setPanels] = useState<ObjectListItemDto[]>([]);
   const [circuits, setCircuits] = useState<ObjectListItemDto[]>([]);
+  // Floorless mode only: the tenant and the floors it owns, both chosen on the form.
+  const [customers, setCustomers] = useState<CustomerDto[]>([]);
+  const [floors, setFloors] = useState<FloorDto[]>([]);
+  const [chosenFloorId, setChosenFloorId] = useState('');
 
   const [customerId, setCustomerId] = useState('');
   const [category, setCategory] = useState<ObjectCategory>(
@@ -71,6 +91,10 @@ export function ObjectFormPage(): ReactElement {
   const [initialScore, setInitialScore] = useState('');
   const [initialConclusion, setInitialConclusion] = useState('');
   const [initialRecommendation, setInitialRecommendation] = useState('');
+  // Section 10.1 requires this alongside the conclusion and the recommendation once the
+  // score lands in the red or black band. It was missing entirely, so every red score
+  // created the object and then lost the assessment.
+  const [initialActionTaken, setInitialActionTaken] = useState('');
   // Every assessment needs photographic evidence, this one included. The object does not
   // exist yet, so the file is held here and uploaded on save.
   const [initialPhoto, setInitialPhoto] = useState<File | null>(null);
@@ -101,6 +125,25 @@ export function ObjectFormPage(): ReactElement {
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  /**
+   * Set when the object was written but its assessment was not.
+   *
+   * The two are separate calls and only the first one is undoable-by-nobody, so a failed
+   * assessment used to be a toast the page navigated away from before anybody read it. The
+   * id parks the half-finished state on screen instead, with a way through to the object.
+   */
+  const [orphanedAssessment, setOrphanedAssessment] = useState<{
+    objectId: string;
+    floorId: string | null;
+    message: string;
+  } | null>(null);
+  /** Confirmation of the last floorless registration, which has no detail page to land on. */
+  const [lastCreated, setLastCreated] = useState<{ code: string; name: string } | null>(null);
+
+  /** An object is only reachable through the floor it sits on; a floorless one has no page. */
+  function objectPathOf(id: string, placedOn: string | null): string | null {
+    return placedOn ? `/floors/${placedOn}/objects/${id}` : null;
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -108,16 +151,18 @@ export function ObjectFormPage(): ReactElement {
     async function bootstrap(): Promise<void> {
       setLoading(true);
       try {
-        if (!floorId) {
-          setLoadError('Давхар олдсонгүй.');
-          return;
+        if (floorId) {
+          // The floor is the anchor: it supplies the customer and the breadcrumb trail.
+          const floorDetail = await projectService.getFloor(floorId);
+          if (cancelled) return;
+          setFloor(floorDetail);
+          setCustomerId(floorDetail.customerId);
+        } else {
+          // Floorless: nothing anchors the customer, so it is offered as a choice.
+          const list = await objectService.customers();
+          if (cancelled) return;
+          setCustomers(list);
         }
-
-        // The floor is the anchor: it supplies the customer and the breadcrumb trail.
-        const floorDetail = await projectService.getFloor(floorId);
-        if (cancelled) return;
-        setFloor(floorDetail);
-        setCustomerId(floorDetail.customerId);
 
         if (objectId) {
           const object = await objectMasterService.getById(objectId);
@@ -177,7 +222,27 @@ export function ObjectFormPage(): ReactElement {
     };
   }, [category]);
 
-  // Related objects are scoped to the same customer, matching the backend rule.
+  /**
+   * The building the object will stand in, or null while it has no floor.
+   *
+   * Read off the floor rather than tracked separately: in route mode the anchor floor DTO
+   * carries `buildingId`, and in floorless mode the picked floor is one of the DTOs already
+   * loaded for the selector. Null means "not placed yet", which is exactly the case the
+   * backend leaves unconstrained.
+   */
+  const effectiveBuildingId =
+    (floorId
+      ? floor?.buildingId
+      : floors.find((entry) => entry.id === chosenFloorId)?.buildingId) ?? null;
+
+  /**
+   * Related objects, scoped to the same customer AND the same building.
+   *
+   * The backend refuses a connection whose two ends stand in different buildings, so
+   * offering a panel from across the site was offering a choice that could only ever come
+   * back as a field error. `buildingId` is dropped while the object is floorless, because
+   * a floorless object has no building and the backend constrains nothing.
+   */
   useEffect(() => {
     if (!customerId) {
       setPanels([]);
@@ -185,17 +250,61 @@ export function ObjectFormPage(): ReactElement {
       return undefined;
     }
     let cancelled = false;
+    const query = {
+      customerId,
+      limit: 100,
+      ...(effectiveBuildingId ? { buildingId: effectiveBuildingId } : {}),
+    };
     void Promise.all([
-      objectMasterService.list({ customerId, category: 'PANEL', limit: 100 }),
-      objectMasterService.list({ customerId, category: 'CIRCUIT', limit: 100 }),
+      objectMasterService.list({ ...query, category: 'PANEL' }),
+      objectMasterService.list({ ...query, category: 'CIRCUIT' }),
     ]).then(([panelPage, circuitPage]) => {
       if (cancelled) return;
       setPanels(panelPage.items);
       setCircuits(circuitPage.items);
+      // Moving the object to another building leaves any earlier pick unofferable. Dropping
+      // it here is what keeps the visible value and the list in step; the backend treats an
+      // omitted reference as "leave it alone", so nothing stored is destroyed by the clear.
+      setPanelId((current) =>
+        current && !panelPage.items.some((item) => item.id === current) ? '' : current,
+      );
+      setCircuitId((current) =>
+        current && !circuitPage.items.some((item) => item.id === current) ? '' : current,
+      );
     });
     return () => {
       cancelled = true;
     };
+  }, [customerId, effectiveBuildingId]);
+
+  /**
+   * Floors to offer in floorless mode.
+   *
+   * The floor list endpoint filters by project and building but not by customer, so the
+   * tenant filter is applied here against each floor's own `customerId`. Only active floors
+   * are offered, because the backend refuses to place an object on an archived one.
+   */
+  useEffect(() => {
+    if (!isFloorless || isEdit || !customerId) {
+      setFloors([]);
+      return undefined;
+    }
+    let cancelled = false;
+    projectService
+      .listFloors({ isActive: true, limit: 100 })
+      .then((page) => {
+        if (cancelled) return;
+        setFloors(page.items.filter((entry) => entry.customerId === customerId));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [isFloorless, isEdit, customerId]);
+
+  // Changing the tenant invalidates a floor picked under the previous one.
+  useEffect(() => {
+    setChosenFloorId('');
   }, [customerId]);
 
   function numberOrNull(value: string): number | null {
@@ -203,15 +312,31 @@ export function ObjectFormPage(): ReactElement {
     return trimmed === '' ? null : Number(trimmed);
   }
 
-  const floorPath = `/floors/${floorId ?? ''}`;
+  /** The floor the object will be written against: from the route, or from the picker. */
+  const effectiveFloorId = floorId ?? (chosenFloorId || null);
+  const floorPath = floorId ? `/floors/${floorId}` : '/projects';
   const selectedType = types.find((type) => type.id === objectTypeId) ?? null;
   // Section 4.1: only a type flagged as generating a conclusion may carry an assessment,
   // so the score field appears exactly where the backend would accept one.
   const showInitialScore = !isEdit && canAssess && (selectedType?.generatesConclusion ?? false);
 
+  /**
+   * The band the typed score falls into, or null when no score was typed.
+   *
+   * Resolved with the shared `riskLevelFor` against the configured bands, the same call the
+   * backend makes, so the form asks for exactly the fields the backend is about to demand.
+   */
+  const parsedScore = initialScore.trim() === '' ? Number.NaN : Number(initialScore.trim());
+  const initialRiskLevel = Number.isFinite(parsedScore) ? riskLevelFor(parsedScore, bands) : null;
+  // Section 10.1: the red and black bands require a conclusion, a recommendation and the
+  // action taken. Nothing here decides where those bands start.
+  const redOrBlack = initialRiskLevel === 'CRITICAL' || initialRiskLevel === 'OUT_OF_SERVICE';
+
   async function handleSubmit(): Promise<void> {
     setFormError(null);
     setFieldErrors({});
+    setOrphanedAssessment(null);
+    setLastCreated(null);
 
     const attributes =
       category === 'PANEL'
@@ -260,7 +385,7 @@ export function ObjectFormPage(): ReactElement {
           name: name.trim(),
           customerId,
           objectTypeId,
-          floorId: floorId ?? null,
+          floorId: effectiveFloorId,
           description: description.trim() || null,
           notes: notes.trim() || null,
           category,
@@ -279,6 +404,32 @@ export function ObjectFormPage(): ReactElement {
     }
 
     const wantsAssessment = !isEdit && showInitialScore && initialScore.trim() !== '';
+
+    /**
+     * Section 10.1 conditional fields, checked before anything is written.
+     *
+     * The bands are configurable, so the requirement is keyed on the resolved level rather
+     * than on a number written here. Checking it up front is the point: the object and the
+     * assessment are two calls, and letting the second one fail leaves an object on record
+     * whose score was thrown away.
+     */
+    if (wantsAssessment && redOrBlack) {
+      const missing: Record<string, string> = {};
+      if (!initialConclusion.trim()) {
+        missing['assessment.conclusion'] = 'Улаан/хар төлөвт дүгнэлт заавал.';
+      }
+      if (!initialRecommendation.trim()) {
+        missing['assessment.recommendation'] = 'Улаан/хар төлөвт зөвлөмж заавал.';
+      }
+      if (!initialActionTaken.trim()) {
+        missing['assessment.actionTaken'] = 'Улаан/хар төлөвт авах арга хэмжээ заавал.';
+      }
+      if (Object.keys(missing).length > 0) {
+        setFieldErrors(missing);
+        setFormError('Үнэлгээний түвшинд шаардагдах мэдээлэл дутуу байна.');
+        return;
+      }
+    }
 
     // Evidence is checked before anything is written at all, so a score with no picture
     // behind it never reaches the upload, let alone the create.
@@ -313,6 +464,7 @@ export function ObjectFormPage(): ReactElement {
           newScore: Number(initialScore.trim()),
           conclusion: initialConclusion.trim() || null,
           recommendation: initialRecommendation.trim() || null,
+          actionTaken: initialActionTaken.trim() || null,
           photoIds: [photoId],
         });
         if (!assessment.success) {
@@ -341,24 +493,63 @@ export function ObjectFormPage(): ReactElement {
         );
 
         if (assessment?.success) {
-          // A rejected assessment must not read as a failed create: the object exists either
-          // way, so the failure is reported on its own and the user lands on the object.
+          /**
+           * A rejected assessment must not read as a failed create: the object exists
+           * either way. It must not read as a success either, which is what navigating
+           * away on a toast amounted to — the page was gone before the message could be
+           * read, and the score was silently lost. The failure is kept on screen instead,
+           * with the offending fields marked and a way through to the object.
+           */
           try {
             await objectMasterService.recordAssessment(created.id, assessment.data);
             notify('Объект болон үнэлгээ бүртгэгдлээ.', 'success');
           } catch (caught) {
-            notify(
-              caught instanceof ApiError
-                ? `Объект үүслээ. Үнэлгээ бүртгэгдсэнгүй: ${caught.message}`
-                : 'Объект үүслээ. Үнэлгээ бүртгэгдсэнгүй.',
-              'error',
-            );
+            const message =
+              caught instanceof ApiError ? caught.message : 'Үнэлгээг бүртгэж чадсангүй.';
+            if (caught instanceof ApiError) {
+              setFieldErrors(
+                Object.fromEntries(
+                  Object.entries(caught.fieldErrors).map(([key, value]) => [
+                    `assessment.${key}`,
+                    value,
+                  ]),
+                ),
+              );
+            }
+            setOrphanedAssessment({
+              objectId: created.id,
+              floorId: created.floorId,
+              message,
+            });
+            notify('Үнэлгээ бүртгэгдсэнгүй.', 'error');
+            setSubmitting(false);
+            return;
           }
         } else {
           notify('Объект үүслээ.', 'success');
         }
 
-        navigate(`${floorPath}/objects/${created.id}`);
+        /**
+         * An object detail page only exists under a floor. A floorless registration
+         * therefore stays on the form: the entry is confirmed above the fields and the
+         * code and name are cleared for the next one, which is what registering a batch of
+         * equipment actually looks like.
+         */
+        const path = objectPathOf(created.id, created.floorId);
+        if (path) {
+          navigate(path);
+        } else {
+          setLastCreated({ code: created.code, name: created.name });
+          setCode('');
+          setName('');
+          setDescription('');
+          setNotes('');
+          setInitialScore('');
+          setInitialConclusion('');
+          setInitialRecommendation('');
+          setInitialActionTaken('');
+          setInitialPhoto(null);
+        }
       }
     } catch (caught) {
       if (caught instanceof ApiError) {
@@ -391,7 +582,10 @@ export function ObjectFormPage(): ReactElement {
             ? `${floor.buildingName ?? '-'} · ${floor.name}`
             : undefined
         }
-        backTo={{ to: floorPath, label: 'Давхар руу буцах' }}
+        backTo={{
+          to: floorPath,
+          label: floorId ? 'Давхар руу буцах' : 'Төсөл рүү буцах',
+        }}
         breadcrumbs={[
           { label: 'Төсөл', to: '/projects' },
           ...(floor
@@ -408,6 +602,34 @@ export function ObjectFormPage(): ReactElement {
       <div className="space-y-4 rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
         {formError && <Alert variant="error">{formError}</Alert>}
 
+        {/*
+          The object was written and its assessment was not. Both halves are said plainly,
+          because the object cannot be created again — a second attempt would only collide
+          on the code — and the score has to be recorded on the object itself.
+        */}
+        {orphanedAssessment && (
+          <Alert variant="error" title="Объект үүслээ, үнэлгээ бүртгэгдсэнгүй">
+            {orphanedAssessment.message}
+            {orphanedAssessment.floorId && (
+              <>
+                {' '}
+                <Link
+                  to={`/floors/${orphanedAssessment.floorId}/objects/${orphanedAssessment.objectId}`}
+                  className="font-medium underline"
+                >
+                  Объект дээр үнэлгээг дахин бүртгэнэ үү.
+                </Link>
+              </>
+            )}
+          </Alert>
+        )}
+
+        {lastCreated && (
+          <Alert variant="success" title="Объект бүртгэгдлээ">
+            {lastCreated.code} · {lastCreated.name}. Дараагийн тоноглолыг шууд бүртгэнэ үү.
+          </Alert>
+        )}
+
         {isEdit ? (
           <Alert variant="info">
             Код болон ангиллыг өөрчлөхгүй. Ангилал өөрчлөгдвөл хадгалагдсан техникийн
@@ -418,15 +640,62 @@ export function ObjectFormPage(): ReactElement {
         )}
 
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-          <Field label="Давхар" hint="Маршрутаас тодорхойлогдоно">
-            <TextInput
-              value={
-                floor ? `${floor.projectName ?? '-'} · ${floor.buildingName ?? '-'} · ${floor.name}` : ''
-              }
-              onChange={() => undefined}
-              disabled
-            />
-          </Field>
+          {isFloorless && !isEdit ? (
+            <>
+              {/*
+                Floorless registration. The customer is what an object actually belongs to —
+                codes are unique per customer and every related-object check compares against
+                it — so it is asked for first, and the floor stays optional underneath.
+              */}
+              <Field label="Харилцагч" required error={fieldErrors.customerId}>
+                <SelectInput
+                  value={customerId}
+                  onChange={setCustomerId}
+                  placeholder="Харилцагч сонгох"
+                  options={customers.map((entry) => ({
+                    value: entry.id,
+                    label: `${entry.name} (${entry.code})`,
+                  }))}
+                  disabled={submitting}
+                />
+              </Field>
+
+              <Field
+                label="Давхар"
+                error={fieldErrors.floorId}
+                hint="Заавал биш. Дараа нь давхарт холбож болно."
+              >
+                <SelectInput
+                  value={chosenFloorId}
+                  onChange={setChosenFloorId}
+                  placeholder={
+                    customerId === ''
+                      ? 'Эхлээд харилцагч сонгоно уу'
+                      : floors.length === 0
+                        ? 'Идэвхтэй давхар алга'
+                        : 'Давхарт холбохгүй'
+                  }
+                  options={floors.map((entry) => ({
+                    value: entry.id,
+                    label: `${entry.projectName ?? '-'} · ${entry.buildingName ?? '-'} · ${entry.name}`,
+                  }))}
+                  disabled={submitting || !customerId || floors.length === 0}
+                />
+              </Field>
+            </>
+          ) : (
+            <Field label="Давхар" hint="Маршрутаас тодорхойлогдоно">
+              <TextInput
+                value={
+                  floor
+                    ? `${floor.projectName ?? '-'} · ${floor.buildingName ?? '-'} · ${floor.name}`
+                    : ''
+                }
+                onChange={() => undefined}
+                disabled
+              />
+            </Field>
+          )}
 
           <Field label="Ангилал" required error={fieldErrors.category}>
             <SelectInput
@@ -492,11 +761,21 @@ export function ObjectFormPage(): ReactElement {
               Хэлхээний мэдээлэл
             </legend>
             <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-              <Field label="Харьяалагдах самбар" error={fieldErrors['circuit.panelId']}>
+              <Field
+                label="Харьяалагдах самбар"
+                error={fieldErrors['circuit.panelId']}
+                hint={
+                  effectiveBuildingId ? 'Зөвхөн энэ барилгын самбарууд.' : undefined
+                }
+              >
                 <SelectInput
                   value={panelId}
                   onChange={setPanelId}
-                  placeholder="Самбар сонгох"
+                  placeholder={
+                    panels.length === 0 && effectiveBuildingId
+                      ? 'Энэ барилгад самбар алга'
+                      : 'Самбар сонгох'
+                  }
                   options={panels.map((panel) => ({
                     value: panel.id,
                     label: `${panel.name} (${panel.code})`,
@@ -539,11 +818,21 @@ export function ObjectFormPage(): ReactElement {
               Тоноглолын мэдээлэл
             </legend>
             <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-              <Field label="Тэжээх хэлхээ" error={fieldErrors['equipment.circuitId']}>
+              <Field
+                label="Тэжээх хэлхээ"
+                error={fieldErrors['equipment.circuitId']}
+                hint={
+                  effectiveBuildingId ? 'Зөвхөн энэ барилгын хэлхээнүүд.' : undefined
+                }
+              >
                 <SelectInput
                   value={circuitId}
                   onChange={setCircuitId}
-                  placeholder="Хэлхээнд холбохгүй"
+                  placeholder={
+                    circuits.length === 0 && effectiveBuildingId
+                      ? 'Энэ барилгад хэлхээ алга'
+                      : 'Хэлхээнд холбохгүй'
+                  }
                   options={circuits.map((circuit) => ({
                     value: circuit.id,
                     label: `${circuit.name} (${circuit.code})`,
@@ -601,21 +890,57 @@ export function ObjectFormPage(): ReactElement {
                   disabled={submitting}
                 />
               </Field>
-              <Field label="Дүгнэлт" error={fieldErrors['assessment.conclusion']}>
+              <Field
+                label="Дүгнэлт"
+                required={redOrBlack}
+                error={fieldErrors['assessment.conclusion']}
+              >
                 <TextInput
                   value={initialConclusion}
                   onChange={setInitialConclusion}
                   disabled={submitting}
                 />
               </Field>
-              <Field label="Зөвлөмж" error={fieldErrors['assessment.recommendation']}>
+              <Field
+                label="Зөвлөмж"
+                required={redOrBlack}
+                error={fieldErrors['assessment.recommendation']}
+              >
                 <TextInput
                   value={initialRecommendation}
                   onChange={setInitialRecommendation}
                   disabled={submitting}
                 />
               </Field>
+              {/*
+                Section 10.1 asks for the action taken alongside the conclusion and the
+                recommendation once the score is red or black. It is always available, and
+                only required in those bands, which is the same rule the backend applies.
+              */}
+              <Field
+                label="Авах арга хэмжээ"
+                required={redOrBlack}
+                error={fieldErrors['assessment.actionTaken']}
+                hint={
+                  redOrBlack
+                    ? 'Улаан/хар төлөвт заавал'
+                    : 'Газар дээр нь хийсэн ажил'
+                }
+              >
+                <TextInput
+                  value={initialActionTaken}
+                  onChange={setInitialActionTaken}
+                  disabled={submitting}
+                />
+              </Field>
             </div>
+
+            {redOrBlack && (
+              <p className="mt-2 text-xs text-amber-700">
+                Оруулсан оноо улаан/хар түвшинд байна: дүгнэлт, зөвлөмж, авах арга хэмжээ
+                гурвуулаа заавал.
+              </p>
+            )}
 
             {/* An assessment is only recorded with evidence behind it, so the photo sits
                 with the score rather than being asked for afterwards. */}

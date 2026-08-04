@@ -128,6 +128,32 @@ class TaskCard extends StatelessWidget {
             ],
           ),
 
+          // How long the work itself took: first reported start to the instant the quantity
+          // was finished, measured and formatted by nobody but the server. Absent while the
+          // sub-task is unfinished and on a skipped one, because there is no honest figure
+          // to print — a zero here would read as "done instantly".
+          if (task.durationMinutes != null) ...<Widget>[
+            const SizedBox(height: 9),
+            Row(
+              children: <Widget>[
+                const Icon(
+                  Icons.schedule_outlined,
+                  size: 13,
+                  color: EmployeeTokens.muted,
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    'Гүйцэтгэсэн хугацаа · ${formatMinutes(task.durationMinutes!)}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: EmployeeTokens.microNote,
+                  ),
+                ),
+              ],
+            ),
+          ],
+
           if (task.score != null) ...<Widget>[
             const SizedBox(height: 11),
             Row(
@@ -161,9 +187,23 @@ class TaskCard extends StatelessWidget {
             ),
           ],
 
+          const SizedBox(height: 11),
+          _RelatedEquipment(objects: task.relatedObjects),
+
           if (task.note != null) ...<Widget>[
             const SizedBox(height: 11),
             _RecordedText(label: 'Тэмдэглэл', text: task.note!),
+          ],
+          if (task.conclusion != null) ...<Widget>[
+            const SizedBox(height: 8),
+            _RecordedText(
+              label: 'Дүгнэлт',
+              text: task.conclusion!,
+              // Attribution belongs inside the block, not beside it: anyone on the job can
+              // overwrite this field, so the sentence on its own does not say whose verdict
+              // it is — including to the technician deciding whether to change it.
+              footnote: _conclusionAuthor,
+            ),
           ],
           if (task.recommendation != null) ...<Widget>[
             const SizedBox(height: 8),
@@ -214,6 +254,18 @@ class TaskCard extends StatelessWidget {
   String get _subtitle => <String?>[task.floorName, task.description]
       .whereType<String>()
       .join(' · ');
+
+  /// `Батаа Энхтөр · 07.29 14:30`, or just the name when the server sent no stamp.
+  /// Null when nobody is on record, so the footnote is omitted rather than printing a dash
+  /// under a conclusion carried over from before this was tracked.
+  String? get _conclusionAuthor {
+    final String? name = task.conclusionByName;
+    final DateTime? at = task.conclusionAt;
+    if (name == null && at == null) return null;
+    if (at == null) return name;
+    if (name == null) return formatShortStamp(at);
+    return '$name · ${formatShortStamp(at)}';
+  }
 
   String get _pillLabel {
     if (task.isDone) return 'Дууссан';
@@ -356,13 +408,77 @@ class _QuantityCell extends StatelessWidget {
   }
 }
 
+/// The equipment this sub-task's score will be written onto.
+///
+/// Present on every card, including when the list is empty, because both answers matter
+/// and neither is guessable from the rest of the card. The one Үнэлгээ a technician types
+/// is copied to each of these objects and becomes its risk band, so working the list out
+/// afterwards from the job title is not a reasonable thing to ask. An empty list is the
+/// louder case: the entry is still recorded against the job, but it reaches no equipment
+/// record and never appears in Үзлэг ба дүгнэлт.
+class _RelatedEquipment extends StatelessWidget {
+  const _RelatedEquipment({required this.objects});
+
+  final List<NamedRefModel> objects;
+
+  @override
+  Widget build(BuildContext context) {
+    if (objects.isEmpty) {
+      return const NoticeBanner(
+        margin: EdgeInsets.zero,
+        tone: EmployeeTokens.muted,
+        icon: Icons.link_off_outlined,
+        title: 'Тоноглол холбоогүй',
+        text: 'Энэ дэд ажлын үнэлгээ ямар ч тоноглолын түүхэнд бичигдэхгүй. '
+            'Тоноглол холбохыг төлөвлөгчөөс хүснэ үү.',
+      );
+    }
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: EmployeeTokens.soft2,
+        border: Border.all(color: EmployeeTokens.faint),
+        borderRadius: BorderRadius.circular(EmployeeTokens.radiusInput),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Text(
+            'ХАМРАХ ТОНОГЛОЛ (${objects.length})',
+            style: EmployeeTokens.microLabel,
+          ),
+          const SizedBox(height: 4),
+          // Plain wrapping text, not the status pill: a pill upper-cases its label and
+          // clips it to one line, which would shout an equipment code and then truncate
+          // the name that identifies it.
+          for (final NamedRefModel object in objects)
+            Text(
+              '· ${object.name}',
+              style: EmployeeTokens.rowSub.copyWith(
+                color: EmployeeTokens.ink2,
+                height: 1.6,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
 /// A previously recorded free-text field, shown so the next entry builds on it
 /// rather than overwriting something the technician cannot see.
 class _RecordedText extends StatelessWidget {
-  const _RecordedText({required this.label, required this.text});
+  const _RecordedText({required this.label, required this.text, this.footnote});
 
   final String label;
   final String text;
+
+  /// An attribution line under the text. Omitted entirely when null, so a field with
+  /// nothing on record is not padded with an empty row.
+  final String? footnote;
 
   @override
   Widget build(BuildContext context) {
@@ -387,6 +503,10 @@ class _RecordedText extends StatelessWidget {
             text,
             style: EmployeeTokens.rowSub.copyWith(color: EmployeeTokens.ink2, height: 1.6),
           ),
+          if (footnote != null) ...<Widget>[
+            const SizedBox(height: 4),
+            Text(footnote!, style: EmployeeTokens.microNote),
+          ],
         ],
       ),
     );

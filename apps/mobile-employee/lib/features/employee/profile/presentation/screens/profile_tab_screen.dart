@@ -70,8 +70,8 @@ class ProfileTabScreen extends ConsumerWidget {
             children: <Widget>[
               // `.tnav` on `s-profile`: the title, then the shared `.hdr-actions`
               // pair — calendar first, bell second — which every tab carries.
-              const Padding(
-                padding: EdgeInsets.fromLTRB(
+              Padding(
+                padding: const EdgeInsets.fromLTRB(
                   EmployeeTokens.labelGutter,
                   14,
                   EmployeeTokens.labelGutter,
@@ -82,8 +82,8 @@ class ProfileTabScreen extends ConsumerWidget {
                     Expanded(
                       child: Text('Профайл', style: EmployeeTokens.screenTitle),
                     ),
-                    SizedBox(width: 10),
-                    EmployeeHeaderActions(),
+                    const SizedBox(width: 10),
+                    const EmployeeHeaderActions(),
                   ],
                 ),
               ),

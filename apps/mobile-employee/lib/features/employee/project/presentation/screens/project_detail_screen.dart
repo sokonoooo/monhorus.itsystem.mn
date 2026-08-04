@@ -127,7 +127,7 @@ class _HeaderCard extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: 12),
-              const Text('ЭРСДЭЛИЙН ТӨЛӨВ', style: EmployeeTokens.sectionLabel),
+              Text('ЭРСДЭЛИЙН ТӨЛӨВ', style: EmployeeTokens.sectionLabel),
               const SizedBox(height: 7),
               RiskCountStrip(summary: project.riskSummary),
               if (project.responsibleEmployeeName != null) ...<Widget>[

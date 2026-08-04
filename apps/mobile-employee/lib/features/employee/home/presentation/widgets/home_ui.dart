@@ -70,66 +70,11 @@ class HomeCard extends StatelessWidget {
   }
 }
 
-/// `.home-hero` — the one big figure, with a caption above and a note below.
-class HomeHeroCard extends StatelessWidget {
-  const HomeHeroCard({
-    super.key,
-    required this.label,
-    required this.value,
-    required this.note,
-    this.icon,
-  });
-
-  final String label;
-
-  /// Rendered as supplied; a dash when the figure is not available, never a zero
-  /// standing in for a missing one.
-  final String value;
-
-  final String note;
-  final IconData? icon;
-
-  @override
-  Widget build(BuildContext context) {
-    return HomeCard(
-      radius: EmployeeTokens.radiusSheet,
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 15),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: <Widget>[
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: <Widget>[
-                Text(
-                  label,
-                  style: EmployeeTokens.detailValue
-                      .copyWith(color: EmployeeTokens.muted),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  value,
-                  style: EmployeeTokens.heroValue,
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  note,
-                  style: EmployeeTokens.noticeBody
-                      .copyWith(fontWeight: FontWeight.w400),
-                ),
-              ],
-            ),
-          ),
-          if (icon != null) ...<Widget>[
-            const SizedBox(width: 12),
-            Icon(icon, size: 26, color: EmployeeTokens.line),
-          ],
-        ],
-      ),
-    );
-  }
-}
+// `HomeHeroCard` — the white card carrying one big figure — lived here. The Нүүр
+// tab drew it and nothing else did, and the steel direction replaced it with the
+// dark `SteelHero` band in `blueprint_ui.dart`, whose stair carries that figure and
+// three more. It is deleted rather than left behind: a second, unreachable home hero
+// is exactly how two home screens start to disagree.
 
 /// `.home-mini` — a pastel icon tile over a figure and a caption.
 class HomeMiniCard extends StatelessWidget {
@@ -194,9 +139,18 @@ class HomeMiniCard extends StatelessWidget {
 
 /// A two-column grid of [HomeMiniCard], 12px apart as the home tab spaces them.
 class HomeMiniGrid extends StatelessWidget {
-  const HomeMiniGrid({super.key, required this.cards});
+  const HomeMiniGrid({
+    super.key,
+    required this.cards,
+    this.padding = const EdgeInsets.fromLTRB(kHomeGutter, 0, kHomeGutter, 10),
+  });
 
   final List<Widget> cards;
+
+  /// The page-level inset. Overridable because the grid is also drawn inside a
+  /// `BlueprintFrame`, which supplies the gutter itself and wants the grid to pad
+  /// evenly within it rather than to the page edge.
+  final EdgeInsets padding;
 
   @override
   Widget build(BuildContext context) {
@@ -224,7 +178,7 @@ class HomeMiniGrid extends StatelessWidget {
     }
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(kHomeGutter, 0, kHomeGutter, 10),
+      padding: padding,
       child: Column(mainAxisSize: MainAxisSize.min, children: rows),
     );
   }
@@ -232,13 +186,20 @@ class HomeMiniGrid extends StatelessWidget {
 
 /// `.sum-strip` — three figures across one card, separated by hairlines.
 class HomeSummaryStrip extends StatelessWidget {
-  const HomeSummaryStrip({super.key, required this.entries});
+  const HomeSummaryStrip({super.key, required this.entries, this.margin});
 
   final List<HomeSummaryEntry> entries;
+
+  /// Null keeps [HomeCard]'s own page-level margin. Zero is what a strip drawn
+  /// inside a `BlueprintFrame` passes, so the frame's keyline and the card's fall on
+  /// the same pixel instead of nesting two boxes.
+  final EdgeInsets? margin;
 
   @override
   Widget build(BuildContext context) {
     return HomeCard(
+      margin: margin ??
+          const EdgeInsets.fromLTRB(kHomeGutter, 0, kHomeGutter, 10),
       padding: const EdgeInsets.symmetric(vertical: 13),
       child: IntrinsicHeight(
         child: Row(

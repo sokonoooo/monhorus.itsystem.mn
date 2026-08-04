@@ -1,6 +1,11 @@
 import {
+  LOAD_MEASUREMENT_KIND_LABELS,
+  LOAD_MEASUREMENT_KIND_UNIT,
+  LOAD_MEASUREMENT_UNIT_LABELS,
   RISK_LEVEL_LABELS,
+  acceptsPhase,
   riskLevelFor,
+  type LoadMeasurementDto,
   type ObjectIcon,
   type CreateObjectAssessmentInput,
   type CreateObjectInput,
@@ -15,6 +20,7 @@ import {
   type ObjectRefDto,
   type PaginatedData,
   type UpdateObjectInput,
+  type UpdateObjectPositionInput,
 } from '@monhorus/shared';
 import { Types, type FilterQuery, type HydratedDocument } from 'mongoose';
 
@@ -39,11 +45,13 @@ import { recalculateFrom } from '../report-record/rollup.service';
 import { ServiceRequest } from '../service-request/service-request.model';
 import { getRiskBands } from '../settings/settings.service';
 import { StoredFile, type IStoredFile } from '../storage/stored-file.model';
+import { appendAssessmentHistory } from './assessment-history.service';
 import { loadFiguresOf } from './load.service';
 import {
   ObjectAssessment,
   ObjectRecord,
   ObjectType,
+  type ILoadMeasurement,
   type IObject,
   type IObjectAssessment,
 } from './object-master.models';
@@ -53,7 +61,14 @@ type Doc<T> = HydratedDocument<T>;
 /** Narrows a possibly-unpopulated objectType reference to the fields the DTO needs. */
 function populatedType(
   value: unknown,
-): { _id: Types.ObjectId; code: string; name: string; icon: ObjectIcon; generatesConclusion?: boolean } | null {
+): {
+  _id: Types.ObjectId;
+  code: string;
+  name: string;
+  icon: ObjectIcon;
+  generatesConclusion?: boolean;
+  showOnPlan?: boolean;
+} | null {
   if (typeof value !== 'object' || value === null || !('code' in value)) return null;
   return value as unknown as {
     _id: Types.ObjectId;
@@ -61,6 +76,7 @@ function populatedType(
     name: string;
     icon: ObjectIcon;
     generatesConclusion?: boolean;
+    showOnPlan?: boolean;
   };
 }
 
@@ -94,7 +110,7 @@ function named(value: unknown): string | null {
 }
 
 const LIST_POPULATE = [
-  { path: 'objectType', select: 'code name icon generatesConclusion' },
+  { path: 'objectType', select: 'code name icon generatesConclusion showOnPlan' },
   { path: 'customer', select: 'name' },
   { path: 'floor', select: 'name parent' },
 ] as const;
@@ -129,7 +145,16 @@ export async function toObjectListItemDto(
     name: object.name,
     category: object.category,
     objectType: type
-      ? { id: String(type._id), code: type.code, name: type.name, icon: type.icon }
+      ? {
+          id: String(type._id),
+          code: type.code,
+          name: type.name,
+          icon: type.icon,
+          // The registry's own answer to "may this appear on a plan". Defaulted rather
+          // than asserted: a projection that forgot the field must read as "not on the
+          // plan", never as a marker drawn on the strength of an undefined.
+          showOnPlan: type.showOnPlan === true,
+        }
       : null,
     customerId: String(
       typeof object.customer === 'object' && object.customer !== null && '_id' in object.customer
@@ -140,6 +165,11 @@ export async function toObjectListItemDto(
     floorId,
     floorName: named(floor),
     buildingName: context.buildingNames.get(parentId) ?? null,
+    // Carried on the list item, not only on the detail: the plan draws every marker from
+    // one `GET /floors/:floorId/objects` call rather than fetching each object.
+    planPosition: object.planPosition
+      ? { x: object.planPosition.x, y: object.planPosition.y }
+      : null,
     status: object.status,
     latestAssessment: object.latestAssessment
       ? {
@@ -238,14 +268,86 @@ async function assertFloorUsable(floorId: string, customerId: Types.ObjectId): P
   return floor._id;
 }
 
-/** A referenced object must exist, share the customer, and be of the expected category. */
+/**
+ * The building a floor stands in, or null when the object is not on a floor.
+ *
+ * A floor's building is normally its direct `parent`, which is what the `buildingId` list
+ * filter above relies on, but the section 4 hierarchy admits a ROOM level and nothing stops
+ * a deeper tree, so the whole ancestor chain is searched for the BUILDING node. This is the
+ * same widening `assertFloorInBuilding` in planned-work applies when it accepts either
+ * `parent` or an entry in `ancestors`.
+ *
+ * Null has one meaning here: "no building could be established for this end". A floorless
+ * object and a floor whose chain carries no BUILDING both produce it, and both are treated
+ * the same way by the caller.
+ */
+async function buildingOfFloor(floorId: Types.ObjectId | null): Promise<Types.ObjectId | null> {
+  if (!floorId) return null;
+  const floor = await ObjectNode.findById(floorId).select('parent ancestors');
+  if (!floor) return null;
+
+  const candidates = [...(floor.parent ? [floor.parent] : []), ...floor.ancestors];
+  if (candidates.length === 0) return null;
+
+  const building = await ObjectNode.findOne({ _id: { $in: candidates }, kind: 'BUILDING' }).select(
+    '_id',
+  );
+  return building?._id ?? null;
+}
+
+/**
+ * Both ends of an object-to-object connection must stand in the same building.
+ *
+ * A circuit is fed by a panel in its own building and a device hangs off a circuit in its
+ * own building; a cable does not run between two towers. Without this a customer with
+ * twelve buildings could feed a second-floor socket from a panel across the site, and every
+ * load figure, single-line trace and panel ratio derived from the link would describe wiring
+ * that does not exist.
+ *
+ * THE FLOORLESS RULE: a connection is refused only when BOTH ends resolve to a building and
+ * the two differ. An object with no floor has no building, so there is no conflict to
+ * detect — refusing it instead would break the documented workflow the create schema is
+ * built around, where an object is registered in the master list before it is placed
+ * (`floorId` is nullish, and `/objects/new` offers the floor as an optional choice). The
+ * check therefore constrains assets that HAVE a building rather than demanding that every
+ * asset have one. The same silence applies when a floor's chain carries no BUILDING node:
+ * there is nothing to compare, and an incomplete hierarchy is not the caller's fault.
+ */
+async function assertSameBuilding(
+  ownerBuildingId: Types.ObjectId | null,
+  related: Pick<IObject, 'floor'>,
+  field: string,
+): Promise<void> {
+  if (!ownerBuildingId || !related.floor) return;
+
+  const relatedBuildingId = await buildingOfFloor(related.floor);
+  if (!relatedBuildingId) return;
+  if (String(relatedBuildingId) === String(ownerBuildingId)) return;
+
+  throw AppError.badRequest(
+    ERROR_CODES.VALIDATION_ERROR,
+    'Холбогдох объект өөр барилгад байрлаж байна.',
+    [{ field, message: 'Зөвхөн нэг барилгын объектыг холбоно.' }],
+  );
+}
+
+/**
+ * A referenced object must exist, share the customer, be of the expected category, be in
+ * service, and stand in the same building as the object referencing it.
+ *
+ * `ownerBuildingId` is the ALREADY-RESOLVED building of the referencing object, not a floor
+ * id the caller sent: the create and update paths have each established the floor the object
+ * will actually sit on by the time they get here, so matching against it is matching against
+ * the stored state rather than against a hint from the client.
+ */
 async function assertRelatedObject(
   relatedId: string,
   expected: IObject['category'],
   customerId: Types.ObjectId,
   field: string,
+  ownerBuildingId: Types.ObjectId | null,
 ): Promise<Types.ObjectId> {
-  const related = await ObjectRecord.findById(relatedId).select('category customer status');
+  const related = await ObjectRecord.findById(relatedId).select('category customer status floor');
   if (!related || related.category !== expected) {
     throw AppError.badRequest(ERROR_CODES.VALIDATION_ERROR, 'Холбогдох объект олдсонгүй.', [
       { field, message: 'Объект олдсонгүй эсвэл ангилал таарахгүй.' },
@@ -265,6 +367,7 @@ async function assertRelatedObject(
       [{ field, message: 'Объект ашиглалтаас гарсан.' }],
     );
   }
+  await assertSameBuilding(ownerBuildingId, related, field);
   return related._id;
 }
 
@@ -498,6 +601,20 @@ export async function createObject(
   }
 
   const floorId = input.floorId ? await assertFloorUsable(input.floorId, customer._id) : null;
+  // Resolved once and handed to every reference check below, so a three-reference circuit
+  // costs one building lookup for itself rather than three.
+  const ownerBuildingId = await buildingOfFloor(floorId);
+
+  // The shared schema already refuses this combination; repeated here because the service
+  // is the layer that owns the rule and a direct caller must not store a pin with no plan
+  // behind it.
+  if (input.planPosition && !floorId) {
+    throw AppError.badRequest(
+      ERROR_CODES.VALIDATION_ERROR,
+      'План дээрх байрлалыг давхар сонгосон үед л тэмдэглэнэ.',
+      [{ field: 'planPosition', message: 'Давхар сонгоно уу.' }],
+    );
+  }
 
   const payload: Record<string, unknown> = {
     code: input.code,
@@ -506,6 +623,7 @@ export async function createObject(
     objectType: new Types.ObjectId(input.objectTypeId),
     customer: customer._id,
     floor: floorId,
+    planPosition: input.planPosition ?? null,
     status: 'ACTIVE',
     description: input.description ?? null,
     notes: input.notes ?? null,
@@ -523,7 +641,13 @@ export async function createObject(
   } else if (input.category === 'CIRCUIT') {
     payload.circuit = {
       panel: input.circuit.panelId
-        ? await assertRelatedObject(input.circuit.panelId, 'PANEL', customer._id, 'circuit.panelId')
+        ? await assertRelatedObject(
+            input.circuit.panelId,
+            'PANEL',
+            customer._id,
+            'circuit.panelId',
+            ownerBuildingId,
+          )
         : null,
       startPointObject: input.circuit.startPointObjectId
         ? await assertRelatedObject(
@@ -531,6 +655,7 @@ export async function createObject(
             'PANEL',
             customer._id,
             'circuit.startPointObjectId',
+            ownerBuildingId,
           )
         : null,
       endPointObject: input.circuit.endPointObjectId
@@ -539,6 +664,7 @@ export async function createObject(
             'EQUIPMENT',
             customer._id,
             'circuit.endPointObjectId',
+            ownerBuildingId,
           )
         : null,
       breakerRating: input.circuit.breakerRating ?? null,
@@ -555,6 +681,7 @@ export async function createObject(
             'CIRCUIT',
             customer._id,
             'equipment.circuitId',
+            ownerBuildingId,
           )
         : null,
       ratedPowerKw: input.equipment.ratedPowerKw ?? null,
@@ -609,7 +736,32 @@ export async function updateObject(
 
   if (input.floorId !== undefined) {
     object.floor = input.floorId ? await assertFloorUsable(input.floorId, object.customer) : null;
+    // Taking the object off the floor takes its pin with it: a coordinate on a plan the
+    // object is no longer on points at nothing.
+    if (!object.floor) object.planPosition = null;
   }
+
+  if (input.planPosition !== undefined) {
+    if (input.planPosition && !object.floor) {
+      throw AppError.badRequest(
+        ERROR_CODES.VALIDATION_ERROR,
+        'План дээрх байрлалыг давхар сонгосон үед л тэмдэглэнэ.',
+        [{ field: 'planPosition', message: 'Давхар сонгоно уу.' }],
+      );
+    }
+    object.planPosition = input.planPosition ?? null;
+  }
+
+  /**
+   * The building every reference below is judged against.
+   *
+   * Read AFTER `input.floorId` has been applied, so a request that moves the object and
+   * re-points its panel in one go is judged against the floor it is actually landing on
+   * rather than the one it is leaving. Resolved only when a reference could be written, so
+   * a rename does not pay for two extra lookups.
+   */
+  const ownerBuildingId =
+    input.circuit || input.equipment ? await buildingOfFloor(object.floor) : null;
 
   // Only the block belonging to this object's category is writable; the schema already
   // rejects the others, and this is the second gate.
@@ -623,7 +775,13 @@ export async function updateObject(
   if (object.category === 'CIRCUIT' && input.circuit) {
     object.circuit = {
       panel: input.circuit.panelId
-        ? await assertRelatedObject(input.circuit.panelId, 'PANEL', object.customer, 'circuit.panelId')
+        ? await assertRelatedObject(
+            input.circuit.panelId,
+            'PANEL',
+            object.customer,
+            'circuit.panelId',
+            ownerBuildingId,
+          )
         : (object.circuit?.panel ?? null),
       startPointObject: input.circuit.startPointObjectId
         ? await assertRelatedObject(
@@ -631,6 +789,7 @@ export async function updateObject(
             'PANEL',
             object.customer,
             'circuit.startPointObjectId',
+            ownerBuildingId,
           )
         : (object.circuit?.startPointObject ?? null),
       endPointObject: input.circuit.endPointObjectId
@@ -639,6 +798,7 @@ export async function updateObject(
             'EQUIPMENT',
             object.customer,
             'circuit.endPointObjectId',
+            ownerBuildingId,
           )
         : (object.circuit?.endPointObject ?? null),
       breakerRating: input.circuit.breakerRating ?? object.circuit?.breakerRating ?? null,
@@ -657,6 +817,7 @@ export async function updateObject(
             'CIRCUIT',
             object.customer,
             'equipment.circuitId',
+            ownerBuildingId,
           )
         : (object.equipment?.circuit ?? null),
       ratedPowerKw: input.equipment.ratedPowerKw ?? object.equipment?.ratedPowerKw ?? null,
@@ -686,6 +847,54 @@ export async function updateObject(
       status: object.status,
       floor: object.floor ? String(object.floor) : null,
     },
+  });
+
+  return getObjectById(objectId, scope);
+}
+
+/**
+ * Moves or clears the object's pin on the floor plan.
+ *
+ * Separate from `updateObject` so dragging a marker costs one small request instead of a
+ * round trip through the strict per-category payload. The permission and the tenant scope
+ * are the same as an update's: this writes to the object, so nothing about it is looser.
+ */
+export async function updateObjectPosition(
+  objectId: string,
+  input: UpdateObjectPositionInput,
+  scope: ResolvedCustomerScope,
+  actor: AuthContext,
+  meta: RequestMeta,
+): Promise<ObjectDetailDto> {
+  const object = await ObjectRecord.findOne({ _id: objectId, ...customerScopeFilter(scope) });
+  if (!object) throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Объект олдсонгүй.');
+
+  if (input.planPosition && !object.floor) {
+    throw AppError.badRequest(
+      ERROR_CODES.VALIDATION_ERROR,
+      'План дээрх байрлалыг давхарт холбогдсон объектод л тэмдэглэнэ.',
+      [{ field: 'planPosition', message: 'Объект давхарт холбогдоогүй байна.' }],
+    );
+  }
+
+  const before = object.planPosition
+    ? { x: object.planPosition.x, y: object.planPosition.y }
+    : null;
+
+  object.planPosition = input.planPosition ?? null;
+  await object.save();
+
+  // Every other mutation in this module writes an audit row; moving equipment on the plan
+  // is a change to the registration and is recorded the same way.
+  await recordAudit({
+    entityType: 'Object',
+    entityId: object._id,
+    action: 'Updated',
+    actor: { id: actor.userId, role: actor.role, label: actor.fullName },
+    meta,
+    reason: input.planPosition ? 'plan position updated' : 'plan position cleared',
+    oldValue: { planPosition: before },
+    newValue: { planPosition: input.planPosition ?? null },
   });
 
   return getObjectById(objectId, scope);
@@ -779,6 +988,9 @@ export async function linkObjectsToFloor(
     if (previousFloor === String(floor._id)) continue;
 
     object.floor = floor._id;
+    // The pin belonged to the floor it came from, so a move leaves the object unplaced on
+    // the new plan rather than at the same fraction of a different drawing.
+    object.planPosition = null;
     await object.save();
     linked += 1;
 
@@ -814,6 +1026,8 @@ export async function unlinkObjectFromFloor(
   }
 
   object.floor = null;
+  // Unlinking removes the placement, and the pin is part of the placement.
+  object.planPosition = null;
   await object.save();
 
   // The object itself survives: unlinking removes the placement, never the master record.
@@ -831,6 +1045,73 @@ export async function unlinkObjectFromFloor(
 
 // -- Assessment --------------------------------------------------------------
 
+/**
+ * Turns the submitted readings into what is stored, and resolves the one kW head.
+ *
+ * TWO HOMES, ONE FACT. `measuredLoadKw` is the authoritative summable figure — the floor
+ * roll-up adds it and nothing else — and an `ACTIVE_POWER` reading is that same quantity
+ * written in the readings list. Either may be supplied and each populates the other; both
+ * supplied with different numbers is refused, never reconciled, so the two can not end up
+ * disagreeing in the database and no entered figure is silently discarded.
+ *
+ * The kind/unit pairing is re-checked here even though `loadMeasurementSchema` already
+ * checks it, for the same reason the evidence guard above is repeated: the service owns the
+ * rule, and a caller that reaches it without going through the route must not be able to
+ * store a current in kilowatts — a row that would then read as power everywhere.
+ */
+function resolveMeasurements(input: CreateObjectAssessmentInput): {
+  measurements: ILoadMeasurement[];
+  measuredLoadKw: number | null;
+} {
+  const issues: { field: string; message: string }[] = [];
+  const measurements: ILoadMeasurement[] = (input.measurements ?? []).map((reading, index) => {
+    const expected = LOAD_MEASUREMENT_KIND_UNIT[reading.kind];
+    if (reading.unit !== expected) {
+      issues.push({
+        field: `measurements.${index}.unit`,
+        message:
+          `"${LOAD_MEASUREMENT_KIND_LABELS[reading.kind]}"-ыг зөвхөн ` +
+          `${LOAD_MEASUREMENT_UNIT_LABELS[expected]} нэгжээр бүртгэнэ.`,
+      });
+    }
+    return {
+      kind: reading.kind,
+      value: reading.value,
+      unit: reading.unit,
+      phase: acceptsPhase(reading.kind) ? (reading.phase ?? null) : null,
+    };
+  });
+
+  const power = measurements.find((reading) => reading.kind === 'ACTIVE_POWER');
+  const given = input.measuredLoadKw ?? null;
+
+  if (power && given !== null && Math.abs(power.value - given) > 1e-6) {
+    issues.push({
+      field: 'measuredLoadKw',
+      message: `Хэмжсэн ачаалал (${given} кВт) болон бүртгэсэн чадал (${power.value} кВт) зөрж байна.`,
+    });
+  }
+
+  if (issues.length > 0) {
+    throw AppError.badRequest(
+      ERROR_CODES.VALIDATION_ERROR,
+      'Ачааллын хэмжилт шаардлага хангахгүй байна.',
+      issues,
+    );
+  }
+
+  return { measurements, measuredLoadKw: given ?? power?.value ?? null };
+}
+
+function measurementDto(reading: ILoadMeasurement): LoadMeasurementDto {
+  return {
+    kind: reading.kind,
+    value: reading.value,
+    unit: reading.unit,
+    phase: reading.phase ?? null,
+  };
+}
+
 function assessmentDto(entry: Doc<IObjectAssessment>): ObjectAssessmentDto {
   return {
     id: String(entry._id),
@@ -840,12 +1121,16 @@ function assessmentDto(entry: Doc<IObjectAssessment>): ObjectAssessmentDto {
     riskLevel: entry.riskLevel,
     assessedById: entry.assessedBy ? String(entry.assessedBy) : null,
     assessedByName: entry.assessedByName,
+    judgedById: entry.judgedBy ? String(entry.judgedBy) : null,
+    judgedByName: entry.judgedByName,
     assessedAt: entry.assessedAt.toISOString(),
     photos: entry.photos.map(photoDto).filter((photo): photo is ObjectPhotoDto => photo !== null),
     conclusion: entry.conclusion,
     recommendation: entry.recommendation,
     actionTaken: entry.actionTaken,
     measuredLoadKw: entry.measuredLoadKw,
+    // Grandfathered rows predate the field and come back with an empty list, not a null.
+    measurements: (entry.measurements ?? []).map(measurementDto),
     repairRequired: entry.repairRequired,
     revisitRequired: entry.revisitRequired,
     revisitDate: entry.revisitDate?.toISOString() ?? null,
@@ -917,6 +1202,11 @@ export async function recordAssessment(
     );
   }
 
+  // Resolved once, before anything is written: every later use of the kW figure reads
+  // `measuredLoadKw` from here rather than from `input`, so the reading list and the
+  // summable head are decided in one place.
+  const { measurements, measuredLoadKw } = resolveMeasurements(input);
+
   const bands = await getRiskBands();
   const riskLevel = riskLevelFor(input.newScore, bands);
 
@@ -969,7 +1259,10 @@ export async function recordAssessment(
   const now = new Date();
   const previousScore = object.latestAssessment?.score ?? null;
 
-  const assessment = await ObjectAssessment.create({
+  // Through the shared writer, which is also what the report path now uses. No
+  // `sourceReportItem`: a manual assessment is an event, not a correctable record, so it
+  // deduplicates against nothing and every recording appends — exactly as before.
+  const assessment = await appendAssessmentHistory({
     object: object._id,
     previousScore,
     newScore: input.newScore,
@@ -981,7 +1274,8 @@ export async function recordAssessment(
     conclusion: conclusion || null,
     recommendation: recommendation || null,
     actionTaken: input.actionTaken ?? null,
-    measuredLoadKw: input.measuredLoadKw ?? null,
+    measuredLoadKw,
+    measurements,
     repairRequired: input.repairRequired,
     revisitRequired: input.revisitRequired,
     revisitDate: input.revisitDate ? new Date(input.revisitDate) : null,
@@ -1006,9 +1300,10 @@ export async function recordAssessment(
   };
 
   // Rule 17.16: the measured reading is stored on its own, never folded into the
-  // calculated figure.
-  if (input.measuredLoadKw !== undefined && input.measuredLoadKw !== null) {
-    object.measuredLoadKw = input.measuredLoadKw;
+  // calculated figure. Still kW-only: an amp or volt reading never moves this head, so the
+  // floor roll-up that sums it is untouched by the readings list.
+  if (measuredLoadKw !== null) {
+    object.measuredLoadKw = measuredLoadKw;
   }
 
   // Rule 17.9: a black-band object must not remain in active use.
@@ -1051,7 +1346,7 @@ export async function recordAssessment(
           observation: input.actionTaken ?? null,
           conclusion: conclusion || null,
           recommendation: recommendation || null,
-          measuredLoadKw: input.measuredLoadKw ?? null,
+          measuredLoadKw,
           evidenceAttachments: photoObjectIds,
         },
       ],

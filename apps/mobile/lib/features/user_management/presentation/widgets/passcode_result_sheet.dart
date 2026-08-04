@@ -74,7 +74,7 @@ class PasscodeResultSheet extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
-                  const Text('ТҮР НУУЦ ҮГ', style: CustomerTokens.sectionLabel),
+                  Text('ТҮР НУУЦ ҮГ', style: CustomerTokens.sectionLabel),
                   const SizedBox(height: 8),
                   SelectableText(
                     provisioned.temporaryPassword,

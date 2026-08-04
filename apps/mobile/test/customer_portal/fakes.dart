@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:monhorus_mobile/core/error/failure.dart';
+import 'package:monhorus_mobile/core/media/photo_capture.dart';
 import 'package:monhorus_mobile/core/network/api_result.dart';
 import 'package:monhorus_mobile/core/network/paginated_data.dart';
 import 'package:monhorus_mobile/core/theme/app_theme.dart';
@@ -73,10 +74,33 @@ AppUser customerWithCreateRight() => AppUser(
       permissions: const <String>{PermissionKeys.portalServiceRequestCreate},
     );
 
+/// A customer account that also holds the staff `object_master.view`, which is what
+/// opens the object timeline. No production customer role grants it - the endpoint is
+/// staff-only by decision - so this exists to prove the section appears when, and only
+/// when, the permission is present.
+AppUser customerWithObjectMasterView() => AppUser(
+      id: testCustomer.id,
+      fullName: testCustomer.fullName,
+      email: testCustomer.email,
+      phone: testCustomer.phone,
+      role: testCustomer.role,
+      status: testCustomer.status,
+      customerId: testCustomer.customerId,
+      customerName: testCustomer.customerName,
+      permissions: const <String>{PermissionKeys.objectMasterView},
+    );
+
 /// The message `resolveCustomerScope` returns with a 403 when a customer account has
 /// no organisation, copied from apps/backend/src/common/security/customer-scope.ts.
 const String serverNotLinkedMessage =
     'Таны бүртгэл харилцагч байгууллагад холбогдоогүй байна. Админд хандана уу.';
+
+/// What the API answers a caller who lacks the permission an endpoint requires,
+/// mapped exactly as `CustomerPortalRepositoryImpl` maps a 403.
+const AuthFailure forbiddenFailure = AuthFailure(
+  'Энэ үйлдлийг хийх эрх байхгүй байна.',
+  code: 'FORBIDDEN',
+);
 
 // -- Wire fixtures -----------------------------------------------------------
 
@@ -241,6 +265,26 @@ ObjectDetailModel objectFixture({
   });
 }
 
+ObjectHistoryModel objectHistoryFixture() {
+  return ObjectHistoryModel.fromJson(<String, dynamic>{
+    'assessments': <Map<String, dynamic>>[],
+    'timeline': <Map<String, dynamic>>[
+      <String, dynamic>{
+        'id': '750000000000000000000011',
+        'kind': 'ASSESSMENT',
+        'occurredAt': '2026-07-20T04:12:00.000Z',
+        'title': 'Үнэлгээ бүртгэгдлээ',
+        'detail': null,
+        'actorName': 'Б. Энхтөр',
+        'previousScore': null,
+        'newScore': 38,
+        'riskLevel': 'CRITICAL',
+        'linkPath': null,
+      },
+    ],
+  });
+}
+
 ServiceRequestDetailModel serviceRequestFixture({
   String id = '710000000000000000000006',
   String requestNumber = 'SR-202607-0012',
@@ -355,6 +399,24 @@ NotificationModel notificationFixture({
   });
 }
 
+/// What `POST /files/service-request-attachments` answers: the stored file, as
+/// `ServiceRequestAttachmentDto`. The upload response and the attachment embedded in a
+/// request detail are the same shape server-side, so one fixture serves both.
+ServiceRequestAttachmentModel attachmentFixture({
+  String id = 'aa00000000000000000000a1',
+  String name = 'gemtel.png',
+}) {
+  return ServiceRequestAttachmentModel.fromJson(<String, dynamic>{
+    'id': id,
+    'name': name,
+    'downloadUrl': '/api/v1/files/$id',
+    'mimeType': 'image/png',
+    'sizeBytes': 2048,
+    'uploadedByName': testCustomer.fullName,
+    'uploadedAt': '2026-07-27T02:55:00.000Z',
+  });
+}
+
 // -- Fake repositories -------------------------------------------------------
 
 /// In-memory stand-in for the portal API.
@@ -371,7 +433,9 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
     ObjectDetailModel? objectDetail,
     ServiceRequestDetailModel? requestDetail,
     this.floorPlan,
+    this.objectHistory,
     this.failure,
+    this.uploadFailure,
   })  : buildings = buildings ?? <BuildingModel>[buildingFixture()],
         floors = floors ?? <FloorModel>[floorFixture()],
         objects = objects ?? <ObjectListItemModel>[objectFixture()],
@@ -390,6 +454,15 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
   final ServiceRequestDetailModel requestDetail;
   final FloorPlanModel? floorPlan;
 
+  /// The object timeline, for the accounts that are entitled to one.
+  ///
+  /// Null - the default - means the endpoint refuses, which is what
+  /// `GET /objects/:objectId/history` does for a customer: it is staff-only by decision
+  /// and accepts no portal key. The fake used to answer success unconditionally, so a
+  /// screen that rendered the timeline for every account looked healthy in the suite and
+  /// 403'd on every device page in the running app.
+  final ObjectHistoryModel? objectHistory;
+
   /// When set, every read fails with it.
   final Failure? failure;
 
@@ -397,9 +470,21 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
   /// went out without one.
   final List<String> requestedCustomerIds = <String>[];
 
+  /// Object ids a screen asked a timeline for, so a test can assert it never asked.
+  final List<String> historyRequestedFor = <String>[];
+
   /// Bodies passed to [createServiceRequest].
   final List<CreateServiceRequestRequestModel> created =
       <CreateServiceRequestRequestModel>[];
+
+  /// Photos handed to [uploadServiceRequestAttachment], in order. A test asserts on
+  /// this to prove the picture went up BEFORE the request was created: the server
+  /// needs the file to exist before `attachmentIds` can name it.
+  final List<CapturedPhoto> uploadedPhotos = <CapturedPhoto>[];
+
+  /// When set, an attachment upload fails with it while every read still succeeds, so
+  /// a test can exercise the upload's own error path without failing the whole screen.
+  final Failure? uploadFailure;
 
   ApiResult<T> _result<T>(T value) {
     final Failure? error = failure;
@@ -465,9 +550,14 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
       _result(objectDetail);
 
   @override
-  Future<ApiResult<ObjectHistoryModel>> getObjectHistory(
-          String objectId) async =>
-      _result(ObjectHistoryModel.empty);
+  Future<ApiResult<ObjectHistoryModel>> getObjectHistory(String objectId) async {
+    historyRequestedFor.add(objectId);
+    final ObjectHistoryModel? history = objectHistory;
+    if (history == null) {
+      return const FailureResult<ObjectHistoryModel>(forbiddenFailure);
+    }
+    return _result(history);
+  }
 
   @override
   Future<ApiResult<PaginatedData<ServiceRequestListItemModel>>>
@@ -486,6 +576,18 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
   Future<ApiResult<ServiceRequestDetailModel>> getServiceRequest(
           String requestId) async =>
       _result(requestDetail);
+
+  @override
+  Future<ApiResult<ServiceRequestAttachmentModel>> uploadServiceRequestAttachment(
+    CapturedPhoto photo,
+  ) async {
+    uploadedPhotos.add(photo);
+    final Failure? error = uploadFailure;
+    if (error != null) {
+      return FailureResult<ServiceRequestAttachmentModel>(error);
+    }
+    return _result(attachmentFixture(id: 'aa000000000000000000000${uploadedPhotos.length}'));
+  }
 
   @override
   Future<ApiResult<ServiceRequestDetailModel>> createServiceRequest(
@@ -565,6 +667,7 @@ Widget wrapCustomerScreen(
   Widget child, {
   required FakeCustomerPortalRepository repository,
   AppUser? user,
+  List<Override> overrides = const <Override>[],
 }) {
   final AppUser account = user ?? testCustomer;
 
@@ -573,6 +676,8 @@ Widget wrapCustomerScreen(
       customerPortalRepositoryProvider.overrideWithValue(repository),
       currentUserProvider.overrideWithValue(account),
       authRepositoryProvider.overrideWithValue(FakeAuthRepository(account)),
+      // Last, so a test can replace one of the above for the case it is about.
+      ...overrides,
     ],
     child: MaterialApp(theme: AppTheme.light, home: child),
   );

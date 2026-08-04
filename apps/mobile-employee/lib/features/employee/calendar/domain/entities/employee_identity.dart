@@ -2,10 +2,12 @@ import 'package:equatable/equatable.dart';
 
 /// Which employee record the signed-in account is.
 ///
-/// `GET /calendar` performs no server-side self-scoping at all — calendar.service.ts
-/// filters on the caller's `employeeId` query parameter and on nothing else — so
-/// without an id the calendar is the whole organisation's schedule. This type exists
-/// so that fact is carried into the UI rather than hidden.
+/// `GET /calendar` scopes itself now: `buildCalendar` bounds both of its sources by the
+/// assigned-or-team predicate read from the session, so the id below is no longer what
+/// keeps a colleague's work off the screen. This type survives because the id is still
+/// worth having — it narrows the request to the caller alone even for an account that
+/// holds an oversight key — and because an account with no employee card gets an EMPTY
+/// calendar rather than everybody's, which is a fact the screen has to be able to explain.
 ///
 /// The id comes from `GET /employees/me`, which the server resolves from the session.
 /// A resolution is therefore either the caller's own record or nothing at all; there
@@ -57,13 +59,13 @@ class UnresolvedEmployeeIdentity extends EmployeeIdentity {
 
   static const UnresolvedEmployeeIdentity notFound = UnresolvedEmployeeIdentity(
     IdentityGap.notFound,
-    'Таны нэвтрэх бүртгэл ажилтны картад холбогдоогүй байна. Доор бүх хуваарь '
-    'харагдаж байна.',
+    'Таны нэвтрэх бүртгэл ажилтны картад холбогдоогүй байна. Тиймээс хуваарь '
+    'хоосон харагдаж болзошгүй. Админд хандана уу.',
   );
 
   static const UnresolvedEmployeeIdentity lookupFailed = UnresolvedEmployeeIdentity(
     IdentityGap.lookupFailed,
-    'Ажилтны бүртгэлийг уншиж чадсангүй. Доор бүх хуваарь харагдаж байна.',
+    'Ажилтны бүртгэлийг уншиж чадсангүй. Хуваарь дутуу харагдаж болзошгүй.',
   );
 
   @override

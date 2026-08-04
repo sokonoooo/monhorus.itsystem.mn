@@ -120,6 +120,15 @@ export interface UploadedPlanFile {
  * Replacement removes the previous image outright: there is no version to keep it under,
  * and keeping an unreachable orphan file would be a silent storage leak. The audit record
  * names both the old and the new file so the change remains traceable.
+ *
+ * Object placements (`Object.planPosition`) are deliberately KEPT across a replacement and
+ * across a removal. They are stored normalised to 0..1 of the plan rather than in pixels,
+ * and a replacement plan is almost always the same floor redrawn or rescanned, so the pins
+ * still land where they belong. Clearing them would silently discard the survey work of
+ * placing every panel on the floor, and there is no way to get it back; a pin that ends up
+ * slightly off after a genuinely different drawing is dragged, which costs one click. A
+ * position is only cleared when the object itself leaves the floor, which is where the
+ * placement actually stops meaning anything.
  */
 export async function uploadFloorPlan(
   floorId: string,
@@ -243,6 +252,10 @@ export async function updateFloorPlanMeta(
   return (await getFloorPlan(floorId, scope))!;
 }
 
+/**
+ * Removes the current plan image. Stored object placements survive it, for the reason
+ * given on `uploadFloorPlan`: a plan removed and re-uploaded is the same floor.
+ */
 export async function removeFloorPlan(
   floorId: string,
   scope: ResolvedCustomerScope,

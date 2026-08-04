@@ -6,7 +6,12 @@ import '../../../shared/service_request_vocabulary.dart';
 import '../format.dart';
 import 'work_ui.dart';
 
-/// One unclaimed service request in the "Нээлттэй" segment.
+/// One service request row, in the "Нээлттэй" pool AND under "Хүсэлт" in "Миний".
+///
+/// The same card for both, because it is the same record and the same facts; what
+/// differs is only whether [onClaim] is supplied. A row the reader already holds has
+/// nothing to claim, so the segment that lists their own work passes null and the
+/// button is simply absent.
 ///
 /// Carries the prototype's per-row "Ажил авах", which this card went without for a real
 /// reason: the only route onto a request used to be `/service-requests/:id/assign`,
@@ -16,9 +21,14 @@ import 'work_ui.dart';
 /// from the session and answers to `service_request.claim`, which a technician does hold.
 ///
 /// The button is drawn only when [onClaim] is supplied, which the pane decides from the
-/// live permission set rather than from the role string. There is still no request detail
-/// screen in this app, so the row shows everything `ServiceRequestListItemDto` carries
-/// and stops there.
+/// live permission set rather than from the role string.
+///
+/// THE ROW OPENS. It used to say here that there was no request detail screen in this app,
+/// and that stopped being true when [ServiceRequestDetailScreen] was added for the Нүүр
+/// tab's urgent list — but this card was never given a tap target, so the one segment whose
+/// whole purpose is deciding whether to take a job was the one place a technician could not
+/// open it and read the fault description first. Tapping the card and tapping "Өөртөө авах"
+/// are deliberately different acts: the row opens the request, the button takes it.
 ///
 /// Every figure comes from the server: the SLA countdown is the backend's own
 /// `slaRemainingMinutes`, which already accounts for authorised extensions, and the
@@ -27,12 +37,19 @@ class OpenRequestCard extends StatelessWidget {
   const OpenRequestCard({
     super.key,
     required this.request,
+    this.onTap,
     this.onClaim,
     this.claiming = false,
     this.disabled = false,
   });
 
   final ServiceRequestListItemModel request;
+
+  /// Opens the request. Independent of [onClaim] and of any permission: reading a request
+  /// in the open queue is what `service_request.view` — the key this whole segment is
+  /// gated on — already allows, so a row that cannot be claimed is still a row that can
+  /// be read.
+  final VoidCallback? onTap;
 
   /// Null when the caller may not claim, which removes the action entirely rather than
   /// showing a control that refuses.
@@ -53,6 +70,7 @@ class OpenRequestCard extends StatelessWidget {
 
     return WorkCard(
       accent: needsAttention ? EmployeeTokens.red : null,
+      onTap: onTap,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,

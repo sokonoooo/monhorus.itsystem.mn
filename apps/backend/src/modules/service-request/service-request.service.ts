@@ -30,7 +30,9 @@ import type { AuthContext } from '../../common/types/express';
 import type { RequestMeta } from '../../common/utils/request-meta.util';
 import { recordAudit } from '../audit/audit.service';
 import { notify } from '../notification/notification.service';
+import { resolveAssignedWorkFilter } from '../planned-work/planned-work.scope';
 import { assertReportAllows } from './work-report.service';
+import { assertSelfProgressAllowed } from './self-progress.policy';
 import { userIdsForEmployees } from '../notification/recipient.util';
 import { Employee, type IEmployee } from '../employee/employee.model';
 import { toEmployeeRefDto } from '../employee/employee.mapper';
@@ -291,6 +293,50 @@ async function validateLocationChain(
   }
 }
 
+/**
+ * Refuses an `attachmentIds` entry the caller did not upload and park themselves.
+ *
+ * `attachmentIds` is a list of ids chosen by the client, which makes it the same kind
+ * of field as `buildingId`: something the request asserts and the server must verify.
+ * The claim below only moves files matching `uploadedBy`, so a foreign id was never
+ * stolen — but it WAS written into `attachments`, and `resolveAttachments` then reads
+ * the StoredFile row to build the detail DTO. Another tenant's filename, size and
+ * uploader name would have come back on a request the caller owns, which is the
+ * metadata half of exactly the leak `assertFileInCustomerScope` closes for the bytes.
+ *
+ * The predicate is the same one the claim uses, so a file that passes here is a file
+ * the claim will move: uploaded by this account, still an unclaimed SERVICE_REQUEST
+ * attachment, i.e. parked on the uploader rather than already owned by some request.
+ * Re-pointing an attachment from one request to another is therefore refused too,
+ * which is the behaviour a client already has no way to ask for.
+ *
+ * Now that a customer can reach the upload route this is load-bearing rather than
+ * theoretical: before it, a portal account could name any 24 hex characters.
+ */
+async function assertAttachmentsBelongToActor(
+  attachmentIds: string[],
+  actor: AuthContext,
+): Promise<void> {
+  if (attachmentIds.length === 0) return;
+
+  const uploaderId = new Types.ObjectId(actor.userId);
+  const owned = await StoredFile.countDocuments({
+    _id: { $in: attachmentIds.map((id) => new Types.ObjectId(id)) },
+    ownerType: 'SERVICE_REQUEST',
+    ownerId: uploaderId,
+    uploadedBy: uploaderId,
+  });
+
+  // Counted rather than compared id by id: the schema already rejects a duplicate-free
+  // list of well-formed ids, and naming which id was refused would confirm that the
+  // others exist, which is precisely what a caller probing for file ids wants to learn.
+  if (owned !== attachmentIds.length) {
+    throw AppError.badRequest(ERROR_CODES.VALIDATION_ERROR, 'Хавсралт файл олдсонгүй.', [
+      { field: 'attachmentIds', message: 'Хавсаргасан файл олдсонгүй. Дахин хуулна уу.' },
+    ]);
+  }
+}
+
 export async function createServiceRequest(
   input: CreateServiceRequestInput,
   scope: ResolvedCustomerScope,
@@ -302,6 +348,7 @@ export async function createServiceRequest(
   // below is then verified against that same owner.
   const ownerCustomerId = resolveOwnerCustomerId(scope, input.customerId);
   await validateLocationChain(input, ownerCustomerId);
+  await assertAttachmentsBelongToActor(input.attachmentIds, actor);
 
   const now = new Date();
   const slaDueAt = computeSlaDueAt(now, input.isUrgent, 0, await getSlaConfig());
@@ -384,21 +431,52 @@ export async function createServiceRequest(
     excludeUserId: actor.userId,
   });
 
-  return getServiceRequestById(String(request._id), scope);
+  return getServiceRequestById(String(request._id), scope, actor);
 }
 
 /**
  * The request list.
  *
+ * TWO INDEPENDENT BOUNDARIES, because a caller can be on the wrong side of either.
+ *
  * The tenant predicate comes from the scope and not from `query.customerId`: for a customer
  * the resolver has already discarded whatever they sent, which is what stops a caller
  * listing another organisation's requests by naming it in the query string.
+ *
+ * The assignment predicate bounds a STAFF caller to their own work, PLUS the open queue.
+ * It closed the same hole `GET /planned-work` had: the filter was built entirely from query
+ * parameters, so a technician who simply omitted `employeeId` received every request in the
+ * company — every customer, address, contact name and fault description.
+ * `resolveAssignedWorkFilter` returns null for a caller holding an oversight key, so a
+ * dispatcher, a manager and an administrator are unaffected.
+ *
+ * `includeUnclaimed` is what keeps the "Нээлттэй" segment and `POST /:id/claim` working:
+ * a request with no employee and no team is nobody's private business, it is the queue a
+ * technician is meant to take from. See the option's own note for why planned work has no
+ * equivalent.
+ *
+ * SKIPPED OUTRIGHT FOR A CUSTOMER SCOPE. A portal account has no employee card, so applying
+ * this would answer the empty list for every customer in the system rather than the requests
+ * they raised — worse, `includeUnclaimed` would show them other tenants' unassigned work if
+ * tenancy were not already ANDed in. Tenancy is a customer's boundary and it is the correct
+ * one.
+ *
+ * ANDed, not merged, so `employeeId`/`teamId` stay ADDITIONAL narrowing and cannot widen
+ * the result, and so the predicate does not collide with the `$or` the search term uses.
  */
 export async function listServiceRequests(
   query: ServiceRequestListQueryInput,
   scope: ResolvedCustomerScope,
+  actor: AuthContext,
 ): Promise<PaginatedData<ServiceRequestListItemDto>> {
   const filter: FilterQuery<IServiceRequest> = { ...customerScopeFilter(scope) };
+
+  if (scope.mode === 'STAFF') {
+    const assignmentFilter = await resolveAssignedWorkFilter<IServiceRequest>(actor, {
+      includeUnclaimed: true,
+    });
+    if (assignmentFilter) filter.$and = [assignmentFilter];
+  }
 
   if (query.status) filter.status = query.status;
   if (query.requestType) filter.requestType = query.requestType;
@@ -447,14 +525,47 @@ export async function listServiceRequests(
   };
 }
 
+/**
+ * The single-record read, bounded by the same two predicates the list is.
+ *
+ * `includeUnclaimed` IS WHAT KEEPS THE CLAIM FLOW ALIVE, and it is the one line here that
+ * is easy to leave out and impossible to notice in a unit test. The "Нээлттэй" segment
+ * lists requests nobody holds; a technician taps one to read the fault description before
+ * deciding to take it. Without the allowance every one of those rows would 404 on tap — a
+ * list of jobs that vanish when touched — and `POST /:id/claim` would still work while
+ * being unreachable through the only screen that offers it.
+ *
+ * NOT-FOUND RATHER THAN FORBIDDEN, which is the convention `assertInCustomerScope` already
+ * set on this endpoint and which the customer half of this same query has always used: a
+ * 403 on an id confirms the record is real, turning the endpoint into an oracle for probing
+ * identifiers. A colleague's request is now indistinguishable from an id that never existed.
+ *
+ * THE WRITE-THEN-RETURN CALLERS are safe by construction rather than by exemption. Assigning
+ * needs `dispatch.assign`, changing status needs `service_request.change_status`, extending
+ * an SLA needs `dispatch.extend_sla` — every one of those is oversight, so the actor is
+ * unscoped here. Creating returns a request that is not assigned to anybody yet, which the
+ * unclaimed branch admits. Claiming returns one the caller has just put their own name on.
+ */
 export async function getServiceRequestById(
   requestId: string,
   scope: ResolvedCustomerScope,
+  actor: AuthContext,
 ): Promise<ServiceRequestDetailDto> {
-  const request = await ServiceRequest.findOne({
+  const filter: FilterQuery<IServiceRequest> = {
     _id: new Types.ObjectId(requestId),
     ...customerScopeFilter(scope),
-  }).populate([...LOCATION_POPULATE]);
+  };
+
+  // Skipped for a CUSTOMER scope for the same reason the list skips it: a portal account
+  // has no employee card, and tenancy is already its boundary.
+  if (scope.mode === 'STAFF') {
+    const assignmentFilter = await resolveAssignedWorkFilter<IServiceRequest>(actor, {
+      includeUnclaimed: true,
+    });
+    if (assignmentFilter) filter.$and = [assignmentFilter];
+  }
+
+  const request = await ServiceRequest.findOne(filter).populate([...LOCATION_POPULATE]);
   if (!request) {
     throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Хүсэлт олдсонгүй.');
   }
@@ -559,7 +670,7 @@ export async function assignServiceRequest(
     excludeUserId: actor.userId,
   });
 
-  return getServiceRequestById(requestId, scope);
+  return getServiceRequestById(requestId, scope, actor);
 }
 
 export async function changeServiceRequestStatus(
@@ -573,6 +684,21 @@ export async function changeServiceRequestStatus(
 
   const from: ServiceRequestStatus = request.status;
   const to = input.status;
+
+  /*
+   * WHO the caller is allowed to be, before WHAT they are allowed to do.
+   *
+   * The route admits two populations: `service_request.change_status`, which is the office
+   * and is unchanged, and `service_request.self_progress`, which is the field and is bounded
+   * to the six states in `SELF_PROGRESS_STATUSES` on a request that names the caller or
+   * their team. `assertSelfProgressAllowed` returns immediately for the first population, so
+   * nothing here narrows an existing holder.
+   *
+   * Run BEFORE the transition matrix so that "you may not make this kind of move" is 403 and
+   * "this move is not possible from here" is 400, rather than the second answer masking the
+   * first for a caller who never had the authority in the first place.
+   */
+  await assertSelfProgressAllowed(request._id, to, actor);
 
   if (!canTransition(from, to)) {
     throw AppError.badRequest(
@@ -655,7 +781,7 @@ export async function changeServiceRequestStatus(
     excludeUserId: actor.userId,
   });
 
-  return getServiceRequestById(requestId, scope);
+  return getServiceRequestById(requestId, scope, actor);
 }
 
 export async function extendSla(
@@ -689,7 +815,7 @@ export async function extendSla(
     newValue: { slaDueAt: request.slaDueAt.toISOString() },
   });
 
-  return getServiceRequestById(requestId, scope);
+  return getServiceRequestById(requestId, scope, actor);
 }
 
 /**
@@ -707,16 +833,27 @@ export async function getDispatchBoard(
   const scopeFilter = customerScopeFilter(scope);
 
   const columns = await Promise.all(
-    DISPATCH_BOARD_COLUMNS.map(async (status) => {
+    // A column may cover more than one status — the open column covers NEW and
+    // UNASSIGNED — so both the page and the count match on the whole set.
+    DISPATCH_BOARD_COLUMNS.map(async (column) => {
+      const statuses = [...column.statuses];
+      const filter = { status: { $in: statuses }, ...scopeFilter };
+
       const [rows, total] = await Promise.all([
-        ServiceRequest.find({ status, ...scopeFilter })
+        ServiceRequest.find(filter)
           .populate([...LOCATION_POPULATE])
           .sort({ isUrgent: -1, slaDueAt: 1 })
           .limit(limitPerColumn),
-        ServiceRequest.countDocuments({ status, ...scopeFilter }),
+        ServiceRequest.countDocuments(filter),
       ]);
 
-      return { status, total, items: rows.map((row) => toListItemDto(row, slaConfig)) };
+      return {
+        id: column.id,
+        statuses,
+        label: column.label,
+        total,
+        items: rows.map((row) => toListItemDto(row, slaConfig)),
+      };
     }),
   );
 

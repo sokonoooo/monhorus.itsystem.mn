@@ -216,6 +216,22 @@ export default function App(): ReactElement {
               </Page>
             }
           />
+          {/*
+            Registration without walking down to a floor first.
+
+            `floorId` has always been optional on the create endpoint and the service simply
+            skips the floor when it is absent, so this route exposes what the API already
+            allowed: the customer is chosen on the form and the floor is an optional field.
+            The floor-anchored route above is unchanged and remains the way in from a floor.
+          */}
+          <Route
+            path="/objects/new"
+            element={
+              <Page anyOf={[PERMISSIONS.OBJECT_MASTER_MANAGE]}>
+                <ObjectFormPage />
+              </Page>
+            }
+          />
           <Route
             path="/floors/:floorId/objects/:objectId"
             element={

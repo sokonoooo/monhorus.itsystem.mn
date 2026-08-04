@@ -66,8 +66,33 @@ export interface PlannedWorkTaskDto {
   assignedEmployeeName: string | null;
   /** Equipment this sub-task covers; its result lands on each of them on approval. */
   relatedObjects: readonly NamedRefDto[];
-  /** The performer's Тайлбар. Дүгнэлт exists only on the consolidated report. */
+  /** The performer's Тайлбар — the observation each related object's ReportItem carries. */
   note: string | null;
+  /**
+   * The performer's Дүгнэлт. Copied onto the ReportItem of every related object, which is
+   * what fills the Дүгнэлт column of Үзлэг ба дүгнэлт for a planned-work row. The
+   * consolidated report keeps its own, separate conclusion.
+   */
+  conclusion: string | null;
+  /**
+   * Who wrote the `conclusion` above, and when.
+   *
+   * Stamped only when the Дүгнэлт TEXT changes, never on an unrelated progress write. Any
+   * team member may record progress on any sub-task and each write overwrites the last, so
+   * stamping on every write would credit the verdict to whoever last nudged the quantity.
+   */
+  conclusionById: string | null;
+  conclusionByName: string | null;
+  conclusionAt: string | null;
+  /**
+   * Wall-clock minutes from the first reported start to the instant the quantity was
+   * completed. Null while the sub-task is unfinished, and null for a skipped one.
+   *
+   * The clock stops at QUANTITY completion, not at DONE: DONE additionally needs the five
+   * evidence items, so a job finished on Monday and photographed on Wednesday must not
+   * read as two days. Paused time is not netted out — nothing in this system is.
+   */
+  durationMinutes: number | null;
   /** 0-100 evaluation the performer records when finishing the sub-task. */
   score: number | null;
   /** Backend-derived band for `score` against the thresholds in Тохиргоо. */
@@ -262,6 +287,15 @@ export interface PlannedWorkListQuery {
   reportStatus?: PlannedWorkReportStatus;
   from?: string;
   to?: string;
+  /**
+   * Includes ARCHIVED records, which the endpoint otherwise omits.
+   *
+   * The flag has always existed on the request schema; it was missing from this type,
+   * so no client could ask for archived work without casting. A work is archived the
+   * moment its report is approved, which made finished work unreachable from any list
+   * that only knew about this interface.
+   */
+  includeArchived?: boolean;
   sortBy?: 'plannedStartDate' | 'plannedEndDate' | 'workNumber' | 'createdAt';
   sortDir?: 'asc' | 'desc';
 }

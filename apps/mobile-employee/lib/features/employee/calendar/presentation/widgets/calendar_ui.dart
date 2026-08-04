@@ -83,26 +83,22 @@ class PanelCard extends StatelessWidget {
 }
 
 /// `.tab-row` — segmented chips; the selected one is filled ink.
+///
+/// Every segment is live. There used to be a per-segment `enabled` list, for the
+/// `Миний` chip that had to stay greyed until an employee id resolved; that control
+/// is gone — `GET /calendar` scopes itself to the reader now — and with it the only
+/// caller that ever passed the list.
 class SegmentedRow extends StatelessWidget {
   const SegmentedRow({
     super.key,
     required this.labels,
     required this.selectedIndex,
     required this.onSelected,
-    this.enabled = const <bool>[],
   });
 
   final List<String> labels;
   final int selectedIndex;
   final ValueChanged<int> onSelected;
-
-  /// Per-segment enablement. Empty means every segment is enabled. A disabled chip
-  /// is rendered greyed rather than hidden, so the control does not change shape
-  /// when an identity resolves a moment after the tab opens.
-  final List<bool> enabled;
-
-  bool _isEnabled(int index) =>
-      enabled.isEmpty || (index < enabled.length && enabled[index]);
 
   @override
   Widget build(BuildContext context) {
@@ -121,7 +117,6 @@ class SegmentedRow extends StatelessWidget {
               child: _Segment(
                 label: labels[i],
                 selected: i == selectedIndex,
-                enabled: _isEnabled(i),
                 onTap: () => onSelected(i),
               ),
             ),
@@ -136,29 +131,25 @@ class _Segment extends StatelessWidget {
   const _Segment({
     required this.label,
     required this.selected,
-    required this.enabled,
     required this.onTap,
   });
 
   final String label;
   final bool selected;
-  final bool enabled;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    final Color background = selected
-        ? (enabled ? EmployeeTokens.ink : EmployeeTokens.line)
-        : EmployeeTokens.white;
-    final Color foreground = selected
-        ? EmployeeTokens.white
-        : (enabled ? EmployeeTokens.muted : EmployeeTokens.line);
+    final Color background =
+        selected ? EmployeeTokens.ink : EmployeeTokens.white;
+    final Color foreground =
+        selected ? EmployeeTokens.white : EmployeeTokens.muted;
 
     return Material(
       color: background,
       borderRadius: BorderRadius.circular(EmployeeTokens.radiusInput),
       child: InkWell(
-        onTap: enabled ? onTap : null,
+        onTap: onTap,
         borderRadius: BorderRadius.circular(EmployeeTokens.radiusInput),
         child: Container(
           alignment: Alignment.center,
@@ -166,9 +157,7 @@ class _Segment extends StatelessWidget {
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(EmployeeTokens.radiusInput),
             border: Border.all(
-              color: selected
-                  ? background
-                  : (enabled ? EmployeeTokens.line : EmployeeTokens.faint),
+              color: selected ? background : EmployeeTokens.line,
               width: EmployeeTokens.hairline,
             ),
           ),

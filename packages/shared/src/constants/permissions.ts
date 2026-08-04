@@ -51,6 +51,61 @@ export const PERMISSIONS = {
   SERVICE_REQUEST_CHANGE_STATUS: 'service_request.change_status',
   SERVICE_REQUEST_CANCEL: 'service_request.cancel',
 
+  /**
+   * Moving a request through the states only the person standing at the site can
+   * truthfully report: ACCEPTED, ON_THE_WAY, ON_SITE, IN_PROGRESS, WAITING and
+   * REPORT_SUBMITTED. See `SELF_PROGRESS_STATUSES` in `constants/service-request.ts`,
+   * which is the authoritative list and the one the backend enforces.
+   *
+   * A SEPARATE KEY BECAUSE `service_request.change_status` COULD NOT BE GRANTED. That key
+   * is the office's whole authority over a request — it also gates cancelling, returning,
+   * un-assigning, verifying and completing, AND it gates `report/approve` and
+   * `report/return`. Handing it to a technician so that they could say "I have arrived"
+   * would also let them close their own job and return a colleague's write-up. So the
+   * field half is named on its own.
+   *
+   * IT NEVER WIDENS THE LEGAL GRAPH. `SERVICE_REQUEST_TRANSITIONS` remains the only
+   * authority on which move is possible at all; this key authorises a SUBSET of that
+   * graph and can add nothing to it. The `reason` requirement on WAITING is likewise
+   * untouched — a paused job still has to say why.
+   *
+   * ASSIGNMENT-SCOPED, and that is half of what makes it safe. A holder may only progress
+   * a request that names them or their team; the predicate is the same
+   * `resolveAssignedWorkFilter` the detail read uses, minus the unclaimed branch —
+   * taking an open request is `service_request.claim`, a separate deliberate act, and a
+   * request nobody holds must not be driven through its lifecycle by a passer-by.
+   *
+   * DELIBERATELY NOT IN THIS SET: CANCELLED, RETURNED, UNASSIGNED, VERIFICATION,
+   * COMPLETED, REVISIT_REQUIRED. Each is a decision ABOUT the work rather than a report
+   * FROM it — cancelling and un-assigning are planning, returning is a judgement on
+   * somebody's write-up, and verification and completion are the office's sign-off that
+   * rule 17.7 keeps downstream of an approved conclusion.
+   */
+  SERVICE_REQUEST_SELF_PROGRESS: 'service_request.self_progress',
+
+  /**
+   * Approving a work conclusion. Named to mirror `planned_work.approve_report`, which is
+   * the same act in the other module.
+   *
+   * APPROVE ONLY. `report/return` stays on `service_request.change_status` and is not
+   * reachable from here, because returning is a judgement on somebody else's work and
+   * belongs to the office; approving is settling a conclusion that has been submitted.
+   * Assignment-scoped exactly as `service_request.self_progress` is.
+   *
+   * THE TRADE-OFF, ACCEPTED DELIBERATELY AND RECORDED HERE SO IT IS NOT REDISCOVERED AS A
+   * BUG: granted to TECHNICIAN, this means one person can score a conclusion, write it,
+   * submit it and approve it, with nobody else in the loop. That breaks the section 9.2
+   * submit/approve separation for service requests, and the consequence is not only
+   * paperwork — `approveWorkReport` publishes the approved conclusion to the central
+   * report store and on to the equipment it names, so a score in the OUT_OF_SERVICE band
+   * (0–20) decommissions that equipment on one person's say-so. It was chosen anyway,
+   * because a technician who cannot settle their own visit leaves every job parked at
+   * REPORT_SUBMITTED until an office account happens to look. An organisation that wants
+   * the separation back withdraws this one key from the TECHNICIAN role in the access
+   * screen; nothing else has to change.
+   */
+  SERVICE_REQUEST_APPROVE_REPORT: 'service_request.approve_report',
+
   // Planned work (requirements section 7). Rescheduling and cancellation are separate
   // keys because both require an explicit reason and an audit record, and neither may
   // ride along with ordinary editing.
@@ -280,6 +335,8 @@ export const PERMISSION_LABELS: Record<PermissionKey, string> = {
   'service_request.update': 'Үйлчилгээний хүсэлт засах',
   'service_request.change_status': 'Хүсэлтийн төлөв өөрчлөх',
   'service_request.cancel': 'Хүсэлт цуцлах',
+  'service_request.self_progress': 'Өөрийн ажлын явцын төлөв өөрчлөх',
+  'service_request.approve_report': 'Ажлын дүгнэлт батлах',
 
   'planned_work.view': 'Төлөвлөгөөт ажил харах',
   'planned_work.create': 'Төлөвлөгөөт ажил үүсгэх',
@@ -512,7 +569,10 @@ export const SYSTEM_ROLE_DEFAULT_PERMISSIONS: Record<SystemRoleKey, readonly Per
    *     over other people's jobs. This is the whole reason the tier could not simply be
    *     pointed at DISPATCH.
    *   - `service_request.change_status`. A request is opened, triaged and closed by the
-   *     office; the technician writes the work up under `service_request.update`.
+   *     office; the technician writes the work up under `service_request.update`, reports
+   *     their own progress under `service_request.self_progress` and settles the
+   *     conclusion under `service_request.approve_report`. Those two are granted below and
+   *     are strictly narrower — neither can cancel, return, un-assign, verify or complete.
    *   - `planned_work.approve_report` and `planned_work.cancel`. Approving is the other
    *     half of the section 9.2 separation and is defined as MANAGEMENT, ADMIN or
    *     SYSTEM_ADMIN only; cancelling a job is a planning decision, not a field one.
@@ -557,8 +617,22 @@ export const SYSTEM_ROLE_DEFAULT_PERMISSIONS: Record<SystemRoleKey, readonly Per
     // section 4.2 makes part of carrying out the work.
     P.OBJECT_MASTER_VIEW, P.OBJECT_MASTER_ASSESS,
     // `service_request.update` is what the work conclusion is written and submitted
-    // under; approving or returning it needs change_status, which is not granted.
+    // under; RETURNING it still needs change_status, which is not granted.
     P.SERVICE_REQUEST_VIEW, P.SERVICE_REQUEST_UPDATE,
+    /*
+     * Saying where the job has got to, and settling the conclusion it produced.
+     *
+     * Both are assignment-scoped server-side, so neither reaches a colleague's request or
+     * an unclaimed one. `self_progress` covers only the six states a person in the field
+     * can truthfully report and never CANCELLED, RETURNED, UNASSIGNED, VERIFICATION,
+     * COMPLETED or REVISIT_REQUIRED; `approve_report` covers approving and NOT returning.
+     *
+     * `approve_report` is the one grant here that gives up a separation on purpose: with
+     * it, the same person scores, writes, submits and approves a conclusion, and an
+     * approved conclusion moves the equipment's own figures. Read the key's own comment —
+     * the reasoning and the way to reverse it are written down there rather than implied.
+     */
+    P.SERVICE_REQUEST_SELF_PROGRESS, P.SERVICE_REQUEST_APPROVE_REPORT,
     P.PLANNED_WORK_VIEW, P.PLANNED_WORK_RECORD_PROGRESS, P.PLANNED_WORK_SUBMIT_REPORT,
     /**
      * Moves the job itself through its lifecycle: START, PAUSE, RESUME, COMPLETE, PLAN.

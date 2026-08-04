@@ -1,8 +1,8 @@
 import {
   PERMISSIONS,
-  SERVICE_REQUEST_STATUS_LABELS,
   type DispatchBoardDto,
   type ServiceRequestListItemDto,
+  type ServiceRequestStatus,
 } from '@monhorus/shared';
 import { useCallback, useEffect, useState, type ReactElement } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -22,7 +22,9 @@ import { AssignDrawer } from './AssignDrawer';
  * Dispatch board.
  *
  * A card opens the request detail, and offers an assign action when the caller holds
- * dispatch.assign and the column is one where assignment still means something.
+ * dispatch.assign and the request's own status is one where assignment still means
+ * something. Columns come from the server as descriptors, so a column may cover more
+ * than one status and the board never re-derives the grouping itself.
  * Status transitions happen only on the detail page, through the validated backend
  * transition service.
  *
@@ -80,8 +82,16 @@ function RequestCard({
   );
 }
 
-/** Statuses where assignment is still meaningful. */
-const ASSIGNABLE_COLUMNS = new Set([
+/**
+ * Statuses where assignment is still meaningful.
+ *
+ * Keyed off the card's own status, not its column: the open column holds both NEW and
+ * UNASSIGNED, so a column-level test could not say "assignable" for one and not the
+ * other. NEW belongs here — the backend promotes NEW straight to ASSIGNED on assign
+ * (assignServiceRequest), so a NEW card without the button was an unreachable action.
+ */
+const ASSIGNABLE_STATUSES = new Set<ServiceRequestStatus>([
+  'NEW',
   'UNASSIGNED',
   'ASSIGNED',
   'ACCEPTED',
@@ -163,13 +173,13 @@ export function DispatchBoardPage(): ReactElement {
             <div className="flex gap-3 overflow-x-auto pb-3">
               {board.columns.map((column) => (
                 <section
-                  key={column.status}
+                  key={column.id}
                   className="flex w-64 shrink-0 flex-col rounded-xl bg-slate-200/50 p-2"
-                  aria-label={SERVICE_REQUEST_STATUS_LABELS[column.status]}
+                  aria-label={column.label}
                 >
                   <header className="mb-2 flex items-center justify-between gap-2 px-1">
                     <h2 className="truncate text-xs font-semibold text-slate-700">
-                      {SERVICE_REQUEST_STATUS_LABELS[column.status]}
+                      {column.label}
                     </h2>
                     <span className="shrink-0 rounded-full bg-white px-1.5 py-0.5 text-[11px] font-medium text-slate-600">
                       {column.total}
@@ -189,7 +199,7 @@ export function DispatchBoardPage(): ReactElement {
                           onOpen={() => navigate(`/service-requests/${item.id}`)}
                           onAssign={
                             can(PERMISSIONS.DISPATCH_ASSIGN) &&
-                            ASSIGNABLE_COLUMNS.has(column.status)
+                            ASSIGNABLE_STATUSES.has(item.status)
                               ? () => setAssignTarget(item)
                               : null
                           }

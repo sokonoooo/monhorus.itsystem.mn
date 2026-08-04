@@ -11,6 +11,7 @@ import '../theme/customer_tokens.dart';
 import '../widgets/authenticated_image.dart';
 import '../widgets/customer_async_view.dart';
 import '../widgets/customer_ui.dart';
+import '../widgets/floor_plan_markers.dart';
 import '../widgets/risk_widgets.dart';
 import 'customer_shell_screen.dart';
 import 'device_detail_screen.dart';
@@ -104,11 +105,12 @@ class _FloorDetailScreenState extends ConsumerState<FloorDetailScreen> {
 
 /// The "Зураглал" tab.
 ///
-/// The prototype pins a coloured dot on each device at an x/y position. The API
-/// carries no coordinate for an object - `ObjectListItemDto` has a floor, not a
-/// point on it - so no dots are placed. What the floor plan endpoint does provide is
-/// the uploaded plan image, which is shown here, alongside the floor's per-band
-/// counts and the objects that need attention first.
+/// The plan image with a coloured dot on every object that carries a `planPosition` -
+/// the normalised x/y an administrator placed on the admin web - alongside the floor's
+/// per-band counts and the objects that need attention first.
+///
+/// The dots are read-only here. Placing and moving them needs `object_master.manage`,
+/// which no customer role holds.
 class _PlanTab extends ConsumerWidget {
   const _PlanTab({required this.floor});
 
@@ -152,7 +154,6 @@ class _PlanTab extends ConsumerWidget {
             ],
           ),
         ),
-        const RiskLegend(),
 
         const SectionCaption('Давхрын план'),
         CustomerAsyncView<FloorPlanModel?>(
@@ -172,22 +173,55 @@ class _PlanTab extends ConsumerWidget {
                     'боломжгүй байна.',
               );
             }
+            // The plan renders whether or not the object list has landed: a marker
+            // layer is worth waiting a beat for, a picture is not.
+            final List<ObjectListItemModel> onPlan =
+                planMarkersOf(objects.valueOrNull ?? const <ObjectListItemModel>[]);
+            final int unplaced =
+                unplacedOnPlanCount(objects.valueOrNull ?? const <ObjectListItemModel>[]);
+
             return PanelCard(
               padding: EdgeInsets.zero,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 mainAxisSize: MainAxisSize.min,
                 children: <Widget>[
-                  AuthenticatedImage(fileId: data.fileId, height: 210),
+                  AuthenticatedImage.sizedToImage(
+                    fileId: data.fileId,
+                    overlay: FloorPlanMarkerLayer(
+                      objects: onPlan,
+                      onTap: (ObjectListItemModel object) =>
+                          Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => DeviceDetailScreen(objectId: object.id),
+                        ),
+                      ),
+                    ),
+                  ),
                   Padding(
                     padding: const EdgeInsets.all(12),
-                    child: Text(
-                      <String>[
-                        data.title ?? data.fileName,
-                        if (data.uploadedByName != null) data.uploadedByName!,
-                        formatDate(data.uploadedAt),
-                      ].join(' · '),
-                      style: CustomerTokens.rowSub,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: <Widget>[
+                        Text(
+                          <String>[
+                            data.title ?? data.fileName,
+                            if (data.uploadedByName != null) data.uploadedByName!,
+                            formatDate(data.uploadedAt),
+                          ].join(' · '),
+                          style: CustomerTokens.rowSub,
+                        ),
+                        if (unplaced > 0) ...<Widget>[
+                          const SizedBox(height: 4),
+                          // Said out loud, as the web says it: a plan with fewer dots
+                          // than the floor has objects is otherwise read as a fault.
+                          Text(
+                            'Планд байрлуулаагүй $unplaced объект байна.',
+                            style: CustomerTokens.rowSub,
+                          ),
+                        ],
+                      ],
                     ),
                   ),
                 ],
@@ -322,8 +356,8 @@ class _HistoryTab extends ConsumerWidget {
             );
           },
         ),
-        const Padding(
-          padding: EdgeInsets.fromLTRB(
+        Padding(
+          padding: const EdgeInsets.fromLTRB(
             CustomerTokens.labelGutter,
             8,
             CustomerTokens.labelGutter,

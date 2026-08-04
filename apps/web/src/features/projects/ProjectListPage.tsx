@@ -45,6 +45,7 @@ export function ProjectListPage(): ReactElement {
   const [searchParams, setSearchParams] = useSearchParams();
 
   const canManage = can(PERMISSIONS.OBJECT_MANAGE);
+  const canRegisterObjects = can(PERMISSIONS.OBJECT_MASTER_MANAGE);
 
   const query = useMemo<ProjectListQuery>(() => {
     const page = Number.parseInt(searchParams.get('page') ?? '1', 10);
@@ -174,7 +175,21 @@ export function ProjectListPage(): ReactElement {
       <PageHeader
         title="Төсөл"
         breadcrumbs={[{ label: 'Нүүр', to: '/dashboard' }, { label: 'Төсөл' }]}
-        actions={canManage && <Button onClick={() => navigate('/projects/new')}>Шинэ төсөл</Button>}
+        actions={
+          <>
+            {/*
+              Registering equipment used to mean walking project → building → floor → plan
+              before the form was even reachable. The API never required a floor, so the
+              short way in sits here, next to the module it belongs to.
+            */}
+            {canRegisterObjects && (
+              <Button variant="secondary" onClick={() => navigate('/objects/new')}>
+                Тоноглол бүртгэх
+              </Button>
+            )}
+            {canManage && <Button onClick={() => navigate('/projects/new')}>Шинэ төсөл</Button>}
+          </>
+        }
       />
 
       <div className={FILTER_BAR}>

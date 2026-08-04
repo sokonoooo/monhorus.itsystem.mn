@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import '../../../../../core/media/photo_capture.dart';
 import '../../../../../core/network/api_result.dart';
 import '../../../shared/service_request_models.dart';
+import '../../../shared/service_request_vocabulary.dart';
 import '../../data/models/inspection_report_model.dart';
 import '../../data/models/planned_work_model.dart';
 import '../../data/models/task_material_model.dart';
@@ -41,8 +42,40 @@ abstract class WorkRepository {
   Future<ApiResult<PaginatedData<ServiceRequestListItemModel>>>
       listOpenServiceRequests();
 
+  /// `GET /service-requests` with no filter at all, which is the server's answer to
+  /// "the work this caller may see": their own, their team's, and the unclaimed pool.
+  ///
+  /// The third of those is why the result is not a "my requests" list on its own — the
+  /// read includes the open queue by design, so the caller subtracts it with
+  /// [ServiceRequestListItemModel.isUnclaimed].
+  Future<ApiResult<PaginatedData<ServiceRequestListItemModel>>>
+      listAssignedServiceRequests();
+
   /// Claims one open request for the signed-in employee.
   Future<ApiResult<void>> claimServiceRequest(String requestId);
+
+  /// One request in full — the only read that carries the fault description, the site
+  /// contact and the attachments.
+  ///
+  /// `Success(null)` means the route answered 404: the request is not the caller's, not
+  /// their team's and not unclaimed, so as far as this account is concerned it does not
+  /// exist. That is a state a screen shows, not a failure it apologises for, which is
+  /// why it is not a [Failure].
+  Future<ApiResult<ServiceRequestDetailModel?>> getServiceRequestDetail(
+    String requestId,
+  );
+
+  /// Moves the request to [status], returning the re-read record.
+  ///
+  /// Bounded server-side twice over for a field caller: to the six states
+  /// `service_request.self_progress` names, and to a request assigned to them or their
+  /// team. Neither bound is re-implemented here — the app only decides which control to
+  /// draw, and the server decides whether the move happens.
+  Future<ApiResult<ServiceRequestDetailModel>> changeServiceRequestStatus({
+    required String requestId,
+    required ServiceRequestStatus status,
+    String? reason,
+  });
 
   // -- Service-request conclusion --------------------------------------------
 
@@ -57,31 +90,17 @@ abstract class WorkRepository {
 
   Future<ApiResult<WorkReportModel>> submitWorkReport(String requestId);
 
+  /// Approves a submitted conclusion, on `service_request.approve_report`.
+  ///
+  /// There is no `returnWorkReport`, deliberately: returning stays office-only on
+  /// `service_request.change_status`.
+  Future<ApiResult<WorkReportModel>> approveWorkReport(String requestId);
+
   Future<ApiResult<WorkReportPhotoModel>> uploadWorkReportPhoto(CapturedPhoto photo);
 
-  // -- Sub-task materials ----------------------------------------------------
+  // -- Material catalogue ----------------------------------------------------
 
   Future<ApiResult<PaginatedData<MaterialItemModel>>> listMaterialItems();
-
-  Future<ApiResult<List<TaskMaterialUsageModel>>> listTaskMaterials({
-    required String plannedWorkId,
-    required String taskId,
-  });
-
-  Future<ApiResult<TaskMaterialUsageModel>> addTaskMaterial({
-    required String plannedWorkId,
-    required String taskId,
-    required String materialItemId,
-    required double quantity,
-    required MaterialUnit unit,
-    String? note,
-  });
-
-  Future<ApiResult<void>> removeTaskMaterial({
-    required String plannedWorkId,
-    required String taskId,
-    required String usageId,
-  });
 
   Future<ApiResult<PlannedWorkModel>> getPlannedWork(String plannedWorkId);
 

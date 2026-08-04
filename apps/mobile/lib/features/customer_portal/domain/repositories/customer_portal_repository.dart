@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import '../../../../core/media/photo_capture.dart';
 import '../../../../core/network/api_result.dart';
 import '../../../../core/network/paginated_data.dart';
 import '../../data/models/notification_model.dart';
@@ -52,6 +53,17 @@ abstract interface class CustomerPortalRepository {
   });
 
   Future<ApiResult<ServiceRequestDetailModel>> getServiceRequest(String requestId);
+
+  /// Uploads one picture and returns the attachment the create call must name.
+  ///
+  /// Takes no scope for the same reason the endpoint asks for none: nothing about the
+  /// upload names an organisation. The server parks the file on the calling account
+  /// and only [createServiceRequest] — which IS scoped — decides whose request claims
+  /// it, so the "at whose records" question is asked exactly once, where it has an
+  /// answer.
+  Future<ApiResult<ServiceRequestAttachmentModel>> uploadServiceRequestAttachment(
+    CapturedPhoto photo,
+  );
 
   Future<ApiResult<ServiceRequestDetailModel>> createServiceRequest(
     CreateServiceRequestRequestModel request,

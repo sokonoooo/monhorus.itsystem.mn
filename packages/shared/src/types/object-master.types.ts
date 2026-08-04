@@ -6,12 +6,33 @@ import type {
   ObjectIcon,
   ObjectStatus,
 } from '../constants/object-master';
+import type {
+  LoadMeasurementKind,
+  LoadMeasurementPhase,
+  LoadMeasurementUnit,
+} from '../constants/load-measurement';
 
 /** A load figure plus why it could not be produced (rule 17.18). */
 export interface LoadValueDto {
   valueKw: number | null;
   complete: boolean;
   reasons: readonly LoadIncompleteReason[];
+}
+
+/**
+ * One reading taken during a visit, in the unit it was read in.
+ *
+ * A recorded observation, never an input to a total: only `measuredLoadKw` is summed. The
+ * unit travels with the value rather than being inferred from the kind at read time, so a
+ * stored row states in full what it is; the write path checks the pair against
+ * `LOAD_MEASUREMENT_KIND_UNIT` so the two can never disagree.
+ */
+export interface LoadMeasurementDto {
+  kind: LoadMeasurementKind;
+  value: number;
+  unit: LoadMeasurementUnit;
+  /** Null for a reading that is not phase-specific: single-phase, or a total. */
+  phase: LoadMeasurementPhase | null;
 }
 
 // -- Section 4.1 type registry ----------------------------------------------
@@ -106,17 +127,44 @@ export interface LatestAssessmentDto {
   revisitDate: string | null;
 }
 
+/**
+ * Where the object sits on its floor plan, as a fraction of the plan's width and height.
+ *
+ * Normalised rather than pixel-based so the placement survives a plan image being replaced
+ * at a different resolution or in a different format.
+ */
+export interface PlanPositionDto {
+  x: number;
+  y: number;
+}
+
 export interface ObjectListItemDto {
   id: string;
   code: string;
   name: string;
   category: ObjectCategory;
-  objectType: { id: string; code: string; name: string; icon: ObjectIcon } | null;
+  /**
+   * The registry entry, inlined.
+   *
+   * `showOnPlan` rides along because it is what decides whether an object may be drawn
+   * as a marker on its floor plan, and every client that draws markers already holds
+   * this list. Without it a client would have to fetch the whole type registry — which
+   * `object_master.view` alone does not always reach — just to answer a yes/no per row.
+   */
+  objectType: {
+    id: string;
+    code: string;
+    name: string;
+    icon: ObjectIcon;
+    showOnPlan: boolean;
+  } | null;
   customerId: string;
   customerName: string | null;
   floorId: string | null;
   floorName: string | null;
   buildingName: string | null;
+  /** Null when the object has never been placed on the floor's plan. */
+  planPosition: PlanPositionDto | null;
   status: ObjectStatus;
   latestAssessment: LatestAssessmentDto | null;
   /** Backend-computed per section 11.5. Null when the inputs are incomplete. */
@@ -171,8 +219,20 @@ export interface ObjectAssessmentDto {
   previousScore: number | null;
   newScore: number;
   riskLevel: RiskLevel;
+  /**
+   * Who SIGNED THE FINDING OFF: the approver of the report it arrived on, or the person
+   * who recorded it by hand. Not necessarily the person who wrote the conclusion below.
+   */
   assessedById: string | null;
   assessedByName: string | null;
+  /**
+   * Who WROTE THE JUDGEMENT — the technician whose Дүгнэлт this row carries, where the
+   * producer recorded an author per piece of equipment (today: a planned-work sub-task).
+   * Null means none was recorded, not that `assessedBy` wrote it; a screen showing one
+   * name falls back to `assessedByName` and labels which of the two it is showing.
+   */
+  judgedById: string | null;
+  judgedByName: string | null;
   assessedAt: string;
   /**
    * Evidence attached to this assessment, in the same shape as the object's own photos.
@@ -184,6 +244,16 @@ export interface ObjectAssessmentDto {
   recommendation: string | null;
   actionTaken: string | null;
   measuredLoadKw: number | null;
+  /**
+   * Everything else the visit read: amps per phase, volts, and the kW figure when one was
+   * given. Empty for every assessment recorded before readings could be logged, and for
+   * every one where only the kW box was filled in — the field is additive and its absence
+   * means "nothing extra was read", never "not applicable".
+   *
+   * An ACTIVE_POWER entry here always equals `measuredLoadKw`; the write path refuses a
+   * pair that disagrees rather than picking a winner.
+   */
+  measurements: readonly LoadMeasurementDto[];
   repairRequired: boolean;
   revisitRequired: boolean;
   revisitDate: string | null;

@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:dio/dio.dart';
 
 import '../../../../core/error/exceptions.dart';
+import '../../../../core/media/photo_capture.dart';
 import '../../../../core/network/dio_client.dart';
 import '../../../../core/network/paginated_data.dart';
 import '../../domain/entities/customer_scope.dart';
@@ -251,6 +252,34 @@ class CustomerPortalRemoteDataSource {
       method: 'GET',
       decoder: (Object? json) =>
           ServiceRequestDetailModel.fromJson(json! as Map<String, dynamic>),
+    );
+  }
+
+  /// POST /files/service-request-attachments — multipart, needs
+  /// `portal.service_request.create` (or the staff `service_request.create`).
+  ///
+  /// Step one of two, the same shape the employee app uses for assessment evidence:
+  /// the request does not exist yet, so the picture has nothing to belong to. The
+  /// server parks the file on the uploading ACCOUNT and [createServiceRequest] claims
+  /// it, which is also why an upload that is never followed by a submit leaves an
+  /// orphan row nobody can read — including the uploader.
+  ///
+  /// The returned id is only useful to this account: the create route refuses an
+  /// `attachmentIds` entry somebody else uploaded, so a leaked id buys nothing.
+  Future<ServiceRequestAttachmentModel> uploadServiceRequestAttachment(
+    CapturedPhoto photo,
+  ) {
+    return _client.upload<ServiceRequestAttachmentModel>(
+      path: '/files/service-request-attachments',
+      body: () => FormData.fromMap(<String, dynamic>{
+        'file': MultipartFile.fromBytes(
+          photo.bytes,
+          filename: photo.filename,
+          contentType: DioMediaType.parse(photo.mimeType),
+        ),
+      }),
+      decoder: (Object? json) =>
+          ServiceRequestAttachmentModel.fromJson(json! as Map<String, dynamic>),
     );
   }
 

@@ -3,6 +3,7 @@ import type { ReactElement, ReactNode } from 'react';
 
 import { Button } from '../../../components/ui/Button';
 import { Drawer } from '../../../components/ui/Drawer';
+import { LoadMeasurementList } from './LoadMeasurements';
 import { ScoreBar } from './ObjectBadges';
 
 interface AssessmentDetailDrawerProps {
@@ -75,9 +76,18 @@ export function AssessmentDetailDrawer({
             </div>
 
             <dl className="grid grid-cols-2 gap-3">
+              {/* The person who wrote the verdict, where one was recorded per piece of
+                  equipment. "Бүртгэгдээгүй" rather than the approver's name: this row is
+                  not a claim that nobody judged it, only that no author was captured, and
+                  the sign-off below is the name to read in that case. */}
+              <DetailRow label="Дүгнэлт бичсэн">
+                {assessment.judgedByName ?? 'Бүртгэгдээгүй'}
+              </DetailRow>
               {/* A null name is a legacy row: the user record behind it was never
                   denormalised, and saying so is honest where a dash reads as a bug. */}
-              <DetailRow label="Үнэлсэн">{assessment.assessedByName ?? 'Тодорхойгүй'}</DetailRow>
+              <DetailRow label="Баталгаажуулсан">
+                {assessment.assessedByName ?? 'Тодорхойгүй'}
+              </DetailRow>
               <DetailRow label="Үнэлсэн огноо">{formatDateTime(assessment.assessedAt)}</DetailRow>
             </dl>
           </div>
@@ -87,6 +97,15 @@ export function AssessmentDetailDrawer({
             <DetailRow label="Зөвлөмж">{assessment.recommendation ?? '-'}</DetailRow>
             <DetailRow label="Арга хэмжээ">{assessment.actionTaken ?? '-'}</DetailRow>
           </dl>
+
+          {/* Read next to the kW figure, not merged with it: only the kW figure is what
+              any total adds up, and the amps are what explain it. */}
+          {assessment.measurements.length > 0 && (
+            <div className="border-t border-slate-200 pt-4">
+              <h3 className="mb-1.5 text-xs text-slate-500">Хэмжилтүүд</h3>
+              <LoadMeasurementList measurements={assessment.measurements} />
+            </div>
+          )}
 
           <dl className="grid grid-cols-2 gap-3 border-t border-slate-200 pt-4">
             <DetailRow label="Хэмжсэн ачаалал">

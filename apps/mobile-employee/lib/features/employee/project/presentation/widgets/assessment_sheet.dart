@@ -6,6 +6,7 @@ import '../../../../../core/error/failure.dart';
 import '../../../../../core/media/photo_capture.dart';
 import '../../../../../core/network/api_result.dart';
 import '../../../presentation/theme/employee_tokens.dart';
+import '../../domain/entities/object_enums.dart';
 import '../../domain/entities/risk_level.dart';
 import '../../../presentation/widgets/employee_ui.dart';
 import '../../../presentation/widgets/photo_source_sheet.dart';
@@ -79,6 +80,12 @@ class _AssessmentSheetState extends ConsumerState<_AssessmentSheet> {
   late final TextEditingController _actionTaken;
   late final TextEditingController _measuredLoad;
 
+  /// The repeatable load readings, in the order they were added.
+  ///
+  /// Each row owns a controller, so adding and removing rows is adding and removing
+  /// controllers — hence the explicit dispose on removal as well as on teardown.
+  final List<_MeasurementRow> _measurements = <_MeasurementRow>[];
+
   /// Files that are already on the server, in upload order.
   final List<ObjectPhotoModel> _photos = <ObjectPhotoModel>[];
 
@@ -113,7 +120,46 @@ class _AssessmentSheetState extends ConsumerState<_AssessmentSheet> {
     _recommendation.dispose();
     _actionTaken.dispose();
     _measuredLoad.dispose();
+    for (final _MeasurementRow row in _measurements) {
+      row.value.dispose();
+    }
     super.dispose();
+  }
+
+  /// `MAX_LOAD_MEASUREMENTS` in packages/shared/src/constants/load-measurement.ts.
+  static const int _maxMeasurements = 12;
+
+  /// Adds a row that does not collide with one already on the form.
+  ///
+  /// The backend refuses two readings of the same kind on the same phase, so a blind
+  /// default would hand the technician a refusal for a button press. Phase-less first
+  /// (the single-phase case), then L1, L2, L3, N — which is what filling in a
+  /// three-phase panel actually looks like.
+  void _addMeasurement() {
+    final Set<String?> taken = _measurements
+        .where((_MeasurementRow row) => row.kind == LoadMeasurementKind.current)
+        .map((_MeasurementRow row) => row.phase?.wireValue)
+        .toSet();
+
+    final LoadMeasurementPhase? free = <LoadMeasurementPhase?>[
+      null,
+      ...LoadMeasurementPhase.values,
+    ].firstWhere(
+      (LoadMeasurementPhase? phase) => !taken.contains(phase?.wireValue),
+      orElse: () => null,
+    );
+
+    setState(() {
+      _measurements.add(
+        _MeasurementRow(kind: LoadMeasurementKind.current, phase: free),
+      );
+    });
+  }
+
+  void _removeMeasurement(int index) {
+    setState(() {
+      _measurements.removeAt(index).value.dispose();
+    });
   }
 
   bool get _busy => _uploading || _saving;
@@ -192,6 +238,29 @@ class _AssessmentSheetState extends ConsumerState<_AssessmentSheet> {
       }
     }
 
+    // Each reading is parsed and reported against its own row, so a bad number names
+    // the line it is on rather than failing the form as a whole.
+    final List<LoadMeasurementModel> measurements = <LoadMeasurementModel>[];
+    for (int index = 0; index < _measurements.length; index++) {
+      final _MeasurementRow row = _measurements[index];
+      final String raw = row.value.text.trim().replaceAll(',', '.');
+      final double? parsed = raw.isEmpty ? null : double.tryParse(raw);
+      if (parsed == null || parsed < 0) {
+        issues['measurements.$index.value'] = 'Хэмжсэн утга эерэг тоо байна.';
+        continue;
+      }
+      measurements.add(
+        LoadMeasurementModel(
+          kind: row.kind,
+          value: parsed,
+          // The unit is never chosen by hand: there is exactly one per kind, and
+          // `toJson` fills it in from the kind so the pair cannot be sent disagreeing.
+          unit: row.kind.unit,
+          phase: row.kind.acceptsPhase ? row.phase : null,
+        ),
+      );
+    }
+
     if (_photos.isEmpty) {
       issues['photoIds'] = 'Дор хаяж нэг нотлох зураг хавсаргана уу.';
     }
@@ -221,6 +290,7 @@ class _AssessmentSheetState extends ConsumerState<_AssessmentSheet> {
                 recommendation: _recommendation.text.trim(),
                 actionTaken: _actionTaken.text.trim(),
                 measuredLoadKw: measuredLoadKw,
+                measurements: measurements,
                 repairRequired: _repairRequired,
               ),
             );
@@ -289,7 +359,7 @@ class _AssessmentSheetState extends ConsumerState<_AssessmentSheet> {
                 shrinkWrap: true,
                 padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
                 children: <Widget>[
-                  const Text(
+                  Text(
                     'Дүгнэлт тайлан бичих',
                     style: EmployeeTokens.screenTitle,
                   ),
@@ -344,8 +414,8 @@ class _AssessmentSheetState extends ConsumerState<_AssessmentSheet> {
                     onAdd: _canAddPhoto ? _addPhoto : null,
                   ),
                   if (_photos.length >= _maxPhotos)
-                    const Padding(
-                      padding: EdgeInsets.only(top: 5),
+                    Padding(
+                      padding: const EdgeInsets.only(top: 5),
                       child: Text(
                         'Нэг үнэлгээнд дээд тал нь 20 зураг хавсаргана.',
                         style: EmployeeTokens.microNote,
@@ -410,6 +480,21 @@ class _AssessmentSheetState extends ConsumerState<_AssessmentSheet> {
                     ),
                   ),
 
+                  // Amps and volts sit beside the kW box, never inside it: only the kW
+                  // figure is summed into a floor total, so a 42 A reading typed into
+                  // that box would become 42 kW of load that was never there.
+                  _MeasurementEditor(
+                    rows: _measurements,
+                    fieldErrors: _fieldErrors,
+                    enabled: !_busy,
+                    onAdd: _measurements.length < _maxMeasurements
+                        ? _addMeasurement
+                        : null,
+                    onRemove: _removeMeasurement,
+                    onChanged: () => setState(() {}),
+                  ),
+                  const SizedBox(height: 14),
+
                   _RepairToggle(
                     value: _repairRequired,
                     onChanged: _busy
@@ -454,6 +539,322 @@ class _AssessmentSheetState extends ConsumerState<_AssessmentSheet> {
               onSave: _submit,
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// One row of the load reading editor while it is being filled in.
+///
+/// Mutable and controller-owning, unlike the immutable `LoadMeasurementModel` it turns
+/// into on submit: a half-typed "23." is a legitimate state of a number box, and
+/// parsing on every keystroke would eat the decimal point.
+class _MeasurementRow {
+  _MeasurementRow({required this.kind, required this.phase});
+
+  LoadMeasurementKind kind;
+  LoadMeasurementPhase? phase;
+  final TextEditingController value = TextEditingController();
+}
+
+/// The repeatable reading editor — "Multiple Load Units".
+///
+/// One line per reading: what was measured, the number, which conductor, and a way to
+/// take the row back off. Compact because the whole sheet is filled in one-handed on a
+/// phone at a panel.
+///
+/// ACTIVE_POWER is deliberately not offered. kW is entered in "Хэмжсэн ачаалал" above,
+/// which is the authoritative figure the floor totals sum; a second kW box on the same
+/// form could produce two different power figures, which the backend would then have to
+/// refuse. A kW reading recorded through another client still displays here.
+class _MeasurementEditor extends StatelessWidget {
+  const _MeasurementEditor({
+    required this.rows,
+    required this.fieldErrors,
+    required this.enabled,
+    required this.onAdd,
+    required this.onRemove,
+    required this.onChanged,
+  });
+
+  final List<_MeasurementRow> rows;
+  final Map<String, String> fieldErrors;
+  final bool enabled;
+  final VoidCallback? onAdd;
+  final void Function(int index) onRemove;
+  final VoidCallback onChanged;
+
+  static final List<LoadMeasurementKind> _addableKinds = LoadMeasurementKind.values
+      .where((LoadMeasurementKind kind) => kind != LoadMeasurementKind.activePower)
+      .toList(growable: false);
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: <Widget>[
+        Row(
+          children: <Widget>[
+            const Expanded(child: _Label('Бусад хэмжилт (А, В)')),
+            _AddMeasurementButton(onPressed: enabled ? onAdd : null),
+          ],
+        ),
+        if (rows.isEmpty)
+          Text(
+            'Гүйдэл, хүчдэл хэмжсэн бол мөр нэмнэ үү. Гурван фазын самбарт фаз тус '
+            'бүрээр нь тусад нь бүртгэнэ.',
+            style: EmployeeTokens.microNote.copyWith(height: 1.5),
+          ),
+        for (int index = 0; index < rows.length; index++)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: _MeasurementRowEditor(
+              // Keyed as well as labelled: the semantics label is what a screen reader
+              // reads, the key is what survives the sheet's list rebuilding a row.
+              key: ValueKey<String>('measurement-row-$index'),
+              index: index,
+              row: rows[index],
+              enabled: enabled,
+              error: fieldErrors['measurements.$index.value'] ??
+                  fieldErrors['measurements.$index.unit'] ??
+                  fieldErrors['measurements.$index.phase'],
+              label: '${index + 1}-р хэмжилт',
+              onRemove: () => onRemove(index),
+              onChanged: onChanged,
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _AddMeasurementButton extends StatelessWidget {
+  const _AddMeasurementButton({required this.onPressed});
+
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final bool active = onPressed != null;
+    return Material(
+      color: EmployeeTokens.white,
+      borderRadius: BorderRadius.circular(EmployeeTokens.radiusInput),
+      child: InkWell(
+        onTap: onPressed,
+        borderRadius: BorderRadius.circular(EmployeeTokens.radiusInput),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          decoration: BoxDecoration(
+            border: Border.all(
+              color: active ? EmployeeTokens.line : EmployeeTokens.faint,
+              width: EmployeeTokens.hairline,
+            ),
+            borderRadius: BorderRadius.circular(EmployeeTokens.radiusInput),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Icon(
+                Icons.add,
+                size: 14,
+                color: active ? EmployeeTokens.ink : EmployeeTokens.muted,
+              ),
+              const SizedBox(width: 5),
+              Text(
+                'Хэмжилт нэмэх',
+                style: EmployeeTokens.rowSub.copyWith(
+                  fontWeight: FontWeight.w700,
+                  color: active ? EmployeeTokens.ink : EmployeeTokens.muted,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _MeasurementRowEditor extends StatelessWidget {
+  const _MeasurementRowEditor({
+    super.key,
+    required this.index,
+    required this.row,
+    required this.enabled,
+    required this.error,
+    required this.label,
+    required this.onRemove,
+    required this.onChanged,
+  });
+
+  final int index;
+  final _MeasurementRow row;
+  final bool enabled;
+  final String? error;
+
+  /// `2-р хэмжилт` — what a screen reader announces this row as.
+  final String label;
+  final VoidCallback onRemove;
+  final VoidCallback onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: <Widget>[
+        Row(
+          children: <Widget>[
+            Expanded(
+              flex: 5,
+              child: _MeasurementDropdown<LoadMeasurementKind>(
+                label: '$label: төрөл',
+                value: row.kind,
+                enabled: enabled,
+                items: <(LoadMeasurementKind, String)>[
+                  for (final LoadMeasurementKind kind
+                      in _MeasurementEditor._addableKinds)
+                    (kind, '${kind.label} (${kind.unit.label})'),
+                ],
+                onChanged: (LoadMeasurementKind? picked) {
+                  if (picked == null) return;
+                  row.kind = picked;
+                  // A kind that carries no phase must not keep the previous one.
+                  if (!picked.acceptsPhase) row.phase = null;
+                  onChanged();
+                },
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              flex: 3,
+              child: Semantics(
+                label: '$label: утга',
+                child: TextField(
+                  key: ValueKey<String>('measurement-value-$index'),
+                  controller: row.value,
+                  enabled: enabled,
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  style: EmployeeTokens.body.copyWith(color: EmployeeTokens.ink),
+                  decoration: InputDecoration(
+                    hintText: '0.0',
+                    hintStyle:
+                        EmployeeTokens.body.copyWith(color: EmployeeTokens.muted),
+                    filled: true,
+                    fillColor: error == null
+                        ? EmployeeTokens.white
+                        : EmployeeTokens.redBg,
+                    isDense: true,
+                    contentPadding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
+                    border: _measurementBorder(error != null),
+                    enabledBorder: _measurementBorder(error != null),
+                    focusedBorder: _measurementBorder(error != null, focused: true),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              flex: 4,
+              child: _MeasurementDropdown<LoadMeasurementPhase?>(
+                label: '$label: фаз',
+                value: row.phase,
+                enabled: enabled && row.kind.acceptsPhase,
+                items: <(LoadMeasurementPhase?, String)>[
+                  (null, 'Фазгүй'),
+                  for (final LoadMeasurementPhase phase
+                      in LoadMeasurementPhase.values)
+                    (phase, phase.wireValue),
+                ],
+                onChanged: (LoadMeasurementPhase? picked) {
+                  row.phase = picked;
+                  onChanged();
+                },
+              ),
+            ),
+            Semantics(
+              label: '$label: хасах',
+              button: true,
+              child: IconButton(
+                key: ValueKey<String>('measurement-remove-$index'),
+                onPressed: enabled ? onRemove : null,
+                icon: const Icon(Icons.close, size: 18),
+                color: EmployeeTokens.red,
+                visualDensity: VisualDensity.compact,
+                tooltip: 'Хасах',
+              ),
+            ),
+          ],
+        ),
+        if (error != null) _ErrorLine(error!),
+      ],
+    );
+  }
+}
+
+OutlineInputBorder _measurementBorder(bool hasError, {bool focused = false}) {
+  return OutlineInputBorder(
+    borderRadius: BorderRadius.circular(EmployeeTokens.radiusInput),
+    borderSide: BorderSide(
+      color: hasError
+          ? EmployeeTokens.red
+          : (focused ? EmployeeTokens.ink : EmployeeTokens.line),
+      width: EmployeeTokens.hairline,
+    ),
+  );
+}
+
+/// The sheet's own dropdown, matching `_SheetField`'s box rather than Material's.
+class _MeasurementDropdown<T> extends StatelessWidget {
+  const _MeasurementDropdown({
+    required this.label,
+    required this.value,
+    required this.items,
+    required this.enabled,
+    required this.onChanged,
+  });
+
+  final String label;
+  final T value;
+  final List<(T, String)> items;
+  final bool enabled;
+  final ValueChanged<T?> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      label: label,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8),
+        decoration: BoxDecoration(
+          color: enabled ? EmployeeTokens.white : EmployeeTokens.soft2,
+          border: Border.all(
+            color: EmployeeTokens.line,
+            width: EmployeeTokens.hairline,
+          ),
+          borderRadius: BorderRadius.circular(EmployeeTokens.radiusInput),
+        ),
+        child: DropdownButtonHideUnderline(
+          child: DropdownButton<T>(
+            value: value,
+            isExpanded: true,
+            isDense: true,
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            iconSize: 18,
+            style: EmployeeTokens.body.copyWith(color: EmployeeTokens.ink),
+            items: <DropdownMenuItem<T>>[
+              for (final (T option, String text) in items)
+                DropdownMenuItem<T>(
+                  value: option,
+                  child: Text(text, overflow: TextOverflow.ellipsis),
+                ),
+            ],
+            onChanged: enabled ? onChanged : null,
+          ),
         ),
       ),
     );
@@ -610,7 +1011,7 @@ class _RepairToggle extends StatelessWidget {
           ),
           child: Row(
             children: <Widget>[
-              const Expanded(
+              Expanded(
                 child: Text(
                   'Засвар шаардлагатай',
                   style: EmployeeTokens.detailValue,
@@ -806,8 +1207,8 @@ class _Footer extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: <Widget>[
           if (!canSave && !busy)
-            const Padding(
-              padding: EdgeInsets.only(bottom: 8),
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
               child: Text(
                 'Зураг хавсаргасны дараа үнэлгээг хадгалах боломжтой болно.',
                 style: EmployeeTokens.microNote,

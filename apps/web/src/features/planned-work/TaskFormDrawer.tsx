@@ -5,6 +5,7 @@ import {
   updatePlannedWorkTaskSchema,
   type DispatchCandidateDto,
   type MaterialUnit,
+  type ObjectListItemDto,
   type ObjectNodeDto,
   type PlannedWorkDto,
   type PlannedWorkTaskDto,
@@ -17,6 +18,7 @@ import { Drawer } from '../../components/ui/Drawer';
 import { useToast } from '../../components/ui/ToastProvider';
 import { FIELD_TEXTAREA, FILTER_LABEL } from '../../components/ui/control-styles';
 import { ApiError } from '../../lib/api-client';
+import { objectMasterService } from '../../services/object-master.service';
 import { objectService } from '../../services/object.service';
 import { plannedWorkService } from '../../services/planned-work.service';
 import { dispatchService } from '../../services/service-request.service';
@@ -32,6 +34,186 @@ interface TaskFormDrawerProps {
 
 function toDateInput(iso: string): string {
   return iso.slice(0, 10);
+}
+
+/** A picked piece of equipment. `code` is absent when the row was hydrated from a saved task. */
+interface EquipmentRow {
+  id: string;
+  name: string;
+  code: string | null;
+}
+
+/**
+ * Page size for the candidate list.
+ *
+ * `objectListQuerySchema` caps `limit` at 100 and the query is validated before the
+ * handler runs, so asking for more is not a larger page — it is a 400 and an empty
+ * picker. Anything above this silently turns the field into a dead control.
+ */
+const EQUIPMENT_PAGE_LIMIT = 100;
+
+/**
+ * The equipment a sub-task covers.
+ *
+ * Scoped exactly the way the backend scopes it: a sub-task that names a floor may only
+ * cover equipment on THAT floor, and one that names none may cover anything in the work's
+ * building. Offering a wider list would only produce a 400 on save.
+ *
+ * Deliberately not `FloorObjectPicker`: that component is a Drawer of its own that LINKS
+ * unlinked objects to a floor and writes through `projectService.linkObjects`. This is a
+ * field inside an existing drawer that selects already-placed equipment and writes nothing
+ * — no part of it could be shared without turning the linker into something else.
+ */
+function TaskEquipmentPicker({
+  buildingId,
+  floorId,
+  rows,
+  disabled,
+  onChange,
+}: {
+  buildingId: string;
+  floorId: string;
+  rows: readonly EquipmentRow[];
+  disabled: boolean;
+  onChange: (next: EquipmentRow[]) => void;
+}): ReactElement {
+  const [candidates, setCandidates] = useState<ObjectListItemDto[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(false);
+  /** The list could not be fetched. Distinct from "fetched, and there is nothing". */
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setFailed(false);
+    objectMasterService
+      .list(
+        floorId
+          ? { floorId, limit: EQUIPMENT_PAGE_LIMIT }
+          : { buildingId, limit: EQUIPMENT_PAGE_LIMIT },
+      )
+      .then((page) => {
+        if (cancelled) return;
+        setCandidates(page.items);
+        setTotal(page.total);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setCandidates([]);
+        setTotal(0);
+        setFailed(true);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [buildingId, floorId]);
+
+  const selected = new Set(rows.map((row) => row.id));
+  const empty = !loading && !failed && candidates.length === 0;
+  // The page is capped, so a bigger building can hold equipment this select never offers.
+  const truncated = !loading && !failed && total > candidates.length;
+
+  /**
+   * The line under the select.
+   *
+   * Every branch says the field is optional, because the state that reads as a
+   * requirement is exactly the one where nothing can be picked.
+   */
+  const hint = loading
+    ? 'Ачааллаж байна…'
+    : failed || empty
+      ? undefined
+      : floorId
+        ? 'Зөвхөн сонгосон давхрын тоноглол. Сонгох албагүй.'
+        : 'Давхар заагаагүй тул барилгын бүх тоноглол. Сонгох албагүй.';
+
+  return (
+    <div className="space-y-2">
+      <Field label="Хамрах тоноглол (заавал бус)" hint={hint}>
+        <SelectInput
+          value=""
+          onChange={(value) => {
+            const object = candidates.find((entry) => entry.id === value);
+            if (!object || selected.has(object.id)) return;
+            onChange([...rows, { id: object.id, name: object.name, code: object.code }]);
+          }}
+          placeholder={
+            loading
+              ? 'Ачааллаж байна…'
+              : failed
+                ? 'Жагсаалт ачаалагдсангүй'
+                : empty
+                  ? 'Сонгох тоноглол алга'
+                  : 'Тоноглол нэмэх'
+          }
+          options={candidates
+            .filter((object) => !selected.has(object.id))
+            .map((object) => ({
+              value: object.id,
+              label: object.code ? `${object.code} · ${object.name}` : object.name,
+            }))}
+          disabled={disabled || failed || empty}
+        />
+      </Field>
+
+      {failed && (
+        <p className="rounded-lg bg-amber-50 p-3 text-xs text-amber-800 ring-1 ring-inset ring-amber-200">
+          Тоноглолын жагсаалтыг ачаалж чадсангүй. Дэд ажлыг тоноглолгүйгээр хадгалж болно.
+        </p>
+      )}
+
+      {empty && (
+        <p className="rounded-lg bg-slate-50 p-3 text-xs text-slate-600 ring-1 ring-inset ring-slate-200">
+          {floorId
+            ? 'Энэ давхарт бүртгэлтэй тоноглол алга. Дэд ажлыг тоноглолгүйгээр хадгалж болно.'
+            : 'Энэ барилгад бүртгэлтэй тоноглол алга. Дэд ажлыг тоноглолгүйгээр хадгалж болно.'}
+        </p>
+      )}
+
+      {truncated && (
+        <p className="text-xs text-slate-500">
+          Нийт {total} тоноглолоос эхний {candidates.length} нь жагсав. Давхар сонгож
+          нарийсгана уу.
+        </p>
+      )}
+
+      {rows.length === 0 ? (
+        <div className="rounded-lg bg-blue-50 p-3 ring-1 ring-inset ring-blue-200">
+          <p className="text-xs font-semibold text-blue-900">
+            Тоноглол заавал биш — сонгоогүй ч хадгална.
+          </p>
+          <p className="mt-0.5 text-xs text-blue-800">
+            Тоноглол сонгоогүй бол энэ дэд ажлын дүгнэлт Үзлэг ба дүгнэлт хэсэгт харагдахгүй:
+            тэнд зөвхөн тоноглолд холбогдсон үр дүн жагсдаг.
+          </p>
+        </div>
+      ) : (
+        <ul className="flex flex-wrap gap-1.5">
+          {rows.map((row) => (
+            <li
+              key={row.id}
+              className="flex items-center gap-1.5 rounded-full bg-slate-100 py-1 pl-2.5 pr-1 text-xs text-slate-700"
+            >
+              <span className="truncate">{row.code ? `${row.code} · ${row.name}` : row.name}</span>
+              <button
+                type="button"
+                disabled={disabled}
+                aria-label={`${row.name} хасах`}
+                onClick={() => onChange(rows.filter((entry) => entry.id !== row.id))}
+                className="rounded-full px-1 text-slate-500 hover:bg-slate-200 hover:text-slate-800"
+              >
+                ×
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
 }
 
 /**
@@ -62,6 +244,9 @@ export function TaskFormDrawer({
   const [plannedStartDate, setPlannedStartDate] = useState('');
   const [plannedEndDate, setPlannedEndDate] = useState('');
   const [assignedEmployeeId, setAssignedEmployeeId] = useState('');
+  const [equipment, setEquipment] = useState<readonly EquipmentRow[]>([]);
+  /** Shown once, after a floor change has thrown a selection away. */
+  const [equipmentCleared, setEquipmentCleared] = useState(false);
 
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -72,6 +257,7 @@ export function TaskFormDrawer({
 
     setFormError(null);
     setFieldErrors({});
+    setEquipmentCleared(false);
 
     if (existing) {
       setFloorId(existing.floorId ?? '');
@@ -82,6 +268,10 @@ export function TaskFormDrawer({
       setPlannedStartDate(toDateInput(existing.plannedStartDate));
       setPlannedEndDate(toDateInput(existing.plannedEndDate));
       setAssignedEmployeeId(existing.assignedEmployeeId ?? '');
+      // The saved refs carry no code; the chip shows the name until the row is re-picked.
+      setEquipment(
+        existing.relatedObjects.map((ref) => ({ id: ref.id, name: ref.name, code: null })),
+      );
     } else {
       setFloorId('');
       setTitle('');
@@ -92,6 +282,7 @@ export function TaskFormDrawer({
       setPlannedStartDate(toDateInput(work.plannedStartDate));
       setPlannedEndDate(toDateInput(work.plannedEndDate));
       setAssignedEmployeeId('');
+      setEquipment([]);
     }
 
     let cancelled = false;
@@ -109,6 +300,31 @@ export function TaskFormDrawer({
     };
   }, [target, existing, work.building.id, work.plannedStartDate, work.plannedEndDate]);
 
+  /**
+   * Moves the sub-task to another floor, dropping equipment the move would invalidate.
+   *
+   * The backend admits a sub-task's equipment only from the floor it names, or from
+   * anywhere in the building when it names none, so a floor change can turn an already
+   * valid selection into a 400 on save. Rather than let that happen, the selection is
+   * dropped exactly when the new scope is not a superset of the old one:
+   *
+   * - to a REAL floor, from anywhere else — narrowing. Equipment picked on another floor,
+   *   or building-wide, need not be on this one, so it goes.
+   * - to "Давхар заахгүй" — widening from one floor to the whole building. Everything
+   *   already picked is still inside the building, so it is kept.
+   *
+   * Decided from the two ids alone rather than by re-checking the new floor's contents:
+   * that list is paged, and a selection silently dropped because it fell past the page
+   * limit would be worse than the 400 this avoids.
+   */
+  function handleFloorChange(nextFloorId: string): void {
+    if (nextFloorId === floorId) return;
+    const invalidated = nextFloorId !== '' && equipment.length > 0;
+    setFloorId(nextFloorId);
+    if (invalidated) setEquipment([]);
+    setEquipmentCleared(invalidated);
+  }
+
   async function handleSubmit(): Promise<void> {
     setFormError(null);
     setFieldErrors({});
@@ -122,6 +338,7 @@ export function TaskFormDrawer({
       plannedStartDate: plannedStartDate ? `${plannedStartDate}T00:00:00.000Z` : '',
       plannedEndDate: plannedEndDate ? `${plannedEndDate}T00:00:00.000Z` : '',
       assignedEmployeeId: assignedEmployeeId || null,
+      relatedObjectIds: equipment.map((row) => row.id),
     };
 
     const parsed = isNew
@@ -197,7 +414,7 @@ export function TaskFormDrawer({
           <Field label="Давхар" error={fieldErrors.floorId}>
             <SelectInput
               value={floorId}
-              onChange={setFloorId}
+              onChange={handleFloorChange}
               placeholder="Давхар заахгүй"
               options={floors.map((floor) => ({ value: floor.id, label: floor.name }))}
               disabled={submitting}
@@ -256,6 +473,28 @@ export function TaskFormDrawer({
             />
           </Field>
         </div>
+
+        {equipmentCleared && (
+          <Alert variant="warning">
+            Давхар өөрчлөгдсөн тул сонгосон тоноглол цуцлагдлаа. Шинэ давхраас дахин сонгоно уу.
+          </Alert>
+        )}
+
+        <TaskEquipmentPicker
+          buildingId={work.building.id}
+          floorId={floorId}
+          rows={equipment}
+          disabled={submitting}
+          onChange={(next) => {
+            setEquipment(next);
+            // The notice has been acted on the moment the list is touched again.
+            setEquipmentCleared(false);
+          }}
+        />
+
+        {fieldErrors.relatedObjectIds && (
+          <Alert variant="error">{fieldErrors.relatedObjectIds}</Alert>
+        )}
 
         <div>
           <label htmlFor="task-description" className={FILTER_LABEL}>

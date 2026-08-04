@@ -2,12 +2,14 @@ import '../../data/models/employee_model.dart';
 
 /// Which employee record the signed-in account is.
 ///
-/// This is the pivot the whole tab turns on. Neither `/planned-work` nor
-/// `/service-requests` applies server-side self-scoping to its LIST — the list
-/// services take no auth context at all — so "my work" exists only as a
-/// client-supplied `employeeId` filter, and if that id cannot be established the
-/// honest outcome is to show no personal figures at all. Showing the unfiltered lists
-/// would be showing every colleague's work under the heading "Миний ажил".
+/// This is the pivot the whole tab turns on. Both `/planned-work` and
+/// `/service-requests` now bound their LIST to the caller's own and their team's work
+/// unless the caller holds an oversight permission, so "my work" is a server decision
+/// rather than a client-supplied `employeeId` filter. The identity is still required
+/// here because this tab reports PERSONAL FIGURES — a workload count, a completed
+/// total — which live on the employee record itself and have no server-side stand-in.
+/// If the id cannot be established the honest outcome is to show no personal figures at
+/// all, and to say why, rather than to label the organisation's numbers as the reader's.
 ///
 /// The id comes from `GET /employees/me`, which the server resolves from the session.
 /// There is deliberately no setter and no picker: the link is a property of the

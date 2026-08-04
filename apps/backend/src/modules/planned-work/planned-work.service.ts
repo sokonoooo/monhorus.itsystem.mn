@@ -54,11 +54,13 @@ import {
   isIncludedTask,
   missingTaskEvidenceOf,
   recalculatePlannedWorkProgress,
+  taskDurationMinutes,
 } from './planned-work.progress.service';
 import { loadReportState, reportStatusesFor, toReportDto } from './planned-work.report.service';
 import {
   assertPlannedWorkAssignmentScope,
   isWithinAssignmentScope,
+  resolveAssignedWorkFilter,
 } from './planned-work.scope';
 import { availableActionsFor } from './planned-work.transition.service';
 
@@ -417,6 +419,11 @@ export function toTaskDto(
     assignedEmployeeName: employeeRefs([task.assignedEmployee])[0]?.name || null,
     relatedObjects: task.relatedObjects.map(namedRef),
     note: task.note,
+    conclusion: task.conclusion,
+    conclusionById: task.conclusionBy ? String(task.conclusionBy) : null,
+    conclusionByName: task.conclusionByName,
+    conclusionAt: task.conclusionAt?.toISOString() ?? null,
+    durationMinutes: taskDurationMinutes(task),
     score: task.score,
     riskLevel: task.riskLevel,
     recommendation: task.recommendation,
@@ -533,14 +540,10 @@ async function loadDetail(
   };
 }
 
-/** Loads a work with its display references populated. */
-async function findPopulated(plannedWorkId: string): Promise<Doc<IPlannedWork>> {
-  const work = await PlannedWork.findById(plannedWorkId).populate([...LIST_POPULATE]);
-  if (!work) {
-    throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Төлөвлөгөөт ажил олдсонгүй.');
-  }
-  return work;
-}
+// `findPopulated` used to live here, loading a work by id with its display references and
+// no notion of who was asking. Its one caller was `getPlannedWorkById`, which now has to
+// build a scoped query instead, so an unscoped by-id loader would be nothing but a way to
+// reintroduce the hole. Deleted rather than left for convenience.
 
 async function findRaw(plannedWorkId: string): Promise<Doc<IPlannedWork>> {
   const work = await PlannedWork.findById(plannedWorkId);
@@ -552,22 +555,67 @@ async function findRaw(plannedWorkId: string): Promise<Doc<IPlannedWork>> {
 
 // -- Read --------------------------------------------------------------------
 
+/**
+ * The single-record read, bounded by the same assignment rule the list is.
+ *
+ * WHY THE SCOPE IS HERE AND NOT ON THE ROUTE. Every write in this module returns the
+ * updated record through this function, so putting the predicate here means a future
+ * endpoint cannot reach a planned work by id without passing it. It is safe for those
+ * callers by construction: each of them already required either an oversight permission or
+ * assignment scope to perform the write, so the record they are handing back is one this
+ * check admits.
+ *
+ * ANSWERED AS NOT-FOUND, matching `assertInCustomerScope` rather than the 403 the write
+ * path returns. The reasoning that made a 403 right for writes was that `planned_work.view`
+ * was unscoped, so the caller could already list and open the record and "not found" would
+ * have read as data loss. That premise is gone — the caller can no longer list or open it —
+ * and what is left is the tenancy argument: answering "forbidden" for an id confirms the
+ * record exists, which turns this endpoint into an oracle for probing identifiers. So an
+ * out-of-scope id is indistinguishable from one that was never real.
+ */
 export async function getPlannedWorkById(
   plannedWorkId: string,
   actor: AuthContext,
 ): Promise<PlannedWorkDto> {
   const now = new Date();
-  const work = await findPopulated(plannedWorkId);
+
+  const assignmentFilter = await resolveAssignedWorkFilter<IPlannedWork>(actor);
+  const filter: FilterQuery<IPlannedWork> = { _id: new Types.ObjectId(plannedWorkId) };
+  if (assignmentFilter) filter.$and = [assignmentFilter];
+
+  const work = await PlannedWork.findOne(filter).populate([...LIST_POPULATE]);
+  if (!work) {
+    throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Төлөвлөгөөт ажил олдсонгүй.');
+  }
+
   // Fallback reconciliation, so a stamp is never missing because the job has not run.
   await markOverdueIfNeeded(work, now);
   return loadDetail(work, actor, now);
 }
 
+/**
+ * The board.
+ *
+ * TAKES THE CALLER, and not only the query. Assignment scope is enforced here rather than
+ * left to the client: this list used to build its filter purely from query parameters, so
+ * a technician who simply omitted `employeeId` received every planned work in the company.
+ * `resolveAssignedWorkFilter` returns the "mine or my team's" predicate for a scoped caller
+ * and null for one holding an oversight key, and it reads the acting employee from
+ * `AuthContext`, never from the request — see planned-work.scope.ts.
+ *
+ * The predicate is ANDed rather than merged, so `employeeId`/`teamId` keep working as
+ * ADDITIONAL narrowing and cannot widen the result. `$and` is also what keeps it from
+ * colliding with the `$or` the search term already occupies.
+ */
 export async function listPlannedWork(
   query: PlannedWorkListQueryInput,
+  actor: AuthContext,
 ): Promise<PaginatedData<PlannedWorkListItemDto>> {
   const now = new Date();
   const filter: FilterQuery<IPlannedWork> = {};
+
+  const assignmentFilter = await resolveAssignedWorkFilter<IPlannedWork>(actor);
+  if (assignmentFilter) filter.$and = [assignmentFilter];
 
   if (query.customerId) filter.customer = new Types.ObjectId(query.customerId);
   if (query.projectId) filter.project = new Types.ObjectId(query.projectId);
@@ -1003,6 +1051,39 @@ export async function updateTask(
 }
 
 /**
+ * Writes the Дүгнэлт and, ONLY when its text actually changed, stamps the author.
+ *
+ * Authorship is deliberately not stamped on every progress write. Every member of the
+ * assigned team may record progress on every sub-task, each write replaces the last, and
+ * the sheet resends the conclusion it loaded — so an unconditional stamp would credit the
+ * verdict to whoever last nudged the quantity rather than to whoever wrote the sentence.
+ *
+ * Blank and null are the same absence here, so resending an untouched empty field is not a
+ * change, and clearing the text clears the whole triple rather than leaving a name hanging
+ * on a conclusion that no longer exists.
+ */
+function applyConclusion(
+  task: Doc<IPlannedWorkTask>,
+  next: string | null,
+  actor: AuthContext,
+): void {
+  if ((next ?? '') === (task.conclusion ?? '')) return;
+
+  task.conclusion = next;
+
+  if ((next ?? '').trim().length === 0) {
+    task.conclusionBy = null;
+    task.conclusionByName = null;
+    task.conclusionAt = null;
+    return;
+  }
+
+  task.conclusionBy = new Types.ObjectId(actor.userId);
+  task.conclusionByName = actor.fullName ?? null;
+  task.conclusionAt = new Date();
+}
+
+/**
  * Records progress on a task.
  *
  * The caller supplies completed quantity, the Тайлбар note, the 0-100 score and the
@@ -1051,6 +1132,7 @@ export async function recordTaskProgress(
   if (input.started !== undefined) task.explicitlyStarted = input.started;
   if (input.skipped !== undefined) task.skipped = input.skipped;
   if (input.note !== undefined) task.note = input.note ?? null;
+  if (input.conclusion !== undefined) applyConclusion(task, input.conclusion ?? null, actor);
   if (input.recommendation !== undefined) task.recommendation = input.recommendation ?? null;
 
   // Re-derived on every score change so a band can never drift from the score it describes.

@@ -75,6 +75,127 @@ enum ServiceRequestStatus {
     ServiceRequestStatus.unassigned,
     ServiceRequestStatus.createdNew,
   ];
+
+  /// Whether a move to this state has to carry a free-text reason.
+  ///
+  /// `REASON_REQUIRED_STATUSES`. Of the four the backend names, only WAITING is also a
+  /// state this app can offer, so it is the only one a technician is ever prompted for —
+  /// but the whole list is transcribed rather than the one entry, because the rule belongs
+  /// to the domain and not to this screen's current permissions.
+  bool get requiresReason =>
+      this == ServiceRequestStatus.waiting ||
+      this == ServiceRequestStatus.returned ||
+      this == ServiceRequestStatus.cancelled ||
+      this == ServiceRequestStatus.revisitRequired;
+
+  /// `SELF_PROGRESS_STATUSES` — the states `service_request.self_progress` authorises.
+  ///
+  /// The six a person standing at the site is the only honest source for. CANCELLED,
+  /// RETURNED, UNASSIGNED, VERIFICATION, COMPLETED and REVISIT_REQUIRED are deliberately
+  /// absent: each is a decision ABOUT the job — planning, a judgement on somebody's
+  /// write-up, or the office's sign-off — rather than a report FROM it.
+  bool get isSelfProgress => _selfProgress.contains(this);
+
+  static const List<ServiceRequestStatus> _selfProgress = <ServiceRequestStatus>[
+    ServiceRequestStatus.accepted,
+    ServiceRequestStatus.onTheWay,
+    ServiceRequestStatus.onSite,
+    ServiceRequestStatus.inProgress,
+    ServiceRequestStatus.waiting,
+    ServiceRequestStatus.reportSubmitted,
+  ];
+
+  /// The moves a self-progress holder may be OFFERED from here: legal for the request AND
+  /// inside the set above.
+  ///
+  /// Mirrors `selfProgressTransitionsFrom` in
+  /// `packages/shared/src/constants/service-request.ts`, and mirrors it as an
+  /// INTERSECTION rather than as a hand-written list per state. A hand-written list is how
+  /// a control ends up offering ASSIGNED → IN_PROGRESS: plausible, in the permitted set,
+  /// and not an edge the graph has. The server is still the authority and refuses either
+  /// way; this only decides what to draw.
+  ///
+  /// Empty for most states, and that is correct rather than a gap: from NEW, UNASSIGNED,
+  /// REPORT_SUBMITTED, VERIFICATION, COMPLETED, REVISIT_REQUIRED and CANCELLED there is
+  /// nothing a technician may do on their own, so the control is simply not drawn.
+  List<ServiceRequestStatus> get selfProgressTargets =>
+      transitions.where((ServiceRequestStatus to) => to.isSelfProgress).toList(
+            growable: false,
+          );
+
+  /// `SERVICE_REQUEST_TRANSITIONS` — every move the backend's matrix allows from here.
+  List<ServiceRequestStatus> get transitions =>
+      _transitions[this] ?? const <ServiceRequestStatus>[];
+
+  static const Map<ServiceRequestStatus, List<ServiceRequestStatus>> _transitions =
+      <ServiceRequestStatus, List<ServiceRequestStatus>>{
+    ServiceRequestStatus.createdNew: <ServiceRequestStatus>[
+      ServiceRequestStatus.unassigned,
+      ServiceRequestStatus.assigned,
+      ServiceRequestStatus.cancelled,
+    ],
+    ServiceRequestStatus.unassigned: <ServiceRequestStatus>[
+      ServiceRequestStatus.assigned,
+      ServiceRequestStatus.cancelled,
+    ],
+    ServiceRequestStatus.assigned: <ServiceRequestStatus>[
+      ServiceRequestStatus.accepted,
+      ServiceRequestStatus.unassigned,
+      ServiceRequestStatus.returned,
+      ServiceRequestStatus.cancelled,
+    ],
+    ServiceRequestStatus.accepted: <ServiceRequestStatus>[
+      ServiceRequestStatus.onTheWay,
+      ServiceRequestStatus.unassigned,
+      ServiceRequestStatus.returned,
+      ServiceRequestStatus.cancelled,
+    ],
+    ServiceRequestStatus.onTheWay: <ServiceRequestStatus>[
+      ServiceRequestStatus.onSite,
+      ServiceRequestStatus.waiting,
+      ServiceRequestStatus.returned,
+      ServiceRequestStatus.cancelled,
+    ],
+    ServiceRequestStatus.onSite: <ServiceRequestStatus>[
+      ServiceRequestStatus.inProgress,
+      ServiceRequestStatus.waiting,
+      ServiceRequestStatus.returned,
+      ServiceRequestStatus.cancelled,
+    ],
+    ServiceRequestStatus.inProgress: <ServiceRequestStatus>[
+      ServiceRequestStatus.reportSubmitted,
+      ServiceRequestStatus.waiting,
+      ServiceRequestStatus.revisitRequired,
+      ServiceRequestStatus.cancelled,
+    ],
+    ServiceRequestStatus.waiting: <ServiceRequestStatus>[
+      ServiceRequestStatus.inProgress,
+      ServiceRequestStatus.onSite,
+      ServiceRequestStatus.returned,
+      ServiceRequestStatus.cancelled,
+    ],
+    ServiceRequestStatus.reportSubmitted: <ServiceRequestStatus>[
+      ServiceRequestStatus.verification,
+      ServiceRequestStatus.returned,
+    ],
+    ServiceRequestStatus.verification: <ServiceRequestStatus>[
+      ServiceRequestStatus.completed,
+      ServiceRequestStatus.returned,
+      ServiceRequestStatus.revisitRequired,
+    ],
+    ServiceRequestStatus.completed: <ServiceRequestStatus>[],
+    ServiceRequestStatus.revisitRequired: <ServiceRequestStatus>[
+      ServiceRequestStatus.assigned,
+      ServiceRequestStatus.unassigned,
+      ServiceRequestStatus.cancelled,
+    ],
+    ServiceRequestStatus.returned: <ServiceRequestStatus>[
+      ServiceRequestStatus.assigned,
+      ServiceRequestStatus.inProgress,
+      ServiceRequestStatus.cancelled,
+    ],
+    ServiceRequestStatus.cancelled: <ServiceRequestStatus>[],
+  };
 }
 
 /// `SERVICE_REQUEST_TYPES`.

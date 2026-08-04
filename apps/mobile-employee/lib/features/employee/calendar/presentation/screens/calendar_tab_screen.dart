@@ -30,16 +30,18 @@ import '../widgets/month_grid.dart';
 /// replaced by the live feed and its inconsistent demo clock normalised to the
 /// device's today.
 ///
-/// Two things the backend does not do, which this screen is built around rather
-/// than around a pretence that it does:
+/// THE READER'S OWN SCHEDULE, AND ONLY THAT. There used to be a `Миний` / `Бүгд`
+/// segmented control here, and picking `Бүгд` dropped the `employeeId` filter — which
+/// was the entire scope, because `GET /calendar` enforced none of its own. One tap
+/// from any technician's home screen listed every colleague's planned work for the
+/// month, names, customers and buildings included. The endpoint applies the
+/// assigned-or-team rule itself now, so the toggle had nothing left to toggle; it is
+/// gone rather than left on screen doing nothing, and there is no view state behind it.
 ///
-///   * `GET /calendar` performs no server-side self-scoping. Narrowing to the
-///     signed-in employee is a client-supplied `employeeId` filter, and the id has
-///     to be worked out first (see [employeeIdentityProvider]). When it cannot be,
-///     the screen says so and shows the full schedule rather than an empty month.
-///   * A calendar entry cannot be opened for work here. Recording progress and
-///     writing a report belong to the Ажил tab; tapping a row opens a read-only
-///     sheet built from the event itself.
+/// One thing the backend still does not do, which this screen is built around rather
+/// than around a pretence that it does: a calendar entry cannot be opened for work
+/// here. Recording progress and writing a report belong to the Ажил tab; tapping a row
+/// opens a read-only sheet built from the event itself.
 class CalendarTabScreen extends ConsumerWidget {
   const CalendarTabScreen({super.key});
 
@@ -162,7 +164,6 @@ class _CalendarBody extends ConsumerWidget {
               ref.invalidate(calendarEventsProvider);
             },
           ),
-          const _ScopeSelector(),
           const _SourceSelector(),
           _MonthCard(
             view: view,
@@ -199,7 +200,7 @@ class _CalendarBody extends ConsumerWidget {
     final bool isToday = view.selectedDay == today;
 
     return <Widget>[
-      _IdentityNotice(result: data, onlyMine: view.onlyMine),
+      _IdentityNotice(result: data),
       AgendaHeading(
         // `#mcal-agenda-title`: ('Өнөөдөр · ' when the day is today) + the date +
         // ' — ' + the count + ' ажил'.
@@ -209,7 +210,7 @@ class _CalendarBody extends ConsumerWidget {
       if (dayEvents.isEmpty)
         CalendarEmptyState(
           icon: Icons.event_available_outlined,
-          message: view.onlyMine && data.scopedToEmployee
+          message: data.scopedToEmployee
               ? 'Энэ өдөр танд төлөвлөгөөт ажил алга.'
               : 'Энэ өдөр төлөвлөгөөт ажил алга.',
         )
@@ -251,7 +252,7 @@ class _Header extends StatelessWidget {
             onTap: () => Navigator.of(context).maybePop(),
           ),
           const SizedBox(width: 10),
-          const Expanded(
+          Expanded(
             child: Text('Хуанли', style: EmployeeTokens.screenTitle),
           ),
           EmployeeHeaderButton(
@@ -266,35 +267,11 @@ class _Header extends StatelessWidget {
   }
 }
 
-/// `Миний` / `Бүгд`.
-///
-/// `Миний` stays disabled until an employee id is resolved, because without one
-/// there is nothing to narrow by and the two options would return the same list
-/// while claiming to be different.
-class _ScopeSelector extends ConsumerWidget {
-  const _ScopeSelector();
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final CalendarViewState view = ref.watch(calendarViewProvider);
-    final AsyncValue<EmployeeIdentity> identity =
-        ref.watch(employeeIdentityProvider);
-
-    final bool canScope =
-        identity.valueOrNull is ResolvedEmployeeIdentity;
-
-    return SegmentedRow(
-      labels: const <String>['Миний', 'Бүгд'],
-      selectedIndex: view.onlyMine && canScope ? 0 : 1,
-      enabled: <bool>[canScope, true],
-      onSelected: (int index) => ref
-          .read(calendarViewProvider.notifier)
-          .setOnlyMine(value: index == 0),
-    );
-  }
-}
-
 /// `Бүгд` / `Төлөвлөгөөт` / `Хүсэлт` — the `sources` query parameter.
+///
+/// The only segmented control left on this screen. Its `Бүгд` means "both sources",
+/// never "everybody's work"; the whose-schedule selector that used to sit above it is
+/// gone, see the note on [CalendarTabScreen].
 class _SourceSelector extends ConsumerWidget {
   const _SourceSelector();
 
@@ -435,11 +412,17 @@ class _GridLoadingLine extends StatelessWidget {
 
 /// Explains whose schedule is on screen whenever it is not straightforwardly the
 /// signed-in employee's.
+///
+/// One case left. A resolved identity needs no disclaimer — `GET /employees/me`
+/// returns the caller's own record and the server scopes the calendar to it either
+/// way — so the only thing worth a line is an account that could not be tied to an
+/// employee card at all, which now reads an empty month rather than everybody's.
+/// The organisation-wide banner that used to live here went with the `Бүгд` segment:
+/// there is no longer a state in which it could be true.
 class _IdentityNotice extends StatelessWidget {
-  const _IdentityNotice({required this.result, required this.onlyMine});
+  const _IdentityNotice({required this.result});
 
   final CalendarMonthResult result;
-  final bool onlyMine;
 
   @override
   Widget build(BuildContext context) {
@@ -447,16 +430,6 @@ class _IdentityNotice extends StatelessWidget {
 
     if (identity is UnresolvedEmployeeIdentity) {
       return NoticeBanner.warning(text: identity.detail);
-    }
-
-    // A resolved identity needs no disclaimer: `GET /employees/me` returns the
-    // caller's own record, so there is no "we matched you by e-mail" caveat left to
-    // print. Only the deliberate organisation-wide view is worth a line.
-    if (identity is ResolvedEmployeeIdentity && !onlyMine) {
-      return const NoticeBanner.info(
-        text: 'Байгууллагын бүх хуваарь харагдаж байна. Зөвхөн өөрийн ажлаа '
-            'харахын тулд "Миний" сонголтыг ашиглана уу.',
-      );
     }
 
     return const SizedBox.shrink();

@@ -13,6 +13,7 @@ import type {
   ObjectTypeListQuery,
   PaginatedData,
   UpdateObjectInput,
+  UpdateObjectPositionInput,
   UpdateObjectTypeInput,
 } from '@monhorus/shared';
 
@@ -76,6 +77,24 @@ export const objectMasterService = {
   async update(objectId: string, payload: UpdateObjectInput): Promise<ObjectDetailDto> {
     return unwrap(
       await apiClient.patch<ApiResponse<ObjectDetailDto>>(`/objects-master/${objectId}`, payload),
+    );
+  },
+
+  /**
+   * Moves or clears the object's pin on the floor plan.
+   *
+   * Its own endpoint so dragging a marker does not have to round-trip the strict
+   * per-category update payload just to change two numbers.
+   */
+  async updatePosition(
+    objectId: string,
+    payload: UpdateObjectPositionInput,
+  ): Promise<ObjectDetailDto> {
+    return unwrap(
+      await apiClient.patch<ApiResponse<ObjectDetailDto>>(
+        `/objects-master/${objectId}/position`,
+        payload,
+      ),
     );
   },
 

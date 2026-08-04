@@ -3,7 +3,10 @@ import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { objectMasterService } from '../../services/object-master.service';
+import { objectService } from '../../services/object.service';
 import { workReportService } from '../../services/service-request.service';
+import { makeObjectListItem, makeObjectNode, makePage } from '../../test/fixtures';
 import { renderWithAuth } from '../../test/render';
 import { WorkReportPanel } from './WorkReportPanel';
 
@@ -406,5 +409,38 @@ describe('WorkReportPanel equipment assessment', () => {
     expect(payload.objectAssessments).toEqual([
       expect.objectContaining({ objectId, score: 55 }),
     ]);
+  });
+
+  /**
+   * The query, not just the rendering.
+   *
+   * The picker asked for `limit: 200`, which `objectListQuerySchema` rejects before the
+   * handler runs, so the request 400ed and the catch left an empty select behind. A mock
+   * answers any query, so only asserting on the query can see it.
+   */
+  it('asks for the floor’s equipment within the page limit the API allows', async () => {
+    const floorId = '507f1f77bcf86cd799439121';
+    const objectId = '507f1f77bcf86cd799439701';
+    vi.spyOn(workReportService, 'get').mockResolvedValue(makeReport());
+    vi.spyOn(objectService, 'children').mockResolvedValue([
+      makeObjectNode({ id: floorId, name: '1 давхар', kind: 'FLOOR' }),
+    ]);
+    const list = vi
+      .spyOn(objectMasterService, 'list')
+      .mockResolvedValue(makePage([makeObjectListItem({ id: objectId, code: 'DB-03', name: 'Самбар 3' })]));
+
+    renderWithAuth(<WorkReportPanel requestId={REQUEST_ID} buildingId="b1" />, {
+      permissions: [
+        PERMISSIONS.SERVICE_REQUEST_VIEW,
+        PERMISSIONS.SERVICE_REQUEST_UPDATE,
+      ] as never,
+    });
+
+    const drawer = await openReport();
+    await userEvent.click(within(drawer).getByRole('button', { name: 'Засах' }));
+    await userEvent.selectOptions(await screen.findByLabelText('Давхар'), floorId);
+
+    await waitFor(() => expect(list).toHaveBeenCalledWith({ floorId, limit: 100 }));
+    expect(await screen.findByRole('option', { name: 'DB-03 · Самбар 3' })).toBeInTheDocument();
   });
 });

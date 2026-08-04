@@ -204,6 +204,7 @@ export function FloorDetailPage(): ReactElement {
 
   const canManage = can(PERMISSIONS.OBJECT_MANAGE);
   const canViewObjects = can(PERMISSIONS.OBJECT_MASTER_VIEW);
+  const canManageObjects = can(PERMISSIONS.OBJECT_MASTER_MANAGE);
 
   const [floor, setFloor] = useState<FloorDto | null>(null);
   const [plan, setPlan] = useState<FloorPlanDto | null>(null);
@@ -550,6 +551,14 @@ export function FloorDetailPage(): ReactElement {
             floorId={floor.id}
             plan={plan}
             canManage={canManage && floor.isActive}
+            objects={objects}
+            customerId={floor.customerId}
+            /*
+              Placing an object writes to the object, so it is gated on object_master.manage
+              rather than on the plan-managing permission. An archived floor is read-only,
+              as it is everywhere else on this page.
+            */
+            canPlace={canManageObjects && floor.isActive}
             onChanged={() => void loadAll()}
           />
         </div>
@@ -563,11 +572,13 @@ export function FloorDetailPage(): ReactElement {
                 <ColumnPicker controller={columnState} />
                 {canManage && floor.isActive && (
                   <>
-                    <Button
-                      size="sm"
-                      onClick={() => navigate(`/floors/${floor.id}/objects/new`)}
-                      disabled={!plan}
-                    >
+                    {/*
+                      Not gated on the plan image. The API never required one — a floor
+                      only has to exist, belong to the tenant and be active — and blocking
+                      registration until somebody uploads a drawing meant equipment on a
+                      floor with no scan yet could not be recorded at all.
+                    */}
+                    <Button size="sm" onClick={() => navigate(`/floors/${floor.id}/objects/new`)}>
                       Тоноглол нэмэх
                     </Button>
                     {/*
@@ -575,26 +586,13 @@ export function FloorDetailPage(): ReactElement {
                       backend already supports and audits it, so linking stays available as
                       the secondary action.
                     */}
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => setPickerOpen(true)}
-                      disabled={!plan}
-                    >
+                    <Button variant="secondary" size="sm" onClick={() => setPickerOpen(true)}>
                       Байгаа объект холбох
                     </Button>
                   </>
                 )}
               </div>
             </div>
-
-            {!plan && (
-              <div className="px-5 pt-4">
-                <Alert variant="info">
-                  План зураг хавсаргасны дараа объект холбоно.
-                </Alert>
-              </div>
-            )}
 
             <DataTable
               columns={columnState.visibleColumns}

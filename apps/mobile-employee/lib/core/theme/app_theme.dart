@@ -37,7 +37,7 @@ class AppTheme {
       useMaterial3: true,
       colorScheme: scheme,
       scaffoldBackgroundColor: surface,
-      appBarTheme: const AppBarTheme(
+      appBarTheme: AppBarTheme(
         backgroundColor: EmployeeTokens.white,
         foregroundColor: EmployeeTokens.ink,
         surfaceTintColor: Colors.transparent,

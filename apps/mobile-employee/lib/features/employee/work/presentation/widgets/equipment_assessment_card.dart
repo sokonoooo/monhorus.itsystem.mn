@@ -5,7 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../presentation/theme/employee_tokens.dart';
 import '../../../project/domain/entities/risk_level.dart';
 import '../providers/conclusion_providers.dart';
-import '../providers/work_providers.dart';
+import 'report_photo_strip.dart';
 import 'work_ui.dart';
 
 /// One piece of equipment being assessed, as an expandable card.
@@ -223,7 +223,7 @@ class _EquipmentAssessmentCardState extends ConsumerState<EquipmentAssessmentCar
             const SizedBox(height: 4),
             // The scale in words, exactly as the object assessment sheet states it. The
             // band itself is the server's to decide.
-            const Text(
+            Text(
               '81-100 хэвийн · 61-80 анхаарах · 41-60 засварлах · 21-40 ноцтой · '
               '0-20 ашиглах боломжгүй',
               style: EmployeeTokens.rowSub,
@@ -257,7 +257,12 @@ class _EquipmentAssessmentCardState extends ConsumerState<EquipmentAssessmentCar
             ),
 
             const SizedBox(height: 12),
-            _ObjectEvidenceStrip(
+            // Evidence for ONE piece of equipment. Separate from the visit-level
+            // before/after strips: a photo of one panel is not evidence about another, and
+            // the server stores these on the item rather than on the report — which is
+            // also why filling these in does not satisfy BEFORE_PHOTO or AFTER_PHOTO.
+            ReportPhotoStrip(
+              label: 'Нотлох зураг',
               photoIds: draft.photoIds,
               busy: widget.uploading,
               onAdd: widget.onAddPhoto,
@@ -305,151 +310,6 @@ class _OriginPill extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(right: 6),
       child: EmployeePill.outline(label: label),
-    );
-  }
-}
-
-/// Evidence for ONE piece of equipment.
-///
-/// Separate from the visit-level before/after strip: a photo of one panel is not evidence
-/// about another, and the server stores these on the item rather than on the report.
-///
-/// The DTO returns ids only, so the bytes are fetched through the authenticated client by
-/// id. No raw or public URL is ever built or shown.
-class _ObjectEvidenceStrip extends ConsumerWidget {
-  const _ObjectEvidenceStrip({
-    required this.photoIds,
-    required this.busy,
-    this.onAdd,
-    this.onRemove,
-  });
-
-  final List<String> photoIds;
-  final bool busy;
-  final VoidCallback? onAdd;
-  final ValueChanged<String>? onRemove;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    if (photoIds.isEmpty && onAdd == null) return const SizedBox.shrink();
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: <Widget>[
-        FieldLabel('Нотлох зураг (${photoIds.length})'),
-        SizedBox(
-          height: 62,
-          child: ListView.separated(
-            scrollDirection: Axis.horizontal,
-            itemCount: photoIds.length + (onAdd == null ? 0 : 1),
-            separatorBuilder: (BuildContext _, int __) => const SizedBox(width: 7),
-            itemBuilder: (BuildContext context, int index) {
-              if (index < photoIds.length) {
-                final String id = photoIds[index];
-                return _Thumb(
-                  photoId: id,
-                  onRemove: onRemove == null ? null : () => onRemove!(id),
-                );
-              }
-              return _AddTile(busy: busy, onTap: busy ? null : onAdd);
-            },
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _Thumb extends ConsumerWidget {
-  const _Thumb({required this.photoId, this.onRemove});
-
-  final String photoId;
-  final VoidCallback? onRemove;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final AsyncValue<Uint8List> bytes = ref.watch(workFileBytesProvider(photoId));
-
-    return Stack(
-      children: <Widget>[
-        Container(
-          width: 62,
-          height: 62,
-          clipBehavior: Clip.antiAlias,
-          decoration: BoxDecoration(
-            color: EmployeeTokens.soft2,
-            border: Border.all(color: EmployeeTokens.faint),
-            borderRadius: BorderRadius.circular(EmployeeTokens.radiusInput),
-          ),
-          child: bytes.when(
-            data: (Uint8List data) => Image.memory(
-              data,
-              fit: BoxFit.cover,
-              errorBuilder: (BuildContext _, Object __, StackTrace? ___) =>
-                  const Icon(Icons.broken_image_outlined, size: 18),
-            ),
-            loading: () => const Center(
-              child: SizedBox(
-                width: 15,
-                height: 15,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              ),
-            ),
-            error: (Object _, StackTrace __) =>
-                const Icon(Icons.image_not_supported_outlined, size: 18),
-          ),
-        ),
-        if (onRemove != null)
-          Positioned(
-            top: -6,
-            right: -6,
-            child: IconButton(
-              onPressed: onRemove,
-              icon: const Icon(Icons.cancel, size: 18),
-              tooltip: 'Зураг хасах',
-              visualDensity: VisualDensity.compact,
-            ),
-          ),
-      ],
-    );
-  }
-}
-
-class _AddTile extends StatelessWidget {
-  const _AddTile({required this.busy, required this.onTap});
-
-  final bool busy;
-  final VoidCallback? onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: EmployeeTokens.white,
-      borderRadius: BorderRadius.circular(EmployeeTokens.radiusInput),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(EmployeeTokens.radiusInput),
-        child: Container(
-          width: 62,
-          height: 62,
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            border: Border.all(
-              color: onTap == null ? EmployeeTokens.faint : EmployeeTokens.line,
-              width: EmployeeTokens.hairline,
-            ),
-            borderRadius: BorderRadius.circular(EmployeeTokens.radiusInput),
-          ),
-          child: busy
-              ? const SizedBox(
-                  width: 16,
-                  height: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : const Icon(Icons.add_a_photo_outlined, size: 18),
-        ),
-      ),
     );
   }
 }

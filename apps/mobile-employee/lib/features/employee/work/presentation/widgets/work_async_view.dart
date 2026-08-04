@@ -26,20 +26,12 @@ class WorkAsyncView<T> extends StatelessWidget {
     required this.builder,
     this.onRetry,
     this.loading,
-    this.unavailableActionLabel,
-    this.onUnavailableAction,
   });
 
   final AsyncValue<T> value;
   final Widget Function(BuildContext context, T data) builder;
   final VoidCallback? onRetry;
   final Widget? loading;
-
-  /// An optional way forward offered alongside a [WorkScopeUnavailable]
-  /// explanation. Never a retry — the situation is stable — but sometimes there is
-  /// a different, honestly-labelled thing the user can look at instead.
-  final String? unavailableActionLabel;
-  final VoidCallback? onUnavailableAction;
 
   @override
   Widget build(BuildContext context) {
@@ -49,12 +41,15 @@ class WorkAsyncView<T> extends StatelessWidget {
       loading: () => loading ?? const WorkLoading(),
       error: (Object error, StackTrace _) {
         if (error is WorkScopeUnavailable) {
+          // No action offered. Every remaining situation of this kind is stable and has
+          // no honest second thing to look at instead: the "show me every planned work"
+          // escape hatch that used to sit here promised an unfiltered list the server no
+          // longer returns to a scoped caller, so it would have been a button that
+          // silently produced the very same rows under a different heading.
           return WorkEmptyState(
             icon: Icons.info_outline,
             title: error.title,
             message: error.detail,
-            actionLabel: unavailableActionLabel,
-            onAction: onUnavailableAction,
           );
         }
 

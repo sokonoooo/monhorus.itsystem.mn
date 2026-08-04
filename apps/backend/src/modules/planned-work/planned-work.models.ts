@@ -266,11 +266,46 @@ export interface IPlannedWorkTask {
    * object's history without duplicating any object data onto the task.
    */
   relatedObjects: Types.ObjectId[];
-  /**
-   * The performer's Тайлбар. `Дүгнэлт` is reserved for the consolidated report, so a
-   * sub-task never carries one.
-   */
+  /** The performer's Тайлбар — the observation on each related object's ReportItem. */
   note: string | null;
+  /**
+   * The performer's `Дүгнэлт`, copied onto the ReportItem of every related object.
+   *
+   * A sub-task used to be barred from carrying one, on the rule that `Дүгнэлт` belonged
+   * to the consolidated report alone. That left the Дүгнэлт column of Үзлэг ба дүгнэлт
+   * empty for every planned-work row, since those rows ARE the per-object items fanned
+   * out from a sub-task. The consolidated report still has its own conclusion; this is an
+   * addition to it, not a replacement.
+   */
+  conclusion: string | null;
+  /**
+   * Who wrote the `conclusion` currently stored, and when.
+   *
+   * Written only when the Дүгнэлт TEXT changes. Any assigned team member may record
+   * progress on any sub-task and each write overwrites the last, so stamping this on every
+   * progress write would attribute the verdict to whoever last adjusted the quantity.
+   * Clearing the conclusion clears the whole triple.
+   */
+  conclusionBy: Types.ObjectId | null;
+  conclusionByName: string | null;
+  conclusionAt: Date | null;
+  /**
+   * First instant this sub-task was reported begun — `started: true` or any completed
+   * quantity. STICKY: set once and never moved or cleared, because it records when the
+   * physical work started.
+   */
+  startedAt: Date | null;
+  /**
+   * First instant `completedQuantity` reached `totalQuantity`. STICKY, and deliberately
+   * NOT the same field as `completedAt`.
+   *
+   * `completedAt` tracks the DONE derivation, which nulls itself whenever a task drops out
+   * of DONE and re-stamps a fresh instant later — deleting one evidence photo is enough to
+   * move it. That is right for "is it currently done"; it is wrong for "when did the work
+   * finish". This one is written once and never rewritten, so the duration it anchors
+   * cannot travel backwards or be erased by a re-derivation.
+   */
+  quantityCompletedAt: Date | null;
   /** 0-100 evaluation recorded when the sub-task is finished. */
   score: number | null;
   /**
@@ -313,6 +348,12 @@ const plannedWorkTaskSchema = new Schema<IPlannedWorkTask>(
       index: true,
     },
     note: { type: String, default: null, trim: true, maxlength: 4000 },
+    conclusion: { type: String, default: null, trim: true, maxlength: 4000 },
+    conclusionBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+    conclusionByName: { type: String, default: null },
+    conclusionAt: { type: Date, default: null },
+    startedAt: { type: Date, default: null },
+    quantityCompletedAt: { type: Date, default: null },
     score: { type: Number, default: null, min: 0, max: 100 },
     riskLevel: { type: String, enum: [...RISK_LEVELS, null], default: null },
     recommendation: { type: String, default: null, trim: true, maxlength: 4000 },

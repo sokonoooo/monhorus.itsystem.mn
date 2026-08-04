@@ -282,9 +282,24 @@ export function ObjectDetailPage(): ReactElement {
         </span>
       ),
     },
+    /*
+     * TWO actors, two columns, because they are two different answers.
+     *
+     * `judgedByName` is the technician who wrote this Дүгнэлт — known only where the
+     * producer recorded an author per piece of equipment, which today means a planned-work
+     * sub-task. `assessedByName` is who signed the finding off. Collapsing them into one
+     * "assessor" cell is what made the history name a manager who never looked at the
+     * panel; keeping them adjacent means a row with no recorded judge falls back to the
+     * approver in the reader's eye without either cell claiming to be the other.
+     */
+    {
+      key: 'judgedBy',
+      header: 'Дүгнэлт бичсэн',
+      render: (row) => <span className="text-slate-700">{row.judgedByName ?? '-'}</span>,
+    },
     {
       key: 'assessedBy',
-      header: 'Үнэлсэн',
+      header: 'Баталгаажуулсан',
       render: (row) => <span className="text-slate-700">{row.assessedByName ?? '-'}</span>,
     },
     {

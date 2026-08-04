@@ -1,8 +1,16 @@
-import { ALL_PERMISSIONS, PERMISSIONS, SYSTEM_ROLE_KEYS, USER_ROLES } from '@monhorus/shared';
+import {
+  ALL_PERMISSIONS,
+  PERMISSIONS,
+  SYSTEM_ROLE_DEFAULT_PERMISSIONS,
+  SYSTEM_ROLE_KEYS,
+  USER_ROLES,
+} from '@monhorus/shared';
 import type { Express } from 'express';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
+import { convergeSystemRolePermissions } from '../../scripts/converge-system-role-permissions';
 import { convergeTechnicianPermissions } from '../../scripts/converge-technician-permissions';
+import { AuditLog } from '../audit/audit-log.model';
 import { resetDomainCollections, startTestApp, stopTestApp } from '../../test/helpers';
 import { User } from '../user/user.model';
 import { Role } from './role.model';
@@ -200,11 +208,12 @@ describe('seedRbac', () => {
 
 /**
  * The convergence path for a database seeded while the TECHNICIAN default still carried
- * `employee.view`.
+ * `employee.view` and did not yet carry the keys the mobile app needs.
  *
- * `seedRbac` is prune-only for non-superuser system roles by design, so NARROWING the shared
- * default does nothing whatsoever to a TECHNICIAN document that already exists — the key
- * stays granted, and every technician keeps reading the staff directory. Every environment
+ * `seedRbac` is prune-only for non-superuser system roles by design, so neither NARROWING
+ * nor WIDENING the shared default reaches a TECHNICIAN document that already exists: the
+ * withdrawn key stays granted and every technician keeps reading the staff directory, while
+ * a newly added key never arrives and whatever it powers is silently dead. Every environment
  * already running is in that state; this migration is how they converge.
  */
 describe('convergeTechnicianPermissions', () => {
@@ -215,7 +224,11 @@ describe('convergeTechnicianPermissions', () => {
     await Role.updateOne(
       { key: SYSTEM_ROLE_KEYS.TECHNICIAN },
       {
-        $pull: { permissions: { $in: [PERMISSIONS.PLANNED_WORK_CHANGE_STATUS] } },
+        $pull: {
+          permissions: {
+            $in: [PERMISSIONS.PLANNED_WORK_CHANGE_STATUS, PERMISSIONS.SERVICE_REQUEST_CLAIM],
+          },
+        },
       },
     );
     await Role.updateOne(
@@ -224,7 +237,7 @@ describe('convergeTechnicianPermissions', () => {
     );
   }
 
-  it('withdraws employee.view and grants the app key a role document predates', async () => {
+  it('withdraws employee.view and grants the app keys a role document predates', async () => {
     await seedLegacyTechnicianRole();
 
     // The premise: a reseed does NOT fix this, which is why the script exists.
@@ -232,16 +245,24 @@ describe('convergeTechnicianPermissions', () => {
     const beforeMigration = await Role.findOne({ key: SYSTEM_ROLE_KEYS.TECHNICIAN });
     expect(beforeMigration?.permissions).toContain(PERMISSIONS.EMPLOYEE_VIEW);
     expect(beforeMigration?.permissions).not.toContain(PERMISSIONS.PLANNED_WORK_CHANGE_STATUS);
+    // The claim key is the second instance of the same failure: it is in the shipped
+    // default and `POST /service-requests/:id/claim` is routed on it, but an existing role
+    // document never receives it, so the app draws no "Өөртөө авах" button at all.
+    expect(beforeMigration?.permissions).not.toContain(PERMISSIONS.SERVICE_REQUEST_CLAIM);
 
     const result = await convergeTechnicianPermissions();
 
     expect(result.roleFound).toBe(true);
     expect(result.revoked).toEqual([PERMISSIONS.EMPLOYEE_VIEW]);
-    expect(result.granted).toEqual([PERMISSIONS.PLANNED_WORK_CHANGE_STATUS]);
+    expect(result.granted).toEqual([
+      PERMISSIONS.PLANNED_WORK_CHANGE_STATUS,
+      PERMISSIONS.SERVICE_REQUEST_CLAIM,
+    ]);
 
     const role = await Role.findOne({ key: SYSTEM_ROLE_KEYS.TECHNICIAN });
     expect(role?.permissions).not.toContain(PERMISSIONS.EMPLOYEE_VIEW);
     expect(role?.permissions).toContain(PERMISSIONS.PLANNED_WORK_CHANGE_STATUS);
+    expect(role?.permissions).toContain(PERMISSIONS.SERVICE_REQUEST_CLAIM);
     // Nothing else moves: the keys the role already held are untouched, and nothing that
     // was deliberately withheld is granted along the way.
     expect(role?.permissions).toContain(PERMISSIONS.PLANNED_WORK_SUBMIT_REPORT);
@@ -256,7 +277,10 @@ describe('convergeTechnicianPermissions', () => {
 
     expect(second.granted).toEqual([]);
     expect(second.revoked).toEqual([]);
-    expect(second.alreadyHeld).toEqual([PERMISSIONS.PLANNED_WORK_CHANGE_STATUS]);
+    expect(second.alreadyHeld).toEqual([
+      PERMISSIONS.PLANNED_WORK_CHANGE_STATUS,
+      PERMISSIONS.SERVICE_REQUEST_CLAIM,
+    ]);
     expect(second.alreadyAbsent).toEqual([PERMISSIONS.EMPLOYEE_VIEW]);
 
     const role = await Role.findOne({ key: SYSTEM_ROLE_KEYS.TECHNICIAN });
@@ -272,11 +296,15 @@ describe('convergeTechnicianPermissions', () => {
     const result = await convergeTechnicianPermissions({ dryRun: true });
 
     expect(result.revoked).toEqual([PERMISSIONS.EMPLOYEE_VIEW]);
-    expect(result.granted).toEqual([PERMISSIONS.PLANNED_WORK_CHANGE_STATUS]);
+    expect(result.granted).toEqual([
+      PERMISSIONS.PLANNED_WORK_CHANGE_STATUS,
+      PERMISSIONS.SERVICE_REQUEST_CLAIM,
+    ]);
 
     const role = await Role.findOne({ key: SYSTEM_ROLE_KEYS.TECHNICIAN });
     expect(role?.permissions).toContain(PERMISSIONS.EMPLOYEE_VIEW);
     expect(role?.permissions).not.toContain(PERMISSIONS.PLANNED_WORK_CHANGE_STATUS);
+    expect(role?.permissions).not.toContain(PERMISSIONS.SERVICE_REQUEST_CLAIM);
   });
 
   it('touches no role other than TECHNICIAN', async () => {
@@ -367,6 +395,238 @@ describe('convergeTechnicianPermissions', () => {
     expect(result.roleFound).toBe(false);
     expect(result.granted).toEqual([]);
     expect(result.revoked).toEqual([]);
+
+    // Left as the suites after this one expect to find it.
+    await seedRbac();
+  });
+});
+
+/**
+ * The general form of the same repair, across every system role at once.
+ *
+ * `seedRbac` being prune-only means a role document that already exists never receives a
+ * default added after it was created, so a live database drifts a little further from the
+ * shipped catalogue with each release and the only evidence is one boot-time warning. This
+ * migration is how those databases converge — and the asymmetry it is built around is the
+ * point of most of what is asserted here: granting a missing default restores the shipped
+ * contract, while withdrawing an extra key may be undoing a deliberate administrator grant,
+ * so the two halves are behind two different flags and the second is never implied by the
+ * first.
+ */
+describe('convergeSystemRolePermissions', () => {
+  /** Every system role exactly as the shipped defaults define it. */
+  async function reseedFromDefaults(): Promise<void> {
+    await Role.deleteMany({ isSystem: true });
+    await seedRbac();
+  }
+
+  const ADMIN_DEFAULTS = SYSTEM_ROLE_DEFAULT_PERMISSIONS[SYSTEM_ROLE_KEYS.ADMIN];
+
+  async function permissionsOf(key: string): Promise<string[]> {
+    const role = await Role.findOne({ key });
+    return role?.permissions ?? [];
+  }
+
+  it('grants a system role the defaults its document predates', async () => {
+    await reseedFromDefaults();
+    // The measured live drift on ADMIN: the account-provisioning and material keys were
+    // added to the shipped default after the role document was created, so the role that
+    // is supposed to run the back office cannot manage a single user.
+    await Role.updateOne(
+      { key: SYSTEM_ROLE_KEYS.ADMIN },
+      {
+        $pull: {
+          permissions: {
+            $in: [PERMISSIONS.USER_VIEW, PERMISSIONS.USER_MANAGE, PERMISSIONS.MATERIAL_VIEW],
+          },
+        },
+      },
+    );
+
+    // The premise: a reseed does NOT fix this, which is why the script exists.
+    await seedRbac();
+    expect(await permissionsOf(SYSTEM_ROLE_KEYS.ADMIN)).not.toContain(PERMISSIONS.USER_MANAGE);
+
+    const result = await convergeSystemRolePermissions({ apply: true });
+
+    const admin = result.roles.find((entry) => entry.key === SYSTEM_ROLE_KEYS.ADMIN);
+    expect(admin?.granted).toEqual([
+      PERMISSIONS.USER_VIEW,
+      PERMISSIONS.USER_MANAGE,
+      PERMISSIONS.MATERIAL_VIEW,
+    ]);
+    expect(admin?.converged).toBe(true);
+    expect(result.unconverged).toEqual([]);
+
+    const held = await permissionsOf(SYSTEM_ROLE_KEYS.ADMIN);
+    expect(new Set(held)).toEqual(new Set(ADMIN_DEFAULTS));
+  });
+
+  it('is a no-op on a second run', async () => {
+    await reseedFromDefaults();
+    await Role.updateOne(
+      { key: SYSTEM_ROLE_KEYS.ADMIN },
+      { $pull: { permissions: PERMISSIONS.USER_MANAGE } },
+    );
+
+    await convergeSystemRolePermissions({ apply: true });
+    const second = await convergeSystemRolePermissions({ apply: true });
+
+    expect(second.roles.every((entry) => entry.granted.length === 0)).toBe(true);
+    expect(second.roles.every((entry) => entry.revoked.length === 0)).toBe(true);
+    expect(
+      (await permissionsOf(SYSTEM_ROLE_KEYS.ADMIN)).filter(
+        (key) => key === PERMISSIONS.USER_MANAGE,
+      ),
+    ).toHaveLength(1);
+  });
+
+  /**
+   * The asymmetry the whole script is built around. An extra key is indistinguishable from
+   * here between drift and an administrator's deliberate grant from the access screen —
+   * the exact edit `seedRbac` is prune-only in order to protect — so it is reported and
+   * left alone until somebody explicitly asks for it to go.
+   */
+  it('reports an extra key without withdrawing it, and withdraws it only with revokeExtra', async () => {
+    await reseedFromDefaults();
+    // The measured live drift on TECHNICIAN: `report.view` was granted at some point and
+    // was bypassing the work-scoping policy until that hole was closed elsewhere.
+    await Role.updateOne(
+      { key: SYSTEM_ROLE_KEYS.TECHNICIAN },
+      { $addToSet: { permissions: PERMISSIONS.REPORT_VIEW } },
+    );
+
+    const kept = await convergeSystemRolePermissions({ apply: true });
+    const technicianKept = kept.roles.find((entry) => entry.key === SYSTEM_ROLE_KEYS.TECHNICIAN);
+    expect(technicianKept?.extra).toEqual([PERMISSIONS.REPORT_VIEW]);
+    expect(technicianKept?.revoked).toEqual([]);
+    expect(technicianKept?.extraKept).toEqual([PERMISSIONS.REPORT_VIEW]);
+    // Still granted, and still counted as converged: holding more than the default is not
+    // a failure to converge unless revocation was asked for.
+    expect(await permissionsOf(SYSTEM_ROLE_KEYS.TECHNICIAN)).toContain(PERMISSIONS.REPORT_VIEW);
+    expect(technicianKept?.converged).toBe(true);
+
+    const withdrawn = await convergeSystemRolePermissions({ apply: true, revokeExtra: true });
+    const technicianWithdrawn = withdrawn.roles.find(
+      (entry) => entry.key === SYSTEM_ROLE_KEYS.TECHNICIAN,
+    );
+    expect(technicianWithdrawn?.revoked).toEqual([PERMISSIONS.REPORT_VIEW]);
+    expect(technicianWithdrawn?.extraKept).toEqual([]);
+
+    const held = await permissionsOf(SYSTEM_ROLE_KEYS.TECHNICIAN);
+    expect(held).not.toContain(PERMISSIONS.REPORT_VIEW);
+    expect(new Set(held)).toEqual(
+      new Set(SYSTEM_ROLE_DEFAULT_PERMISSIONS[SYSTEM_ROLE_KEYS.TECHNICIAN]),
+    );
+  });
+
+  it('writes nothing on a dry run, which is the default', async () => {
+    await reseedFromDefaults();
+    await Role.updateOne(
+      { key: SYSTEM_ROLE_KEYS.ADMIN },
+      {
+        $pull: { permissions: PERMISSIONS.USER_MANAGE },
+      },
+    );
+    await Role.updateOne(
+      { key: SYSTEM_ROLE_KEYS.ADMIN },
+      { $addToSet: { permissions: PERMISSIONS.RBAC_MANAGE } },
+    );
+
+    // No options at all: the safe mode has to be what you get for free.
+    const result = await convergeSystemRolePermissions({ revokeExtra: true });
+    expect(result.dryRun).toBe(true);
+
+    const admin = result.roles.find((entry) => entry.key === SYSTEM_ROLE_KEYS.ADMIN);
+    // The diff is still computed in full — that is the point of a dry run.
+    expect(admin?.granted).toEqual([PERMISSIONS.USER_MANAGE]);
+    expect(admin?.revoked).toEqual([PERMISSIONS.RBAC_MANAGE]);
+    // ...and reported as unconverged, so the exit code of a dry run cannot be mistaken for
+    // the exit code of a run that actually fixed something.
+    expect(result.unconverged).toContain(SYSTEM_ROLE_KEYS.ADMIN);
+
+    const held = await permissionsOf(SYSTEM_ROLE_KEYS.ADMIN);
+    expect(held).not.toContain(PERMISSIONS.USER_MANAGE);
+    expect(held).toContain(PERMISSIONS.RBAC_MANAGE);
+    expect(await AuditLog.countDocuments({})).toBe(0);
+  });
+
+  it('never touches a custom role, which has no default to converge against', async () => {
+    await reseedFromDefaults();
+    const custom = await Role.create({
+      key: 'TEAM_LEAD_CONVERGE_TEST',
+      name: 'Ахлах ажилтан',
+      description: null,
+      // Both halves of the diff at once: keys no system default contains, and none of the
+      // keys the roles around it are about to be granted.
+      permissions: [PERMISSIONS.DASHBOARD_VIEW, PERMISSIONS.EMPLOYEE_VIEW],
+      isSystem: false,
+    });
+
+    await convergeSystemRolePermissions({ apply: true, revokeExtra: true });
+
+    const untouched = await Role.findById(custom._id);
+    expect(untouched?.permissions).toEqual([PERMISSIONS.DASHBOARD_VIEW, PERMISSIONS.EMPLOYEE_VIEW]);
+
+    await Role.deleteOne({ _id: custom._id });
+  });
+
+  /**
+   * `seedRbac` resynchronises SYSTEM_ADMIN to the whole catalogue on every boot, which is
+   * stronger than anything done here and runs far more often. Two mechanisms writing the
+   * same document with the same intent is how they end up disagreeing.
+   */
+  it('leaves SYSTEM_ADMIN to the seed', async () => {
+    await reseedFromDefaults();
+
+    const result = await convergeSystemRolePermissions({ apply: true, revokeExtra: true });
+
+    const superuser = result.roles.find((entry) => entry.key === SYSTEM_ROLE_KEYS.SYSTEM_ADMIN);
+    expect(superuser?.skipped).toBe('seed-managed');
+    expect(superuser?.granted).toEqual([]);
+    expect(superuser?.revoked).toEqual([]);
+    expect(await permissionsOf(SYSTEM_ROLE_KEYS.SYSTEM_ADMIN)).toHaveLength(ALL_PERMISSIONS.length);
+  });
+
+  /**
+   * A permission set that changed without anyone opening the access screen still has to be
+   * explicable from the audit log alone, so the row matches the shape
+   * `PATCH /rbac/roles/:roleId` writes and names the migration in `reason`.
+   */
+  it('writes one audit row per role it changes, and none for a role it does not', async () => {
+    await reseedFromDefaults();
+    await Role.updateOne(
+      { key: SYSTEM_ROLE_KEYS.ADMIN },
+      { $pull: { permissions: PERMISSIONS.USER_MANAGE } },
+    );
+    // The audit collection is emptied by `resetDomainCollections` before every test, and
+    // nothing else on this path writes to it — it cannot be cleared here, because the model
+    // blocks every delete to keep the trail immutable.
+
+    await convergeSystemRolePermissions({ apply: true });
+
+    const rows = await AuditLog.find({ entityType: 'Permission' }).lean();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.action).toBe('Updated');
+    expect(rows[0]?.reason).toContain('migrate:system-role-permissions');
+    expect(rows[0]?.user).toBeNull();
+    const oldValue = rows[0]?.oldValue as { permissions: string[] };
+    const newValue = rows[0]?.newValue as { permissions: string[] };
+    expect(oldValue.permissions).not.toContain(PERMISSIONS.USER_MANAGE);
+    expect(newValue.permissions).toContain(PERMISSIONS.USER_MANAGE);
+  });
+
+  it('counts a system role missing from the database as unconverged rather than creating it', async () => {
+    await reseedFromDefaults();
+    await Role.deleteMany({ key: SYSTEM_ROLE_KEYS.SALES });
+
+    const result = await convergeSystemRolePermissions({ apply: true });
+
+    const sales = result.roles.find((entry) => entry.key === SYSTEM_ROLE_KEYS.SALES);
+    expect(sales?.roleFound).toBe(false);
+    expect(sales?.converged).toBe(false);
+    expect(result.unconverged).toEqual([SYSTEM_ROLE_KEYS.SALES]);
+    expect(await Role.countDocuments({ key: SYSTEM_ROLE_KEYS.SALES })).toBe(0);
 
     // Left as the suites after this one expect to find it.
     await seedRbac();

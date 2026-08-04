@@ -17,7 +17,7 @@ import { Role } from '../rbac/role.model';
 import { Report, ReportItem } from '../report-record/report-record.model';
 import { StoredFile } from '../storage/stored-file.model';
 import { User } from '../user/user.model';
-import { ObjectAssessment } from './object-master.models';
+import { ObjectAssessment, ObjectRecord } from './object-master.models';
 
 const API = '/api/v1';
 
@@ -446,6 +446,236 @@ describe('strict per-category validation', () => {
   });
 });
 
+/**
+ * A cable does not run between two towers.
+ *
+ * Every object-to-object reference — a circuit's panel, its start and end points, and a
+ * device's circuit — must join two assets standing in the same building. The floorless case
+ * is deliberately permissive: an object with no floor has no building, so there is nothing
+ * to contradict, and the master list is documented as accepting an object before it is
+ * placed.
+ */
+describe('building scoping for object connections', () => {
+  /** A second floor inside the SAME building as `floorId`. */
+  async function secondFloorSameBuilding(): Promise<string> {
+    const floor = await request(app)
+      .post(`${API}/floors`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ buildingId, code: 'FL-2', name: '2 давхар', floorNumber: 2 });
+    expect(floor.status).toBe(201);
+    return floor.body.data.id as string;
+  }
+
+  /** A floor in a DIFFERENT building of the same project and the same customer. */
+  async function floorInOtherBuilding(): Promise<string> {
+    const building = await request(app)
+      .post(`${API}/buildings`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ projectId, code: 'BLD-2', name: 'Хоёрдугаар барилга' });
+    expect(building.status).toBe(201);
+
+    const floor = await request(app)
+      .post(`${API}/floors`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ buildingId: building.body.data.id, code: 'B2-FL-1', name: '1 давхар', floorNumber: 1 });
+    expect(floor.status).toBe(201);
+    return floor.body.data.id as string;
+  }
+
+  /** Type codes are unique registry-wide, so each panel here brings its own. */
+  let panelSequence = 0;
+
+  async function createPanel(onFloor: string | null): Promise<string> {
+    panelSequence += 1;
+    const panelType = await createType({
+      code: `DBX${panelSequence}`,
+      name: 'Самбар',
+      category: 'PANEL',
+    });
+    const panel = await createObject({
+      code: `DBX-${panelSequence}`,
+      name: 'Түгээх самбар',
+      category: 'PANEL',
+      objectTypeId: panelType,
+      floorId: onFloor,
+      panel: { capacityKw: 25 },
+    });
+    expect(panel.status).toBe(201);
+    return panel.body.data.id as string;
+  }
+
+  it('accepts a connection between two floors of the same building', async () => {
+    const upstairs = await secondFloorSameBuilding();
+    const panel = await createPanel(floorId);
+    const circuitType = await createType({ code: 'LINE', name: 'Шугам', category: 'CIRCUIT' });
+
+    const circuit = await createObject({
+      code: 'HL-SAME',
+      name: 'Нэг барилгын хэлхээ',
+      category: 'CIRCUIT',
+      objectTypeId: circuitType,
+      floorId: upstairs,
+      circuit: { panelId: panel },
+    });
+
+    expect(circuit.status).toBe(201);
+    expect(circuit.body.data.circuit.panel.id).toBe(panel);
+  });
+
+  it('refuses a circuit whose panel stands in another building', async () => {
+    const elsewhere = await floorInOtherBuilding();
+    const panel = await createPanel(elsewhere);
+    const circuitType = await createType({ code: 'LINE', name: 'Шугам', category: 'CIRCUIT' });
+
+    const response = await createObject({
+      code: 'HL-CROSS',
+      name: 'Хөндлөн барилгын хэлхээ',
+      category: 'CIRCUIT',
+      objectTypeId: circuitType,
+      floorId,
+      circuit: { panelId: panel },
+    });
+
+    expect(response.status).toBe(400);
+    expect(response.body.message).toContain('өөр барилгад');
+    expect(response.body.issues).toContainEqual({
+      field: 'circuit.panelId',
+      message: 'Зөвхөн нэг барилгын объектыг холбоно.',
+    });
+  });
+
+  it('refuses equipment fed by a circuit in another building', async () => {
+    const elsewhere = await floorInOtherBuilding();
+    const circuitType = await createType({ code: 'LINE', name: 'Шугам', category: 'CIRCUIT' });
+    const equipmentType = await createType({ code: 'LAMP', name: 'Гэрэл', category: 'EQUIPMENT' });
+
+    const circuit = await createObject({
+      code: 'HL-FAR',
+      name: 'Хол хэлхээ',
+      category: 'CIRCUIT',
+      objectTypeId: circuitType,
+      floorId: elsewhere,
+      circuit: {},
+    });
+    expect(circuit.status).toBe(201);
+
+    const response = await createObject({
+      code: 'EQ-CROSS',
+      name: 'Хөндлөн тоноглол',
+      category: 'EQUIPMENT',
+      objectTypeId: equipmentType,
+      floorId,
+      equipment: { circuitId: circuit.body.data.id },
+    });
+
+    expect(response.status).toBe(400);
+    expect(response.body.issues).toContainEqual({
+      field: 'equipment.circuitId',
+      message: 'Зөвхөн нэг барилгын объектыг холбоно.',
+    });
+  });
+
+  it('refuses a cross-building connection made by update, and keeps the stored one', async () => {
+    const chain = await buildChain();
+    const elsewhere = await floorInOtherBuilding();
+    const foreignPanel = await createPanel(elsewhere);
+
+    const response = await request(app)
+      .patch(`${API}/objects-master/${chain.circuit}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ circuit: { panelId: foreignPanel } });
+
+    expect(response.status).toBe(400);
+    expect(response.body.message).toContain('өөр барилгад');
+
+    const after = await ObjectRecord.findById(chain.circuit).select('circuit.panel');
+    expect(String(after?.circuit?.panel)).toBe(chain.panel);
+  });
+
+  it('judges an update that moves the object against the floor it is landing on', async () => {
+    const chain = await buildChain();
+    const elsewhere = await floorInOtherBuilding();
+
+    // The move and the reference arrive in one request. The panel is in the original
+    // building, so the object leaving that building takes the connection out of scope.
+    const response = await request(app)
+      .patch(`${API}/objects-master/${chain.circuit}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ floorId: elsewhere, circuit: { panelId: chain.panel } });
+
+    expect(response.status).toBe(400);
+    expect(response.body.message).toContain('өөр барилгад');
+  });
+
+  it('allows a connection when the object being connected has no floor', async () => {
+    const panel = await createPanel(floorId);
+    const circuitType = await createType({ code: 'LINE', name: 'Шугам', category: 'CIRCUIT' });
+
+    // A floorless object has no building, so there is no building to contradict. The
+    // master list is documented as accepting an object before it is placed, and refusing
+    // this would make that object unconnectable.
+    const circuit = await createObject({
+      code: 'HL-FLOORLESS',
+      name: 'Байршуулаагүй хэлхээ',
+      category: 'CIRCUIT',
+      objectTypeId: circuitType,
+      circuit: { panelId: panel },
+    });
+
+    expect(circuit.status).toBe(201);
+    expect(circuit.body.data.floorId).toBeNull();
+    expect(circuit.body.data.circuit.panel.id).toBe(panel);
+  });
+
+  it('allows a connection when the referenced object has no floor', async () => {
+    const panel = await createPanel(null);
+    const circuitType = await createType({ code: 'LINE', name: 'Шугам', category: 'CIRCUIT' });
+
+    const circuit = await createObject({
+      code: 'HL-TO-FLOORLESS',
+      name: 'Байршуулаагүй самбарт холбогдсон',
+      category: 'CIRCUIT',
+      objectTypeId: circuitType,
+      floorId,
+      circuit: { panelId: panel },
+    });
+
+    expect(circuit.status).toBe(201);
+    expect(circuit.body.data.circuit.panel.id).toBe(panel);
+  });
+
+  it('still refuses a cross-tenant connection, before the building is ever compared', async () => {
+    const other = await Customer.create({ code: 'OT', name: 'Өөр ХХК' });
+    const circuitType = await createType({ code: 'LINE', name: 'Шугам', category: 'CIRCUIT' });
+    const equipmentType = await createType({ code: 'LAMP', name: 'Гэрэл', category: 'EQUIPMENT' });
+
+    const foreignCircuit = await request(app)
+      .post(`${API}/objects-master`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        customerId: String(other._id),
+        code: 'HL-OTHER',
+        name: 'Өөр харилцагчийн хэлхээ',
+        category: 'CIRCUIT',
+        objectTypeId: circuitType,
+        circuit: {},
+      });
+    expect(foreignCircuit.status).toBe(201);
+
+    const response = await createObject({
+      code: 'EQ-TENANT',
+      name: 'Хөндлөн харилцагч',
+      category: 'EQUIPMENT',
+      objectTypeId: equipmentType,
+      floorId,
+      equipment: { circuitId: foreignCircuit.body.data.id },
+    });
+
+    expect(response.status).toBe(400);
+    expect(response.body.message).toContain('өөр харилцагчид');
+  });
+});
+
 describe('load calculation through the API', () => {
   it('computes equipment, circuit and panel loads from the stored graph', async () => {
     const chain = await buildChain();
@@ -831,6 +1061,169 @@ describe('assessment history', () => {
     expect(detail.body.data.loadVariance.valueKw).toBeCloseTo(0.4, 3);
   });
 
+  /**
+   * Multiple load units.
+   *
+   * The invariant under test throughout is that `measuredLoadKw` is still the only summable
+   * quantity: amps and volts are recorded beside the assessment and are visible to nothing
+   * that adds up.
+   */
+  describe('load measurements', () => {
+    it('refuses a reading whose unit does not match its kind', async () => {
+      const chain = await buildChain();
+
+      const response = await recordAssessment(chain.equipment, {
+        newScore: 95,
+        // A current in kilowatts. Accepted, it would read as 42 kW of power everywhere.
+        measurements: [{ kind: 'CURRENT', value: 42, unit: 'KILOWATT', phase: 'L1' }],
+      });
+
+      expect(response.status).toBe(400);
+      expect(JSON.stringify(response.body)).toContain('unit');
+    });
+
+    it('refuses a phase on a power reading', async () => {
+      const chain = await buildChain();
+
+      const response = await recordAssessment(chain.equipment, {
+        newScore: 95,
+        measurements: [{ kind: 'ACTIVE_POWER', value: 8, unit: 'KILOWATT', phase: 'L2' }],
+      });
+
+      expect(response.status).toBe(400);
+    });
+
+    it('round-trips three per-phase current readings on one assessment', async () => {
+      const chain = await buildChain();
+
+      const created = await recordAssessment(chain.equipment, {
+        newScore: 95,
+        measurements: [
+          { kind: 'CURRENT', value: 41.2, unit: 'AMPERE', phase: 'L1' },
+          { kind: 'CURRENT', value: 38.9, unit: 'AMPERE', phase: 'L2' },
+          { kind: 'CURRENT', value: 44.1, unit: 'AMPERE', phase: 'L3' },
+          { kind: 'VOLTAGE', value: 231, unit: 'VOLT', phase: null },
+        ],
+      });
+      expect(created.status).toBe(201);
+
+      const history = await request(app)
+        .get(`${API}/objects-master/${chain.equipment}/history`)
+        .set('Authorization', `Bearer ${token}`);
+
+      // The per-phase imbalance is the finding, so all three survive as separate rows in
+      // the order they were entered rather than being averaged into one figure.
+      expect(history.body.data.assessments[0].measurements).toEqual([
+        { kind: 'CURRENT', value: 41.2, unit: 'AMPERE', phase: 'L1' },
+        { kind: 'CURRENT', value: 38.9, unit: 'AMPERE', phase: 'L2' },
+        { kind: 'CURRENT', value: 44.1, unit: 'AMPERE', phase: 'L3' },
+        { kind: 'VOLTAGE', value: 231, unit: 'VOLT', phase: null },
+      ]);
+      // No kW was given and none was invented from the amps.
+      expect(history.body.data.assessments[0].measuredLoadKw).toBeNull();
+    });
+
+    it('refuses the same kind and phase twice', async () => {
+      const chain = await buildChain();
+
+      const response = await recordAssessment(chain.equipment, {
+        newScore: 95,
+        measurements: [
+          { kind: 'CURRENT', value: 41.2, unit: 'AMPERE', phase: 'L1' },
+          { kind: 'CURRENT', value: 12.0, unit: 'AMPERE', phase: 'L1' },
+        ],
+      });
+
+      expect(response.status).toBe(400);
+    });
+
+    it('leaves an assessment with no measurements exactly as it was', async () => {
+      const chain = await buildChain();
+
+      const created = await recordAssessment(chain.equipment, {
+        newScore: 95,
+        measuredLoadKw: 5.2,
+      });
+      expect(created.status).toBe(201);
+      // Optional on the wire and empty in the reply — never null, so no reader has to
+      // distinguish "not sent" from "nothing read".
+      expect(created.body.data.measurements).toEqual([]);
+      expect(created.body.data.measuredLoadKw).toBe(5.2);
+
+      const detail = await request(app)
+        .get(`${API}/objects-master/${chain.equipment}`)
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(detail.body.data.measuredLoadKw).toBe(5.2);
+      expect(detail.body.data.loadVariance.valueKw).toBeCloseTo(0.4, 3);
+    });
+
+    it('refuses a kW reading that disagrees with the measured load', async () => {
+      const chain = await buildChain();
+
+      const response = await recordAssessment(chain.equipment, {
+        newScore: 95,
+        measuredLoadKw: 5.2,
+        measurements: [{ kind: 'ACTIVE_POWER', value: 7.9, unit: 'KILOWATT', phase: null }],
+      });
+
+      // Neither figure wins: one of the two would vanish with no trace it was entered.
+      // Refused at the schema, so the message lands on the kW field the technician can see.
+      expect(response.status).toBe(400);
+      expect(JSON.stringify(response.body)).toContain('зөрж байна');
+    });
+
+    it('fills the measured load from a kW reading when the kW field was left empty', async () => {
+      const chain = await buildChain();
+
+      const created = await recordAssessment(chain.equipment, {
+        newScore: 95,
+        measurements: [{ kind: 'ACTIVE_POWER', value: 7.9, unit: 'KILOWATT', phase: null }],
+      });
+      expect(created.status).toBe(201);
+      expect(created.body.data.measuredLoadKw).toBe(7.9);
+
+      // And it reaches the summable head on the object, exactly as the kW box does.
+      const detail = await request(app)
+        .get(`${API}/objects-master/${chain.equipment}`)
+        .set('Authorization', `Bearer ${token}`);
+      expect(detail.body.data.measuredLoadKw).toBe(7.9);
+    });
+
+    it('leaves the floor load summary unchanged when amp and volt readings are added', async () => {
+      const chain = await buildChain();
+
+      await recordAssessment(chain.panel, { newScore: 95, measuredLoadKw: 10 });
+
+      const before = await request(app)
+        .get(`${API}/floors/${floorId}/load`)
+        .set('Authorization', `Bearer ${token}`);
+
+      // The same kW figure, now with four non-kW readings alongside it.
+      await recordAssessment(chain.panel, {
+        newScore: 95,
+        measuredLoadKw: 10,
+        measurements: [
+          { kind: 'CURRENT', value: 41.2, unit: 'AMPERE', phase: 'L1' },
+          { kind: 'CURRENT', value: 38.9, unit: 'AMPERE', phase: 'L2' },
+          { kind: 'CURRENT', value: 44.1, unit: 'AMPERE', phase: 'L3' },
+          { kind: 'VOLTAGE', value: 231, unit: 'VOLT', phase: null },
+        ],
+      });
+
+      const after = await request(app)
+        .get(`${API}/floors/${floorId}/load`)
+        .set('Authorization', `Bearer ${token}`);
+
+      // 41.2 + 38.9 + 44.1 + 231 = 355.4 of nothing: the amps and volts are visible to no
+      // total. Only `measuredLoadKw` is summed, and it did not move.
+      expect(after.body.data.measuredTotalKw).toBe(10);
+      expect(after.body.data.measuredTotalKw).toEqual(before.body.data.measuredTotalKw);
+      expect(after.body.data.totalKw).toEqual(before.body.data.totalKw);
+      expect(after.body.data.variance).toEqual(before.body.data.variance);
+    });
+  });
+
   it('refuses an assessment on a type that does not generate conclusions', async () => {
     const typeId = await createType({
       code: 'CLAMP',
@@ -878,6 +1271,25 @@ describe('assessment history', () => {
 
     expect(history.status).toBe(200);
     expect(history.body.data.assessments).toHaveLength(1);
+
+    /*
+     * The manual screen is UNCHANGED by the per-equipment author added for planned work.
+     *
+     * One person records the score here and that recording IS the sign-off, so it lands in
+     * `assessedBy` exactly as before. `judgedBy` is left null rather than repeating them:
+     * it means "a separately recorded author of the verdict", and inventing one here would
+     * make a reader think two people were involved.
+     */
+    const entry = history.body.data.assessments[0] as {
+      assessedById: string | null;
+      assessedByName: string | null;
+      judgedById: string | null;
+      judgedByName: string | null;
+    };
+    expect(entry.assessedById).not.toBeNull();
+    expect(entry.assessedByName).not.toBeNull();
+    expect(entry.judgedById).toBeNull();
+    expect(entry.judgedByName).toBeNull();
 
     // The timeline is built from report items now, so a row's kind is the report type that
     // produced it rather than a vocabulary private to this endpoint.
@@ -955,6 +1367,42 @@ describe('unified report write-through and rollup', () => {
       .get(`${API}/objects-master/${chain.equipment}`)
       .set('Authorization', `Bearer ${token}`);
     expect(detail.body.data.latestAssessment.score).toBe(70);
+  });
+
+  /**
+   * The manual path writes its history row ITSELF, and the derived report must not write a
+   * second one.
+   *
+   * `recordAssessment` creates the `ObjectAssessment`, points the head at it, and only then
+   * writes a derived `OBJECT_ASSESSMENT` report and applies it. Since the apply now appends
+   * history for every other report type, this pins the exemption: two rows for one
+   * assessment would be the regression, and so would a head that stopped resolving.
+   */
+  it('adds no second history row when the manual assessment writes through to a report', async () => {
+    const chain = await buildChain();
+
+    await recordAssessment(chain.equipment, { newScore: 90, conclusion: 'Хэвийн' });
+
+    const rows = await ObjectAssessment.find({ object: chain.equipment });
+    // One assessment, one history row — despite the report write-through and its apply.
+    expect(rows).toHaveLength(1);
+    // Written by the manual path, so it is not keyed to a report finding and appends every
+    // time rather than deduplicating.
+    expect(rows[0]?.sourceReportItem ?? null).toBeNull();
+    expect(rows[0]?.sourceLabel).toBeNull();
+
+    // The head still resolves to the row the manual path created.
+    const object = await ObjectRecord.findById(chain.equipment);
+    expect(String(object?.latestAssessment?.assessment)).toBe(String(rows[0]?._id));
+
+    // A second manual assessment appends, because nothing keys it to a correctable record.
+    const again = await recordAssessment(chain.equipment, {
+      newScore: 70,
+      recommendation: 'Чангалах',
+      repairRequired: true,
+    });
+    expect(again.status).toBe(201);
+    expect(await ObjectAssessment.countDocuments({ object: chain.equipment })).toBe(2);
   });
 
   it('rolls the worst equipment score up to the floor, building and project', async () => {
@@ -1421,6 +1869,14 @@ describe('customer scope on objects', () => {
       .set('Authorization', `Bearer ${overPrivileged}`);
     expect(deleteForeign.status).toBe(404);
 
+    // The lighter position endpoint is scoped exactly like the full update above: a small
+    // payload is not a smaller permission.
+    const moveForeign = await request(app)
+      .patch(`${API}/objects-master/${foreign.objectId}/position`)
+      .set('Authorization', `Bearer ${overPrivileged}`)
+      .send({ planPosition: { x: 0.5, y: 0.5 } });
+    expect(moveForeign.status).toBe(404);
+
     // Another tenant's object cannot be pulled onto the caller's own floor.
     const link = await request(app)
       .post(`${API}/floors/${floorId}/objects`)
@@ -1470,5 +1926,250 @@ describe('customer scope on objects', () => {
     const load = await asStaff(`/floors/${foreign.floorId}/load`);
     expect(load.status).toBe(200);
     expect(load.body.data.panelCount).toBe(1);
+  });
+});
+
+/**
+ * Placement on the floor plan (section 11.2).
+ *
+ * Coordinates are normalised fractions of the plan image, so the API is exercised with the
+ * same 0..1 pairs the plan panel sends and with values outside that range, which no plan
+ * can express.
+ */
+describe('plan placement', () => {
+  async function createPlaceable(
+    body: Record<string, unknown> = {},
+  ): Promise<request.Response> {
+    const typeId = await createType({
+      code: `PIN${Math.floor(Math.random() * 100000)}`,
+      name: 'План дээрх төрөл',
+      category: 'EQUIPMENT',
+      showOnPlan: true,
+    });
+    return createObject({
+      code: 'EQ-PIN',
+      name: 'План дээрх тоноглол',
+      category: 'EQUIPMENT',
+      objectTypeId: typeId,
+      floorId,
+      equipment: { ratedPowerKw: 1 },
+      ...body,
+    });
+  }
+
+  it('creates an object with a position and returns it on the floor listing', async () => {
+    const created = await createPlaceable({ planPosition: { x: 0.25, y: 0.75 } });
+
+    expect(created.status).toBe(201);
+    expect(created.body.data.planPosition).toEqual({ x: 0.25, y: 0.75 });
+
+    // The plan draws its markers from this one call, so the position has to survive the
+    // list mapping and not only the detail mapping.
+    const listed = await request(app)
+      .get(`${API}/floors/${floorId}/objects`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(listed.status).toBe(200);
+    expect(listed.body.data.items[0].planPosition).toEqual({ x: 0.25, y: 0.75 });
+
+    // …and so does the registry's own answer to "may this be drawn on a plan". A client
+    // that only holds this list would otherwise have to fetch the whole type registry to
+    // decide whether to draw the marker it was just handed a position for.
+    expect(listed.body.data.items[0].objectType.showOnPlan).toBe(true);
+  });
+
+  /**
+   * The inline type reference carries `showOnPlan` for every object, not only for a
+   * placed one: it is what a plan filters on, and a false is as load-bearing as a true.
+   */
+  it('reports showOnPlan as false for a type that is not shown on the plan', async () => {
+    const typeId = await createType({
+      code: `NOPIN${Math.floor(Math.random() * 100000)}`,
+      name: 'Планд харагдахгүй төрөл',
+      category: 'EQUIPMENT',
+      showOnPlan: false,
+    });
+    const created = await createObject({
+      code: 'EQ-NOPIN',
+      name: 'Планд харагдахгүй тоноглол',
+      category: 'EQUIPMENT',
+      objectTypeId: typeId,
+      floorId,
+      equipment: { ratedPowerKw: 1 },
+    });
+    expect(created.status).toBe(201);
+
+    const listed = await request(app)
+      .get(`${API}/floors/${floorId}/objects`)
+      .set('Authorization', `Bearer ${token}`);
+    const row = (listed.body.data.items as { id: string; objectType: { showOnPlan: boolean } }[])
+      .find((item) => item.id === created.body.data.id);
+    expect(row?.objectType.showOnPlan).toBe(false);
+  });
+
+  it('creates an object with no position at all', async () => {
+    const created = await createPlaceable();
+
+    expect(created.status).toBe(201);
+    expect(created.body.data.planPosition).toBeNull();
+  });
+
+  it('refuses a coordinate outside the plan', async () => {
+    for (const planPosition of [
+      { x: 1.5, y: 0.5 },
+      { x: 0.5, y: -0.2 },
+    ]) {
+      const response = await createPlaceable({ code: 'EQ-BAD', planPosition });
+      expect(response.status).toBe(400);
+    }
+  });
+
+  /** A pin belongs to a drawing, and the drawing belongs to a floor. */
+  it('refuses a position with no floor behind it', async () => {
+    const response = await createPlaceable({
+      floorId: null,
+      planPosition: { x: 0.4, y: 0.4 },
+    });
+
+    expect(response.status).toBe(400);
+    const issues = response.body.issues as { field: string }[];
+    expect(issues.some((issue) => issue.field.includes('planPosition'))).toBe(true);
+  });
+
+  it('moves a pin through the position endpoint', async () => {
+    const created = await createPlaceable({ planPosition: { x: 0.1, y: 0.1 } });
+    const objectId = created.body.data.id as string;
+
+    const moved = await request(app)
+      .patch(`${API}/objects-master/${objectId}/position`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ planPosition: { x: 0.6, y: 0.35 } });
+
+    expect(moved.status).toBe(200);
+    expect(moved.body.data.planPosition).toEqual({ x: 0.6, y: 0.35 });
+
+    const reread = await request(app)
+      .get(`${API}/objects-master/${objectId}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(reread.body.data.planPosition).toEqual({ x: 0.6, y: 0.35 });
+  });
+
+  it('clears a pin through the position endpoint', async () => {
+    const created = await createPlaceable({ planPosition: { x: 0.2, y: 0.2 } });
+    const objectId = created.body.data.id as string;
+
+    const cleared = await request(app)
+      .patch(`${API}/objects-master/${objectId}/position`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ planPosition: null });
+
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.data.planPosition).toBeNull();
+    // The object itself survives: clearing removes the pin, never the registration.
+    expect(cleared.body.data.floorId).toBe(floorId);
+  });
+
+  it('refuses a coordinate outside the plan on the position endpoint', async () => {
+    const created = await createPlaceable();
+    const objectId = created.body.data.id as string;
+
+    const response = await request(app)
+      .patch(`${API}/objects-master/${objectId}/position`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ planPosition: { x: 0.5, y: 2 } });
+
+    expect(response.status).toBe(400);
+  });
+
+  /** Every other mutation in this module is audited; moving a pin is one too. */
+  it('audits a move and a clear', async () => {
+    const created = await createPlaceable({ planPosition: { x: 0.1, y: 0.1 } });
+    const objectId = created.body.data.id as string;
+
+    await request(app)
+      .patch(`${API}/objects-master/${objectId}/position`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ planPosition: { x: 0.8, y: 0.9 } });
+    await request(app)
+      .patch(`${API}/objects-master/${objectId}/position`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ planPosition: null });
+
+    const entries = await AuditLog.find({ entityType: 'Object', entityId: objectId });
+    const reasons = entries.map((entry) => entry.reason);
+    expect(reasons).toContain('plan position updated');
+    expect(reasons).toContain('plan position cleared');
+
+    const moved = entries.find((entry) => entry.reason === 'plan position updated');
+    expect((moved?.oldValue as { planPosition: unknown }).planPosition).toEqual({
+      x: 0.1,
+      y: 0.1,
+    });
+    expect((moved?.newValue as { planPosition: unknown }).planPosition).toEqual({
+      x: 0.8,
+      y: 0.9,
+    });
+  });
+
+  /** An unplaced object has no floor, so there is no plan to pin it to. */
+  it('refuses a position on an object that sits on no floor', async () => {
+    const created = await createPlaceable({ code: 'EQ-LOOSE', floorId: null });
+    const objectId = created.body.data.id as string;
+
+    const response = await request(app)
+      .patch(`${API}/objects-master/${objectId}/position`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ planPosition: { x: 0.5, y: 0.5 } });
+
+    expect(response.status).toBe(400);
+  });
+
+  /** Unlinking removes the placement, and the pin is part of the placement. */
+  it('drops the pin when the object leaves the floor', async () => {
+    const created = await createPlaceable({ planPosition: { x: 0.3, y: 0.3 } });
+    const objectId = created.body.data.id as string;
+
+    const unlink = await request(app)
+      .delete(`${API}/floors/${floorId}/objects/${objectId}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(unlink.status).toBe(200);
+
+    const reread = await request(app)
+      .get(`${API}/objects-master/${objectId}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(reread.body.data.planPosition).toBeNull();
+  });
+
+  /**
+   * Replacing the plan keeps every placement.
+   *
+   * The positions are fractions of the drawing, and a replacement plan is the same floor
+   * redrawn, so clearing them would throw away the survey work of placing each object.
+   */
+  it('keeps stored positions when the plan image is replaced or removed', async () => {
+    const created = await createPlaceable({ planPosition: { x: 0.42, y: 0.58 } });
+    const objectId = created.body.data.id as string;
+
+    await request(app)
+      .put(`${API}/floors/${floorId}/plan`)
+      .set('Authorization', `Bearer ${token}`)
+      .attach('file', Buffer.from('plan-one'), { filename: 'a.png', contentType: 'image/png' });
+    await request(app)
+      .put(`${API}/floors/${floorId}/plan`)
+      .set('Authorization', `Bearer ${token}`)
+      .attach('file', Buffer.from('plan-two'), { filename: 'b.png', contentType: 'image/png' });
+
+    let reread = await request(app)
+      .get(`${API}/objects-master/${objectId}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(reread.body.data.planPosition).toEqual({ x: 0.42, y: 0.58 });
+
+    await request(app)
+      .delete(`${API}/floors/${floorId}/plan`)
+      .set('Authorization', `Bearer ${token}`);
+
+    reread = await request(app)
+      .get(`${API}/objects-master/${objectId}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(reread.body.data.planPosition).toEqual({ x: 0.42, y: 0.58 });
   });
 });

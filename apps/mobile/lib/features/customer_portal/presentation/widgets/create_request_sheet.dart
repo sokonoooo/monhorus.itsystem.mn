@@ -1,7 +1,10 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/error/failure.dart';
+import '../../../../core/media/photo_capture.dart';
 import '../../../../core/network/api_result.dart';
 import '../../../auth/domain/entities/app_user.dart';
 import '../../../auth/presentation/providers/auth_provider.dart';
@@ -11,7 +14,9 @@ import '../../domain/entities/customer_scope.dart';
 import '../../domain/entities/service_request_enums.dart';
 import '../providers/customer_portal_providers.dart';
 import '../theme/customer_tokens.dart';
+import 'blueprint_ui.dart';
 import 'customer_ui.dart';
+import 'photo_source_sheet.dart';
 
 /// The prototype's "Дуудлага илгээх" bottom sheet.
 ///
@@ -24,16 +29,25 @@ import 'customer_ui.dart';
 /// on `customerId` is therefore the session's, never a choice made on this screen -
 /// and the server ignores the field for a customer caller in any case.
 ///
-/// Two deliberate departures from the prototype, both because the API has no such
-/// concept and inventing one would be inventing a business rule:
+/// One deliberate departure from the prototype, because the API has no such concept
+/// and inventing one would be inventing a business rule: the three-level "Яаралтай
+/// байдал" chooser becomes a single urgent switch, since `createServiceRequestSchema`
+/// has `isUrgent: boolean` and no priority field.
 ///
-///   * The three-level "Яаралтай байдал" chooser becomes a single urgent switch.
-///     `createServiceRequestSchema` has `isUrgent: boolean` and no priority field.
-///   * The photo grid is omitted. Attaching a file is a two-phase flow - upload to
-///     `POST /files/service-request-attachments` first, then pass the returned ids
-///     as `attachmentIds` - and the upload needs an image picker plugin that this
-///     app does not carry. The request model keeps the `attachmentIds` field so the
-///     flow can be completed without a contract change.
+/// The five things a request must carry — байршил, төрөл, холбоо барих хүн, тайлбар
+/// and a picture — are all collected here, and the picture is REQUIRED:
+///
+///   * Attaching one is a two-phase flow. `POST /files/service-request-attachments`
+///     mints a file id, then the create call names it in `attachmentIds` and the
+///     server transfers ownership of the file to the new request. The same shape the
+///     employee app uses for assessment evidence, through the same `capturePhoto`.
+///   * The requirement is enforced HERE, not in `createServiceRequestSchema`. The
+///     admin web create page and every staff flow post through that same schema and
+///     send no attachments at all, so making the field mandatory API-side would break
+///     them. This sheet is the one flow the rule is about, so this is where it lives.
+///   * An upload that is never followed by a submit leaves a file nobody can read —
+///     the server parks it on the uploading account, and an unclaimed attachment
+///     resolves to no organisation — so abandoning the sheet leaks nothing.
 class CreateRequestSheet extends ConsumerStatefulWidget {
   const CreateRequestSheet({
     super.key,
@@ -44,6 +58,7 @@ class CreateRequestSheet extends ConsumerStatefulWidget {
     this.deviceName,
     this.initialDescription,
     this.initialUrgent = false,
+    this.pickPhoto = pickServiceRequestPhoto,
   });
 
   final ResolvedCustomerScope scope;
@@ -53,6 +68,11 @@ class CreateRequestSheet extends ConsumerStatefulWidget {
   final String? deviceName;
   final String? initialDescription;
   final bool initialUrgent;
+
+  /// How the sheet obtains a picture. Overridden in tests only; `image_picker` has no
+  /// test binding, so a widget test would otherwise be unable to reach the submit path
+  /// at all now that a photo is mandatory.
+  final PortalPhotoPicker pickPhoto;
 
   /// Returns the id of the created request, or null when the sheet was dismissed.
   static Future<String?> show(
@@ -64,6 +84,7 @@ class CreateRequestSheet extends ConsumerStatefulWidget {
     String? deviceName,
     String? initialDescription,
     bool initialUrgent = false,
+    PortalPhotoPicker pickPhoto = pickServiceRequestPhoto,
   }) {
     return showModalBottomSheet<String>(
       context: context,
@@ -84,6 +105,7 @@ class CreateRequestSheet extends ConsumerStatefulWidget {
           deviceName: deviceName,
           initialDescription: initialDescription,
           initialUrgent: initialUrgent,
+          pickPhoto: pickPhoto,
         ),
       ),
     );
@@ -104,9 +126,30 @@ class _CreateRequestSheetState extends ConsumerState<CreateRequestSheet> {
   ServiceRequestType _requestType = ServiceRequestType.standardCall;
   late bool _isUrgent;
 
+  /// Files already uploaded and parked on this account, in the order they were added.
+  /// Their ids are what `attachmentIds` carries.
+  final List<ServiceRequestAttachmentModel> _photos =
+      <ServiceRequestAttachmentModel>[];
+
+  /// The captured bytes, kept per file id so the grid can draw a thumbnail without
+  /// downloading back the picture it just sent — and without hitting `GET /files/:id`,
+  /// which refuses an attachment no request has claimed yet.
+  final Map<String, Uint8List> _thumbnails = <String, Uint8List>{};
+
+  bool _uploading = false;
   bool _submitting = false;
+  String? _photoError;
   String? _submitError;
   String? _createdId;
+
+  /// `createServiceRequestSchema` caps `attachmentIds` at 20. Enforced before the
+  /// picker opens so the twenty-first picture is never uploaded: it would be stored,
+  /// orphaned, and then rejected along with the rest of the form.
+  static const int _maxPhotos = 20;
+
+  bool get _busy => _uploading || _submitting;
+
+  bool get _canAddPhoto => !_busy && _photos.length < _maxPhotos;
 
   @override
   void initState() {
@@ -160,7 +203,7 @@ class _CreateRequestSheetState extends ConsumerState<CreateRequestSheet> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisSize: MainAxisSize.min,
                     children: <Widget>[
-                      const Text(
+                      Text(
                         'Дуудлага илгээх',
                         style: CustomerTokens.screenTitle,
                       ),
@@ -280,7 +323,7 @@ class _CreateRequestSheetState extends ConsumerState<CreateRequestSheet> {
                             fontWeight: FontWeight.w700,
                           ),
                         ),
-                        subtitle: const Text(
+                        subtitle: Text(
                           'Яаралтай дуудлагын SLA 6 цаг, энгийн дуудлагынх 24 цаг.',
                           style: CustomerTokens.rowSub,
                         ),
@@ -340,6 +383,9 @@ class _CreateRequestSheetState extends ConsumerState<CreateRequestSheet> {
                         },
                       ),
 
+                      const SizedBox(height: 4),
+                      _buildPhotoSection(),
+
                       if (_submitError != null) ...<Widget>[
                         const SizedBox(height: 4),
                         NoticeBanner.alert(text: _submitError!),
@@ -359,7 +405,7 @@ class _CreateRequestSheetState extends ConsumerState<CreateRequestSheet> {
                 children: <Widget>[
                   Expanded(
                     child: OutlinedButton(
-                      onPressed: _submitting
+                      onPressed: _busy
                           ? null
                           : () => Navigator.of(context).maybePop(),
                       child: const Text('Болих'),
@@ -368,8 +414,13 @@ class _CreateRequestSheetState extends ConsumerState<CreateRequestSheet> {
                   const SizedBox(width: 8),
                   Expanded(
                     flex: 2,
+                    // Deliberately still tappable with no picture, rather than
+                    // disabled. A greyed-out button states that something is wrong and
+                    // refuses to say what; tapping it prints the sentence and scrolls
+                    // the reason into view. The rule is stated in the section above in
+                    // any case, so this is the second telling, not the first.
                     child: FilledButton(
-                      onPressed: _submitting ? null : _submit,
+                      onPressed: _busy ? null : _submit,
                       style: FilledButton.styleFrom(
                         minimumSize: const Size.fromHeight(48),
                       ),
@@ -389,6 +440,142 @@ class _CreateRequestSheetState extends ConsumerState<CreateRequestSheet> {
         ),
       ),
     );
+  }
+
+  /// What the user is told when they try to send a request with no picture.
+  ///
+  /// A sentence rather than a label: the rule is not obvious from the form, and the
+  /// dispatcher who receives the request cannot see the fault without it.
+  static const String _photoRequiredMessage =
+      'Асуудлыг харуулсан дор хаяж нэг зураг заавал хавсаргана.';
+
+  /// The mandatory photo grid.
+  ///
+  /// The requirement is stated up front by the section's own subtitle rather than only
+  /// on refusal, so the rule is visible before the submit button is reached. Framed as
+  /// a [BlueprintFrame] like every other panel in the flow.
+  Widget _buildPhotoSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: <Widget>[
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          crossAxisAlignment: CrossAxisAlignment.baseline,
+          textBaseline: TextBaseline.alphabetic,
+          children: <Widget>[
+            const FieldLabel('Зураг (заавал)'),
+            Text('${_photos.length}/$_maxPhotos', style: CustomerTokens.rowSub),
+          ],
+        ),
+        BlueprintFrame(
+          padding: const EdgeInsets.fromLTRB(13, 12, 13, 13),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Text(
+                'Асуудлыг харуулсан зураг хавсаргана. Зурагтай дуудлагыг '
+                'ажилтан хурдан оношилно.',
+                style: CustomerTokens.rowSub.copyWith(height: 1.45),
+              ),
+              if (_photos.isNotEmpty) ...<Widget>[
+                const SizedBox(height: 11),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: <Widget>[
+                    for (final ServiceRequestAttachmentModel photo in _photos)
+                      _PhotoThumb(
+                        bytes: _thumbnails[photo.id],
+                        label: photo.name,
+                        onRemove: _busy ? null : () => _removePhoto(photo.id),
+                      ),
+                  ],
+                ),
+              ],
+              const SizedBox(height: 11),
+              OutlinedButton.icon(
+                onPressed: _canAddPhoto ? _addPhoto : null,
+                icon: _uploading
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.add_a_photo_outlined, size: 18),
+                label: Text(
+                  _photos.isEmpty ? 'Зураг нэмэх' : 'Өөр зураг нэмэх',
+                ),
+              ),
+            ],
+          ),
+        ),
+        if (_photoError != null) ...<Widget>[
+          const SizedBox(height: 8),
+          NoticeBanner.alert(text: _photoError!),
+        ],
+      ],
+    );
+  }
+
+  /// Picks one picture and uploads it immediately.
+  ///
+  /// Uploading on add rather than on submit is what lets the create call be a single
+  /// atomic POST carrying ids: the server needs the file to exist before a request can
+  /// claim it. It also means a slow upload is paid for while the user is still typing
+  /// rather than after they press Илгээх.
+  Future<void> _addPhoto() async {
+    if (!_canAddPhoto) return;
+
+    final PhotoCaptureResult picked = await widget.pickPhoto(context);
+    if (!mounted) return;
+
+    switch (picked) {
+      case PhotoCaptureCancelled():
+        // Backing out of the camera is the normal case, not a problem to report.
+        return;
+      case PhotoCaptureFailed(message: final String message):
+        setState(() => _photoError = message);
+        return;
+      case PhotoCaptured(photo: final CapturedPhoto photo):
+        setState(() {
+          _uploading = true;
+          _photoError = null;
+        });
+
+        final ApiResult<ServiceRequestAttachmentModel> result = await ref
+            .read(customerPortalRepositoryProvider)
+            .uploadServiceRequestAttachment(photo);
+
+        if (!mounted) return;
+
+        result.when(
+          success: (ServiceRequestAttachmentModel stored) => setState(() {
+            _uploading = false;
+            _photos.add(stored);
+            _thumbnails[stored.id] = photo.bytes;
+            // A refusal that was about the missing picture is now stale.
+            _submitError = null;
+          }),
+          failure: (Failure failure) => setState(() {
+            _uploading = false;
+            _photoError = failure.message;
+          }),
+        );
+    }
+  }
+
+  /// Drops a picture from the request being composed.
+  ///
+  /// The uploaded file is deliberately not deleted server-side: there is no delete
+  /// route for a parked attachment, and an unclaimed file is readable by nobody — not
+  /// even its uploader — so leaving it costs a row and leaks nothing.
+  void _removePhoto(String fileId) {
+    setState(() {
+      _photos.removeWhere((ServiceRequestAttachmentModel p) => p.id == fileId);
+      _thumbnails.remove(fileId);
+    });
   }
 
   Widget _buildConfirmation(String requestId) {
@@ -415,12 +602,12 @@ class _CreateRequestSheetState extends ConsumerState<CreateRequestSheet> {
                   child: const Icon(Icons.check, size: 32, color: CustomerTokens.green),
                 ),
                 const SizedBox(height: 14),
-                const Text(
+                Text(
                   'Хүсэлт илгээгдлээ',
                   style: CustomerTokens.screenTitle,
                 ),
                 const SizedBox(height: 8),
-                const Text(
+                Text(
                   'Таны хүсэлтийг систем бүртгэж, диспетчер ажилтанд хуваарилах '
                   'болно.',
                   textAlign: TextAlign.center,
@@ -445,11 +632,22 @@ class _CreateRequestSheetState extends ConsumerState<CreateRequestSheet> {
   }
 
   Future<void> _submit() async {
-    if (!(_formKey.currentState?.validate() ?? false)) return;
+    if (_busy) return;
+
+    // Both halves are evaluated before returning, so a form with a short description
+    // AND no picture reports both faults at once rather than one per attempt.
+    final bool formValid = _formKey.currentState?.validate() ?? false;
+    final bool hasPhoto = _photos.isNotEmpty;
+
+    if (!hasPhoto) {
+      setState(() => _photoError = _photoRequiredMessage);
+    }
+    if (!formValid || !hasPhoto) return;
 
     setState(() {
       _submitting = true;
       _submitError = null;
+      _photoError = null;
     });
 
     final CreateServiceRequestRequestModel request =
@@ -463,6 +661,11 @@ class _CreateRequestSheetState extends ConsumerState<CreateRequestSheet> {
       description: _description.text.trim(),
       contactName: _contactName.text.trim(),
       contactPhone: _contactPhone.text.trim(),
+      // The ids the server parked on this account; creating the request is what
+      // transfers their ownership to it.
+      attachmentIds: _photos
+          .map((ServiceRequestAttachmentModel photo) => photo.id)
+          .toList(growable: false),
     );
 
     final ApiResult<ServiceRequestDetailModel> result = await ref
@@ -487,6 +690,93 @@ class _CreateRequestSheetState extends ConsumerState<CreateRequestSheet> {
           _submitError = failure.message;
         });
       },
+    );
+  }
+}
+
+/// One uploaded picture in the grid, with the control that drops it.
+///
+/// Drawn from the bytes the picker returned rather than from `downloadUrl`: the file
+/// is parked on the uploading account until the request claims it, and `GET /files/:id`
+/// resolves a service-request attachment through the request that owns it — so an
+/// unclaimed one answers 404 to everybody, its uploader included. There is nothing to
+/// fetch back yet, and nothing worth fetching: these are the exact bytes that were sent.
+class _PhotoThumb extends StatelessWidget {
+  const _PhotoThumb({
+    required this.bytes,
+    required this.label,
+    required this.onRemove,
+  });
+
+  final Uint8List? bytes;
+  final String label;
+  final VoidCallback? onRemove;
+
+  static const double _size = 76;
+
+  @override
+  Widget build(BuildContext context) {
+    final Uint8List? data = bytes;
+
+    return SizedBox(
+      width: _size,
+      height: _size,
+      child: Stack(
+        children: <Widget>[
+          Positioned.fill(
+            child: Container(
+              decoration: const BoxDecoration(
+                color: CustomerTokens.soft2,
+                border: Border.fromBorderSide(CustomerTokens.hairlineSide),
+              ),
+              child: data == null
+                  // Only reachable if the bytes were dropped from memory while the
+                  // upload survived; the name still identifies which picture it is.
+                  ? Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(4),
+                        child: Text(
+                          label,
+                          maxLines: 3,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: TextAlign.center,
+                          style: CustomerTokens.rowSub,
+                        ),
+                      ),
+                    )
+                  : Image.memory(
+                      data,
+                      fit: BoxFit.cover,
+                      // Decoded down to the box it is drawn in: a full-resolution
+                      // frame per thumbnail is megabytes of raster for 76 logical
+                      // pixels, and twenty of them would be felt.
+                      cacheWidth: (_size * MediaQuery.devicePixelRatioOf(context))
+                          .round(),
+                      semanticLabel: label,
+                    ),
+            ),
+          ),
+          if (onRemove != null)
+            Positioned(
+              top: 0,
+              right: 0,
+              child: Material(
+                color: CustomerTokens.ink,
+                child: InkWell(
+                  onTap: onRemove,
+                  child: const Padding(
+                    padding: EdgeInsets.all(3),
+                    child: Icon(
+                      Icons.close,
+                      size: 13,
+                      color: CustomerTokens.onHero,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
     );
   }
 }

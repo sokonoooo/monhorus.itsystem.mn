@@ -296,8 +296,10 @@ class FloorModel {
 /// header, so it cannot be handed to `Image.network`; the bytes go through the
 /// authenticated client instead.
 ///
-/// Note what is NOT here: the DTO carries no pin, marker or coordinate list. The
-/// prototype's device dots on the plan have no backing field anywhere in the API.
+/// Note what is NOT here: the DTO carries no pin, marker or coordinate list — and it
+/// does not need one. A device's place on the drawing is `planPosition` on the object
+/// itself (`ObjectListItemModel`), a fraction of the plan's width and height, so a
+/// marker layer is built from the floor's object list rather than from the plan.
 class FloorPlanModel {
   const FloorPlanModel({
     required this.id,

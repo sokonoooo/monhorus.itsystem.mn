@@ -1,168 +1,298 @@
 import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
 
-/// Design tokens for the employee app, mirroring `docs/MOBILE_DESIGN_SYSTEM.md`,
-/// which both Flutter apps follow.
+/// Design tokens for the employee app, mirroring the customer app's
+/// `CustomerTokens` value for value.
 ///
-/// Visual direction: field instrument. White surfaces on a cool graphite canvas, a
-/// 1px keyline plus a whisper of shadow, one spent-sparingly brand accent ([accent]),
-/// and a disciplined type scale. It should read like precision equipment built to be
-/// scanned at a glance on a job site — not a printed document, not a glossy consumer
-/// app. Colour still encodes risk first: five distinct bands, not three, on pills,
-/// score rings, plan dots, progress bars and left bars.
+/// Visual direction: **blueprint**, transcribed from the `soko` home mock
+/// (`Soko Customer Home.html`), direction 1b — "steel". A warm paper ground that is
+/// deliberately not grey, a dark navy hero band anchoring the top of the screen,
+/// square corners everywhere, 1px hairlines instead of shadows, condensed headings
+/// against a humanist body face, and uppercase letter-spaced kickers. It should
+/// read like a technical drawing of the day's work, not a consumer dashboard.
+/// Colour still encodes risk first: five distinct bands, not three, on pills, score
+/// rings, plan dots, progress bars and left bars.
 ///
-/// This is the whole palette and the whole type scale. A colour or a `fontSize:` at a
-/// call site is a defect, and so is a second copy of either: `AccentTone`,
-/// `ProjectTone`, `HomeTokens.mono`, two `monoStyle` constants and the auth screens'
-/// Tailwind slate all used to exist alongside this file, and none of them do now.
+/// Two rules carried over from the mock and worth stating plainly:
+///
+/// * **Nothing is rounded.** The mock overrides its own radius tokens to `0` on
+///   every component. [radiusCard] and friends are kept as named zeros so call
+///   sites keep reading from the scale rather than hardcoding it.
+/// * **Nothing floats.** Definition comes from the hairline. [cardShadow] is
+///   deliberately empty; the one shadow in the system is [fabShadow].
+///
+/// This is the whole palette and the whole type scale. A colour or a `fontSize:` at
+/// a call site is a defect, and so is a second copy of either.
 /// `lib/core/theme/app_theme.dart` and `lib/features/auth` read from here too.
 class EmployeeTokens {
   const EmployeeTokens._();
 
+  // -- Type faces --------------------------------------------------------------
+  //
+  // Fira Sans and Fira Sans Condensed, fetched by `google_fonts` and cached to
+  // disk. `main()` awaits `GoogleFonts.pendingFonts` before the first frame so text
+  // does not land in the system face and reflow.
+  //
+  // NOT Barlow, which is what the HTML mock uses. Barlow and Barlow Condensed carry
+  // no Cyrillic at all — 0 of the 64 basic letters, and none of Mongolian's Ө/ө/Ү/ү
+  // — so every string in this app would have silently fallen back to the system
+  // face and only the digits would have been the intended face. Fira Sans is the
+  // same idea drawn with full Cyrillic: a humanist UI sans with a true condensed
+  // sibling, so the mock's body/condensed-heading pairing survives.
+  //
+  // The styles below are `static final`, not `static const`: google_fonts registers
+  // a distinct family per weight (`FiraSans_regular`, `FiraSansCondensed_600`, ...),
+  // so the family name is only knowable at runtime and a const `fontFamily:` string
+  // would silently fall back to the system face.
+
+  /// Body copy, labels, figures inside a sentence.
+  static TextStyle _body({
+    required double size,
+    FontWeight weight = FontWeight.w400,
+    double? tracking,
+    double height = 1.4,
+    Color color = ink,
+  }) {
+    return GoogleFonts.firaSans(
+      fontSize: size,
+      fontWeight: weight,
+      letterSpacing: tracking,
+      height: height,
+      color: color,
+    );
+  }
+
+  /// Headings and every standalone figure. Condensed, so a long Cyrillic heading
+  /// still fits a phone column.
+  static TextStyle _heading({
+    required double size,
+    FontWeight weight = FontWeight.w600,
+    double? tracking,
+    double height = 1.2,
+    Color color = ink,
+  }) {
+    return GoogleFonts.firaSansCondensed(
+      fontSize: size,
+      fontWeight: weight,
+      letterSpacing: tracking,
+      height: height,
+      color: color,
+    );
+  }
+
+  /// Awaited in `main()` so both faces are resolved before the first frame.
+  static Future<void> preload() {
+    return GoogleFonts.pendingFonts(<TextStyle>[
+      GoogleFonts.firaSans(),
+      GoogleFonts.firaSans(fontWeight: FontWeight.w500),
+      GoogleFonts.firaSansCondensed(fontWeight: FontWeight.w600),
+      GoogleFonts.firaSansCondensed(fontWeight: FontWeight.w700),
+    ]);
+  }
+
   // -- Neutrals --------------------------------------------------------------
 
-  /// Screen background.
-  static const Color bg = Color(0xFFE4E7EC);
-  static const Color paper = Color(0xFFF6F7F9);
+  /// Screen background. The mock's `--home-paper-alt` — warm, not grey.
+  static const Color bg = Color(0xFFFDFDFB);
+
+  /// The slightly warmer paper used for recessed blocks and the tab bar.
+  static const Color paper = Color(0xFFFBFAF7);
 
   /// Every card.
   static const Color white = Color(0xFFFFFFFF);
 
   /// Primary text.
-  static const Color ink = Color(0xFF12151B);
+  static const Color ink = Color(0xFF1D1F20);
 
   /// Pressed state for an ink-foreground control (outline/text buttons).
-  static const Color inkPressed = Color(0xFF262A33);
+  static const Color inkPressed = Color(0xFF2B2B2D);
 
-  /// Secondary body text.
-  static const Color ink2 = Color(0xFF3D434E);
+  /// Secondary body text — `ink` at 70%.
+  static const Color ink2 = Color(0xB31D1F20);
 
-  /// Labels, subtitles, inactive nav items.
-  static const Color muted = Color(0xFF6B7280);
+  /// Labels, subtitles, inactive nav items — `ink` at 55%.
+  static const Color muted = Color(0x8C1D1F20);
+
+  /// The softest label tint — `ink` at 45%. Section kickers, inactive tabs.
+  static const Color mutedSoft = Color(0x731D1F20);
+
+  /// Chevrons and other passive affordances — `ink` at 35%.
+  static const Color chevron = Color(0x591D1F20);
 
   /// Weaker divider.
-  static const Color faint = Color(0xFFE7E9ED);
+  static const Color faint = Color(0x141D1F20);
 
   /// Neutral chip fill, progress-track background.
-  static const Color soft = Color(0xFFE9EBEF);
+  static const Color soft = Color(0xFFE7E7EA);
 
   /// Inset panels / subtle zebra fill.
-  static const Color soft2 = Color(0xFFF3F4F6);
+  static const Color soft2 = Color(0xFFF5F5F8);
 
-  /// The signature 1px card border.
-  static const Color line = Color(0xFFD7DBE2);
+  /// The signature 1px card border. `ink` at 16%, exactly the mock's
+  /// `--color-divider`.
+  static const Color line = Color(0x291D1F20);
 
   /// A stronger keyline - outline-button borders, emphasis dividers.
-  static const Color lineStrong = Color(0xFFB7BEC9);
+  static const Color lineStrong = Color(0x591D1F20);
 
   /// The Material seed. Present so `ColorScheme.fromSeed` can keep Material's own
   /// focus, selection and cursor affordances sane. **Never painted directly** - use
   /// [accent] for anything that actually needs to render in the brand colour.
-  static const Color materialSeed = Color(0xFF2563EB);
+  static const Color materialSeed = Color(0xFF5980A6);
 
-  /// The one brand accent, spent narrowly: the active tab, primary buttons, links,
+  /// The one brand accent, spent narrowly: the FAB, primary buttons, focus rings,
   /// and in-progress/active-state emphasis. Never a background tint by itself.
-  static const Color accent = Color(0xFF1D4ED8);
+  static const Color accent = Color(0xFF5980A6);
 
   /// Pressed state of an accent-filled control.
-  static const Color accentPressed = Color(0xFF17399E);
+  static const Color accentPressed = Color(0xFF416180);
+
+  /// Links and kickers that need to read as accent against paper — accent-700.
+  /// [accent] itself is too light for text at 11px.
+  static const Color accentText = Color(0xFF416180);
+
+  /// The active bottom-nav tab — accent-800.
+  static const Color accentStrong = Color(0xFF2C455D);
 
   /// A tint of [accent] - selected-chip fills only, never a full-card background.
-  static const Color accentBg = Color(0xFFE4EAFB);
+  static const Color accentBg = Color(0xFFEEF6FF);
+
+  /// Row hover / pressed wash — `accent` at 6% / 10%.
+  static const Color accentWash = Color(0x0F5980A6);
+  static const Color accentWashStrong = Color(0x1A5980A6);
+
+  // -- The hero band ----------------------------------------------------------
+  //
+  // Direction 1b's defining move: a dark navy block behind the greeting and the
+  // day's figures. It is the only dark surface in the system.
+
+  /// The hero background — accent-900.
+  static const Color hero = Color(0xFF1D2D3D);
+
+  /// Primary text on [hero].
+  static const Color onHero = Color(0xFFFFFFFF);
+
+  /// The date line and other secondary text on [hero] — white at 60%.
+  static const Color onHeroMuted = Color(0x99FFFFFF);
+
+  /// Stair labels on [hero] — white at 62%.
+  static const Color onHeroFaint = Color(0x9EFFFFFF);
+
+  /// Hairlines and button borders on [hero] — white at 30%.
+  static const Color heroLine = Color(0x4DFFFFFF);
+
+  /// Pressed wash for a control on [hero] — white at 12%.
+  static const Color heroWash = Color(0x1FFFFFFF);
 
   // -- Status ----------------------------------------------------------------
   //
+  // The mock's risk ramp runs green → deep maroon across five steps and is the one
+  // place saturated colour is allowed. The `Bg`/`Border` tints are each strong
+  // colour mixed toward the paper ground at 12% and 38%, so a chip stays legible on
+  // paper without introducing a hue the ramp does not already contain.
+  //
   // All five bands, plus the non-risk `blue`/`purple` accents below, use white label
-  // text on a solid-fill chip; see the contrast-rule change in
-  // `MOBILE_DESIGN_SYSTEM.md` §1.
+  // text on a solid-fill chip.
 
-  static const Color green = Color(0xFF157A41);
-  static const Color greenBg = Color(0xFFE6F2EA);
-  static const Color greenBorder = Color(0xFFBCDAC8);
+  static const Color green = Color(0xFF4C7A52);
+  static const Color greenBg = Color(0xFFE6EBE3);
+  static const Color greenBorder = Color(0xFFB9C9B8);
 
-  static const Color yellow = Color(0xFFA8670A);
-  static const Color yellowBg = Color(0xFFFAF0DD);
-  static const Color yellowBorder = Color(0xFFE8CD97);
+  static const Color yellow = Color(0xFF9A8226);
+  static const Color yellowBg = Color(0xFFEFECDE);
+  static const Color yellowBorder = Color(0xFFD6CCA8);
 
   /// SCHEDULE_REPAIR. Lives here, not in a feature's own tone file: the palette is
   /// one table and a band colour hidden inside a tab is how five bands became three.
-  static const Color orange = Color(0xFFC2410C);
-  static const Color orangeBg = Color(0xFFFBE9DE);
-  static const Color orangeBorder = Color(0xFFEABB98);
+  static const Color orange = Color(0xFFC0722C);
+  static const Color orangeBg = Color(0xFFF4EADF);
+  static const Color orangeBorder = Color(0xFFE4C6AA);
 
-  static const Color red = Color(0xFFB91C1C);
-  static const Color redBg = Color(0xFFFAE4E2);
-  static const Color redBorder = Color(0xFFEAB5AE);
+  static const Color red = Color(0xFFB0413A);
+  static const Color redBg = Color(0xFFF2E4E0);
+  static const Color redBorder = Color(0xFFDEB4AF);
 
   /// Danger pressed state.
-  static const Color redPressed = Color(0xFF8F1515);
+  static const Color redPressed = Color(0xFF8A322C);
 
   /// OUT_OF_SERVICE.
-  static const Color black = Color(0xFF1C1917);
-  static const Color blackBg = Color(0xFFE6E4E1);
-  static const Color blackBorder = Color(0xFFB7B2AC);
+  static const Color black = Color(0xFF7A2B26);
+  static const Color blackBg = Color(0xFFECE1DE);
+  static const Color blackBorder = Color(0xFFCAABA8);
 
   /// The label colour on a solid band-filled chip.
   static const Color onAttention = Color(0xFFFFFFFF);
 
   // -- Non-risk status accents -------------------------------------------------
   //
-  // Deliberately kept apart from the band triads above. Mirrors `CustomerTokens.blue`
-  // / `.purple` for parity between the two apps; see `MOBILE_DESIGN_SYSTEM.md`.
+  // Deliberately kept apart from the band triads above. Mirrors
+  // `CustomerTokens.blue` / `.purple` for parity between the two apps.
 
-  /// Shares its strong colour with [accent] by design - "in-flight / informational"
-  /// status is the same idea as "active", just expressed as a status chip rather than
-  /// a piece of chrome.
-  static const Color blue = accent;
-  static const Color blueBg = Color(0xFFE4EAFB);
-  static const Color blueBorder = Color(0xFFB0C4F5);
+  /// Shares its strong colour with [accentText] by design - "in-flight /
+  /// informational" status is the same idea as "active", just expressed as a status
+  /// chip rather than a piece of chrome. Uses the darker accent-700 so 11px chip
+  /// text stays legible.
+  static const Color blue = accentText;
+  static const Color blueBg = Color(0xFFEEF6FF);
+  static const Color blueBorder = Color(0xFFB5D9FD);
 
-  static const Color purple = Color(0xFF7B3FE4);
-  static const Color purpleBg = Color(0xFFF0E9FF);
-  static const Color purpleBorder = Color(0xFFC4A9FF);
+  /// The mock has no purple. This is a desaturated slate-violet chosen to sit in the
+  /// same tonal family as the steel accent rather than the Tailwind violet it
+  /// replaces, which read as a different product next to the blueprint palette.
+  static const Color purple = Color(0xFF5F5386);
+  static const Color purpleBg = Color(0xFFE8E6E9);
+  static const Color purpleBorder = Color(0xFFC0BBCC);
 
   // -- Shape -----------------------------------------------------------------
 
   /// The signature outline: 1px solid [line] on white.
   static const double hairline = 1;
 
-  static const double radiusInput = 8;
-  static const double radiusRow = 10;
+  // Every radius is zero. They stay named so a call site still reads from the
+  // scale, and so that softening one surface later is a one-line change here
+  // rather than a hunt through the widgets.
+  static const double radiusInput = 0;
+  static const double radiusRow = 0;
 
   /// Main cards and the floor plan.
-  static const double radiusCard = 12;
+  static const double radiusCard = 0;
 
   /// Home-tab cards.
-  static const double radiusHomeCard = 12;
+  static const double radiusHomeCard = 0;
 
   /// Bottom-sheet top corners and the home hero.
-  static const double radiusSheet = 14;
+  static const double radiusSheet = 0;
 
-  /// A small rounded-rect tag radius - status pills and chips are technical labels,
-  /// not marketing badges, so this is deliberately not a full stadium/capsule.
-  static const double radiusPill = 6;
+  /// Status pills and chips.
+  static const double radiusPill = 0;
 
-  /// Screen-level cards and rows sit 14px in from the edge; section labels and
-  /// breadcrumbs use 18px. The two gutters are deliberately different.
-  static const double gutter = 14;
-  static const double labelGutter = 18;
+  /// The blueprint keeps one gutter, not two: the mock insets every page-level
+  /// element 20px from the edge, labels included.
+  static const double gutter = 20;
+  static const double labelGutter = 20;
 
-  /// Trailing spacer so the last card clears the bottom nav.
-  static const double scrollBottomSpacer = 84;
+  /// Trailing spacer so the last card clears the bottom nav — the mock's
+  /// `.home__spacer`.
+  static const double scrollBottomSpacer = 130;
 
-  static Border get cardBorder =>
-      Border.all(color: line, width: hairline);
+  static Border get cardBorder => Border.all(color: line, width: hairline);
 
-  /// The whisper of shadow every card carries - definition comes from the 1px
-  /// keyline first, this is only ever a faint lift off the canvas.
-  static const List<BoxShadow> cardShadow = <BoxShadow>[
-    BoxShadow(color: Color(0x0F10131A), blurRadius: 3, offset: Offset(0, 1)),
+  /// Deliberately empty. In this system a card is defined by its 1px keyline, never
+  /// by lift off the canvas. Kept as a token so the many call sites that spread it
+  /// into a `BoxDecoration` keep compiling and keep reading from one place.
+  static const List<BoxShadow> cardShadow = <BoxShadow>[];
+
+  /// The one shadow in the system: the square bottom-nav FAB, the only element that
+  /// sits above the page rather than on it. The mock's `--shadow-md`.
+  static const List<BoxShadow> fabShadow = <BoxShadow>[
+    BoxShadow(color: Color(0x292B2B2D), blurRadius: 10, offset: Offset(0, 3)),
   ];
 
   /// `ink` at low alpha - `shadowColor` for Material widgets (`Card`, `Dialog`,
   /// bottom sheet) whose elevation shadow can't be painted via [cardShadow].
-  static const Color shadowTint = Color(0x2912151B);
+  static const Color shadowTint = Color(0x292B2B2D);
 
-  /// A card: white, 1px [line], [cardShadow].
+  /// A card: white, 1px [line], square, flat.
   static BoxDecoration card({
     Color fill = white,
     Color border = line,
@@ -179,191 +309,102 @@ class EmployeeTokens {
   // -- Type ------------------------------------------------------------------
 
   /// Tab-screen title, e.g. "Ажил" / "Төслүүд".
-  static const TextStyle screenTitle = TextStyle(
-    fontSize: 19,
-    fontWeight: FontWeight.w900,
-    color: ink,
-    height: 1.2,
-  );
+  static final TextStyle screenTitle = _heading(size: 25, height: 1.2);
 
   /// Detail-header title.
-  static const TextStyle headerTitle = TextStyle(
-    fontSize: 17,
-    fontWeight: FontWeight.w800,
-    color: ink,
-    height: 1.2,
-  );
+  static final TextStyle headerTitle = _heading(size: 20, height: 1.2);
 
   /// Card heading.
-  static const TextStyle cardTitle = TextStyle(
-    fontSize: 15,
-    fontWeight: FontWeight.w800,
-    color: ink,
-    height: 1.3,
-  );
+  static final TextStyle cardTitle = _heading(size: 17, height: 1.2);
 
   /// List-row title.
-  static const TextStyle rowTitle = TextStyle(
-    fontSize: 13,
-    fontWeight: FontWeight.w600,
-    color: ink,
-    height: 1.35,
-  );
+  static final TextStyle rowTitle =
+      _body(size: 14.5, weight: FontWeight.w500, height: 1.3);
 
   /// List-row subtitle. Cyrillic runs long, so callers must keep maxLines and
   /// `TextOverflow.ellipsis` on every use.
-  static const TextStyle rowSub = TextStyle(
-    fontSize: 11,
-    fontWeight: FontWeight.w400,
-    color: muted,
-    height: 1.4,
-  );
+  static final TextStyle rowSub = _body(size: 12.5, height: 1.4, color: muted);
 
-  /// Section label: 10px, w700, uppercase, tracked out.
-  static const TextStyle sectionLabel = TextStyle(
-    fontSize: 10,
-    fontWeight: FontWeight.w700,
-    color: muted,
-    letterSpacing: 0.8,
-    height: 1.4,
-  );
+  /// The section kicker: 11px, tracked 0.14em. The most characteristic label in the
+  /// system — uppercase, widely tracked, and never bold.
+  static final TextStyle sectionLabel =
+      _body(size: 11, tracking: 1.54, height: 1.4, color: mutedSoft);
 
-  /// Pill text: 10px, w700, uppercase.
-  static const TextStyle pillLabel = TextStyle(
-    fontSize: 10,
-    fontWeight: FontWeight.w700,
-    letterSpacing: 0.4,
-    height: 1.3,
-  );
+  /// Pill text: 11px, tracked 0.06em.
+  static final TextStyle pillLabel =
+      _body(size: 11, tracking: 0.66, height: 1.3);
 
   /// Bottom-nav label.
-  static const TextStyle navLabel = TextStyle(
-    fontSize: 9,
-    fontWeight: FontWeight.w600,
-    height: 1.2,
-  );
+  static final TextStyle navLabel =
+      _body(size: 10.5, tracking: 0.42, height: 1.3, color: mutedSoft);
 
   /// Empty-state caption.
-  static const TextStyle emptyText = TextStyle(
-    fontSize: 13,
-    color: muted,
-    height: 1.5,
-  );
+  static final TextStyle emptyText = _body(size: 13, height: 1.5, color: muted);
 
   /// Splash wordmark.
-  static const TextStyle display = TextStyle(
-    fontSize: 26,
-    fontWeight: FontWeight.w900,
-    color: ink,
-    height: 1.2,
+  static final TextStyle display = _heading(
+    size: 30,
+    weight: FontWeight.w700,
+    tracking: 0.3,
+    height: 1,
   );
 
   /// Paragraph text.
-  static const TextStyle body = TextStyle(
-    fontSize: 13,
-    fontWeight: FontWeight.w400,
-    color: ink2,
-    height: 1.5,
-  );
+  static final TextStyle body = _body(size: 13.5, height: 1.5, color: ink2);
 
-  /// The prototype's JetBrains Mono runs — codes, scores, counts and timestamps. No
-  /// font asset is bundled, so the platform monospace face is asked for by family
-  /// name and the fallbacks cover iOS, Android and the test host.
+  /// A figure, unsized — pair with one of the sized variants below.
   ///
-  /// Lived in `HomeTokens.mono` and again as `monoStyle` in two feature files; there
-  /// is one now.
-  static const TextStyle mono = TextStyle(
-    fontFamily: 'monospace',
-    fontFamilyFallback: <String>['Menlo', 'Roboto Mono', 'Courier New'],
-    fontWeight: FontWeight.w700,
-  );
+  /// The mock sets every standalone number in Barlow Condensed w600, not in a
+  /// monospace face. The name is kept because call sites across the app read from
+  /// it, but there is no monospace in this design system any more.
+  static final TextStyle mono = _heading(size: 14, height: 1.2);
 
   // -- Document-scale extensions ---------------------------------------------
   //
-  // The five styles below are the scale above applied to the three places the
-  // instrument-panel look needs a figure rather than a sentence. They are here
-  // rather than at a call site so a `fontSize:` literal stays a defect.
+  // The styles below are the scale above applied to the places the blueprint needs
+  // a figure rather than a sentence. They are here rather than at a call site so a
+  // `fontSize:` literal stays a defect.
 
   /// The caption over a metric figure: smaller and more tracked than
   /// [sectionLabel], because it sits inside a 12px-padded tile.
-  static const TextStyle microLabel = TextStyle(
-    fontSize: 9,
-    fontWeight: FontWeight.w700,
-    letterSpacing: 0.6,
-    color: muted,
-    height: 1.3,
-  );
+  static final TextStyle microLabel =
+      _body(size: 9.5, tracking: 0.48, height: 1.3, color: mutedSoft);
 
   /// The note under a metric figure.
-  static const TextStyle microNote = TextStyle(
-    fontSize: 10,
-    fontWeight: FontWeight.w400,
-    color: muted,
-    height: 1.3,
-  );
+  static final TextStyle microNote =
+      _body(size: 10.5, height: 1.3, color: muted);
 
   /// A metric tile's figure.
-  static final TextStyle metricValue = mono.copyWith(
-    fontSize: 20,
-    fontWeight: FontWeight.w900,
-    height: 1,
-    color: ink,
-  );
+  static final TextStyle metricValue = _heading(size: 22, height: 1);
 
   /// The one big figure on the home hero.
-  static final TextStyle heroValue = mono.copyWith(
-    fontSize: 52,
-    fontWeight: FontWeight.w900,
-    height: 1.1,
-    color: ink,
-  );
+  static final TextStyle heroValue =
+      _heading(size: 52, height: 1, color: onHero);
 
   /// A KPI column's figure.
-  static const TextStyle kpiValue = TextStyle(
-    fontSize: 22,
-    fontWeight: FontWeight.w900,
-    height: 1.15,
-    color: ink,
-  );
+  static final TextStyle kpiValue = _heading(size: 24, height: 1);
 
   /// The number inside a `ScoreRing`.
-  static final TextStyle scoreValue = mono.copyWith(
-    fontSize: 24,
-    fontWeight: FontWeight.w900,
-    height: 1,
-    color: ink,
-  );
+  static final TextStyle scoreValue = _heading(size: 24, height: 1);
 
   /// A key/value line inside a card.
-  static const TextStyle detailValue = TextStyle(
-    fontSize: 12,
-    fontWeight: FontWeight.w700,
-    color: ink,
-    height: 1.4,
-  );
+  static final TextStyle detailValue =
+      _body(size: 12.5, weight: FontWeight.w500, height: 1.4);
 
   /// The heading of a tinted notice banner. Callers tint it with the tone's `fg`.
-  static const TextStyle noticeTitle = TextStyle(
-    fontSize: 12,
-    fontWeight: FontWeight.w800,
-    color: ink,
-    height: 1.4,
-  );
+  static final TextStyle noticeTitle = _heading(size: 15, height: 1.25);
 
   /// The explanation under a [noticeTitle].
-  static const TextStyle noticeBody = TextStyle(
-    fontSize: 12,
-    fontWeight: FontWeight.w600,
-    color: ink2,
-    height: 1.5,
-  );
+  static final TextStyle noticeBody =
+      _body(size: 12.5, height: 1.5, color: ink2);
 
   /// A full-width call to action.
-  static const TextStyle buttonLabel = TextStyle(
-    fontSize: 14,
-    fontWeight: FontWeight.w800,
-    color: white,
+  static final TextStyle buttonLabel = _body(
+    size: 13.5,
+    weight: FontWeight.w500,
+    tracking: 0.54,
     height: 1.2,
+    color: white,
   );
 }
 

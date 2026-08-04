@@ -133,15 +133,15 @@ class _ChangePasswordScreenState extends ConsumerState<ChangePasswordScreen> {
                           width: EmployeeTokens.hairline,
                         ),
                       ),
-                      child: const Row(
+                      child: Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: <Widget>[
-                          Icon(
+                          const Icon(
                             Icons.warning_amber_rounded,
                             color: EmployeeTokens.yellow,
                             size: 20,
                           ),
-                          SizedBox(width: 10),
+                          const SizedBox(width: 10),
                           Expanded(
                             // Ink on the tint: `yellow` does not reach 4.5:1 on this
                             // wash, and the icon already carries the severity.

@@ -26,6 +26,7 @@ class ReportView {
     required this.recommendation,
     required this.actionTaken,
     required this.measuredLoadKw,
+    this.measurements = const <LoadMeasurementModel>[],
     required this.repairRequired,
     required this.revisitRequired,
     required this.revisitDate,
@@ -50,6 +51,10 @@ class ReportView {
   final String? recommendation;
   final String? actionTaken;
   final double? measuredLoadKw;
+
+  /// Amps and volts read during the same visit. Shown beside the kW figure and never
+  /// merged into it — only the kW figure is what any total adds up.
+  final List<LoadMeasurementModel> measurements;
 
   final bool repairRequired;
   final bool revisitRequired;
@@ -78,6 +83,7 @@ class ReportView {
       recommendation: assessment.recommendation,
       actionTaken: assessment.actionTaken,
       measuredLoadKw: assessment.measuredLoadKw,
+      measurements: assessment.measurements,
       repairRequired: assessment.repairRequired,
       revisitRequired: assessment.revisitRequired,
       revisitDate: assessment.revisitDate,
@@ -260,6 +266,15 @@ class ReportSheet extends StatelessWidget {
                                     style: EmployeeTokens.rowSub,
                                   ),
                                 ],
+                                if (report.measurements.isNotEmpty) ...<Widget>[
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    report.measurements
+                                        .map(formatLoadMeasurement)
+                                        .join(' · '),
+                                    style: EmployeeTokens.rowSub,
+                                  ),
+                                ],
                               ],
                             ),
                           ),
@@ -340,8 +355,8 @@ class ReportSheet extends StatelessWidget {
                   ),
                 ),
 
-                const Padding(
-                  padding: EdgeInsets.fromLTRB(
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(
                     EmployeeTokens.labelGutter,
                     2,
                     EmployeeTokens.labelGutter,

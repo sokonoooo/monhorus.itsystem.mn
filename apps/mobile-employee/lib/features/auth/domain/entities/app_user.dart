@@ -55,9 +55,26 @@ class PermissionKeys {
   static const String serviceRequestView = 'service_request.view';
   static const String serviceRequestCreate = 'service_request.create';
   static const String serviceRequestUpdate = 'service_request.update';
-  /// Approving or returning a conclusion. Read only so the app can say that reviewing
-  /// happens elsewhere; this build never offers the action.
+  /// The OFFICE's full authority over a request: every transition, plus approving AND
+  /// returning a conclusion. Never granted to the field tier — it also cancels, un-assigns,
+  /// verifies and completes — so this app reads it only to recognise a dispatcher or a
+  /// manager signed in here and not narrow their controls.
   static const String serviceRequestChangeStatus = 'service_request.change_status';
+
+  /// Reporting your own progress: ACCEPTED, ON_THE_WAY, ON_SITE, IN_PROGRESS, WAITING and
+  /// REPORT_SUBMITTED, and nothing else. See `ServiceRequestStatus.isSelfProgress`, which
+  /// is the transcription of the backend's `SELF_PROGRESS_STATUSES`.
+  ///
+  /// Assignment-scoped server-side, so holding it is not authority over a colleague's job
+  /// or over an unclaimed one — taking an unheld request is [serviceRequestClaim], a
+  /// separate act.
+  static const String serviceRequestSelfProgress = 'service_request.self_progress';
+
+  /// Approving a submitted conclusion. Approve ONLY: returning one stays on
+  /// [serviceRequestChangeStatus], because a return is a judgement passed on somebody
+  /// else's work. Named after `planned_work.approve_report`, which is the same act in the
+  /// other module.
+  static const String serviceRequestApproveReport = 'service_request.approve_report';
   /// Taking an unassigned request for yourself. Deliberately not `dispatch.assign`,
   /// which is a dispatcher's authority to put somebody ELSE on a job.
   static const String serviceRequestClaim = 'service_request.claim';

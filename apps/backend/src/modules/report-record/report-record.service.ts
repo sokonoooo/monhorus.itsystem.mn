@@ -13,6 +13,7 @@ import {
 import { Types } from 'mongoose';
 
 import { logger } from '../../config/logger';
+import { appendAssessmentHistory } from '../object-master/assessment-history.service';
 import { ObjectRecord } from '../object-master/object-master.models';
 import { ObjectNode } from '../objects/object.models';
 import { getRiskBands } from '../settings/settings.service';
@@ -87,6 +88,12 @@ export interface ReportItemInput {
   recommendation?: string | null;
   measuredLoadKw?: number | null;
   evidenceAttachments?: Types.ObjectId[];
+  /**
+   * The author of this item's judgement, where the producer records one per equipment.
+   * Omitted by producers that do not — see `IReportItem.judgedBy`.
+   */
+  judgedBy?: Types.ObjectId | null;
+  judgedByName?: string | null;
   sourceReport?: Types.ObjectId | null;
   sourceReportItem?: Types.ObjectId | null;
 }
@@ -214,6 +221,8 @@ async function syncItems(
           recommendation: item.recommendation ?? null,
           measuredLoadKw: item.measuredLoadKw ?? null,
           evidenceAttachments: item.evidenceAttachments ?? [],
+          judgedBy: item.judgedBy ?? null,
+          judgedByName: item.judgedByName ?? null,
           sourceReport: item.sourceReport ?? null,
           sourceReportItem: item.sourceReportItem ?? null,
         },
@@ -233,10 +242,30 @@ async function syncItems(
  * letting an unreviewed figure move a building's standing would make the hierarchy
  * disagree with the report that produced it. A report naming no equipment reaches nothing,
  * which is the rule for a standalone record.
+ *
+ * Each scored finding lands in TWO places, and it used to land in only one. The
+ * denormalised head on the object is what the lists and the plan read; the
+ * `ObjectAssessment` row is the equipment's history, which is what the device detail
+ * screen's Үнэлгээний түүх table reads. Writing only the head is what made an evaluation
+ * submitted through Үзлэг ба дүгнэлт move the object's score while leaving its history
+ * empty — and it also left `latestAssessment.assessment` pointing at a freshly minted
+ * ObjectId that referenced no document at all. The head now points at the row that was
+ * actually written.
  */
 export async function applyReportToEquipment(reportId: Types.ObjectId): Promise<void> {
   const report = await Report.findById(reportId);
   if (!report || !REPORT_EFFECTIVE_STATUSES.includes(report.status)) return;
+
+  /**
+   * An OBJECT_ASSESSMENT report is the write-through of a manual assessment that has
+   * ALREADY recorded its own history row and pointed the head at it — the row is the
+   * record and this report is derived from it, not the other way round. Appending here
+   * would give the manual screen two rows for one assessment.
+   *
+   * Nothing else produces this type: `recordAssessment` and the legacy migration are the
+   * only writers, and both create the `ObjectAssessment` first.
+   */
+  const historyAlreadyWritten = report.type === 'OBJECT_ASSESSMENT';
 
   const items = await ReportItem.find({ report: reportId });
   const touchedFloors = new Set<string>();
@@ -247,12 +276,55 @@ export async function applyReportToEquipment(reportId: Types.ObjectId): Promise<
     const object = await ObjectRecord.findById(item.object);
     if (!object) continue;
 
+    // Read before the head is overwritten, so the row records the step it represents.
+    const previousScore = object.latestAssessment?.score ?? null;
+    // Who signed it off, falling back to who raised it for a report that reaches equipment
+    // without a separate approval step. Never invented here. Report-level by nature: one
+    // approval covers every finding on the report.
+    const assessedBy = report.approvedBy ?? report.createdBy ?? null;
+    const assessedByName = report.approvedByName ?? report.createdByName;
+
+    const entry = historyAlreadyWritten
+      ? null
+      : await appendAssessmentHistory({
+          object: object._id,
+          previousScore,
+          newScore: item.score,
+          riskLevel: item.riskLevel,
+          assessedBy,
+          assessedByName,
+          // Per ITEM, not per report: the approval above covers the whole report, but the
+          // verdict on this one piece of equipment was written by whoever wrote it, and on
+          // a planned work covering several sub-tasks that is not one person. Null where
+          // the producer recorded no per-equipment author, which the reader treats as
+          // "unknown" rather than as the approver.
+          judgedBy: item.judgedBy ?? null,
+          judgedByName: item.judgedByName ?? null,
+          // The report's own event time, the same instant the head and the timeline row
+          // carry, rather than the moment this apply happened to run.
+          assessedAt: report.occurredAt,
+          photos: [...(item.evidenceAttachments ?? [])],
+          conclusion: item.conclusion,
+          recommendation: item.recommendation,
+          // The item's observation is what was seen on this equipment, which is what the
+          // manual path stores as the action taken.
+          actionTaken: item.observation,
+          measuredLoadKw: item.measuredLoadKw,
+          // What the history table shows in its source column: the work or request number
+          // when the producer had one, the report number otherwise.
+          sourceLabel: report.sourceReference ?? report.reportNumber,
+          sourceReport: report._id,
+          sourceReportItem: item._id,
+        });
+
     object.latestAssessment = {
-      assessment: object.latestAssessment?.assessment ?? new Types.ObjectId(),
+      // The row just written — or, for the manual write-through, the one the manual path
+      // already pointed at.
+      assessment: entry?._id ?? object.latestAssessment?.assessment ?? new Types.ObjectId(),
       score: item.score,
       riskLevel: item.riskLevel,
       assessedAt: report.occurredAt,
-      assessedByName: report.approvedByName ?? report.createdByName,
+      assessedByName,
       conclusion: item.conclusion,
       recommendation: item.recommendation,
       repairRequired: object.latestAssessment?.repairRequired ?? false,

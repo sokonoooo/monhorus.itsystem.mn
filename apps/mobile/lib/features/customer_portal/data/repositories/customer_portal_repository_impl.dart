@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import '../../../../core/error/exceptions.dart';
+import '../../../../core/media/photo_capture.dart';
 import '../../../../core/error/failure.dart';
 import '../../../../core/network/api_result.dart';
 import '../../../../core/network/paginated_data.dart';
@@ -138,6 +139,13 @@ class CustomerPortalRepositoryImpl implements CustomerPortalRepository {
   @override
   Future<ApiResult<ServiceRequestDetailModel>> getServiceRequest(String requestId) {
     return _guard(() => _remote.getServiceRequest(requestId));
+  }
+
+  @override
+  Future<ApiResult<ServiceRequestAttachmentModel>> uploadServiceRequestAttachment(
+    CapturedPhoto photo,
+  ) {
+    return _guard(() => _remote.uploadServiceRequestAttachment(photo));
   }
 
   @override

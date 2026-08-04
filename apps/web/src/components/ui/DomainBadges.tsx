@@ -109,6 +109,18 @@ const RISK_STYLES: Record<RiskLevel, string> = {
   OUT_OF_SERVICE: BLACK,
 };
 
+/**
+ * The same five risk colours, for surfaces that are not badges.
+ *
+ * The floor-plan markers read from this rather than defining a palette of their own, so a
+ * red pin on the plan is the same red as the badge in the table beside it. `UNASSESSED` is
+ * grey, which is what "no finding yet" is everywhere else in the app.
+ */
+export const RISK_SURFACE_STYLES: Record<RiskLevel | 'UNASSESSED', string> = {
+  ...RISK_STYLES,
+  UNASSESSED: GREY,
+};
+
 export function RiskBadge({ level, score }: { level: RiskLevel; score?: number | null }): ReactElement {
   return (
     <span className={`${BASE} ${RISK_STYLES[level]}`}>

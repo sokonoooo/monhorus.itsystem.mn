@@ -1,10 +1,10 @@
 import { z } from 'zod';
 
 import { MATERIAL_CATEGORIES, MATERIAL_UNITS } from '../constants/material';
-import { booleanQuerySchema, isoDateSchema, objectIdSchema, sortDirSchema } from './common.schema';
+import { booleanQuerySchema, sortDirSchema } from './common.schema';
 
 /**
- * Material catalogue and per-sub-task usage.
+ * The material catalogue.
  *
  * Shared verbatim by the Express validator and the web forms, so the two cannot drift.
  * Nothing here validates availability: there are no stock balances to check against, and
@@ -51,35 +51,6 @@ export const materialItemListQuerySchema = z.object({
   sortDir: sortDirSchema.default('asc'),
 });
 
-/**
- * One material consumed on one sub-task.
- *
- * `usedByEmployeeId` is optional and defaults server-side to the caller's own employee
- * record: the common case is the technician recording what they themselves just used, and
- * making them pick their own name from a list is friction with no purpose. Naming someone
- * else stays possible for a supervisor writing up a crew's work.
- */
-export const createTaskMaterialUsageSchema = z.object({
-  materialItemId: objectIdSchema,
-  quantity: z
-    .number({ required_error: 'Тоо хэмжээ заавал.', invalid_type_error: 'Тоо хэмжээ буруу.' })
-    .positive('Тоо хэмжээ 0-ээс их байна.')
-    .max(1_000_000, 'Тоо хэмжээ хэт их байна.'),
-  unit: z.enum(MATERIAL_UNITS, { required_error: 'Хэмжих нэгж заавал.' }),
-  note: z.string().trim().max(1000).nullish(),
-  usedByEmployeeId: objectIdSchema.nullish(),
-  /** Defaults to now. Bounded server-side so a row cannot be dated into the future. */
-  usedAt: isoDateSchema.optional(),
-});
-
-export const updateTaskMaterialUsageSchema = createTaskMaterialUsageSchema
-  .partial()
-  .refine((value) => Object.keys(value).length > 0, {
-    message: 'Өөрчлөх талбар заавал илгээнэ.',
-  });
-
 export type CreateMaterialItemInput = z.infer<typeof createMaterialItemSchema>;
 export type UpdateMaterialItemInput = z.infer<typeof updateMaterialItemSchema>;
 export type MaterialItemListQueryInput = z.infer<typeof materialItemListQuerySchema>;
-export type CreateTaskMaterialUsageInput = z.infer<typeof createTaskMaterialUsageSchema>;
-export type UpdateTaskMaterialUsageInput = z.infer<typeof updateTaskMaterialUsageSchema>;

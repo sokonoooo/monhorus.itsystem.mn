@@ -14,6 +14,7 @@ import 'package:monhorus_employee/features/auth/presentation/providers/auth_prov
 import 'package:monhorus_employee/features/employee/project/data/models/object_models.dart';
 import 'package:monhorus_employee/features/employee/project/presentation/providers/project_providers.dart';
 import 'package:monhorus_employee/features/employee/project/presentation/screens/device_detail_screen.dart';
+import 'package:monhorus_employee/features/employee/project/presentation/widgets/report_sheet.dart';
 
 Map<String, dynamic> _device({bool canAssess = true}) => <String, dynamic>{
       'id': 'o1',
@@ -107,6 +108,29 @@ Widget _screen(AppUser user, {bool canAssess = true}) {
     ),
   );
 }
+
+/// Scrolls the assessment sheet until [target] is built.
+///
+/// Dragged by the list itself rather than by a widget inside it: the sheet's list
+/// unmounts what scrolls off, so any anchor picked from its contents disappears
+/// mid-drag and takes the drag with it. `shrinkWrap` identifies the sheet's own list
+/// against the page behind it and the horizontal photo strip inside it.
+Future<void> _scrollSheetTo(WidgetTester tester, Finder target) async {
+  final Finder sheetList = find.byWidgetPredicate(
+    (Widget widget) => widget is ListView && widget.shrinkWrap,
+  );
+
+  for (int attempt = 0; attempt < 20 && target.evaluate().isEmpty; attempt++) {
+    await tester.drag(sheetList, const Offset(0, -180));
+    await tester.pumpAndSettle();
+  }
+}
+
+/// The number box and the remove button of the nth (0-based) reading row.
+Finder _measurementValue(int index) =>
+    find.byKey(ValueKey<String>('measurement-value-$index'));
+Finder _measurementRemove(int index) =>
+    find.byKey(ValueKey<String>('measurement-remove-$index'));
 
 void main() {
   const Set<String> assessor = <String>{
@@ -203,6 +227,119 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Үнэлгээ хадгалах'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  // Multiple load units: the repeatable reading editor beside the kW box.
+  //
+  // The sheet's submit cannot be driven here (evidence needs `image_picker`'s platform
+  // channel), so what is checked is the part this widget owns: rows appear, rows go away
+  // again, and a fresh row never lands on a (kind, phase) pair already on the form —
+  // which is the pairing the backend refuses.
+  testWidgets('the sheet adds and removes load measurement rows', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 844));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(_screen(_user(permissions: assessor)));
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(
+      find.text('Дүгнэлт тайлан бичих'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Дүгнэлт тайлан бичих'));
+    await tester.pumpAndSettle();
+
+    await _scrollSheetTo(tester, find.text('Хэмжилт нэмэх'));
+
+    // Nothing until a row is asked for: most assessments carry only the kW figure.
+    expect(_measurementValue(0), findsNothing);
+
+    await tester.tap(find.text('Хэмжилт нэмэх'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Хэмжилт нэмэх'));
+    await tester.pumpAndSettle();
+
+    await _scrollSheetTo(tester, _measurementRemove(1));
+
+    expect(_measurementValue(0), findsOneWidget);
+    expect(_measurementValue(1), findsOneWidget);
+    // The second row defaulted to L1 rather than colliding with the first, which is
+    // the (kind, phase) pair the backend refuses twice over.
+    expect(find.text('L1'), findsOneWidget);
+
+    await tester.enterText(_measurementValue(0), '41.2');
+    await tester.pumpAndSettle();
+
+    await tester.tap(_measurementRemove(1));
+    await tester.pumpAndSettle();
+
+    expect(_measurementValue(1), findsNothing);
+    // The row that stayed kept what was typed into it.
+    expect(find.text('41.2'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  // A stored reading is read beside the assessment it was taken during.
+  testWidgets('the report sheet shows the readings next to the kW figure', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 844));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ReportSheet(
+            report: ReportView.fromAssessment(
+              ObjectAssessmentModel.fromJson(<String, dynamic>{
+                'id': 'a1',
+                'objectId': 'o1',
+                'previousScore': 80,
+                'newScore': 72,
+                'riskLevel': 'ATTENTION',
+                'assessedByName': 'Дорж Ganbold',
+                'assessedAt': '2026-07-20T02:00:00.000Z',
+                'photos': <dynamic>[],
+                'conclusion': 'Ачаалал жигд бус.',
+                'recommendation': null,
+                'actionTaken': null,
+                'measuredLoadKw': 17.2,
+                'measurements': <Map<String, dynamic>>[
+                  <String, dynamic>{
+                    'kind': 'CURRENT',
+                    'value': 41.2,
+                    'unit': 'AMPERE',
+                    'phase': 'L1',
+                  },
+                  <String, dynamic>{
+                    'kind': 'VOLTAGE',
+                    'value': 231,
+                    'unit': 'VOLT',
+                    'phase': null,
+                  },
+                ],
+                'repairRequired': false,
+                'revisitRequired': false,
+                'revisitDate': null,
+                'revisitOwnerName': null,
+                'sourceLabel': null,
+              }),
+              deviceLabel: 'CT-LDB-1',
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // `formatDecimal` keeps two digits on a non-integral reading and drops the tail on
+    // a whole one, which is why the volts read plainly and the amps do not.
+    expect(find.text('Хэмжсэн ачаалал 17.20 kW'), findsOneWidget);
+    expect(find.text('41.20 А (L1) · 231 В'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }

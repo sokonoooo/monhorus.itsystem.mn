@@ -72,19 +72,25 @@ class ObjectMasterRefModel {
 }
 
 /// Mirrors the inline `objectType` reference on `ObjectListItemDto`
-/// (`{ id, code, name, icon } | null`).
+/// (`{ id, code, name, icon, showOnPlan } | null`).
 class ObjectTypeRefModel {
   const ObjectTypeRefModel({
     required this.id,
     required this.code,
     required this.name,
     required this.icon,
+    required this.showOnPlan,
   });
 
   final String id;
   final String code;
   final String name;
   final ObjectIcon icon;
+
+  /// The registry's own answer to "may an object of this type be drawn on a floor
+  /// plan". False when absent: a server that has not been rebuilt yet must leave the
+  /// plan as it was rather than scatter markers the admin web would not draw.
+  final bool showOnPlan;
 
   static ObjectTypeRefModel? fromJson(Object? raw) {
     if (raw is! Map<String, dynamic>) return null;
@@ -95,8 +101,53 @@ class ObjectTypeRefModel {
       code: raw['code'] as String? ?? '',
       name: raw['name'] as String? ?? '',
       icon: ObjectIcon.fromWire(raw['icon'] as String?),
+      showOnPlan: raw['showOnPlan'] as bool? ?? false,
     );
   }
+}
+
+/// Mirrors `PlanPositionDto` - where the object sits on its floor plan, as a fraction
+/// of the plan image's width and height.
+///
+/// Normalised rather than pixel-based so a placement survives the plan being replaced
+/// at another resolution. Both numbers must be finite and within 0..1: a marker drawn
+/// from anything else lands outside the drawing, where it is either invisible or - worse
+/// - pinned to an edge as though that were the recorded position. Such a value is
+/// rejected here, and the object then renders as unplaced, which is a truthful state.
+class PlanPositionModel {
+  const PlanPositionModel({required this.x, required this.y});
+
+  /// Fraction of the plan's width, 0 at the left edge and 1 at the right.
+  final double x;
+
+  /// Fraction of the plan's height, 0 at the top edge and 1 at the bottom.
+  final double y;
+
+  /// Read with `is num` rather than a cast: a coordinate that arrives as a string, or
+  /// as null, must cost one unplaced marker and not the whole floor's object list.
+  static PlanPositionModel? fromJson(Object? raw) {
+    if (raw is! Map<String, dynamic>) return null;
+    final Object? rawX = raw['x'];
+    final Object? rawY = raw['y'];
+    if (rawX is! num || rawY is! num) return null;
+    final double x = rawX.toDouble();
+    final double y = rawY.toDouble();
+    if (!_inRange(x) || !_inRange(y)) return null;
+    return PlanPositionModel(x: x, y: y);
+  }
+
+  static bool _inRange(double value) =>
+      value.isFinite && value >= 0 && value <= 1;
+
+  @override
+  bool operator ==(Object other) =>
+      other is PlanPositionModel && other.x == x && other.y == y;
+
+  @override
+  int get hashCode => Object.hash(x, y);
+
+  @override
+  String toString() => 'PlanPositionModel($x, $y)';
 }
 
 /// Mirrors `LatestAssessmentDto` in
@@ -291,6 +342,7 @@ class ObjectListItemModel {
     required this.floorId,
     required this.floorName,
     required this.buildingName,
+    required this.planPosition,
     required this.status,
     required this.latestAssessment,
     required this.calculatedLoad,
@@ -309,6 +361,11 @@ class ObjectListItemModel {
   final String? floorId;
   final String? floorName;
   final String? buildingName;
+
+  /// Where the object sits on its floor's plan image. Null when it has never been
+  /// placed - or when the stored value was unusable - and it then draws no marker.
+  final PlanPositionModel? planPosition;
+
   final ObjectStatus? status;
 
   /// Null when the object has never been assessed. That is a distinct state from a
@@ -333,6 +390,7 @@ class ObjectListItemModel {
       floorId: json['floorId'] as String?,
       floorName: json['floorName'] as String?,
       buildingName: json['buildingName'] as String?,
+      planPosition: PlanPositionModel.fromJson(json['planPosition']),
       status: ObjectStatus.fromWire(json['status'] as String?),
       latestAssessment: LatestAssessmentModel.fromJson(json['latestAssessment']),
       calculatedLoad: LoadValueModel.fromJson(json['calculatedLoad']),
@@ -368,6 +426,7 @@ class ObjectDetailModel extends ObjectListItemModel {
     required super.floorId,
     required super.floorName,
     required super.buildingName,
+    required super.planPosition,
     required super.status,
     required super.latestAssessment,
     required super.calculatedLoad,
@@ -426,6 +485,7 @@ class ObjectDetailModel extends ObjectListItemModel {
       floorId: json['floorId'] as String?,
       floorName: json['floorName'] as String?,
       buildingName: json['buildingName'] as String?,
+      planPosition: PlanPositionModel.fromJson(json['planPosition']),
       status: ObjectStatus.fromWire(json['status'] as String?),
       latestAssessment: LatestAssessmentModel.fromJson(json['latestAssessment']),
       calculatedLoad: LoadValueModel.fromJson(json['calculatedLoad']),

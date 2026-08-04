@@ -91,6 +91,7 @@ class PlannedWorkTaskModel {
     required this.remainingQuantity,
     required this.progressPercent,
     required this.status,
+    required this.relatedObjects,
     required this.beforePhotos,
     required this.afterPhotos,
     required this.missingEvidence,
@@ -100,6 +101,11 @@ class PlannedWorkTaskModel {
     this.assignedEmployeeId,
     this.assignedEmployeeName,
     this.note,
+    this.conclusion,
+    this.conclusionById,
+    this.conclusionByName,
+    this.conclusionAt,
+    this.durationMinutes,
     this.score,
     this.riskLevel,
     this.recommendation,
@@ -121,8 +127,38 @@ class PlannedWorkTaskModel {
   final String? assignedEmployeeId;
   final String? assignedEmployeeName;
 
-  /// The performer's Тайлбар. The Дүгнэлт belongs to the consolidated report.
+  /// The equipment this sub-task covers.
+  ///
+  /// The single score below is fanned out to every one of these on approval — there is no
+  /// per-object scoring. Shown to the technician rather than dropped, because a score
+  /// recorded without knowing which equipment it lands on is a guess, and an empty list
+  /// means the entry reaches no equipment record at all.
+  final List<NamedRefModel> relatedObjects;
+
+  /// The performer's Тайлбар — what was observed.
   final String? note;
+
+  /// The performer's Дүгнэлт — the verdict drawn from it, written onto every one of
+  /// [relatedObjects]. The consolidated report keeps its own, separate conclusion.
+  final String? conclusion;
+
+  /// Who wrote the [conclusion] above, and when the server recorded it.
+  ///
+  /// Stamped by the backend only when the Дүгнэлт text itself changes. Every member of the
+  /// assigned team can write to every sub-task and each write replaces the last, so without
+  /// this the verdict on the card is anonymous.
+  final String? conclusionById;
+  final String? conclusionByName;
+  final DateTime? conclusionAt;
+
+  /// Whole minutes from the first reported start to the instant the quantity was
+  /// completed, computed on the server. Null while the sub-task is unfinished, and null
+  /// when it was skipped.
+  ///
+  /// The clock stops at quantity completion rather than at DONE: DONE also waits on the
+  /// five evidence items, so work finished on Monday and photographed on Wednesday would
+  /// otherwise read as two days.
+  final int? durationMinutes;
   final int? score;
   final RiskLevel? riskLevel;
   final String? recommendation;
@@ -164,7 +200,14 @@ class PlannedWorkTaskModel {
       // backend populates the relation, so anything that is not an id is dropped.
       assignedEmployeeId: parseObjectId(json['assignedEmployeeId']),
       assignedEmployeeName: parseString(json['assignedEmployeeName']),
+      relatedObjects:
+          parseList<NamedRefModel>(json['relatedObjects'], NamedRefModel.fromJson),
       note: parseString(json['note']),
+      conclusion: parseString(json['conclusion']),
+      conclusionById: parseObjectId(json['conclusionById']),
+      conclusionByName: parseString(json['conclusionByName']),
+      conclusionAt: parseDate(json['conclusionAt']),
+      durationMinutes: parseInt(json['durationMinutes']),
       score: parseInt(json['score']),
       riskLevel: RiskLevel.fromWire(json['riskLevel'] as String?),
       recommendation: parseString(json['recommendation']),
@@ -744,6 +787,7 @@ class RecordTaskProgressRequest {
     this.started,
     this.skipped,
     this.note,
+    this.conclusion,
     this.score,
     this.recommendation,
   });
@@ -754,6 +798,10 @@ class RecordTaskProgressRequest {
   final bool? started;
   final bool? skipped;
   final String? note;
+
+  /// Written onto the ReportItem of every object the sub-task covers, which is what fills
+  /// the Дүгнэлт column of Үзлэг ба дүгнэлт for this row.
+  final String? conclusion;
   final int? score;
   final String? recommendation;
 
@@ -763,6 +811,7 @@ class RecordTaskProgressRequest {
       if (started != null) 'started': started,
       if (skipped != null) 'skipped': skipped,
       if (note != null) 'note': note,
+      if (conclusion != null) 'conclusion': conclusion,
       if (score != null) 'score': score,
       if (recommendation != null) 'recommendation': recommendation,
     };

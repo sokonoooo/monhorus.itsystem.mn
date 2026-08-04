@@ -1,4 +1,4 @@
-import { PERMISSIONS, type PermissionKey } from '@monhorus/shared';
+import { DISPATCH_BOARD_COLUMNS, PERMISSIONS, type PermissionKey } from '@monhorus/shared';
 import type { Express } from 'express';
 import { Types } from 'mongoose';
 import request from 'supertest';
@@ -659,14 +659,18 @@ describe('service request customer scope', () => {
 });
 
 describe('dispatch board', () => {
-  it('returns one column per workflow status', async () => {
+  it('returns one column per board column, opening with the merged unassigned column', async () => {
     const response = await request(app)
       .get(`${API}/dispatch/board`)
       .set('Authorization', `Bearer ${token}`);
 
     expect(response.status).toBe(200);
-    expect(response.body.data.columns).toHaveLength(11);
-    expect(response.body.data.columns[0].status).toBe('UNASSIGNED');
+    expect(response.body.data.columns).toHaveLength(DISPATCH_BOARD_COLUMNS.length);
+    expect(response.body.data.columns[0].id).toBe('OPEN');
+    expect(response.body.data.columns[0].statuses).toEqual(['NEW', 'UNASSIGNED']);
+    expect(response.body.data.columns.map((column: { id: string }) => column.id)).toContain(
+      'WAITING',
+    );
   });
 
   it('refuses the board without dispatch.view', async () => {

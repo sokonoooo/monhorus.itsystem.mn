@@ -53,17 +53,14 @@ class HomeRepositoryImpl implements HomeRepository {
   }
 
   @override
-  Future<ApiResult<PaginatedData<PlannedWorkListItemModel>>> listPlannedWork(
-    String employeeId,
-  ) {
-    return _guard(() => _remote.listPlannedWork(employeeId: employeeId));
+  Future<ApiResult<PaginatedData<PlannedWorkListItemModel>>> listPlannedWork() {
+    return _guard(() => _remote.listPlannedWork());
   }
 
   @override
-  Future<ApiResult<PaginatedData<ServiceRequestListItemModel>>> listServiceRequests(
-    String employeeId,
-  ) {
-    return _guard(() => _remote.listServiceRequests(employeeId: employeeId));
+  Future<ApiResult<PaginatedData<ServiceRequestListItemModel>>>
+      listServiceRequests() {
+    return _guard(() => _remote.listServiceRequests());
   }
 
   @override

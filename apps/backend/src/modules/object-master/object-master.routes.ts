@@ -5,6 +5,7 @@ import {
   createObjectTypeSchema,
   objectListQuerySchema,
   objectTypeListQuerySchema,
+  updateObjectPositionSchema,
   updateObjectSchema,
   updateObjectTypeSchema,
   type CreateObjectAssessmentInput,
@@ -13,6 +14,7 @@ import {
   type ObjectListQueryInput,
   type ObjectTypeListQueryInput,
   type UpdateObjectInput,
+  type UpdateObjectPositionInput,
   type UpdateObjectTypeInput,
 } from '@monhorus/shared';
 import { Router, type NextFunction, type Request, type Response } from 'express';
@@ -204,6 +206,33 @@ objectMasterRouter.patch(
         meta(req),
       );
       ok(res, result, 'Объект шинэчлэгдлээ.');
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+/**
+ * Moves or clears the object's pin on the floor plan.
+ *
+ * Guarded by the same permission and the same tenant scope as a full update: it is still a
+ * write to the object, and dragging a marker is not a lesser act than editing a field. It
+ * exists only so a drag does not have to resend the whole strict payload.
+ */
+objectMasterRouter.patch(
+  '/:objectId/position',
+  requirePermission(PERMISSIONS.OBJECT_MASTER_MANAGE),
+  validate({ params: z.object({ objectId }), body: updateObjectPositionSchema }),
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const result = await objectService.updateObjectPosition(
+        pathParam(req, 'objectId'),
+        req.body as UpdateObjectPositionInput,
+        scopeOf(req),
+        requireAuth(req),
+        meta(req),
+      );
+      ok(res, result, 'План дээрх байрлал шинэчлэгдлээ.');
     } catch (error) {
       next(error);
     }

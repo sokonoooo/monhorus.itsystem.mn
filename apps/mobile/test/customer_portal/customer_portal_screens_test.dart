@@ -5,7 +5,6 @@ import 'package:monhorus_mobile/features/auth/domain/entities/app_user.dart';
 import 'package:monhorus_mobile/features/customer_portal/data/models/project_model.dart';
 import 'package:monhorus_mobile/features/customer_portal/data/models/service_request_model.dart';
 import 'package:monhorus_mobile/features/customer_portal/domain/entities/customer_scope.dart';
-import 'package:monhorus_mobile/features/customer_portal/domain/entities/risk_level.dart';
 import 'package:monhorus_mobile/features/customer_portal/presentation/screens/building_detail_screen.dart';
 import 'package:monhorus_mobile/features/customer_portal/presentation/screens/building_list_screen.dart';
 import 'package:monhorus_mobile/features/customer_portal/presentation/screens/customer_home_screen.dart';
@@ -16,6 +15,7 @@ import 'package:monhorus_mobile/features/customer_portal/presentation/screens/fl
 import 'package:monhorus_mobile/features/customer_portal/presentation/screens/service_request_detail_screen.dart';
 import 'package:monhorus_mobile/features/customer_portal/presentation/screens/service_request_list_screen.dart';
 import 'package:monhorus_mobile/features/customer_portal/presentation/widgets/risk_glyph.dart';
+import 'package:monhorus_mobile/features/customer_portal/presentation/widgets/risk_widgets.dart';
 
 import 'fakes.dart';
 
@@ -44,7 +44,7 @@ void main() {
   }
 
   group('s-home', () {
-    testWidgets('shows the KPI strip and the customer own requests',
+    testWidgets('shows the hero risk stair and the customer own requests',
         (WidgetTester tester) async {
       final FakeCustomerPortalRepository repository =
           FakeCustomerPortalRepository();
@@ -57,14 +57,30 @@ void main() {
         ),
       );
 
-      expect(find.text('Сайн байна уу,'), findsOneWidget);
-      expect(find.text('Д. Оюунчимэг'), findsOneWidget);
-      expect(find.text('БАРИЛГА'), findsOneWidget);
+      // The steel hero replaced the greeting nav bar, the KPI strip and the
+      // roll-up card: the wordmark, the building count, the one sentence that
+      // says how bad things are, and the five bands as five columns.
+      expect(find.text('soko'), findsOneWidget);
+      expect(find.textContaining('1 БАРИЛГА · '), findsOneWidget);
+      // The fixture's building carries three ATTENTION devices and no critical
+      // ones, so the headline is the attention line and the figure is its own.
+      expect(find.text('3 төхөөрөмж анхаарал шаардаж байна'), findsOneWidget);
+      expect(find.text('ХЭВИЙН'), findsOneWidget);
       expect(find.text('АНХААРАХ'), findsOneWidget);
-      expect(find.text('ЭРСДЭЛ'), findsOneWidget);
-      expect(find.text('НЭГДСЭН ТАЙЛАНГИЙН ХУРААНГУЙ'), findsOneWidget);
+      expect(find.text('НОЦТОЙ'), findsOneWidget);
+      expect(find.text('40'), findsOneWidget);
+      // The building listing, worst risk first, and the request section below it.
+      expect(find.text('БҮХ БАРИЛГА · ЭРСДЭЛЭЭР'), findsOneWidget);
+      expect(find.text('Төв цамхаг'), findsOneWidget);
       expect(find.text('ОЙРЫН ХҮСЭЛТҮҮД'), findsOneWidget);
       expect(find.textContaining('SR-202607-0012'), findsWidgets);
+
+      // Removed on request: the status roll-up and the new-request call to action.
+      // The Хүсэлт tab owns both - the status of every request is the list itself,
+      // and that tab carries its own create action - so the home screen stops
+      // restating them. Asserted so putting either back is a deliberate act.
+      expect(find.text('ХҮСЭЛТИЙН ТӨЛӨВ'), findsNothing);
+      expect(find.text('Шинэ хүсэлт үүсгэх'), findsNothing);
     });
 
     testWidgets('every read went out carrying the session customer id',
@@ -207,7 +223,7 @@ void main() {
   });
 
   group('s-building-detail', () {
-    testWidgets('shows the silhouette, the legend and the floor rows',
+    testWidgets('shows the silhouette and the floor rows, with no legend',
         (WidgetTester tester) async {
       await pumpPhone(
         tester,
@@ -222,20 +238,19 @@ void main() {
       expect(find.text('2-р давхар'), findsWidgets);
       expect(find.textContaining('Лобби, оффис'), findsOneWidget);
 
-      // The legend must state what each band means, by name and by shape.
-      //
-      // It used to print the numeric range - "81-100%" - which was wrong: the band
-      // boundaries are runtime-configurable server-side and neither mobile role can
-      // read GET /settings (403), so a printed range can silently contradict the
-      // server. The assertion now checks what the legend is actually for.
-      for (final RiskLevel level in RiskLevel.values) {
-        expect(find.text(level.label), findsWidgets, reason: level.wireValue);
-      }
-      // The sixth row: a never-scored object is a distinct state, not a band.
-      expect(find.text(unassessedLabel), findsWidgets);
-      // One glyph per band plus one for unassessed, so risk survives greyscale.
+      // The six-row colour key was removed on request, from here and from the floor
+      // and device screens. It restated what every row already says in words: each
+      // floor carries its worst band by NAME, so the colour was never load-bearing
+      // and the key was three screens of repetition.
+      expect(find.byType(RiskLegend), findsNothing);
+
+      // What replaces it: the band still reaches the reader as text plus a glyph, so
+      // risk survives greyscale without a key to consult.
       expect(find.byType(RiskGlyph), findsWidgets);
-      // No numeric scale anywhere on the screen.
+
+      // No numeric scale anywhere on the screen. The band boundaries are
+      // runtime-configurable server-side and neither mobile role can read
+      // GET /settings (403), so a printed range can silently contradict the server.
       expect(find.textContaining('81-100'), findsNothing);
       expect(find.textContaining('21-40'), findsNothing);
     });
@@ -369,6 +384,51 @@ void main() {
       );
 
       expect(find.text('Засварын хүсэлт илгээх'), findsOneWidget);
+    });
+
+    /// The object timeline is staff-only by decision: it folds in audit rows,
+    /// planned-work tasks and internal request detail, none of which is customer
+    /// facing. Rendered unconditionally it 403'd on every device page, so it is
+    /// hidden - not disabled - exactly as the request action is.
+    testWidgets('hides the object history without object_master.view',
+        (WidgetTester tester) async {
+      final FakeCustomerPortalRepository repository =
+          FakeCustomerPortalRepository();
+
+      await pumpPhone(
+        tester,
+        wrapCustomerScreen(
+          const DeviceDetailScreen(objectId: '6e0000000000000000000003'),
+          repository: repository,
+        ),
+      );
+
+      // Scrolled to the foot of the list, so "not found" cannot mean "not built yet".
+      await scrollTo(tester, find.text('ДҮГНЭЛТ БА ЗӨВЛӨМЖ'));
+      expect(find.text('ОБЪЕКТЫН ТҮҮХ'), findsNothing);
+      // And no error state in its place: the section is absent, not refused.
+      expect(find.text('Энэ үйлдлийг хийх эрх байхгүй байна.'), findsNothing);
+      // The request the server would have answered 403 is never issued at all.
+      expect(repository.historyRequestedFor, isEmpty);
+    });
+
+    testWidgets('shows the object history once the permission is granted',
+        (WidgetTester tester) async {
+      await pumpPhone(
+        tester,
+        wrapCustomerScreen(
+          const DeviceDetailScreen(objectId: '6e0000000000000000000003'),
+          repository: FakeCustomerPortalRepository(
+            objectHistory: objectHistoryFixture(),
+          ),
+          user: customerWithObjectMasterView(),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await scrollTo(tester, find.text('ОБЪЕКТЫН ТҮҮХ'));
+      expect(find.text('ОБЪЕКТЫН ТҮҮХ'), findsOneWidget);
+      expect(find.text('Үнэлгээ бүртгэгдлээ'), findsOneWidget);
     });
   });
 

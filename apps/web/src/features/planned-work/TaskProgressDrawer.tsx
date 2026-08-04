@@ -16,7 +16,6 @@ import { ApiError } from '../../lib/api-client';
 import { plannedWorkService } from '../../services/planned-work.service';
 import { Field, TextInput } from '../employees/FormControls';
 import { ScoreBar } from '../projects/objects/ObjectBadges';
-import { TaskMaterialsPanel } from './TaskMaterialsPanel';
 import { ProgressBar, TaskStatusBadge } from './PlannedWorkBadges';
 
 interface TaskProgressDrawerProps {
@@ -29,11 +28,17 @@ interface TaskProgressDrawerProps {
 /**
  * Records progress on a sub-task.
  *
- * The inputs are quantity, the Тайлбар note, the 0-100 evaluation, the recommendation and
- * the two photo sets. `Дүгнэлт` is deliberately absent: it belongs to the consolidated
- * report. Neither the task status nor the risk band is chosen here - the backend derives
- * both - so the drawer shows what is still missing rather than letting a user declare the
- * task finished or label its band.
+ * The inputs are quantity, the Тайлбар note, the 0-100 evaluation, the Дүгнэлт, the
+ * recommendation and the two photo sets.
+ *
+ * `Дүгнэлт` used to be absent here, reserved for the consolidated report. It is now
+ * collected per sub-task as well, because the sub-task's result is what is fanned out to
+ * each piece of equipment it covers, and without one the Дүгнэлт column of Үзлэг ба
+ * дүгнэлт stayed blank for every planned-work row. The consolidated report keeps its own.
+ *
+ * Neither the task status nor the risk band is chosen here - the backend derives both - so
+ * the drawer shows what is still missing rather than letting a user declare the task
+ * finished or label its band.
  */
 export function TaskProgressDrawer({
   work,
@@ -45,6 +50,7 @@ export function TaskProgressDrawer({
 
   const [completedQuantity, setCompletedQuantity] = useState('');
   const [note, setNote] = useState('');
+  const [conclusion, setConclusion] = useState('');
   const [score, setScore] = useState('');
   const [recommendation, setRecommendation] = useState('');
   const [skipped, setSkipped] = useState(false);
@@ -61,6 +67,7 @@ export function TaskProgressDrawer({
     if (!task) return;
     setCompletedQuantity(String(task.completedQuantity));
     setNote(task.note ?? '');
+    setConclusion(task.conclusion ?? '');
     setScore(task.score === null ? '' : String(task.score));
     setRecommendation(task.recommendation ?? '');
     setSkipped(task.status === 'SKIPPED');
@@ -77,6 +84,7 @@ export function TaskProgressDrawer({
       completedQuantity: Number(completedQuantity || '0'),
       skipped,
       note: note.trim() || null,
+      conclusion: conclusion.trim() || null,
       score: score.trim() === '' ? null : Number(score),
       recommendation: recommendation.trim() || null,
     });
@@ -269,14 +277,6 @@ export function TaskProgressDrawer({
             Хийгдэхгүй ажил (биелэлтийн тооцоонд орохгүй)
           </label>
 
-          {/* What the sub-task CONSUMED, next to but never mixed with the equipment it
-              assessed: the objects receive the finding, these are spent doing the work. */}
-          <TaskMaterialsPanel
-            plannedWorkId={work.id}
-            taskId={task.id}
-            editable={task.status !== 'DONE' && task.status !== 'SKIPPED'}
-          />
-
           <div>
             <label htmlFor="task-note" className={FILTER_LABEL}>
               Тайлбар
@@ -306,6 +306,28 @@ export function TaskProgressDrawer({
                 showPill
               />
             </div>
+          </div>
+
+          <div>
+            <label htmlFor="task-conclusion" className={FILTER_LABEL}>
+              Дүгнэлт
+            </label>
+            <textarea
+              id="task-conclusion"
+              rows={3}
+              value={conclusion}
+              onChange={(event) => setConclusion(event.target.value)}
+              disabled={submitting}
+              className={FIELD_TEXTAREA}
+            />
+            {/* Said plainly, because an empty selection makes the field a dead end: the
+                conclusion is carried by the equipment items, so with none it is stored and
+                never surfaces in Үзлэг ба дүгнэлт. */}
+            <p className="mt-1 text-xs text-slate-500">
+              {task.relatedObjects.length === 0
+                ? 'Тоноглол сонгоогүй бол энэ дүгнэлт Үзлэг ба дүгнэлт хэсэгт харагдахгүй: тэнд зөвхөн тоноглолд холбогдсон үр дүн жагсдаг.'
+                : `Энэ дүгнэлт ${task.relatedObjects.length} тоноглолд бичигдэнэ.`}
+            </p>
           </div>
 
           <div>

@@ -511,8 +511,8 @@ class _AssessAction extends ConsumerWidget {
     if (!ref.watch(canAssessDevicesProvider)) return const SizedBox.shrink();
 
     if (!device.canAssess) {
-      return const Padding(
-        padding: EdgeInsets.fromLTRB(
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(
           EmployeeTokens.labelGutter,
           6,
           EmployeeTokens.labelGutter,

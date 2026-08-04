@@ -85,3 +85,6 @@ Thumbs.db
 npm-debug.log*
 coverage/
 .nyc_output/
+
+# -- Runtime upload storage (UPLOAD_DIR) --------------------------------------
+var/

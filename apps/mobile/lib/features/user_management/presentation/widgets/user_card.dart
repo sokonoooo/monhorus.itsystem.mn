@@ -85,9 +85,9 @@ class UserCard extends StatelessWidget {
                 ),
                 const Spacer(),
                 if (isSelf)
-                  const Text('Өөрийн бүртгэл', style: CustomerTokens.rowSub)
+                  Text('Өөрийн бүртгэл', style: CustomerTokens.rowSub)
                 else if (!manageable)
-                  const Text('Эрх хүрэлцэхгүй', style: CustomerTokens.rowSub),
+                  Text('Эрх хүрэлцэхгүй', style: CustomerTokens.rowSub),
               ],
             ),
             if (manageable) ...<Widget>[

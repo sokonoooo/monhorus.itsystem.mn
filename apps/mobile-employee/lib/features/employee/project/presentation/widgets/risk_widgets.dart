@@ -20,7 +20,7 @@ class RiskCountStrip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (summary.isEmpty) {
-      return const Text('Үнэлгээ бүртгэгдээгүй', style: EmployeeTokens.rowSub);
+      return Text('Үнэлгээ бүртгэгдээгүй', style: EmployeeTokens.rowSub);
     }
 
     return Wrap(

@@ -132,6 +132,67 @@ describe('PlannedWorkListPage', () => {
     expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'OVERDUE' }));
   });
 
+  /**
+   * A planned work is archived the moment its report is approved, so "finished work" and
+   * "archived work" are the same rows in practice. The board asked for neither, and a
+   * signed-off job disappeared from the menu.
+   */
+  it('keeps archived work on the board by default', async () => {
+    const list = vi.spyOn(plannedWorkService, 'list').mockResolvedValue(
+      makePage([
+        makePlannedWorkListItem({
+          lifecycleStatus: 'ARCHIVED',
+          effectiveStatus: 'ARCHIVED',
+          reportStatus: 'APPROVED',
+        }),
+      ]),
+    );
+
+    renderWithAuth(<PlannedWorkListPage />, { permissions: [PERMISSIONS.PLANNED_WORK_VIEW] });
+
+    const table = await screen.findByRole('table');
+    expect(within(table).getByText('Архивласан')).toBeInTheDocument();
+    expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ includeArchived: true }));
+  });
+
+  it('drops archived work only when the toggle is cleared', async () => {
+    const list = vi
+      .spyOn(plannedWorkService, 'list')
+      .mockResolvedValue(makePage([makePlannedWorkListItem()]));
+    const user = userEvent.setup();
+
+    renderWithAuth(<PlannedWorkListPage />, { permissions: [PERMISSIONS.PLANNED_WORK_VIEW] });
+
+    await screen.findByRole('table');
+    const toggle = screen.getByLabelText('Архивласныг харуулах');
+    expect(toggle).toBeChecked();
+
+    await user.click(toggle);
+    expect(list).toHaveBeenLastCalledWith(
+      expect.not.objectContaining({ includeArchived: expect.anything() }),
+    );
+
+    // And it comes back, so the default view is never a dead end.
+    await user.click(screen.getByLabelText('Архивласныг харуулах'));
+    expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ includeArchived: true }));
+  });
+
+  it('still narrows to a single lifecycle status, archived included', async () => {
+    const list = vi
+      .spyOn(plannedWorkService, 'list')
+      .mockResolvedValue(makePage([makePlannedWorkListItem()]));
+    const user = userEvent.setup();
+
+    renderWithAuth(<PlannedWorkListPage />, { permissions: [PERMISSIONS.PLANNED_WORK_VIEW] });
+
+    await screen.findByRole('table');
+    await user.selectOptions(screen.getByLabelText('Төлөв'), 'ARCHIVED');
+    expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'ARCHIVED' }));
+
+    await user.selectOptions(screen.getByLabelText('Төлөв'), 'COMPLETED');
+    expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'COMPLETED' }));
+  });
+
   it('sends the report status filter to the backend', async () => {
     const list = vi
       .spyOn(plannedWorkService, 'list')

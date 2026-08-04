@@ -22,7 +22,7 @@ class RiskSummaryStrip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (summary.isEmpty) {
-      return const Text('Үнэлгээ бүртгэгдээгүй', style: CustomerTokens.rowSub);
+      return Text('Үнэлгээ бүртгэгдээгүй', style: CustomerTokens.rowSub);
     }
 
     return Wrap(
@@ -45,6 +45,13 @@ class RiskSummaryStrip extends StatelessWidget {
   }
 }
 
+/// One band's count, identified by a solid fill of the band colour.
+///
+/// The band name is printed alongside the figure rather than left to the fill alone.
+/// Colour is the only thing distinguishing the bands now that the silhouettes are gone,
+/// and `ATTENTION` against `SCHEDULE_REPAIR` is precisely the pair a red-green
+/// colour-blind reader cannot separate, so the text carries the meaning and the colour
+/// reinforces it.
 class _CountChip extends StatelessWidget {
   const _CountChip({required this.level, required this.count, required this.compact});
 
@@ -54,24 +61,39 @@ class _CountChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final String label = level?.label ?? unassessedLabel;
+    final RiskLevel? band = level;
+    final String label = band?.label ?? unassessedLabel;
+    // Unassessed is not a band and never takes a band fill: it stays neutral, so an
+    // object nobody has looked at cannot read as a graded result.
+    final Color background = band?.solidBackground ?? CustomerTokens.soft2;
+    final Color foreground = band?.solidForeground ?? CustomerTokens.ink2;
 
     return Semantics(
       label: '$label $count',
       excludeSemantics: true,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
         decoration: BoxDecoration(
-          color: CustomerTokens.soft2,
+          color: background,
           borderRadius: BorderRadius.circular(CustomerTokens.radiusInput),
-          border: Border.all(color: CustomerTokens.faint),
+          border: band == null ? Border.all(color: CustomerTokens.faint) : null,
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
-            RiskGlyph(level: level, size: compact ? 8 : 9),
+            // The band name yields before the figure does. A chip can be laid out in
+            // a column far narrower than its label — a building card's roll-up is
+            // ~100px wide — and the count is the one part that must never be clipped.
+            Flexible(
+              child: Text(
+                band?.shortLabel ?? unassessedLabel,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: CustomerTokens.rowSub.copyWith(color: foreground),
+              ),
+            ),
             const SizedBox(width: 5),
-            Text('$count', style: CustomerTokens.monoSub),
+            Text('$count', style: CustomerTokens.monoSub.copyWith(color: foreground)),
           ],
         ),
       ),
@@ -202,7 +224,17 @@ class _LegendItem extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 5),
-          Text(label, style: CustomerTokens.rowSub),
+          // The full band label is long ("Ойрын хугацаанд засварлах") and the legend
+          // is a Wrap, so the glyph and the colour key keep their size and the text
+          // is what gives way on a narrow run.
+          Flexible(
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: CustomerTokens.rowSub,
+            ),
+          ),
         ],
       ),
     );
@@ -253,7 +285,7 @@ class ScoreRing extends StatelessWidget {
           children: <Widget>[
             Text(score == null ? '-' : '$score', style: CustomerTokens.monoDisplay),
             const SizedBox(height: 3),
-            const Text('ҮНЭЛГЭЭ %', style: CustomerTokens.navLabel),
+            Text('ҮНЭЛГЭЭ %', style: CustomerTokens.navLabel),
           ],
         ),
       ),

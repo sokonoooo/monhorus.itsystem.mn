@@ -8,7 +8,7 @@ import {
   type WorkReportObjectDto,
   type WorkReportPhotoDto,
 } from '@monhorus/shared';
-import { Types } from 'mongoose';
+import { Types, type FilterQuery } from 'mongoose';
 
 import { AppError } from '../../common/errors/app-error';
 import { ERROR_CODES } from '../../common/errors/error-codes';
@@ -22,9 +22,12 @@ import { logger } from '../../config/logger';
 import { recordAudit } from '../audit/audit.service';
 import { notify } from '../notification/notification.service';
 import { ObjectRecord } from '../object-master/object-master.models';
+import { resolveAssignedWorkFilter } from '../planned-work/planned-work.scope';
+import { Report } from '../report-record/report-record.model';
 import { applyReportSafely, writeReport } from '../report-record/report-record.service';
 import { getRiskBands } from '../settings/settings.service';
-import { ServiceRequest } from './service-request.model';
+import { assertReportApprovalAllowed } from './self-progress.policy';
+import { ServiceRequest, type IServiceRequest } from './service-request.model';
 import { WorkReport, type IWorkReport } from './work-report.model';
 
 type WithId<T> = T & { _id: Types.ObjectId };
@@ -66,9 +69,31 @@ function toLinkedObject(value: unknown): WorkReportObjectDto {
   return { id: String(value), code: null, name: null };
 }
 
+/**
+ * An array field of a conclusion, as it may actually come back from the database.
+ *
+ * `.lean()` returns the raw stored document: it skips hydration, and hydration is what
+ * applies a schema `default`. A conclusion written before a list field existed on the
+ * schema therefore arrives with that key ABSENT rather than as `[]`, and `undefined.map`
+ * threw a TypeError the error handler could only report as a generic 500 — the whole
+ * "Дүгнэлт бичих" screen failed on every conclusion older than the field. `objectAssessments`
+ * is the field that actually broke, but `materials` and `objects` were added the same way
+ * and are absent on the same documents, so every list is read through here.
+ *
+ * Backfilling instead would fix today's rows and leave the next added field to break the
+ * same screen again; the read is the thing that has to tolerate its own history.
+ */
+function listOf<T>(value: T[] | undefined | null): T[] {
+  return Array.isArray(value) ? value : [];
+}
+
 function toDto(report: WithId<IWorkReport>): WorkReportDto {
-  const beforePhotos = report.beforePhotos.map(toPhotoDto).filter((p): p is WorkReportPhotoDto => p !== null);
-  const afterPhotos = report.afterPhotos.map(toPhotoDto).filter((p): p is WorkReportPhotoDto => p !== null);
+  const beforePhotos = listOf(report.beforePhotos)
+    .map(toPhotoDto)
+    .filter((p): p is WorkReportPhotoDto => p !== null);
+  const afterPhotos = listOf(report.afterPhotos)
+    .map(toPhotoDto)
+    .filter((p): p is WorkReportPhotoDto => p !== null);
 
   const completeness = workReportCompleteness({
     score: report.score,
@@ -92,15 +117,15 @@ function toDto(report: WithId<IWorkReport>): WorkReportDto {
     revisitDate: report.revisitDate?.toISOString() ?? null,
     beforePhotos,
     afterPhotos,
-    materials: report.materials.map(
+    materials: listOf(report.materials).map(
       (entry): WorkReportMaterialDto => ({
         name: entry.name,
         quantity: entry.quantity,
         unit: entry.unit,
       }),
     ),
-    objects: report.objects.map(toLinkedObject),
-    objectAssessments: report.objectAssessments.map((entry) => {
+    objects: listOf(report.objects).map(toLinkedObject),
+    objectAssessments: listOf(report.objectAssessments).map((entry) => {
       const named = toLinkedObject(entry.object);
       return {
         objectId: named.id,
@@ -110,7 +135,7 @@ function toDto(report: WithId<IWorkReport>): WorkReportDto {
         observation: entry.observation,
         conclusion: entry.conclusion,
         recommendation: entry.recommendation,
-        photoIds: entry.photos.map(String),
+        photoIds: listOf(entry.photos).map(String),
       };
     }),
     missing: completeness.missing,
@@ -151,22 +176,62 @@ async function loadPopulated(reportId: Types.ObjectId): Promise<WorkReportDto> {
 }
 
 /**
- * Resolves the request a conclusion hangs off, within the caller's tenant.
+ * Resolves the request a conclusion hangs off, within the caller's tenant AND their
+ * assignment scope.
  *
  * The conclusion has no customer of its own, so its boundary is the request's. The
  * predicate lives in the query and a foreign request is reported as missing, for the same
  * reason as everywhere else: a "forbidden" answer would confirm the id exists.
+ *
+ * THE ASSIGNMENT HALF IS THE SAME PREDICATE `getServiceRequestById` APPLIES, and it is here
+ * because the two had drifted apart. Once the request detail read became assignment-scoped,
+ * a technician was answered 404 for a colleague's request and 200 for that same request's
+ * conclusion — the sub-route was still bounded by tenancy alone. `GET /:id/report` is
+ * `getOrCreate`, so the gap was not merely a read: naming any id in the company minted a
+ * DRAFT conclusion attributed to the caller on a job that was never theirs. The rule the
+ * assignment policy states — the set a caller may act on cannot drift from the set they are
+ * shown — is what this restores.
+ *
+ * `includeUnclaimed` MATCHES THE DETAIL READ DELIBERATELY, and is not a separate decision
+ * about the open queue: the "Дүгнэлт бичих" button is reached from the request detail
+ * screen, so a request a technician may open is exactly the set they may write up. Refusing
+ * an unclaimed request here while still showing it would be a narrower policy than the
+ * screen offers, which is a product change rather than a consistency fix.
+ *
+ * SKIPPED FOR A CUSTOMER SCOPE for the reason the list and the detail read skip it: a portal
+ * account has no employee card, so the predicate would answer nothing, and tenancy is
+ * already its boundary.
+ *
+ * THE OFFICE REVIEWER IS UNAFFECTED. Returning needs `service_request.change_status`, and
+ * every role holding it — SYSTEM_ADMIN, ADMIN, MANAGEMENT, DISPATCH — also holds an
+ * oversight key, so `resolveAssignedWorkFilter` returns null for them and adds nothing to
+ * the query.
+ *
+ * A FIELD APPROVER IS NOT. `service_request.approve_report` carries no oversight key with
+ * it, so a technician reaching `report/approve` is bounded by this predicate like any other
+ * read — and then a second time, more tightly, by `assertReportApprovalAllowed`, which drops
+ * the unclaimed branch this one keeps. The two are not redundant: this one decides what may
+ * be LOOKED at, that one decides what may be APPROVED, and approving a conclusion on a
+ * request nobody holds is not a thing the claim flow leaves room for.
  */
 async function requestIdInScope(
   requestId: string,
   scope: ResolvedCustomerScope,
+  actor: AuthContext,
 ): Promise<Types.ObjectId> {
-  const request = await ServiceRequest.findOne({
+  const filter: FilterQuery<IServiceRequest> = {
     _id: new Types.ObjectId(requestId),
     ...customerScopeFilter(scope),
-  })
-    .select('_id')
-    .lean();
+  };
+
+  if (scope.mode === 'STAFF') {
+    const assignmentFilter = await resolveAssignedWorkFilter<IServiceRequest>(actor, {
+      includeUnclaimed: true,
+    });
+    if (assignmentFilter) filter.$and = [assignmentFilter];
+  }
+
+  const request = await ServiceRequest.findOne(filter).select('_id').lean();
   if (!request) throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Хүсэлт олдсонгүй.');
   return request._id;
 }
@@ -182,7 +247,7 @@ export async function getOrCreateWorkReport(
   scope: ResolvedCustomerScope,
   actor: AuthContext,
 ): Promise<WorkReportDto> {
-  const request = { _id: await requestIdInScope(requestId, scope) };
+  const request = { _id: await requestIdInScope(requestId, scope, actor) };
 
   const existing = await WorkReport.findOne({ serviceRequest: request._id })
     .populate(POPULATE)
@@ -203,8 +268,11 @@ export async function getOrCreateWorkReport(
 export async function findWorkReport(
   requestId: string,
   scope: ResolvedCustomerScope,
+  actor: AuthContext,
 ): Promise<WorkReportDto | null> {
-  const report = await WorkReport.findOne({ serviceRequest: await requestIdInScope(requestId, scope) })
+  const report = await WorkReport.findOne({
+    serviceRequest: await requestIdInScope(requestId, scope, actor),
+  })
     .populate(POPULATE)
     .lean<WithId<IWorkReport> | null>();
   return report ? toDto(report) : null;
@@ -218,7 +286,7 @@ export async function saveWorkReport(
   meta: RequestMeta,
 ): Promise<WorkReportDto> {
   const report = await WorkReport.findOne({
-    serviceRequest: await requestIdInScope(requestId, scope),
+    serviceRequest: await requestIdInScope(requestId, scope, actor),
   });
   if (!report) throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Дүгнэлт олдсонгүй.');
 
@@ -337,7 +405,7 @@ export async function submitWorkReport(
   meta: RequestMeta,
 ): Promise<WorkReportDto> {
   const report = await WorkReport.findOne({
-    serviceRequest: await requestIdInScope(requestId, scope),
+    serviceRequest: await requestIdInScope(requestId, scope, actor),
   })
     .populate(POPULATE)
     .lean<WithId<IWorkReport> | null>();
@@ -415,7 +483,8 @@ async function publishApprovedResult(
       'requestNumber customer project building',
     );
 
-    const evidence = [...report.beforePhotos, ...report.afterPhotos];
+    const evidence = [...listOf(report.beforePhotos), ...listOf(report.afterPhotos)];
+    const assessments = listOf(report.objectAssessments);
     const occurredAt = report.approvedAt ?? new Date();
 
     const written = await writeReport({
@@ -435,9 +504,18 @@ async function publishApprovedResult(
        * equipment the technician listed but did not score separately. The fallback is also
        * what keeps every conclusion written before per-equipment assessment existed
        * producing exactly the report it produced before.
+       *
+       * NO `judgedBy` IS SENT. A planned-work sub-task stamps `conclusionBy` when its
+       * Дүгнэлт text changes, so its items can name the technician who judged that
+       * equipment. `IWorkReportObjectAssessment` records no author at all — only the
+       * conclusion as a whole has a `createdBy`, which is the draft's owner rather than a
+       * per-equipment verdict — so there is nothing here that is true per item. The
+       * history rows these produce keep naming the approver through `assessedBy`, and
+       * their `judgedBy` stays null, which reads as "no per-equipment author recorded"
+       * rather than as a claim about the wrong person.
        */
-      items: report.objects.map((objectId) => {
-        const perObject = report.objectAssessments.find(
+      items: listOf(report.objects).map((objectId) => {
+        const perObject = assessments.find(
           (entry) => String(entry.object) === String(objectId),
         );
         return {
@@ -449,11 +527,13 @@ async function publishApprovedResult(
           // The object's own evidence when it has some, the visit's otherwise: a photo of
           // one panel is not evidence about another.
           evidenceAttachments:
-            perObject && perObject.photos.length > 0 ? [...perObject.photos] : evidence,
+            perObject && listOf(perObject.photos).length > 0
+              ? [...listOf(perObject.photos)]
+              : evidence,
         };
       }),
       hierarchy:
-        report.objects.length === 0
+        listOf(report.objects).length === 0
           ? {
               customer: request?.customer ?? null,
               project: request?.project ?? null,
@@ -464,6 +544,29 @@ async function publishApprovedResult(
       occurredAt,
     });
 
+    /**
+     * The approval is carried onto the canonical row, as the planned-work path already
+     * does with its own.
+     *
+     * `writeReport` records who RAISED a report, never who signed it off, so a row landing
+     * here as APPROVED with no `approvedBy` was claiming a review with nobody attached to
+     * it. Everything downstream reads `approvedByName ?? createdByName` — the history row's
+     * author, the object timeline's actor, the report list — and on this path the two
+     * happened to be the same person, so the gap was invisible rather than absent.
+     */
+    if (report.approvedBy || report.approvedAt) {
+      await Report.updateOne(
+        { _id: written._id },
+        {
+          $set: {
+            approvedBy: report.approvedBy,
+            approvedByName: report.approvedByName,
+            approvedAt: report.approvedAt,
+          },
+        },
+      );
+    }
+
     await applyReportSafely(written._id);
   } catch (error) {
     logger.error(
@@ -473,15 +576,28 @@ async function publishApprovedResult(
   }
 }
 
+/**
+ * Settles a submitted conclusion.
+ *
+ * TWO KEYS REACH THIS, and they are not the same authority. `service_request.change_status`
+ * is the office reviewer and is unscoped in practice, because every role holding it also
+ * holds an oversight key. `service_request.approve_report` is the field grant, and for its
+ * holders `assertReportApprovalAllowed` bounds this to a request that names them or their
+ * team — the same predicate `POST /:id/status` applies, minus the unclaimed queue.
+ *
+ * `returnWorkReport` below has no equivalent and must not acquire one: returning stays on
+ * `service_request.change_status` alone.
+ */
 export async function approveWorkReport(
   requestId: string,
   scope: ResolvedCustomerScope,
   actor: AuthContext,
   meta: RequestMeta,
 ): Promise<WorkReportDto> {
-  const report = await WorkReport.findOne({
-    serviceRequest: await requestIdInScope(requestId, scope),
-  });
+  const serviceRequestId = await requestIdInScope(requestId, scope, actor);
+  await assertReportApprovalAllowed(serviceRequestId, actor);
+
+  const report = await WorkReport.findOne({ serviceRequest: serviceRequestId });
   if (!report) throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Дүгнэлт олдсонгүй.');
 
   if (report.status !== 'SUBMITTED') {
@@ -529,7 +645,7 @@ export async function returnWorkReport(
   meta: RequestMeta,
 ): Promise<WorkReportDto> {
   const report = await WorkReport.findOne({
-    serviceRequest: await requestIdInScope(requestId, scope),
+    serviceRequest: await requestIdInScope(requestId, scope, actor),
   });
   if (!report) throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Дүгнэлт олдсонгүй.');
 

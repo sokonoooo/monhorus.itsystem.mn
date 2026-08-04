@@ -73,6 +73,52 @@ export function canTransition(
   return SERVICE_REQUEST_TRANSITIONS[from].includes(to);
 }
 
+/**
+ * The states `service_request.self_progress` authorises, and nothing else.
+ *
+ * WHAT THE LINE IS DRAWN ON: every state here is something the person standing at the site
+ * is the only honest source for — I have accepted it, I am on my way, I have arrived, I am
+ * working, I am blocked, my write-up is in. None of them is a decision ABOUT the job.
+ *
+ * The six deliberately absent, each for its own reason rather than by omission:
+ *   - CANCELLED and UNASSIGNED — planning decisions. Dropping a job is not reporting on it.
+ *   - RETURNED — a judgement on somebody's write-up, which is the office's.
+ *   - VERIFICATION and COMPLETED — the sign-off rule 17.7 keeps downstream of an approved
+ *     conclusion, so that closing a job is never the same act as finishing the work.
+ *   - REVISIT_REQUIRED — it creates follow-up work for somebody, i.e. it is dispatch.
+ *
+ * THIS SET NEVER WIDENS [SERVICE_REQUEST_TRANSITIONS]. It is intersected with it, never
+ * substituted for it: a move has to be legal for the request AND permitted for the caller,
+ * and this answers only the second half. WAITING keeps its `reason` requirement, which is
+ * why it is the one entry here that also appears in [REASON_REQUIRED_STATUSES].
+ */
+export const SELF_PROGRESS_STATUSES: readonly ServiceRequestStatus[] = [
+  'ACCEPTED',
+  'ON_THE_WAY',
+  'ON_SITE',
+  'IN_PROGRESS',
+  'WAITING',
+  'REPORT_SUBMITTED',
+];
+
+export function isSelfProgressStatus(status: ServiceRequestStatus): boolean {
+  return SELF_PROGRESS_STATUSES.includes(status);
+}
+
+/**
+ * The moves a self-progress holder may actually offer from `from`: legal for the request
+ * and inside the set above.
+ *
+ * Exported so the dispatch board, the employee app and the backend all read one answer
+ * rather than each intersecting the two lists their own way — which is how a control ends
+ * up offering a move the API refuses.
+ */
+export function selfProgressTransitionsFrom(
+  from: ServiceRequestStatus,
+): readonly ServiceRequestStatus[] {
+  return SERVICE_REQUEST_TRANSITIONS[from].filter(isSelfProgressStatus);
+}
+
 /** Transitions that require a free-text reason (requirements 8.3, 14.1, 14.4). */
 export const REASON_REQUIRED_STATUSES: readonly ServiceRequestStatus[] = [
   'WAITING',
@@ -85,20 +131,60 @@ export function isReasonRequired(status: ServiceRequestStatus): boolean {
   return REASON_REQUIRED_STATUSES.includes(status);
 }
 
-/** Columns rendered by the dispatch board, in workflow order. */
-export const DISPATCH_BOARD_COLUMNS: readonly ServiceRequestStatus[] = [
-  'UNASSIGNED',
-  'ASSIGNED',
-  'ACCEPTED',
-  'ON_THE_WAY',
-  'ON_SITE',
-  'IN_PROGRESS',
-  'REPORT_SUBMITTED',
-  'VERIFICATION',
-  'COMPLETED',
-  'RETURNED',
-  'REVISIT_REQUIRED',
-];
+/**
+ * A dispatch board column.
+ *
+ * A column is not a status. Most cover exactly one, but the open column covers both
+ * NEW and UNASSIGNED, so the shape has to be a set of statuses rather than a single
+ * one. `id` is the stable key consumers switch on; the label is display only.
+ */
+export interface DispatchBoardColumnDef {
+  id: string;
+  statuses: readonly ServiceRequestStatus[];
+  label: string;
+}
+
+/**
+ * Columns rendered by the dispatch board, in workflow order.
+ *
+ * NEW and UNASSIGNED are one column. Every request is created NEW and nothing promotes
+ * it to UNASSIGNED on its own, so a board that listed only UNASSIGNED showed nothing at
+ * all; the two statuses mean the same thing to a dispatcher ("nobody has this yet") and
+ * are already paired as CLAIMABLE_STATUSES on the backend model.
+ *
+ * WAITING is its own column: it is reachable from ON_THE_WAY, ON_SITE and IN_PROGRESS,
+ * and without a column a paused job disappears from the board entirely.
+ *
+ * CANCELLED is deliberately absent — it is terminal and nothing on the board acts on it.
+ */
+export const DISPATCH_BOARD_COLUMNS = [
+  { id: 'OPEN', statuses: ['NEW', 'UNASSIGNED'], label: 'Хуваарилаагүй' },
+  { id: 'ASSIGNED', statuses: ['ASSIGNED'], label: SERVICE_REQUEST_STATUS_LABELS.ASSIGNED },
+  { id: 'ACCEPTED', statuses: ['ACCEPTED'], label: SERVICE_REQUEST_STATUS_LABELS.ACCEPTED },
+  { id: 'ON_THE_WAY', statuses: ['ON_THE_WAY'], label: SERVICE_REQUEST_STATUS_LABELS.ON_THE_WAY },
+  { id: 'ON_SITE', statuses: ['ON_SITE'], label: SERVICE_REQUEST_STATUS_LABELS.ON_SITE },
+  { id: 'IN_PROGRESS', statuses: ['IN_PROGRESS'], label: SERVICE_REQUEST_STATUS_LABELS.IN_PROGRESS },
+  { id: 'WAITING', statuses: ['WAITING'], label: SERVICE_REQUEST_STATUS_LABELS.WAITING },
+  {
+    id: 'REPORT_SUBMITTED',
+    statuses: ['REPORT_SUBMITTED'],
+    label: SERVICE_REQUEST_STATUS_LABELS.REPORT_SUBMITTED,
+  },
+  {
+    id: 'VERIFICATION',
+    statuses: ['VERIFICATION'],
+    label: SERVICE_REQUEST_STATUS_LABELS.VERIFICATION,
+  },
+  { id: 'COMPLETED', statuses: ['COMPLETED'], label: SERVICE_REQUEST_STATUS_LABELS.COMPLETED },
+  { id: 'RETURNED', statuses: ['RETURNED'], label: SERVICE_REQUEST_STATUS_LABELS.RETURNED },
+  {
+    id: 'REVISIT_REQUIRED',
+    statuses: ['REVISIT_REQUIRED'],
+    label: SERVICE_REQUEST_STATUS_LABELS.REVISIT_REQUIRED,
+  },
+] as const satisfies readonly DispatchBoardColumnDef[];
+
+export type DispatchBoardColumnId = (typeof DISPATCH_BOARD_COLUMNS)[number]['id'];
 
 /** Requirements section 8.1. */
 export const SERVICE_REQUEST_TYPES = [

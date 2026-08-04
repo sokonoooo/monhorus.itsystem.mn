@@ -55,8 +55,8 @@ class _ProjectTabScreenState extends ConsumerState<ProjectTabScreen> {
           children: <Widget>[
             // `.tnav` on `s-projects`: the title, then the shared `.hdr-actions`
             // pair — calendar first, bell second — which every tab carries.
-            const Padding(
-              padding: EdgeInsets.fromLTRB(
+            Padding(
+              padding: const EdgeInsets.fromLTRB(
                 EmployeeTokens.labelGutter,
                 14,
                 EmployeeTokens.labelGutter,
@@ -67,8 +67,8 @@ class _ProjectTabScreenState extends ConsumerState<ProjectTabScreen> {
                   Expanded(
                     child: Text('Төслүүд', style: EmployeeTokens.screenTitle),
                   ),
-                  SizedBox(width: 10),
-                  EmployeeHeaderActions(),
+                  const SizedBox(width: 10),
+                  const EmployeeHeaderActions(),
                 ],
               ),
             ),
@@ -139,8 +139,8 @@ class _Body extends StatelessWidget {
         // employeeId to filter by, so this is every project the account may read
         // rather than the prototype's "Миний төслүүд". Saying so is better than a
         // heading that claims a scope the data does not have.
-        const Padding(
-          padding: EdgeInsets.fromLTRB(
+        Padding(
+          padding: const EdgeInsets.fromLTRB(
             EmployeeTokens.labelGutter,
             6,
             EmployeeTokens.labelGutter,

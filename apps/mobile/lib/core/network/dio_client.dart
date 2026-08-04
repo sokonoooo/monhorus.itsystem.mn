@@ -93,28 +93,85 @@ class DioClient {
     Object? data,
     Map<String, dynamic>? queryParameters,
     bool allowRetry = true,
+  }) {
+    return _send<T>(
+      path: path,
+      method: method,
+      decoder: decoder,
+      body: () => data,
+      queryParameters: queryParameters,
+      allowRetry: allowRetry,
+    );
+  }
+
+  /// Multipart variant of [request], for the file-upload routes.
+  ///
+  /// Takes a builder rather than a ready [FormData] because a multipart body is a
+  /// one-shot stream: `FormData.finalize()` may be called once, so the 401-refresh
+  /// replay below would resend an already consumed body and the server would see an
+  /// empty request. Building a fresh body per attempt is what makes that retry safe,
+  /// and it is the only reason this method exists separately.
+  ///
+  /// Dio sets the `multipart/form-data` content type and boundary itself whenever the
+  /// body is a [FormData], overriding the JSON default on the shared options, so
+  /// nothing here has to touch headers.
+  ///
+  /// Mirrors `apps/mobile-employee/lib/core/network/dio_client.dart` so a photo leaves
+  /// either app the same way.
+  Future<T> upload<T>({
+    required String path,
+    required FormData Function() body,
+    required T Function(Object? json) decoder,
+    String method = 'POST',
+  }) {
+    return _send<T>(
+      path: path,
+      method: method,
+      decoder: decoder,
+      body: body,
+      // The shared options set no send timeout, which is right for a JSON body but not
+      // for a photo pushed from a handset: without one a stalled upload hangs on a
+      // spinner forever instead of failing and letting the user retry.
+      sendTimeout: _uploadSendTimeout,
+    );
+  }
+
+  /// Generous, because it must not abort a slow but progressing upload. A picture is
+  /// capped at 10 MB server-side and `capturePhoto` re-encodes to a few hundred
+  /// kilobytes, so anything beyond this is a stall, not a big file.
+  static const Duration _uploadSendTimeout = Duration(seconds: 60);
+
+  Future<T> _send<T>({
+    required String path,
+    required String method,
+    required T Function(Object? json) decoder,
+    required Object? Function() body,
+    Map<String, dynamic>? queryParameters,
+    Duration? sendTimeout,
+    bool allowRetry = true,
   }) async {
     try {
       final Response<dynamic> response = await _dio.request<dynamic>(
         path,
-        data: data,
+        data: body(),
         queryParameters: queryParameters,
-        options: Options(method: method),
+        options: Options(method: method, sendTimeout: sendTimeout),
       );
 
       final int status = response.statusCode ?? 0;
-      final dynamic body = response.data;
+      final dynamic responseBody = response.data;
 
       if (status == 401 && allowRetry && !_noAuthPaths.any(path.contains)) {
         final String? refreshed = await _refreshAccessToken();
         if (refreshed != null) {
           // Replay exactly once. allowRetry: false prevents an infinite loop.
-          return request<T>(
+          return _send<T>(
             path: path,
             method: method,
             decoder: decoder,
-            data: data,
+            body: body,
             queryParameters: queryParameters,
+            sendTimeout: sendTimeout,
             allowRetry: false,
           );
         }
@@ -124,12 +181,12 @@ class DioClient {
 
       if (status >= 200 &&
           status < 300 &&
-          body is Map<String, dynamic> &&
-          body['success'] == true) {
-        return decoder(body['data']);
+          responseBody is Map<String, dynamic> &&
+          responseBody['success'] == true) {
+        return decoder(responseBody['data']);
       }
 
-      throw _toServerException(status, body);
+      throw _toServerException(status, responseBody);
     } on DioException catch (error) {
       final Object? inner = error.error;
       if (inner is NetworkException) throw inner;

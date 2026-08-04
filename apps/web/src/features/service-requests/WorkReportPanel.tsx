@@ -29,7 +29,7 @@ import {
 } from '../../components/ui/control-styles';
 import { useAuth } from '../../contexts/auth-context';
 import { ApiError } from '../../lib/api-client';
-import { authorisedFileUrl } from '../../lib/file-url';
+import { useAuthorisedFileUrls } from '../../lib/use-authorised-file-urls';
 import { objectMasterService } from '../../services/object-master.service';
 import { objectService } from '../../services/object.service';
 import { workReportService } from '../../services/service-request.service';
@@ -155,50 +155,6 @@ function MaterialEditor({
 /** Matches the mime types the storage service accepts for an image. */
 const ACCEPTED_PHOTO_TYPES = 'image/png,image/jpeg,image/webp';
 
-/**
- * Resolves stored photos to displayable object URLs.
- *
- * The download route requires a bearer token, so an evidence photo cannot be used as a bare
- * `img src`. Each one is fetched once and turned into an object URL that backs its thumbnail
- * and its enlarged preview alike. Everything handed out is revoked when the set changes or
- * the component unmounts, otherwise the blobs live as long as the document does.
- */
-function useAuthorisedPhotoUrls(photos: readonly WorkReportPhotoDto[]): Record<string, string> {
-  const [urls, setUrls] = useState<Record<string, string>>({});
-  // Identity, not contents: a new array of the same photos must not refetch.
-  const key = photos.map((photo) => photo.id).join(',');
-
-  useEffect(() => {
-    let cancelled = false;
-    const created: string[] = [];
-
-    void (async () => {
-      const resolved: Record<string, string> = {};
-      for (const photo of photos) {
-        try {
-          const url = await authorisedFileUrl(photo.downloadUrl);
-          created.push(url);
-          resolved[photo.id] = url;
-        } catch {
-          // A thumbnail that will not load must not hide the rest of the evidence.
-        }
-      }
-      if (cancelled) {
-        for (const url of created) URL.revokeObjectURL(url);
-        return;
-      }
-      setUrls(resolved);
-    })();
-
-    return () => {
-      cancelled = true;
-      for (const url of created) URL.revokeObjectURL(url);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
-
-  return urls;
-}
 
 /**
  * Thumbnail grid for one evidence set.
@@ -334,7 +290,8 @@ function EquipmentAssessments({
     }
     setLoading(true);
     objectMasterService
-      .list({ floorId, limit: 200 })
+      // 100 is the cap `objectListQuerySchema` enforces; more is a 400, not a bigger page.
+      .list({ floorId, limit: 100 })
       .then((page) => setObjects(page.items))
       .catch(() => setObjects([]))
       .finally(() => setLoading(false));
@@ -504,8 +461,8 @@ function ReportDrawer({
   const [uploading, setUploading] = useState<'BEFORE' | 'AFTER' | null>(null);
   const [preview, setPreview] = useState<WorkReportPhotoDto | null>(null);
 
-  const beforeUrls = useAuthorisedPhotoUrls(beforePhotos);
-  const afterUrls = useAuthorisedPhotoUrls(afterPhotos);
+  const beforeUrls = useAuthorisedFileUrls(beforePhotos);
+  const afterUrls = useAuthorisedFileUrls(afterPhotos);
 
   useEffect(() => {
     if (!open) return;
@@ -847,8 +804,8 @@ function ReportDrawer({
  * inside the panel's render body.
  */
 function ReportEvidence({ report }: { report: WorkReportDto }): ReactElement {
-  const beforeUrls = useAuthorisedPhotoUrls(report.beforePhotos);
-  const afterUrls = useAuthorisedPhotoUrls(report.afterPhotos);
+  const beforeUrls = useAuthorisedFileUrls(report.beforePhotos);
+  const afterUrls = useAuthorisedFileUrls(report.afterPhotos);
   const [preview, setPreview] = useState<WorkReportPhotoDto | null>(null);
 
   return (

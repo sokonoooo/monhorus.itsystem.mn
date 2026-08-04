@@ -144,7 +144,7 @@ class _EventDetailSheet extends StatelessWidget {
                     ),
                     if (progress != null) ...<Widget>[
                       const SizedBox(height: 12),
-                      const Text(
+                      Text(
                         'ГҮЙЦЭТГЭЛ',
                         style: EmployeeTokens.sectionLabel,
                       ),

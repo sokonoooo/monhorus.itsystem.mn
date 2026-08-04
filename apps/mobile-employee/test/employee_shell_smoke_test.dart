@@ -221,4 +221,43 @@ void main() {
       expect(tester.takeException(), isNull);
     });
   }
+
+  // THE SCHEDULE IS THE READER'S OWN, WITH NO WAY TO ASK FOR ANYBODY ELSE'S.
+  //
+  // The Хуанли screen used to open with a `Миний` / `Бүгд` segmented control above the
+  // month grid. `Бүгд` dropped the `employeeId` filter, and since `GET /calendar` enforced
+  // no scope of its own that filter WAS the scope: one tap from any tab's header listed
+  // every colleague's planned work for the month, their names, customers and buildings
+  // included. The server bounds the endpoint to the caller's own assignments now, so the
+  // chip could only have been a control that silently did nothing.
+  //
+  // Pinned from the shell rather than by mounting the screen directly, because the header
+  // button is how a technician actually reaches it, and the one-tap reach is what made the
+  // control dangerous. `Бүгд` on its own is deliberately NOT asserted absent — the source
+  // selector below still offers it, meaning "both sources", and conflating the two labels
+  // would make this test fail for the wrong reason.
+  testWidgets('the schedule offers no whose-work toggle', (
+    WidgetTester tester,
+  ) async {
+    await _mountShell(tester);
+    await _openTab(tester, 'Нүүр');
+
+    await tester.tap(_headerButton('Миний хуваарь'));
+    await _pumpUntil(
+      tester,
+      () => _headerButton('Буцах').evaluate().length == 1,
+      reason: 'the schedule to arrive',
+    );
+
+    // `SegmentedRow` upper-cases its labels, so this is the string that would be on screen.
+    expect(
+      find.text('МИНИЙ'),
+      findsNothing,
+      reason: 'the whose-work segmented control must not come back',
+    );
+
+    // The source selector is untouched: three chips, `Бүгд` among them.
+    expect(find.text('БҮГД'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 }

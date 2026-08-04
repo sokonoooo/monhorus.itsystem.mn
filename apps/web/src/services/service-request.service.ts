@@ -10,6 +10,7 @@ import type {
   DispatchCandidateDto,
   ExtendSlaInput,
   PaginatedData,
+  ServiceRequestAttachmentDto,
   ServiceRequestDetailDto,
   ServiceRequestListItemDto,
   ServiceRequestListQuery,
@@ -62,6 +63,27 @@ export const serviceRequestService = {
       await apiClient.post<ApiResponse<ServiceRequestDetailDto>>(
         `/service-requests/${requestId}/status`,
         payload,
+      ),
+    );
+  },
+
+  /**
+   * Uploads one attachment ahead of the request that will carry it.
+   *
+   * The request is created in one shot with its `attachmentIds`, so the file is parked on
+   * the uploader here and claimed by `create` — the same two-phase flow the customer app
+   * and the work report already use. A file chosen but never submitted therefore stays
+   * unreferenced rather than attaching itself to nothing.
+   */
+  async uploadAttachment(file: File): Promise<ServiceRequestAttachmentDto> {
+    const form = new FormData();
+    form.append('file', file);
+
+    return unwrap(
+      await apiClient.post<ApiResponse<ServiceRequestAttachmentDto>>(
+        '/files/service-request-attachments',
+        form,
+        { headers: { 'Content-Type': 'multipart/form-data' } },
       ),
     );
   },

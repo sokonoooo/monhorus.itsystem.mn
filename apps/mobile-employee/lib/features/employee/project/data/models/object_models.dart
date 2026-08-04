@@ -83,12 +83,18 @@ class ObjectTypeRefModel {
     required this.code,
     required this.name,
     required this.icon,
+    required this.showOnPlan,
   });
 
   final String id;
   final String code;
   final String name;
   final ObjectIcon icon;
+
+  /// The registry's own answer to "may an object of this type be drawn on a floor
+  /// plan". False when absent: a server that predates the field must leave the plan as
+  /// it was rather than scatter markers the admin web would not draw.
+  final bool showOnPlan;
 
   static ObjectTypeRefModel? fromJson(Object? raw) {
     if (raw is! Map<String, dynamic>) return null;
@@ -99,8 +105,50 @@ class ObjectTypeRefModel {
       code: raw['code'] as String? ?? '',
       name: raw['name'] as String? ?? '',
       icon: ObjectIcon.fromWire(raw['icon'] as String?),
+      showOnPlan: parseBool(raw['showOnPlan']),
     );
   }
+}
+
+/// Mirrors `PlanPositionDto` — where the object sits on its floor plan, as a fraction
+/// of the plan image's width and height.
+///
+/// Normalised rather than pixel-based so a placement survives the plan being replaced
+/// at another resolution. Both numbers must be finite and within 0..1: a marker drawn
+/// from anything else lands outside the drawing, where it is either invisible or — worse
+/// — pinned to an edge as though that were the recorded position. Such a value is
+/// rejected here and the object then reads as unplaced, which is a truthful state.
+class PlanPositionModel {
+  const PlanPositionModel({required this.x, required this.y});
+
+  /// Fraction of the plan's width, 0 at the left edge and 1 at the right.
+  final double x;
+
+  /// Fraction of the plan's height, 0 at the top edge and 1 at the bottom.
+  final double y;
+
+  /// One unusable coordinate costs one unplaced marker, never the floor's whole
+  /// object list: [parseDouble] refuses a non-numeric field instead of throwing.
+  static PlanPositionModel? fromJson(Object? raw) {
+    if (raw is! Map<String, dynamic>) return null;
+    final double? x = parseDouble(raw['x']);
+    final double? y = parseDouble(raw['y']);
+    if (x == null || y == null) return null;
+    if (!_inRange(x) || !_inRange(y)) return null;
+    return PlanPositionModel(x: x, y: y);
+  }
+
+  static bool _inRange(double value) => value.isFinite && value >= 0 && value <= 1;
+
+  @override
+  bool operator ==(Object other) =>
+      other is PlanPositionModel && other.x == x && other.y == y;
+
+  @override
+  int get hashCode => Object.hash(x, y);
+
+  @override
+  String toString() => 'PlanPositionModel($x, $y)';
 }
 
 /// Mirrors `LatestAssessmentDto`.
@@ -292,6 +340,7 @@ class ObjectListItemModel {
     required this.floorId,
     required this.floorName,
     required this.buildingName,
+    required this.planPosition,
     required this.status,
     required this.latestAssessment,
     required this.calculatedLoad,
@@ -310,6 +359,11 @@ class ObjectListItemModel {
   final String? floorId;
   final String? floorName;
   final String? buildingName;
+
+  /// Where the object sits on its floor's plan image. Null when it has never been
+  /// placed — or when the stored value was unusable — and it then draws no marker.
+  final PlanPositionModel? planPosition;
+
   final ObjectStatus? status;
 
   /// Null when the object has never been assessed. That is a distinct state from a
@@ -334,6 +388,7 @@ class ObjectListItemModel {
       floorId: json['floorId'] as String?,
       floorName: json['floorName'] as String?,
       buildingName: json['buildingName'] as String?,
+      planPosition: PlanPositionModel.fromJson(json['planPosition']),
       status: ObjectStatus.fromWire(json['status'] as String?),
       latestAssessment: LatestAssessmentModel.fromJson(json['latestAssessment']),
       calculatedLoad: LoadValueModel.fromJson(json['calculatedLoad']),
@@ -369,6 +424,7 @@ class ObjectDetailModel extends ObjectListItemModel {
     required super.floorId,
     required super.floorName,
     required super.buildingName,
+    required super.planPosition,
     required super.status,
     required super.latestAssessment,
     required super.calculatedLoad,
@@ -427,6 +483,7 @@ class ObjectDetailModel extends ObjectListItemModel {
       floorId: json['floorId'] as String?,
       floorName: json['floorName'] as String?,
       buildingName: json['buildingName'] as String?,
+      planPosition: PlanPositionModel.fromJson(json['planPosition']),
       status: ObjectStatus.fromWire(json['status'] as String?),
       latestAssessment: LatestAssessmentModel.fromJson(json['latestAssessment']),
       calculatedLoad: LoadValueModel.fromJson(json['calculatedLoad']),
@@ -468,6 +525,65 @@ class ObjectDetailModel extends ObjectListItemModel {
   }
 }
 
+/// Mirrors `LoadMeasurementDto` — one reading in the unit it was taken in.
+///
+/// Recorded beside the assessment, never added to anything: `measuredLoadKw` is the
+/// only figure any roll-up sums, and an amp reading folded into it would become
+/// phantom kilowatts on a floor total.
+class LoadMeasurementModel {
+  const LoadMeasurementModel({
+    required this.kind,
+    required this.value,
+    required this.unit,
+    required this.phase,
+  });
+
+  final LoadMeasurementKind kind;
+  final double value;
+  final LoadMeasurementUnit unit;
+
+  /// Null means the reading is not phase-specific — single-phase, or a total.
+  final LoadMeasurementPhase? phase;
+
+  /// The readings on one assessment, skipping any the app cannot name.
+  ///
+  /// A kind added to the shared vocabulary after this build shipped must not take the
+  /// device history down with it: an unreadable row is dropped, and the rows around it
+  /// still render. Nothing here computes, so a dropped row costs a line of display and
+  /// no total.
+  static List<LoadMeasurementModel> listFrom(Object? raw) {
+    if (raw is! List) return const <LoadMeasurementModel>[];
+    final List<LoadMeasurementModel> readings = <LoadMeasurementModel>[];
+    for (final Object? entry in raw) {
+      if (entry is! Map<String, dynamic>) continue;
+      final LoadMeasurementKind? kind =
+          LoadMeasurementKind.fromWire(entry['kind'] as String?);
+      final LoadMeasurementUnit? unit =
+          LoadMeasurementUnit.fromWire(entry['unit'] as String?);
+      final double? value = parseDouble(entry['value']);
+      if (kind == null || unit == null || value == null) continue;
+      readings.add(LoadMeasurementModel(
+        kind: kind,
+        value: value,
+        unit: unit,
+        phase: LoadMeasurementPhase.fromWire(entry['phase'] as String?),
+      ));
+    }
+    return readings;
+  }
+
+  /// The body shape `loadMeasurementSchema` accepts. The unit comes from the kind, so
+  /// the two can not be sent disagreeing.
+  Map<String, dynamic> toJson() {
+    return <String, dynamic>{
+      'kind': kind.wireValue,
+      'value': value,
+      'unit': kind.unit.wireValue,
+      'phase': kind.acceptsPhase ? phase?.wireValue : null,
+    };
+  }
+}
+
 /// Mirrors `ObjectAssessmentDto` — one written conclusion, append-only.
 class ObjectAssessmentModel {
   const ObjectAssessmentModel({
@@ -483,6 +599,7 @@ class ObjectAssessmentModel {
     required this.recommendation,
     required this.actionTaken,
     required this.measuredLoadKw,
+    this.measurements = const <LoadMeasurementModel>[],
     required this.repairRequired,
     required this.revisitRequired,
     required this.revisitDate,
@@ -502,6 +619,11 @@ class ObjectAssessmentModel {
   final String? recommendation;
   final String? actionTaken;
   final double? measuredLoadKw;
+
+  /// Amps, volts and kW as read on site. Empty for every assessment recorded before
+  /// readings could be logged, and for every one where only the kW box was filled in.
+  final List<LoadMeasurementModel> measurements;
+
   final bool repairRequired;
   final bool revisitRequired;
   final DateTime? revisitDate;
@@ -524,6 +646,7 @@ class ObjectAssessmentModel {
       recommendation: json['recommendation'] as String?,
       actionTaken: json['actionTaken'] as String?,
       measuredLoadKw: parseDouble(json['measuredLoadKw']),
+      measurements: LoadMeasurementModel.listFrom(json['measurements']),
       repairRequired: json['repairRequired'] as bool? ?? false,
       revisitRequired: json['revisitRequired'] as bool? ?? false,
       revisitDate: parseDate(json['revisitDate']),
@@ -642,6 +765,7 @@ class CreateAssessmentRequest {
     this.recommendation,
     this.actionTaken,
     this.measuredLoadKw,
+    this.measurements = const <LoadMeasurementModel>[],
     this.repairRequired = false,
   });
 
@@ -651,6 +775,11 @@ class CreateAssessmentRequest {
   final String? recommendation;
   final String? actionTaken;
   final double? measuredLoadKw;
+
+  /// Extra readings in their own units. Left off the body entirely when empty, so an
+  /// untouched form sends exactly what it sent before the field existed.
+  final List<LoadMeasurementModel> measurements;
+
   final bool repairRequired;
 
   Map<String, dynamic> toJson() {
@@ -665,6 +794,10 @@ class CreateAssessmentRequest {
         'recommendation': recommendation,
       if (actionTaken != null && actionTaken!.isNotEmpty) 'actionTaken': actionTaken,
       if (measuredLoadKw != null) 'measuredLoadKw': measuredLoadKw,
+      if (measurements.isNotEmpty)
+        'measurements': measurements
+            .map((LoadMeasurementModel reading) => reading.toJson())
+            .toList(growable: false),
     };
   }
 }

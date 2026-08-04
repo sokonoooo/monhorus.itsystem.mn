@@ -114,7 +114,7 @@ class _ResetPasscodeSheetState extends ConsumerState<ResetPasscodeSheet> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
-            const Text('Нууц үг шинэчлэх', style: CustomerTokens.headerTitle),
+            Text('Нууц үг шинэчлэх', style: CustomerTokens.headerTitle),
             const SizedBox(height: 14),
 
             Container(

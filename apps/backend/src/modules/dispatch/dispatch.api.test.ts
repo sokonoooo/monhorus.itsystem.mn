@@ -210,6 +210,96 @@ describe('dispatch team candidates', () => {
   });
 });
 
+/**
+ * The board is the only place a dispatcher sees new work, and it had no end-to-end test
+ * of its own: the shipped board queried UNASSIGNED but every request is created NEW, so
+ * a freshly filed request was invisible until somebody assigned it by other means. These
+ * cases go through the real create endpoint rather than writing a status straight to the
+ * collection, so nothing here can pass while creation and the board disagree again.
+ */
+describe('dispatch board', () => {
+  async function createRequest(description: string): Promise<{ id: string; number: string }> {
+    const created = await request(app)
+      .post(`${API}/service-requests`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        customerId,
+        buildingId,
+        requestType: 'STANDARD_CALL',
+        isUrgent: false,
+        description,
+        contactName: 'Б. Болд',
+        contactPhone: '9911-2233',
+      });
+    expect(created.status).toBe(201);
+    return { id: created.body.data.id as string, number: created.body.data.requestNumber as string };
+  }
+
+  async function fetchBoard(): Promise<
+    { id: string; statuses: string[]; total: number; items: { id: string }[] }[]
+  > {
+    const response = await request(app)
+      .get(`${API}/dispatch/board`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(response.status).toBe(200);
+    return response.body.data.columns;
+  }
+
+  it('shows a newly created request in the merged open column', async () => {
+    const created = await createRequest('Гэрэл асахгүй байна');
+
+    const columns = await fetchBoard();
+    const open = columns.find((column) => column.id === 'OPEN');
+
+    expect(open).toBeDefined();
+    expect(open?.statuses).toEqual(['NEW', 'UNASSIGNED']);
+    expect(open?.total).toBe(1);
+    expect(open?.items.map((item) => item.id)).toContain(created.id);
+  });
+
+  it('keeps a request in the open column once it moves NEW -> UNASSIGNED', async () => {
+    const created = await createRequest('Автомат унтарсан');
+
+    await request(app)
+      .post(`${API}/service-requests/${created.id}/status`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ status: 'UNASSIGNED' });
+
+    const columns = await fetchBoard();
+    const open = columns.find((column) => column.id === 'OPEN');
+
+    // One column, one card — the merge must not double-count across its two statuses.
+    expect(open?.total).toBe(1);
+    expect(open?.items.map((item) => item.id)).toEqual([created.id]);
+  });
+
+  it('shows a paused request in the WAITING column', async () => {
+    const created = await createRequest('Сэлбэг хүлээж байна');
+    const employeeId = await makeEmployee('EMP-BOARD', 'ACTIVE');
+
+    await request(app)
+      .post(`${API}/service-requests/${created.id}/assign`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ employeeIds: [employeeId] });
+
+    for (const status of ['ACCEPTED', 'ON_THE_WAY', 'WAITING']) {
+      const changed = await request(app)
+        .post(`${API}/service-requests/${created.id}/status`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ status, reason: 'Сэлбэг хүлээгдэж байна' });
+      expect(changed.status).toBe(200);
+    }
+
+    const columns = await fetchBoard();
+    const waiting = columns.find((column) => column.id === 'WAITING');
+
+    expect(waiting?.total).toBe(1);
+    expect(waiting?.items.map((item) => item.id)).toEqual([created.id]);
+    // And it left the open column rather than showing in both.
+    expect(columns.find((column) => column.id === 'OPEN')?.total).toBe(0);
+  });
+});
+
 describe('employee workload on the detail page', () => {
   it('reports the real assignment counts', async () => {
     const employeeId = await makeEmployee('EMP-LOAD', 'ACTIVE');

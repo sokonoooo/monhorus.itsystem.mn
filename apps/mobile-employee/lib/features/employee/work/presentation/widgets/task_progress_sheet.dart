@@ -12,7 +12,6 @@ import '../../domain/entities/planned_work_enums.dart';
 import '../format.dart';
 import '../providers/work_providers.dart';
 import 'evidence_photo_strip.dart';
-import 'task_materials_section.dart';
 import 'work_ui.dart';
 
 /// "Өнөөдрийн гүйцэтгэл оруулах" — the daily entry for one sub-task.
@@ -30,7 +29,13 @@ import 'work_ui.dart';
 ///    Зөвлөмж and a 0-100 Үнэлгээ. The note, score and recommendation fields exist
 ///    here because without them a task can be recorded at 100% and still sit in
 ///    IN_PROGRESS forever; `missingEvidence` from the server is shown verbatim so the
-///    remaining requirements are never guessed at.
+///    remaining requirements are never guessed at. Дүгнэлт is collected alongside
+///    them — not part of the gate, but the field that fills the Дүгнэлт column of
+///    Үзлэг ба дүгнэлт once the sub-task's result is fanned out to its equipment.
+///
+///    That equipment is named at the top of the sheet. One Үнэлгээ is written onto
+///    every object the sub-task covers, so the list has to be visible while the
+///    number is being chosen rather than discovered afterwards.
 ///
 /// 3. The two photo strips write straight through. A picture goes to
 ///    `POST .../tasks/:taskId/photos` the moment it is chosen, because that is the
@@ -66,6 +71,7 @@ class _TaskProgressSheet extends ConsumerStatefulWidget {
 
 class _TaskProgressSheetState extends ConsumerState<_TaskProgressSheet> {
   late final TextEditingController _note;
+  late final TextEditingController _conclusion;
   late final TextEditingController _recommendation;
   late final TextEditingController _score;
 
@@ -96,6 +102,7 @@ class _TaskProgressSheetState extends ConsumerState<_TaskProgressSheet> {
     // Pre-fills the existing values so a second entry edits the record rather than
     // silently blanking a note the previous session wrote.
     _note = TextEditingController(text: widget.task.note ?? '');
+    _conclusion = TextEditingController(text: widget.task.conclusion ?? '');
     _recommendation = TextEditingController(text: widget.task.recommendation ?? '');
     _score = TextEditingController(text: widget.task.score?.toString() ?? '');
 
@@ -110,6 +117,7 @@ class _TaskProgressSheetState extends ConsumerState<_TaskProgressSheet> {
   @override
   void dispose() {
     _note.dispose();
+    _conclusion.dispose();
     _recommendation.dispose();
     _score.dispose();
     super.dispose();
@@ -191,6 +199,7 @@ class _TaskProgressSheetState extends ConsumerState<_TaskProgressSheet> {
     if (_uploadingKind != null) return;
 
     final String note = _note.text.trim();
+    final String conclusion = _conclusion.text.trim();
     final String recommendation = _recommendation.text.trim();
     final String rawScore = _score.text.trim();
 
@@ -234,6 +243,7 @@ class _TaskProgressSheetState extends ConsumerState<_TaskProgressSheet> {
             // being annotated.
             started: true,
             note: note,
+            conclusion: conclusion.isEmpty ? null : conclusion,
             score: score,
             recommendation: recommendation.isEmpty ? null : recommendation,
           ),
@@ -333,6 +343,12 @@ class _TaskProgressSheetState extends ConsumerState<_TaskProgressSheet> {
                       height: 1.5,
                     ),
                   ),
+                  const SizedBox(height: 14),
+
+                  // Named before anything is typed, not after: the single Үнэлгээ below
+                  // is copied onto every one of these objects and sets its risk band, so
+                  // which ones they are has to be readable while the number is chosen.
+                  _CoveredEquipment(objects: task.relatedObjects),
                   const SizedBox(height: 18),
 
                   const FieldLabel('Өнөөдөр хийсэн тоо хэмжээ'),
@@ -386,6 +402,29 @@ class _TaskProgressSheetState extends ConsumerState<_TaskProgressSheet> {
                         color: EmployeeTokens.muted,
                         height: 1.5,
                       ),
+                    ),
+                  ),
+
+                  const FieldLabel('Дүгнэлт'),
+                  SheetField(
+                    // Keyed because a pre-filled field shows no hint, leaving nothing
+                    // else in the sheet that identifies this one rather than the note
+                    // or the recommendation beside it.
+                    key: const Key('task-conclusion-field'),
+                    controller: _conclusion,
+                    hint: 'Тоноглолын байдалд өгөх дүгнэлт...',
+                    maxLines: 3,
+                    enabled: !_busy,
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4, bottom: 10),
+                    child: Text(
+                      task.relatedObjects.isEmpty
+                          ? 'Тоноглол сонгоогүй бол энэ дүгнэлт Үзлэг ба дүгнэлт хэсэгт '
+                              'харагдахгүй: тэнд зөвхөн тоноглолд холбогдсон үр дүн жагсдаг.'
+                          : 'Энэ дүгнэлт дээрх ${task.relatedObjects.length} тоноглол '
+                              'тус бүрд бичигдэнэ.',
+                      style: EmployeeTokens.microNote,
                     ),
                   ),
 
@@ -446,16 +485,6 @@ class _TaskProgressSheetState extends ConsumerState<_TaskProgressSheet> {
                     ),
                   ],
 
-                  const SizedBox(height: 14),
-                  // What this sub-task CONSUMED — next to, but never merged with, the
-                  // equipment it assesses.
-                  TaskMaterialsSection(
-                    plannedWorkId: widget.plannedWorkId,
-                    taskId: widget.task.id,
-                    editable: live.status != PlannedWorkTaskStatus.done &&
-                        live.status != PlannedWorkTaskStatus.skipped,
-                  ),
-
                   if (_submitError != null) ...<Widget>[
                     const SizedBox(height: 12),
                     NoticeBanner(
@@ -476,6 +505,63 @@ class _TaskProgressSheetState extends ConsumerState<_TaskProgressSheet> {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// The equipment this entry will be written onto, named before anything is typed.
+///
+/// The empty case is drawn as loudly as the populated one. A sub-task covering no
+/// equipment still accepts a score, but that score reaches no equipment record and the
+/// entry never appears in Үзлэг ба дүгнэлт — a technician who is not told that is
+/// scoring into nothing, which is precisely what this readout exists to prevent.
+class _CoveredEquipment extends StatelessWidget {
+  const _CoveredEquipment({required this.objects});
+
+  final List<NamedRefModel> objects;
+
+  @override
+  Widget build(BuildContext context) {
+    if (objects.isEmpty) {
+      return const NoticeBanner(
+        margin: EdgeInsets.zero,
+        tone: EmployeeTokens.yellow,
+        icon: Icons.link_off_outlined,
+        title: 'Тоноглол холбоогүй',
+        text: 'Энэ дэд ажилд тоноглол холбоогүй тул оруулсан үнэлгээ ямар ч '
+            'тоноглолын түүхэнд бичигдэхгүй.',
+      );
+    }
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(11),
+      decoration: BoxDecoration(
+        color: EmployeeTokens.soft2,
+        border: Border.all(color: EmployeeTokens.faint),
+        borderRadius: BorderRadius.circular(EmployeeTokens.radiusInput),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Text(
+            'ҮНЭЛГЭЭ БИЧИГДЭХ ТОНОГЛОЛ (${objects.length})',
+            style: EmployeeTokens.microLabel,
+          ),
+          const SizedBox(height: 4),
+          // Plain wrapping text rather than the status pill, which upper-cases its
+          // label and clips it to a single line.
+          for (final NamedRefModel object in objects)
+            Text(
+              '· ${object.name}',
+              style: EmployeeTokens.rowSub.copyWith(
+                color: EmployeeTokens.ink2,
+                height: 1.6,
+              ),
+            ),
+        ],
       ),
     );
   }

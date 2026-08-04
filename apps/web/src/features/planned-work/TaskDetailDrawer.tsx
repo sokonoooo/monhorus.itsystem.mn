@@ -8,6 +8,7 @@ import { useEffect, useState, type ReactElement } from 'react';
 import { Alert } from '../../components/ui/Alert';
 import { Drawer } from '../../components/ui/Drawer';
 import { Modal } from '../../components/ui/Modal';
+import { formatMinutes } from '../../lib/duration';
 import { authorisedFileUrl } from '../../lib/file-url';
 import { ScoreBar } from '../projects/objects/ObjectBadges';
 import { ProgressBar, TaskStatusBadge } from './PlannedWorkBadges';
@@ -24,6 +25,16 @@ function formatDateTime(iso: string | null): string {
 
 function formatSize(bytes: number): string {
   return `${(bytes / 1024).toFixed(0)} KB`;
+}
+
+/**
+ * Who signed the Дүгнэлт, and when. Name and stamp on one line rather than two rows,
+ * because neither half means much alone.
+ */
+function conclusionAuthor(task: PlannedWorkTaskDto): string {
+  if (!task.conclusionByName && !task.conclusionAt) return '-';
+  const name = task.conclusionByName ?? 'Тодорхойгүй';
+  return task.conclusionAt ? `${name} · ${formatDateTime(task.conclusionAt)}` : name;
 }
 
 function DetailRow({ label, value }: { label: string; value: string }): ReactElement {
@@ -193,9 +204,31 @@ export function TaskDetailDrawer({ task, onClose }: TaskDetailDrawerProps): Reac
 
             <dl className="space-y-3">
               <DetailRow label="Тайлбар" value={task.note ?? '-'} />
+              <DetailRow label="Дүгнэлт" value={task.conclusion ?? '-'} />
+              {/*
+                Directly under the verdict, because the two are read together: any member
+                of the assigned team can write over this field, so the sentence alone does
+                not say whose judgement it is.
+              */}
+              <DetailRow label="Дүгнэлт бичсэн" value={conclusionAuthor(task)} />
               <DetailRow label="Зөвлөмж" value={task.recommendation ?? '-'} />
+              <DetailRow
+                label="Хамрах тоноглол"
+                value={
+                  task.relatedObjects.length === 0
+                    ? 'Сонгоогүй'
+                    : task.relatedObjects.map((object) => object.name).join(', ')
+                }
+              />
               <DetailRow label="Ажилтан" value={task.assignedEmployeeName ?? '-'} />
               <DetailRow label="Дууссан" value={formatDateTime(task.completedAt)} />
+              {/*
+                Wall clock from the first reported start to the instant the quantity was
+                finished — server-computed, and a dash while it cannot yet be stated. It is
+                not the gap to `Дууссан` above: that one waits for the evidence gate, so a
+                job finished on Monday and photographed on Wednesday would read as two days.
+              */}
+              <DetailRow label="Гүйцэтгэсэн хугацаа" value={formatMinutes(task.durationMinutes)} />
             </dl>
 
             {attachmentSection('Ажлын өмнөх хавсралт', task.beforePhotos)}

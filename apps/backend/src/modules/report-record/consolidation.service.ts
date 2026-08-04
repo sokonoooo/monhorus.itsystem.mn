@@ -148,6 +148,12 @@ export async function createConsolidatedReport(
       observation: item.observation,
       conclusion: item.conclusion,
       recommendation: item.recommendation,
+      // Carried, not re-attributed. A consolidation copies findings rather than making
+      // them, so the person who judged the equipment is still the person who judged it;
+      // the consolidator's name belongs on the new report's own createdBy/approvedBy.
+      // Null where the source item had no author, never filled from the reviewer.
+      judgedBy: item.judgedBy,
+      judgedByName: item.judgedByName,
       evidenceAttachments: [...item.evidenceAttachments],
       sourceReport: item.report,
       sourceReportItem: item._id,

@@ -11,7 +11,12 @@ import 'features/auth/presentation/screens/login_screen.dart';
 import 'features/customer_portal/presentation/screens/customer_shell_screen.dart';
 import 'features/user_management/presentation/screens/users_screen.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  // Resolve Barlow and Barlow Condensed before the first frame. Without this the
+  // app paints one frame in the system face and reflows once the fonts land, which
+  // is very visible on the condensed headings.
+  await CustomerTokens.preload();
   runApp(const ProviderScope(child: MonhorusApp()));
 }
 
@@ -68,14 +73,14 @@ class _SplashScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Scaffold(
+    return Scaffold(
       body: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: <Widget>[
             Text('Monhorus', style: CustomerTokens.display),
-            SizedBox(height: 20),
-            CircularProgressIndicator(),
+            const SizedBox(height: 20),
+            const CircularProgressIndicator(),
           ],
         ),
       ),

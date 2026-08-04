@@ -4,9 +4,10 @@ import {
   SERVICE_REQUEST_TYPE_LABELS,
   createServiceRequestSchema,
   type CreateServiceRequestInput,
+  type ServiceRequestAttachmentDto,
   type ServiceRequestType,
 } from '@monhorus/shared';
-import { useState, type FormEvent, type ReactElement } from 'react';
+import { useRef, useState, type FormEvent, type ReactElement } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { Alert } from '../../components/ui/Alert';
@@ -17,7 +18,15 @@ import { FILTER_INPUT, FILTER_LABEL } from '../../components/ui/control-styles';
 import { ApiError } from '../../lib/api-client';
 import { serviceRequestService } from '../../services/service-request.service';
 import { Field, Section, SelectInput, TextInput } from '../employees/FormControls';
+import { RequestAttachments } from './RequestAttachments';
 import { LOCATION_LEVELS, useLocationChain } from './useLocationChain';
+
+/** Mirrors ALLOWED_MIME_TYPES and MAX_FILE_BYTES in the storage service. */
+const ACCEPTED_TYPES =
+  'image/jpeg,image/png,image/webp,application/pdf,application/msword,' +
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document,' +
+  'application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+const ACCEPTED_HINT = 'Зураг, PDF, Word, Excel - хамгийн ихдээ 10MB, 20 хүртэл файл.';
 
 export function ServiceRequestCreatePage(): ReactElement {
   const navigate = useNavigate();
@@ -34,6 +43,33 @@ export function ServiceRequestCreatePage(): ReactElement {
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [attachments, setAttachments] = useState<readonly ServiceRequestAttachmentDto[]>([]);
+  const [uploading, setUploading] = useState(false);
+
+  /**
+   * Uploads immediately and holds the stored file until the form is submitted.
+   *
+   * `POST /files/service-request-attachments` parks the file on the uploader; the request
+   * claims it by id. Removing one here therefore only drops it from the draft — the same
+   * behaviour the work-report drawer has, and the reason an abandoned form attaches
+   * nothing.
+   */
+  async function handleUpload(file: File | undefined): Promise<void> {
+    if (!file) return;
+    setUploading(true);
+    setFormError(null);
+
+    try {
+      const uploaded = await serviceRequestService.uploadAttachment(file);
+      setAttachments((current) => [...current, uploaded]);
+    } catch (caught) {
+      setFormError(caught instanceof ApiError ? caught.message : 'Файл хуулж чадсангүй.');
+    } finally {
+      setUploading(false);
+    }
+  }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
@@ -55,7 +91,7 @@ export function ServiceRequestCreatePage(): ReactElement {
       description: description.trim(),
       contactName: contactName.trim(),
       contactPhone: contactPhone.trim(),
-      attachmentIds: [],
+      attachmentIds: attachments.map((attachment) => attachment.id),
     };
 
     // Same schema the API uses, so the rules cannot drift between the two layers.
@@ -213,9 +249,46 @@ export function ServiceRequestCreatePage(): ReactElement {
               )}
             </div>
 
-            <Alert variant="info">
-              Зураг, файл хавсаргах боломж дараагийн үе шатанд нэмэгдэнэ.
-            </Alert>
+            <div>
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <span className={FILTER_LABEL}>Хавсралт</span>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => fileInputRef.current?.click()}
+                  loading={uploading}
+                  disabled={submitting || attachments.length >= 20}
+                >
+                  Файл хавсаргах
+                </Button>
+              </div>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept={ACCEPTED_TYPES}
+                className="hidden"
+                aria-label="Хавсралт сонгох"
+                onChange={(event) => {
+                  void handleUpload(event.target.files?.[0]);
+                  // Cleared so re-choosing the same file fires a change event again.
+                  event.target.value = '';
+                }}
+              />
+              <RequestAttachments
+                attachments={attachments}
+                disabled={submitting}
+                onRemove={(attachmentId) =>
+                  setAttachments((current) =>
+                    current.filter((attachment) => attachment.id !== attachmentId),
+                  )
+                }
+              />
+              <p className="mt-1 text-xs text-slate-400">{ACCEPTED_HINT}</p>
+              {fieldErrors.attachmentIds && (
+                <p className="mt-1 text-xs text-red-600">{fieldErrors.attachmentIds}</p>
+              )}
+            </div>
           </div>
 
           <div className="flex justify-end gap-2 border-t border-slate-200 bg-slate-50 px-5 py-3">

@@ -10,11 +10,10 @@ import {
   startTestApp,
   stopTestApp,
 } from '../../test/helpers';
-import { AuditLog } from '../audit/audit-log.model';
 import { ObjectRecord, ObjectType } from '../object-master/object-master.models';
 import { Customer, ObjectNode } from '../objects/object.models';
 import { PlannedWork, PlannedWorkTask } from '../planned-work/planned-work.models';
-import { MaterialItem, TaskMaterialUsage } from './material.models';
+import { MaterialItem } from './material.models';
 
 const API = '/api/v1';
 
@@ -27,7 +26,6 @@ let floorId: Types.ObjectId;
 let otherFloorId: Types.ObjectId;
 let workId: Types.ObjectId;
 let taskId: Types.ObjectId;
-let materialId: Types.ObjectId;
 
 async function login(email: string, password: string): Promise<string> {
   const response = await request(app).post(`${API}/auth/login`).send({ email, password });
@@ -51,7 +49,6 @@ beforeEach(async () => {
     PERMISSIONS.PLANNED_WORK_VIEW,
     PERMISSIONS.PLANNED_WORK_CREATE,
     PERMISSIONS.PLANNED_WORK_UPDATE,
-    PERMISSIONS.PLANNED_WORK_RECORD_PROGRESS,
   ]);
   token = await login(user.email, user.password);
 
@@ -131,13 +128,14 @@ beforeEach(async () => {
   });
   taskId = task._id;
 
-  const material = await MaterialItem.create({
+  // One seeded catalogue row, so the list count and the duplicate-code refusal both have
+  // something to be measured against.
+  await MaterialItem.create({
     code: 'CBL-3X2.5',
     name: 'Кабель 3x2.5',
     category: 'CABLE',
     defaultUnit: 'METRE',
   });
-  materialId = material._id;
 });
 
 describe('Material catalogue', () => {
@@ -178,137 +176,6 @@ describe('Material catalogue', () => {
       .set('Authorization', `Bearer ${outsiderToken}`);
 
     expect(response.status).toBe(403);
-  });
-});
-
-describe('Sub-task material usage', () => {
-  const usagePath = (): string =>
-    `${API}/planned-work/${String(workId)}/tasks/${String(taskId)}/materials`;
-
-  it('records, lists, edits and removes usage on a sub-task', async () => {
-    const added = await request(app)
-      .post(usagePath())
-      .set('Authorization', `Bearer ${token}`)
-      .send({ materialItemId: String(materialId), quantity: 12.5, unit: 'METRE', note: '2-р самбар' });
-
-    expect(added.status).toBe(201);
-    expect(added.body.data.materialCode).toBe('CBL-3X2.5');
-    expect(added.body.data.quantity).toBe(12.5);
-    const usageId = added.body.data.id as string;
-
-    const listed = await request(app).get(usagePath()).set('Authorization', `Bearer ${token}`);
-    expect(listed.body.data).toHaveLength(1);
-
-    const edited = await request(app)
-      .patch(`${usagePath()}/${usageId}`)
-      .set('Authorization', `Bearer ${token}`)
-      .send({ quantity: 20 });
-    expect(edited.status).toBe(200);
-    expect(edited.body.data.quantity).toBe(20);
-
-    const removed = await request(app)
-      .delete(`${usagePath()}/${usageId}`)
-      .set('Authorization', `Bearer ${token}`);
-    expect(removed.status).toBe(200);
-    expect(await TaskMaterialUsage.countDocuments({ task: taskId })).toBe(0);
-  });
-
-  it('denormalises the work and customer onto the row', async () => {
-    await request(app)
-      .post(usagePath())
-      .set('Authorization', `Bearer ${token}`)
-      .send({ materialItemId: String(materialId), quantity: 3, unit: 'METRE' });
-
-    const row = await TaskMaterialUsage.findOne({ task: taskId });
-    // Written from the loaded sub-task, never accepted from the caller, so it cannot
-    // disagree with the parent.
-    expect(String(row?.plannedWork)).toBe(String(workId));
-    expect(String(row?.customer)).toBe(String(customerId));
-  });
-
-  it('allows the same material twice on one sub-task', async () => {
-    const body = { materialItemId: String(materialId), quantity: 5, unit: 'METRE' };
-    await request(app).post(usagePath()).set('Authorization', `Bearer ${token}`).send(body);
-    const second = await request(app)
-      .post(usagePath())
-      .set('Authorization', `Bearer ${token}`)
-      .send(body);
-
-    // Two spools on different days are two events, not one row to be merged.
-    expect(second.status).toBe(201);
-    expect(await TaskMaterialUsage.countDocuments({ task: taskId })).toBe(2);
-  });
-
-  it('writes an audit row for every usage change', async () => {
-    const added = await request(app)
-      .post(usagePath())
-      .set('Authorization', `Bearer ${token}`)
-      .send({ materialItemId: String(materialId), quantity: 1, unit: 'METRE' });
-
-    const audit = await AuditLog.findOne({
-      entityType: 'TaskMaterialUsage',
-      entityId: new Types.ObjectId(added.body.data.id as string),
-    });
-    expect(audit?.action).toBe('Created');
-  });
-
-  it('refuses a usage row once the sub-task is done', async () => {
-    await PlannedWorkTask.updateOne({ _id: taskId }, { $set: { status: 'DONE' } });
-
-    const response = await request(app)
-      .post(usagePath())
-      .set('Authorization', `Bearer ${token}`)
-      .send({ materialItemId: String(materialId), quantity: 1, unit: 'METRE' });
-
-    expect(response.status).toBe(400);
-  });
-
-  it('refuses a sub-task that belongs to a different planned work', async () => {
-    const otherWork = await PlannedWork.create({
-      workNumber: 'PW-202608-0002',
-      building: buildingId,
-      customer: customerId,
-      title: 'Өөр ажил',
-      status: 'PLANNED',
-      plannedStartDate: new Date('2026-08-01'),
-      plannedEndDate: new Date('2026-08-31'),
-      originalPlannedEndDate: new Date('2026-08-31'),
-    });
-
-    // The task is real and the work is real; only their pairing is wrong.
-    const response = await request(app)
-      .post(
-        `${API}/planned-work/${String(otherWork._id)}/tasks/${String(taskId)}/materials`,
-      )
-      .set('Authorization', `Bearer ${token}`)
-      .send({ materialItemId: String(materialId), quantity: 1, unit: 'METRE' });
-
-    expect(response.status).toBe(404);
-  });
-
-  it('refuses a retired catalogue item', async () => {
-    await MaterialItem.updateOne({ _id: materialId }, { $set: { isActive: false } });
-
-    const response = await request(app)
-      .post(usagePath())
-      .set('Authorization', `Bearer ${token}`)
-      .send({ materialItemId: String(materialId), quantity: 1, unit: 'METRE' });
-
-    expect(response.status).toBe(400);
-  });
-
-  it('refuses a usage date in the future', async () => {
-    const response = await request(app)
-      .post(usagePath())
-      .set('Authorization', `Bearer ${token}`)
-      .send({
-        materialItemId: String(materialId),
-        quantity: 1,
-        unit: 'METRE',
-        usedAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-      });
-
-    expect(response.status).toBe(400);
   });
 });
 

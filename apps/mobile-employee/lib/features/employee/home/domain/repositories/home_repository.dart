@@ -8,13 +8,13 @@ import '../../data/models/work_models.dart';
 abstract class HomeRepository {
   Future<ApiResult<DashboardSummaryModel>> getDashboardSummary();
 
-  Future<ApiResult<PaginatedData<PlannedWorkListItemModel>>> listPlannedWork(
-    String employeeId,
-  );
+  /// The reader's own work. Takes no employee id: the server scopes a non-oversight
+  /// caller to work assigned to them or to their team, and narrowing further here
+  /// would hide team-assigned work.
+  Future<ApiResult<PaginatedData<PlannedWorkListItemModel>>> listPlannedWork();
 
-  Future<ApiResult<PaginatedData<ServiceRequestListItemModel>>> listServiceRequests(
-    String employeeId,
-  );
+  Future<ApiResult<PaginatedData<ServiceRequestListItemModel>>>
+      listServiceRequests();
 
   Future<ApiResult<CalendarResultModel>> getDayAgenda({
     required DateTime day,

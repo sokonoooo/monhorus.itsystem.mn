@@ -76,12 +76,18 @@ final FutureProvider<EmployeeIdentity> employeeIdentityProvider =
 
 // -- View state --------------------------------------------------------------
 
-/// What the user has chosen: which month, which day, whose work, which source.
+/// What the user has chosen: which month, which day, which source.
+///
+/// WHOSE SCHEDULE IS NOT AMONG THEM, and that is the point. This used to carry an
+/// `onlyMine` flag behind a `Миний` / `Бүгд` segmented control, because `GET /calendar`
+/// scoped nothing server-side and "everybody's" was one tap away — a technician could
+/// read every colleague's planned work, with names, customers and buildings. The
+/// endpoint enforces the assigned-or-team rule itself now, so the toggle could only
+/// ever have been a button that quietly did nothing.
 class CalendarViewState extends Equatable {
   const CalendarViewState({
     required this.month,
     required this.selectedDay,
-    required this.onlyMine,
     this.source,
   });
 
@@ -90,30 +96,24 @@ class CalendarViewState extends Equatable {
   /// Normalised to midnight, so day comparisons are equality.
   final DateTime selectedDay;
 
-  /// Whether to narrow `GET /calendar` to the resolved employee. Ignored while the
-  /// identity is unresolved — there is no id to narrow by.
-  final bool onlyMine;
-
   /// Null means both sources.
   final CalendarSource? source;
 
   CalendarViewState copyWith({
     CalendarMonth? month,
     DateTime? selectedDay,
-    bool? onlyMine,
     CalendarSource? source,
     bool clearSource = false,
   }) {
     return CalendarViewState(
       month: month ?? this.month,
       selectedDay: selectedDay ?? this.selectedDay,
-      onlyMine: onlyMine ?? this.onlyMine,
       source: clearSource ? null : (source ?? this.source),
     );
   }
 
   @override
-  List<Object?> get props => <Object?>[month, selectedDay, onlyMine, source];
+  List<Object?> get props => <Object?>[month, selectedDay, source];
 }
 
 class CalendarViewController extends Notifier<CalendarViewState> {
@@ -123,9 +123,6 @@ class CalendarViewController extends Notifier<CalendarViewState> {
     return CalendarViewState(
       month: CalendarMonth.of(today),
       selectedDay: today,
-      // Defaults to the employee's own schedule, which is what the tab is for. It
-      // falls back to the full list on its own when no identity could be resolved.
-      onlyMine: true,
     );
   }
 
@@ -162,11 +159,6 @@ class CalendarViewController extends Notifier<CalendarViewState> {
     state = state.copyWith(month: CalendarMonth.of(today), selectedDay: today);
   }
 
-  void setOnlyMine({required bool value}) {
-    if (state.onlyMine == value) return;
-    state = state.copyWith(onlyMine: value);
-  }
-
   void setSource(CalendarSource? value) {
     if (state.source == value) return;
     state = value == null
@@ -185,19 +177,23 @@ final NotifierProvider<CalendarViewController, CalendarViewState>
 
 /// One month of `GET /calendar`, already narrowed by the current view state.
 ///
-/// Re-runs whenever the month, the source filter or the scope changes, because it
-/// watches [calendarViewProvider]. The identity is awaited rather than watched
-/// synchronously so the first frame does not fire an unscoped request that a second
-/// frame would immediately replace.
+/// Re-runs whenever the month or the source filter changes, because it watches
+/// [calendarViewProvider].
+///
+/// `employeeId` IS NO LONGER THE BOUNDARY, and is still sent. The server bounds both
+/// sources by the caller's own assignments, so omitting the parameter can no longer
+/// widen anything; what it still does is narrow a caller who happens to hold an
+/// oversight key — a dispatcher opening the employee app's "Миний хуваарь" wants their
+/// own schedule, not the company's. When no id resolves, the request goes out without
+/// it and the server's own scope is what answers.
 final FutureProvider<CalendarMonthResult> calendarEventsProvider =
     FutureProvider<CalendarMonthResult>((Ref ref) async {
   final CalendarViewState view = ref.watch(calendarViewProvider);
   final EmployeeIdentity identity =
       await ref.watch(employeeIdentityProvider.future);
 
-  final String? employeeId = view.onlyMine && identity is ResolvedEmployeeIdentity
-      ? identity.employeeId
-      : null;
+  final String? employeeId =
+      identity is ResolvedEmployeeIdentity ? identity.employeeId : null;
 
   final ApiResult<CalendarResultModel> result =
       await ref.watch(calendarRepositoryProvider).getCalendar(
@@ -226,6 +222,8 @@ final FutureProvider<CalendarMonthResult> calendarEventsProvider =
 
 /// What the screen renders: the month's events plus the facts needed to describe
 /// them honestly — whose schedule this is, and whether it is anyone's in particular.
+///
+/// There is no "the whole organisation" case left to describe: the server refuses it.
 class CalendarMonthResult {
   const CalendarMonthResult({
     required this.events,
@@ -238,8 +236,10 @@ class CalendarMonthResult {
   final String timezone;
   final EmployeeIdentity identity;
 
-  /// False when the list is the whole organisation's schedule, either because the
-  /// user asked for it or because no employee id could be resolved.
+  /// Whether the request could name the reader. False only when no employee id
+  /// resolved, in which case the server's own assignment scope answered instead —
+  /// and for an account linked to no employee card that answer is nothing at all,
+  /// which is why the screen phrases its empty day generically in that case.
   final bool scopedToEmployee;
 
   /// Events touching [day], worst band first, then earliest start.

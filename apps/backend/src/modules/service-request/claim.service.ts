@@ -184,5 +184,5 @@ export async function claimServiceRequest(
     excludeUserId: actor.userId,
   });
 
-  return getServiceRequestById(requestId, scope);
+  return getServiceRequestById(requestId, scope, actor);
 }

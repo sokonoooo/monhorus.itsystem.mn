@@ -11,9 +11,7 @@ import 'package:monhorus_employee/core/error/failure.dart';
 import 'package:monhorus_employee/core/network/api_result.dart';
 import 'package:monhorus_employee/features/employee/work/domain/repositories/work_repository.dart';
 import 'package:monhorus_employee/core/network/paginated_data.dart';
-import 'package:monhorus_employee/features/employee/work/data/models/task_material_model.dart';
 import 'package:monhorus_employee/features/employee/work/domain/entities/planned_work_enums.dart';
-import 'package:monhorus_employee/features/employee/work/presentation/widgets/task_materials_section.dart';
 import 'package:monhorus_employee/features/auth/domain/entities/app_user.dart';
 import 'package:monhorus_employee/features/auth/presentation/providers/auth_provider.dart';
 import 'package:monhorus_employee/features/employee/shared/service_request_models.dart';
@@ -23,6 +21,7 @@ import 'package:monhorus_employee/features/employee/work/data/models/planned_wor
 import 'package:monhorus_employee/features/employee/work/domain/entities/work_identity.dart';
 import 'package:monhorus_employee/features/employee/work/presentation/providers/work_providers.dart';
 import 'package:monhorus_employee/features/employee/work/presentation/screens/planned_work_detail_screen.dart';
+import 'package:monhorus_employee/features/employee/work/presentation/screens/service_request_detail_screen.dart';
 import 'package:monhorus_employee/features/employee/work/presentation/screens/work_tab_screen.dart';
 
 Map<String, dynamic> _work() => <String, dynamic>{
@@ -118,9 +117,23 @@ Map<String, dynamic> _work() => <String, dynamic>{
           'progressPercent': 100,
           'status': 'IN_PROGRESS',
           'note': 'Самбар шалгасан.',
+          'conclusion': 'Самбар хэвийн, ашиглалтад тэнцэнэ.',
+          // Who signed the verdict and how long the work ran. Both are server-computed:
+          // the stamp only moves when the Дүгнэлт text itself changes, and the duration is
+          // the wall clock from the first reported start to quantity completion.
+          'conclusionById': 'u9',
+          'conclusionByName': 'Батаа Энхтөр',
+          'conclusionAt': '2026-07-29T06:30:00.000Z',
+          'durationMinutes': 150,
           'score': 88,
           'riskLevel': 'NORMAL',
           'recommendation': 'Боолт чангалах.',
+          // The equipment the single score above is written onto. The second sub-task
+          // deliberately has none, so both branches of the readout are exercised.
+          'relatedObjects': <dynamic>[
+            <String, dynamic>{'id': 'o1', 'name': 'DB-2A самбар'},
+            <String, dynamic>{'id': 'o2', 'name': 'DB-2B самбар'},
+          ],
           'beforePhotos': <dynamic>[],
           'afterPhotos': <dynamic>[],
           // The live backend emits a stringified document here when populated.
@@ -177,6 +190,58 @@ class _StubDetailAwaitingReport extends PlannedWorkDetailNotifier {
   @override
   Future<PlannedWorkModel> build(String plannedWorkId) async =>
       PlannedWorkModel.fromJson(_workAwaitingReport());
+}
+
+/// Captures the progress request the sheet sends, so its payload can be asserted.
+///
+/// Overriding the notifier rather than the repository keeps the test hermetic without a
+/// Dio stub, and the sheet reads the reply back to decide what it reports — so the reply
+/// has to be a real record, not a bare success.
+class _StubDetailCapturingProgress extends PlannedWorkDetailNotifier {
+  static RecordTaskProgressRequest? lastRequest;
+
+  @override
+  Future<PlannedWorkModel> build(String plannedWorkId) async =>
+      PlannedWorkModel.fromJson(_workAwaitingReport());
+
+  @override
+  Future<ApiResult<PlannedWorkModel>> recordProgress({
+    required String taskId,
+    required RecordTaskProgressRequest request,
+  }) async {
+    lastRequest = request;
+    return Success<PlannedWorkModel>(
+      PlannedWorkModel.fromJson(_workAwaitingReport()),
+    );
+  }
+}
+
+/// Captures what the Дүгнэлт editor sends, without a repository behind it.
+///
+/// The write matters as much as the absence of an exception: a sheet whose controllers
+/// were disposed too early could equally have been "fixed" by reading the fields before
+/// the pop and never showing them again, which would pass a no-throw assertion while
+/// sending nothing.
+class _StubDetailCapturingReport extends PlannedWorkDetailNotifier {
+  static String? lastConclusion;
+  static String? lastRecommendation;
+
+  @override
+  Future<PlannedWorkModel> build(String plannedWorkId) async {
+    lastConclusion = null;
+    lastRecommendation = null;
+    return PlannedWorkModel.fromJson(_work());
+  }
+
+  @override
+  Future<ApiResult<PlannedWorkModel>> saveReport({
+    String? conclusion,
+    String? recommendation,
+  }) async {
+    lastConclusion = conclusion;
+    lastRecommendation = recommendation;
+    return Success<PlannedWorkModel>(PlannedWorkModel.fromJson(_work()));
+  }
 }
 
 /// Readiness refused: the fixture's second sub-task is still PENDING.
@@ -247,10 +312,13 @@ const AppUser _user = AppUser(
   },
 );
 
-/// One row of `GET /service-requests`, as the unclaimed pool answers it.
+/// One row of `GET /service-requests`.
 ///
-/// `assignedEmployees` is empty and stays empty: that is what makes a request part of
-/// this pool, and a fixture with somebody in it would be testing a different list.
+/// `assignedEmployees` and `assignedTeam` default to empty, which is exactly what makes
+/// a row part of the UNCLAIMED pool — the server's own definition, `{ assignedEmployees:
+/// { $size: 0 }, assignedTeam: null }`. Pass either to build a row that somebody holds;
+/// the same route answers both kinds in one response, which is the whole reason "Миний"
+/// has to subtract one from the other.
 Map<String, dynamic> _request({
   required String id,
   required String number,
@@ -260,6 +328,8 @@ Map<String, dynamic> _request({
   String? slaState,
   String? slaDueAt,
   int? slaRemainingMinutes,
+  List<Map<String, dynamic>> assignedEmployees = const <Map<String, dynamic>>[],
+  Map<String, dynamic>? assignedTeam,
 }) =>
     <String, dynamic>{
       'id': id,
@@ -275,7 +345,8 @@ Map<String, dynamic> _request({
       'slaState': slaState,
       'slaDueAt': slaDueAt,
       'slaRemainingMinutes': slaRemainingMinutes,
-      'assignedEmployees': <dynamic>[],
+      'assignedEmployees': assignedEmployees,
+      if (assignedTeam != null) 'assignedTeam': assignedTeam,
       'createdAt': '2026-07-30T01:00:00.000Z',
     };
 
@@ -357,7 +428,324 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Тест'), findsOneWidget);
-    expect(find.text('Бүх төлөвлөгөөт ажлыг харах'), findsOneWidget);
+    expect(find.text('Тайлбар.'), findsOneWidget);
+    // No "show me every planned work" escape hatch any more. It used to be offered here,
+    // on the premise that an unfiltered `GET /planned-work` was the one thing that would
+    // still answer something. The server bounds that list to the caller now, so the
+    // button would have re-fetched the very same rows under a heading claiming they were
+    // the whole company's.
+    expect(find.text('Бүх төлөвлөгөөт ажлыг харах'), findsNothing);
+    expect(find.text('Дахин оролдох'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  // -- The account nobody linked ---------------------------------------------
+  //
+  // `GET /employees/me` 404s when no `Employee.systemUser` points at the account. The
+  // server answers such a caller's list with nothing — correctly, since no assignment can
+  // name them — and an unexplained empty list reads as "quiet week" rather than as
+  // "an administrator has to link your login". These two cover the sentence and the
+  // request that produced the empty list.
+
+  testWidgets('an unlinked account is told so, not shown an empty week', (
+    WidgetTester tester,
+  ) async {
+    final _ListRepository repository = _ListRepository();
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: <Override>[
+          currentUserProvider.overrideWithValue(_user),
+          workRepositoryProvider.overrideWithValue(repository),
+          // Exactly what `GET /employees/me` answering 404 produces.
+          workIdentityProvider.overrideWith(
+            (Ref ref) async =>
+                const UnresolvedWorkIdentity(WorkIdentityProblem.notLinked),
+          ),
+        ],
+        child: const MaterialApp(home: WorkTabScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Ажилтны карт холбогдоогүй байна'), findsOneWidget);
+    // Named as the person who has to act, which is the actionable half of the notice.
+    expect(find.textContaining('Администратор'), findsOneWidget);
+
+    // The wrong sentence: true about the rows, and about the wrong problem.
+    expect(find.text('Танд оноогдсон ажил алга'), findsNothing);
+
+    // And the list was still asked for, with no filter: "Миний" no longer hand-builds a
+    // scope the server contradicts.
+    expect(repository.calls, <List<String?>>[
+      <String?>[null, null],
+    ]);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('"Миний" asks for no filter and lets the server scope it', (
+    WidgetTester tester,
+  ) async {
+    final _ListRepository repository = _ListRepository(
+      items: <PlannedWorkListItemModel>[
+        PlannedWorkListItemModel.fromJson(_work()),
+      ],
+    );
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: <Override>[
+          currentUserProvider.overrideWithValue(_user),
+          workRepositoryProvider.overrideWithValue(repository),
+          // A technician on a team, named on nothing individually. Under the old
+          // client-built filter this segment sent `employeeId=<me>`, which ANDs with
+          // `teamId` server-side — so work assigned to the TEAM never appeared and the
+          // technician concluded they had nothing to do.
+          workIdentityProvider.overrideWith((Ref ref) async => _assignedIdentity),
+        ],
+        child: const MaterialApp(home: WorkTabScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(repository.calls, <List<String?>>[
+      <String?>[null, null],
+    ]);
+    expect(find.text('Цахилгаан самбарын сарын үзлэг'), findsOneWidget);
+    // Nothing claims this is an unfiltered system-wide list, because it is not one.
+    expect(find.text('Шүүгдээгүй жагсаалт'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('"Багийн" still narrows explicitly, by team', (
+    WidgetTester tester,
+  ) async {
+    final _ListRepository repository = _ListRepository();
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: <Override>[
+          currentUserProvider.overrideWithValue(_user),
+          workRepositoryProvider.overrideWithValue(repository),
+          workIdentityProvider.overrideWith((Ref ref) async => _assignedIdentity),
+        ],
+        child: const MaterialApp(home: WorkTabScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('БАГИЙН'));
+    await tester.pumpAndSettle();
+
+    // A narrowing on top of the enforced scope, never a replacement for it.
+    expect(repository.calls.last, <String?>[null, 'team-a']);
+    expect(tester.takeException(), isNull);
+  });
+
+  // -- "Миний" carries requests too ------------------------------------------
+  //
+  // THE BUG THIS SEGMENT WAS BUILT AROUND: an assigned service request appeared
+  // nowhere. `PlannedWorkBoard` holds `PlannedWorkListItemModel` and structurally
+  // cannot carry a request, so the moment one was assigned it left the "Нээлттэй" pool
+  // and dropped out of the app entirely — correctly assigned server-side, invisible
+  // everywhere else.
+
+  testWidgets('"Миний" lists assigned requests beside the planned work', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 1600));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final _ListRepository repository = _ListRepository(
+      items: <PlannedWorkListItemModel>[
+        PlannedWorkListItemModel.fromJson(_work()),
+      ],
+      // One response, three kinds of row — which is what `GET /service-requests`
+      // actually answers, because the read passes `includeUnclaimed: true`.
+      requests: <ServiceRequestListItemModel>[
+        // Mine, by name.
+        ServiceRequestListItemModel.fromJson(
+          _request(
+            id: 'r-mine',
+            number: 'SR-202607-0100',
+            status: 'ASSIGNED',
+            deviceName: 'Лифт №2',
+            assignedEmployees: <Map<String, dynamic>>[
+              <String, dynamic>{'id': 'e1', 'name': 'Дорж Ganbold'},
+            ],
+          ),
+        ),
+        // Mine, through my team and naming nobody. Dropping this row is exactly the
+        // mistake the `employeeId` filter used to make on /planned-work.
+        ServiceRequestListItemModel.fromJson(
+          _request(
+            id: 'r-team',
+            number: 'SR-202607-0101',
+            status: 'ASSIGNED',
+            deviceName: 'DB-2A самбар',
+            assignedTeam: <String, dynamic>{'id': 'team-a', 'name': 'А баг'},
+          ),
+        ),
+        // Nobody's. It belongs in "Нээлттэй" and must not be counted as mine.
+        ServiceRequestListItemModel.fromJson(
+          _request(
+            id: 'r-open',
+            number: 'SR-202607-0044',
+            status: 'UNASSIGNED',
+            deviceName: 'Гал хамгаалагч',
+          ),
+        ),
+        // Somebody else's, which an oversight caller would also be answered.
+        ServiceRequestListItemModel.fromJson(
+          _request(
+            id: 'r-other',
+            number: 'SR-202607-0077',
+            status: 'ASSIGNED',
+            deviceName: 'Агаар сэлгэгч',
+            assignedEmployees: <Map<String, dynamic>>[
+              <String, dynamic>{'id': 'e-other', 'name': 'Пүрэв Сараа'},
+            ],
+          ),
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: <Override>[
+          currentUserProvider.overrideWithValue(_userWithRequests),
+          workRepositoryProvider.overrideWithValue(repository),
+          workIdentityProvider.overrideWith((Ref ref) async => _assignedIdentity),
+        ],
+        child: const MaterialApp(home: WorkTabScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Both record types, under their own headings, in one scroll view.
+    expect(find.text('ХҮСЭЛТ'), findsOneWidget);
+    expect(find.text('ТӨЛӨВЛӨГӨӨТ АЖИЛ'), findsOneWidget);
+    expect(find.text('SR-202607-0100'), findsOneWidget);
+    expect(find.text('SR-202607-0101'), findsOneWidget);
+    expect(find.text('Цахилгаан самбарын сарын үзлэг'), findsOneWidget);
+
+    // The unclaimed row is NOT here. It is the "Нээлттэй" segment's, and a queue
+    // nobody has taken must not be shown as this technician's own work.
+    expect(find.text('SR-202607-0044'), findsNothing);
+    // Neither is a colleague's.
+    expect(find.text('SR-202607-0077'), findsNothing);
+
+    // A row that is already the reader's has nothing to claim.
+    expect(find.text('Өөртөө авах'), findsNothing);
+
+    // No `employeeId` on either read: the server bounds both lists itself, and a
+    // client-side filter can only subtract from the union it enforces.
+    expect(repository.calls, <List<String?>>[
+      <String?>[null, null],
+    ]);
+    expect(repository.requestCalls, 1);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('tapping an assigned request opens its detail screen', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 1200));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: <Override>[
+          currentUserProvider.overrideWithValue(_userWithRequests),
+          workRepositoryProvider.overrideWithValue(
+            _ListRepository(
+              requests: <ServiceRequestListItemModel>[
+                ServiceRequestListItemModel.fromJson(
+                  _request(
+                    id: 'r-mine',
+                    number: 'SR-202607-0100',
+                    status: 'ASSIGNED',
+                    deviceName: 'Лифт №2',
+                    assignedEmployees: <Map<String, dynamic>>[
+                      <String, dynamic>{'id': 'e1', 'name': 'Дорж Ganbold'},
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          workIdentityProvider.overrideWith((Ref ref) async => _assignedIdentity),
+        ],
+        child: const MaterialApp(home: WorkTabScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Лифт №2'));
+    await tester.pumpAndSettle();
+
+    // The same screen the open pool opens, carrying the row's own facts as the
+    // placeholder it opens with while the detail read is in flight.
+    expect(find.byType(ServiceRequestDetailScreen), findsOneWidget);
+    expect(find.text('SR-202607-0100'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('an account with nothing at all is told about both lists', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: <Override>[
+          currentUserProvider.overrideWithValue(_userWithRequests),
+          workRepositoryProvider.overrideWithValue(_ListRepository()),
+          workIdentityProvider.overrideWith((Ref ref) async => _assignedIdentity),
+        ],
+        child: const MaterialApp(home: WorkTabScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Танд оноогдсон ажил алга'), findsOneWidget);
+    // The old sentence spoke only of planned work, which is how a technician holding a
+    // service request was told they had nothing to do.
+    expect(find.textContaining('үйлчилгээний хүсэлт'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('a failed request read is named, not swallowed', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 1400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: <Override>[
+          currentUserProvider.overrideWithValue(_userWithRequests),
+          plannedWorkBoardProvider.overrideWith(
+            (Ref ref) async => PlannedWorkBoard.from(
+              <PlannedWorkListItemModel>[
+                PlannedWorkListItemModel.fromJson(_work()),
+              ],
+            ),
+          ),
+          assignedRequestsProvider.overrideWith(
+            (Ref ref) async => const AssignedRequests(
+              items: <ServiceRequestListItemModel>[],
+              notice: 'Сүлжээнд холбогдож чадсангүй.',
+            ),
+          ),
+        ],
+        child: const MaterialApp(home: WorkTabScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // The board still drew, and the half that failed says so in the backend's words.
+    expect(find.text('Цахилгаан самбарын сарын үзлэг'), findsOneWidget);
+    expect(find.text('Үйлчилгээний хүсэлт ачаалагдсангүй'), findsOneWidget);
+    expect(find.text('Сүлжээнд холбогдож чадсангүй.'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -438,6 +826,172 @@ void main() {
     expect(find.text('АЖЛЫН ӨМНӨХ ЗУРАГ'), findsOneWidget);
     expect(find.text('АЖЛЫН ДАРААХ ЗУРАГ'), findsOneWidget);
     expect(find.text('Нэмэх'), findsNWidgets(2));
+    expect(tester.takeException(), isNull);
+  });
+
+  /// The equipment a sub-task covers, and the Дүгнэлт written onto it.
+  ///
+  /// `relatedObjects` used to be dropped by the model outright: the server sent it and
+  /// the handset threw it away, so a technician typed a score with no way of knowing
+  /// which equipment it would land on. The card names it now, and the empty case is
+  /// stated rather than left blank, because a sub-task covering nothing records a score
+  /// that reaches no equipment record at all.
+  testWidgets('a sub-task names the equipment its score will be written onto', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 1200));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: <Override>[
+          currentUserProvider.overrideWithValue(_user),
+          workIdentityProvider.overrideWith((Ref ref) async => _assignedIdentity),
+          plannedWorkDetailProvider.overrideWith(_StubDetail.new),
+          inspectionReportProvider.overrideWith(_StubInspectionBlocked.new),
+        ],
+        child: const MaterialApp(
+          home: PlannedWorkDetailScreen(plannedWorkId: 'w1'),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // The model must keep what the server sent, not discard it as it once did.
+    final PlannedWorkModel parsed = PlannedWorkModel.fromJson(_work());
+    expect(
+      parsed.tasks.first.relatedObjects.map((NamedRefModel ref) => ref.name),
+      <String>['DB-2A самбар', 'DB-2B самбар'],
+    );
+    expect(parsed.tasks.first.conclusion, 'Самбар хэвийн, ашиглалтад тэнцэнэ.');
+    expect(parsed.tasks[1].relatedObjects, isEmpty);
+
+    await tester.scrollUntilVisible(
+      find.text('ХАМРАХ ТОНОГЛОЛ (2)'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('· DB-2A самбар'), findsOneWidget);
+    expect(find.text('· DB-2B самбар'), findsOneWidget);
+    // The recorded verdict is readable on the card beside the note it was drawn from.
+    expect(find.text('ДҮГНЭЛТ'), findsWidgets);
+    expect(find.text('Самбар хэвийн, ашиглалтад тэнцэнэ.'), findsOneWidget);
+
+    // And it is attributed. Any member of the assigned team can overwrite this field, so an
+    // unsigned verdict is indistinguishable from one the reader wrote themselves. The stamp
+    // is matched loosely because `formatShortStamp` renders in the device's local zone.
+    expect(parsed.tasks.first.conclusionByName, 'Батаа Энхтөр');
+    expect(find.textContaining('Батаа Энхтөр ·'), findsOneWidget);
+
+    // 150 minutes through the tab's own `formatMinutes`, never a bare number of minutes.
+    expect(parsed.tasks.first.durationMinutes, 150);
+    expect(find.text('Гүйцэтгэсэн хугацаа · 2 цаг 30 мин'), findsOneWidget);
+
+    // The unstarted second sub-task carries no duration line at all: a zero there would
+    // read as work that finished the instant it began.
+    expect(parsed.tasks[1].durationMinutes, isNull);
+    expect(find.textContaining('Гүйцэтгэсэн хугацаа'), findsOneWidget);
+
+    // The second sub-task covers nothing, and is told so rather than left silent.
+    await tester.scrollUntilVisible(
+      find.text('Тоноглол холбоогүй'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.textContaining('ямар ч тоноглолын түүхэнд бичигдэхгүй'),
+      findsOneWidget,
+    );
+
+    expect(tester.takeException(), isNull);
+  });
+
+  /// Section 10.1 used to keep Дүгнэлт off a sub-task entirely. That left the Дүгнэлт
+  /// column of Үзлэг ба дүгнэлт empty for every planned-work row, since those rows ARE
+  /// the per-object items fanned out from a sub-task. It is collected here now, and has
+  /// to survive the round trip to the request.
+  testWidgets('the progress sheet sends the sub-task Дүгнэлт', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 1200));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    _StubDetailCapturingProgress.lastRequest = null;
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: <Override>[
+          currentUserProvider.overrideWithValue(_user),
+          workIdentityProvider.overrideWith((Ref ref) async => _assignedIdentity),
+          plannedWorkDetailProvider.overrideWith(_StubDetailCapturingProgress.new),
+          inspectionReportProvider.overrideWith(_StubInspectionBlocked.new),
+        ],
+        child: const MaterialApp(
+          home: PlannedWorkDetailScreen(plannedWorkId: 'w1'),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(
+      find.text('Тэмдэглэл, үнэлгээ засах'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Тэмдэглэл, үнэлгээ засах'));
+    await tester.pumpAndSettle();
+
+    // The sheet names the equipment before anything is typed, so the one Үнэлгээ below
+    // is never chosen without knowing where it lands.
+    expect(find.text('ҮНЭЛГЭЭ БИЧИГДЭХ ТОНОГЛОЛ (2)'), findsOneWidget);
+
+    final Finder sheetScrollable = find
+        .descendant(
+          of: find.byType(BottomSheet),
+          matching: find.byType(Scrollable),
+        )
+        .first;
+    // Scrolled to by key, not by its label: the card behind the sheet carries a
+    // 'ДҮГНЭЛТ' caption of its own and is already on screen, so a text-based scroll
+    // would find that one and never move the sheet.
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('task-conclusion-field')),
+      200,
+      scrollable: sheetScrollable,
+    );
+    await tester.pumpAndSettle();
+
+    // Pre-filled from the record, so a correction edits it rather than retyping it.
+    final Finder conclusionField = find.descendant(
+      of: find.byKey(const Key('task-conclusion-field')),
+      matching: find.byType(TextField),
+    );
+    expect(
+      tester.widget<TextField>(conclusionField).controller?.text,
+      'Самбар хэвийн, ашиглалтад тэнцэнэ.',
+    );
+    expect(find.textContaining('2 тоноглол тус бүрд бичигдэнэ'), findsOneWidget);
+
+    await tester.enterText(conclusionField, 'Дахин шалгалт шаардлагагүй.');
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(
+      find.text('Гүйцэтгэл хадгалах'),
+      200,
+      scrollable: sheetScrollable,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Гүйцэтгэл хадгалах'));
+    await tester.pumpAndSettle();
+
+    final RecordTaskProgressRequest? sent =
+        _StubDetailCapturingProgress.lastRequest;
+    expect(sent, isNotNull);
+    expect(sent!.conclusion, 'Дахин шалгалт шаардлагагүй.');
+    expect(sent.toJson()['conclusion'], 'Дахин шалгалт шаардлагагүй.');
+
     expect(tester.takeException(), isNull);
   });
 
@@ -729,6 +1283,11 @@ void main() {
               const <PlannedWorkListItemModel>[],
             ),
           ),
+          // "Миний" is what the tab opens on and it now reads a second list, which
+          // would resolve the identity over a network these tests have no server for
+          // before the pool is ever reached.
+          assignedRequestsProvider
+              .overrideWith((Ref ref) async => AssignedRequests.none),
           ...overrides,
         ],
         child: const MaterialApp(home: WorkTabScreen()),
@@ -873,6 +1432,71 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  /// The row itself opens the request, which it could not do at all before.
+  ///
+  /// `OpenRequestCard` had no tap parameter — only `onClaim` — so the one segment whose
+  /// whole purpose is deciding whether to take a job was the one place a technician could
+  /// not open it and read the fault description first. Tapping the card and tapping
+  /// "Өөртөө авах" are deliberately different acts, which is why this asserts the claim
+  /// did NOT fire.
+  testWidgets('tapping an open request opens its detail screen', (
+    WidgetTester tester,
+  ) async {
+    final _ClaimRepository repository = _ClaimRepository(const Success<void>(null));
+
+    await pumpOpenSegment(
+      tester,
+      user: _userWithClaim,
+      overrides: <Override>[
+        workRepositoryProvider.overrideWithValue(repository),
+        openRequestPoolProvider.overrideWith(
+          (Ref ref) async => OpenRequestPool(
+            items: <ServiceRequestListItemModel>[
+              ServiceRequestListItemModel.fromJson(
+                _request(
+                  id: 'r1',
+                  number: 'SR-202607-0044',
+                  status: 'UNASSIGNED',
+                  deviceName: 'Лифт №2',
+                ),
+              ),
+            ],
+            total: 1,
+          ),
+        ),
+      ],
+    );
+
+    await tester.tap(find.text('Лифт №2'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(ServiceRequestDetailScreen), findsOneWidget);
+    // The row's own facts travel with it, so the screen is never blank on open — and
+    // the detail read then fills in what a list row cannot carry.
+    expect(find.text('SR-202607-0044'), findsOneWidget);
+    expect(find.text('Лифт №2'), findsOneWidget);
+    expect(find.textContaining('Төв байр'), findsWidgets);
+
+    // Opening is not taking.
+    expect(repository.claimed, isEmpty);
+    expect(tester.takeException(), isNull);
+
+    // ...and the whole sequence the segment exists for: come back from the detail
+    // screen and take the job. The claim lives on the row rather than on the detail
+    // screen, so this is the real path a technician walks, and it has to survive the
+    // navigation.
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+
+    expect(find.byType(ServiceRequestDetailScreen), findsNothing);
+    await tester.tap(find.text('Өөртөө авах'));
+    await tester.pumpAndSettle();
+
+    expect(repository.claimed, <String>['r1']);
+    expect(find.textContaining('өөртөө авлаа'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('tapping the action claims that request', (WidgetTester tester) async {
     final _ClaimRepository repository = _ClaimRepository(const Success<void>(null));
 
@@ -942,90 +1566,6 @@ void main() {
   });
 
 
-  testWidgets('the materials section lists what the sub-task consumed', (
-    WidgetTester tester,
-  ) async {
-    await _pumpMaterials(
-      tester,
-      user: _userWithMaterials,
-      repository: _MaterialRepository(
-        usage: <TaskMaterialUsageModel>[
-          TaskMaterialUsageModel.fromJson(<String, dynamic>{
-            'id': 'u1',
-            'materialItemId': 'm1',
-            'materialCode': 'CBL-3X2.5',
-            'materialName': 'Кабель 3x2.5',
-            'quantity': 12,
-            'unit': 'METRE',
-            'usedByName': 'Б. Энхтөр',
-          }),
-        ],
-      ),
-    );
-
-    expect(find.text('АШИГЛАСАН МАТЕРИАЛ (1)'), findsOneWidget);
-    expect(find.text('12.0 метр'), findsOneWidget);
-    expect(tester.takeException(), isNull);
-  });
-
-  testWidgets('recording a material posts it against this sub-task', (
-    WidgetTester tester,
-  ) async {
-    final _MaterialRepository repository = _MaterialRepository();
-    await _pumpMaterials(tester, user: _userWithMaterials, repository: repository);
-
-    await tester.tap(find.byType(DropdownButtonFormField<MaterialItemModel>));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('CBL-3X2.5 · Кабель 3x2.5').last);
-    await tester.pumpAndSettle();
-
-    await tester.enterText(find.byType(TextField).first, '7');
-    await tester.tap(find.text('Материал нэмэх'));
-    await tester.pumpAndSettle();
-
-    expect(repository.added, hasLength(1));
-    expect(repository.added.first.quantity, 7);
-  });
-
-  testWidgets('a finished sub-task keeps its rows but loses the controls', (
-    WidgetTester tester,
-  ) async {
-    await _pumpMaterials(
-      tester,
-      user: _userWithMaterials,
-      editable: false,
-      repository: _MaterialRepository(
-        usage: <TaskMaterialUsageModel>[
-          TaskMaterialUsageModel.fromJson(<String, dynamic>{
-            'id': 'u1',
-            'materialItemId': 'm1',
-            'materialCode': 'CBL-3X2.5',
-            'materialName': 'Кабель 3x2.5',
-            'quantity': 4,
-            'unit': 'METRE',
-          }),
-        ],
-      ),
-    );
-
-    expect(find.text('АШИГЛАСАН МАТЕРИАЛ (1)'), findsOneWidget);
-    expect(find.text('Материал нэмэх'), findsNothing);
-    expect(find.textContaining('Дэд ажил дууссан тул'), findsOneWidget);
-  });
-
-  /// Without `material.view` the section contributes nothing at all.
-  testWidgets('the materials section is absent without material.view', (
-    WidgetTester tester,
-  ) async {
-    await _pumpMaterials(
-      tester,
-      user: _userWithClaim,
-      repository: _MaterialRepository(),
-    );
-
-    expect(find.textContaining('АШИГЛАСАН МАТЕРИАЛ'), findsNothing);
-  });
-
   test('the pool is ordered by what will breach first', () {
     ServiceRequestListItemModel row(
       String number, {
@@ -1057,6 +1597,307 @@ void main() {
       <String>['SR-1', 'SR-2', 'SR-3', 'SR-4'],
     );
   });
+
+  // -- Report editors: the controllers must outlive the pop ------------------
+  //
+  // `showModalBottomSheet` and `showDialog` complete their future the instant
+  // `Navigator.pop` is called, NOT when the route leaves the screen: it is still
+  // mounted, still animating out and still rebuilding for a few hundred milliseconds
+  // afterwards. Both editors below used to be plain `builder:` closures over
+  // controllers the caller owned and disposed from `.whenComplete`, so the pop killed
+  // controllers their own live TextFields were still reading — and the very next
+  // rebuild threw "A TextEditingController was used after being disposed", left the
+  // route half torn down, and tripped `_dependents.isEmpty` in
+  // `InheritedElement.debugDeactivated`. The red screen named the framework, not this
+  // file.
+  //
+  // Every case here TYPES FIRST and then tears the whole tree down. Both halves are
+  // load-bearing: typing focuses the field, which is what guarantees the rebuild after
+  // the pop, and a happy-path render that never unmounts cannot see a disposal-order
+  // defect at all.
+
+  testWidgets('the Дүгнэлт editor survives a typed save and the teardown after it', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 1200));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: <Override>[
+          currentUserProvider.overrideWithValue(_user),
+          workIdentityProvider.overrideWith((Ref ref) async => _assignedIdentity),
+          plannedWorkDetailProvider.overrideWith(_StubDetailCapturingReport.new),
+          inspectionReportProvider.overrideWith(_StubInspectionBlocked.new),
+        ],
+        child: const MaterialApp(
+          home: PlannedWorkDetailScreen(plannedWorkId: 'w1'),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(
+      find.text('Дүгнэлт, зөвлөмж бичих'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Дүгнэлт, зөвлөмж бичих'));
+    await tester.pumpAndSettle();
+    expect(find.text('Дүгнэлт тайлан'), findsOneWidget);
+
+    final Finder fields = find.descendant(
+      of: find.byType(BottomSheet),
+      matching: find.byType(TextField),
+    );
+    await tester.enterText(fields.first, 'Кабель солигдсон.');
+    await tester.enterText(fields.last, 'Дараагийн үзлэгт дахин хэмжинэ.');
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Тайлан хадгалах'));
+    await tester.pumpAndSettle();
+
+    // The pop happened, what was typed reached the notifier, and nothing threw while
+    // the sheet played itself out.
+    expect(find.text('Дүгнэлт тайлан'), findsNothing);
+    expect(_StubDetailCapturingReport.lastConclusion, 'Кабель солигдсон.');
+    expect(
+      _StubDetailCapturingReport.lastRecommendation,
+      'Дараагийн үзлэгт дахин хэмжинэ.',
+    );
+    expect(tester.takeException(), isNull);
+
+    // The disposal step. Replacing the whole tree unmounts the screen, the Navigator
+    // and the Overlay in one go, which is where the leaked dependency showed up.
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('the Дүгнэлт editor survives a typed cancel and the teardown after it', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 1200));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: <Override>[
+          currentUserProvider.overrideWithValue(_user),
+          workIdentityProvider.overrideWith((Ref ref) async => _assignedIdentity),
+          plannedWorkDetailProvider.overrideWith(_StubDetailCapturingReport.new),
+          inspectionReportProvider.overrideWith(_StubInspectionBlocked.new),
+        ],
+        child: const MaterialApp(
+          home: PlannedWorkDetailScreen(plannedWorkId: 'w1'),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(
+      find.text('Дүгнэлт, зөвлөмж бичих'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Дүгнэлт, зөвлөмж бичих'));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(
+      find
+          .descendant(
+            of: find.byType(BottomSheet),
+            matching: find.byType(TextField),
+          )
+          .first,
+      'Хагас бичсэн дүгнэлт',
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Болих'));
+    await tester.pumpAndSettle();
+
+    // A cancel sends nothing — and, like the save, must not dispose anything early.
+    expect(find.text('Дүгнэлт тайлан'), findsNothing);
+    expect(_StubDetailCapturingReport.lastConclusion, isNull);
+    expect(tester.takeException(), isNull);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('the reason prompt survives a typed dismissal and the teardown after it', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 1200));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: <Override>[
+          currentUserProvider.overrideWithValue(_user),
+          workIdentityProvider.overrideWith((Ref ref) async => _assignedIdentity),
+          plannedWorkDetailProvider.overrideWith(_StubDetail.new),
+          inspectionReportProvider.overrideWith(_StubInspectionBlocked.new),
+        ],
+        child: const MaterialApp(
+          home: PlannedWorkDetailScreen(plannedWorkId: 'w1'),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // The reason prompt AUTOFOCUSES its field, so it reaches the dangerous state
+    // without anyone typing — this case types anyway, because that is the flow.
+    await tester.scrollUntilVisible(
+      find.text('Түр зогсоох'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Түр зогсоох'));
+    await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsOneWidget);
+
+    await tester.enterText(
+      find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.byType(TextField),
+      ),
+      'Материал хүрэлцээгүй',
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(
+      find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.text('Болих'),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(tester.takeException(), isNull);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('the sub-task progress sheet survives a typed cancel and its teardown', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 1200));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: <Override>[
+          currentUserProvider.overrideWithValue(_user),
+          workIdentityProvider.overrideWith((Ref ref) async => _assignedIdentity),
+          plannedWorkDetailProvider.overrideWith(_StubDetail.new),
+          inspectionReportProvider.overrideWith(_StubInspectionBlocked.new),
+        ],
+        child: const MaterialApp(
+          home: PlannedWorkDetailScreen(plannedWorkId: 'w1'),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(
+      find.text('Өнөөдрийн гүйцэтгэл оруулах'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Өнөөдрийн гүйцэтгэл оруулах').first);
+    await tester.pumpAndSettle();
+
+    // Дүгнэлт is the newest of the four controllers this sheet owns, and it sits
+    // below the fold of the sheet's own list.
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('task-conclusion-field')),
+      200,
+      scrollable: find
+          .descendant(
+            of: find.byType(BottomSheet),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.descendant(
+        of: find.byKey(const Key('task-conclusion-field')),
+        matching: find.byType(TextField),
+      ),
+      'Тоноглол хэвийн.',
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Болих'));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('the inspection report sheet survives a typed cancel and its teardown', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 1200));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: <Override>[
+          currentUserProvider.overrideWithValue(_user),
+          workIdentityProvider.overrideWith((Ref ref) async => _assignedIdentity),
+          plannedWorkDetailProvider.overrideWith(_StubDetailAwaitingReport.new),
+          inspectionReportProvider.overrideWith(_StubInspectionDraft.new),
+        ],
+        child: const MaterialApp(
+          home: PlannedWorkDetailScreen(plannedWorkId: 'w1'),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(
+      find.text('Тайлан бичих'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Тайлан бичих'));
+    await tester.pumpAndSettle();
+    expect(find.text('Үзлэгийн тайлан бичих'), findsOneWidget);
+
+    await tester.enterText(
+      find
+          .descendant(
+            of: find.byType(BottomSheet),
+            matching: find.byType(TextField),
+          )
+          .first,
+      'Бүх самбарыг хамруулсан.',
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Болих'));
+    await tester.pumpAndSettle();
+    expect(find.text('Үзлэгийн тайлан бичих'), findsNothing);
+    expect(tester.takeException(), isNull);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+  });
 }
 
 
@@ -1085,6 +1926,88 @@ const AppUser _userWithClaim = AppUser(
 /// `noSuchMethod` rather than sixteen stub methods: the pool is supplied by an override,
 /// so claiming is the only call this screen makes through the repository, and a stub for
 /// each of the others would be fifteen lines asserting nothing.
+/// Records what `plannedWorkBoardProvider` asked `GET /planned-work` for.
+///
+/// The parameters are the assertion, not an implementation detail: "Миний" sending
+/// `employeeId` was the bug, because the server ANDs it with `teamId` and the rule it
+/// enforces is a union.
+class _ListRepository implements WorkRepository {
+  _ListRepository({
+    this.items = const <PlannedWorkListItemModel>[],
+    this.requests = const <ServiceRequestListItemModel>[],
+  });
+
+  final List<PlannedWorkListItemModel> items;
+
+  /// What `GET /service-requests` answers — the reader's rows AND the unclaimed queue
+  /// together, exactly as the live route does.
+  final List<ServiceRequestListItemModel> requests;
+
+  /// One `[employeeId, teamId]` pair per call, in order.
+  final List<List<String?>> calls = <List<String?>>[];
+
+  /// How many times the request list was asked for, and with what — nothing, which is
+  /// the assertion: an `employeeId` filter ANDs with the server's own predicate.
+  int requestCalls = 0;
+
+  @override
+  Future<ApiResult<PaginatedData<PlannedWorkListItemModel>>> listPlannedWork({
+    String? employeeId,
+    String? teamId,
+    PlannedWorkEffectiveStatus? status,
+    String? search,
+  }) async {
+    calls.add(<String?>[employeeId, teamId]);
+    return Success<PaginatedData<PlannedWorkListItemModel>>(
+      PaginatedData<PlannedWorkListItemModel>(
+        items: items,
+        page: 1,
+        limit: 20,
+        total: items.length,
+        totalPages: 1,
+      ),
+    );
+  }
+
+  @override
+  Future<ApiResult<PaginatedData<ServiceRequestListItemModel>>>
+      listAssignedServiceRequests() async {
+    requestCalls += 1;
+    return Success<PaginatedData<ServiceRequestListItemModel>>(
+      PaginatedData<ServiceRequestListItemModel>(
+        items: requests,
+        page: 1,
+        limit: 100,
+        total: requests.length,
+        totalPages: 1,
+      ),
+    );
+  }
+
+  /// The detail read, answered from the row this stub already holds, so the screen the
+  /// navigation lands on carries the SAME number the list showed.
+  @override
+  Future<ApiResult<ServiceRequestDetailModel?>> getServiceRequestDetail(
+    String requestId,
+  ) async {
+    for (final ServiceRequestListItemModel row in requests) {
+      if (row.id == requestId) {
+        return Success<ServiceRequestDetailModel?>(
+          _detailFor(
+            id: row.id,
+            number: row.requestNumber,
+            deviceName: row.device?.name,
+          ),
+        );
+      }
+    }
+    return const Success<ServiceRequestDetailModel?>(null);
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
 class _ClaimRepository implements WorkRepository {
   _ClaimRepository(this._result);
 
@@ -1097,118 +2020,51 @@ class _ClaimRepository implements WorkRepository {
     return _result;
   }
 
+  /// The pool's one row, as the detail route answers it. Unclaimed — no employee and no
+  /// team — because that is the branch `includeUnclaimed: true` admits, and it is the
+  /// whole reason a technician can read a job before deciding to take it.
   @override
-  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
-}
-
-
-// -- Sub-task materials ------------------------------------------------------
-//
-// What a sub-task CONSUMED, which is deliberately not the equipment it assesses.
-
-/// A technician who may also read the material catalogue.
-const AppUser _userWithMaterials = AppUser(
-  id: 'u',
-  fullName: 'Дорж Ganbold',
-  email: 'd.ganbold@monhorus.mn',
-  role: UserRole.technician,
-  status: AccountStatus.active,
-  permissions: <String>{
-    'planned_work.view',
-    'planned_work.record_progress',
-    'material.view',
-  },
-);
-
-/// Answers only the two material reads and the add.
-class _MaterialRepository implements WorkRepository {
-  _MaterialRepository({this.usage = const <TaskMaterialUsageModel>[]});
-
-  List<TaskMaterialUsageModel> usage;
-  final List<({String materialItemId, double quantity})> added =
-      <({String materialItemId, double quantity})>[];
-
-  @override
-  Future<ApiResult<PaginatedData<MaterialItemModel>>> listMaterialItems() async {
-    return Success<PaginatedData<MaterialItemModel>>(
-      PaginatedData<MaterialItemModel>(
-        items: <MaterialItemModel>[
-          MaterialItemModel.fromJson(<String, dynamic>{
-            'id': 'm1',
-            'code': 'CBL-3X2.5',
-            'name': 'Кабель 3x2.5',
-            'defaultUnit': 'METRE',
-          }),
-        ],
-        page: 1,
-        limit: 200,
-        total: 1,
-        totalPages: 1,
-      ),
-    );
-  }
-
-  @override
-  Future<ApiResult<List<TaskMaterialUsageModel>>> listTaskMaterials({
-    required String plannedWorkId,
-    required String taskId,
-  }) async {
-    return Success<List<TaskMaterialUsageModel>>(usage);
-  }
-
-  @override
-  Future<ApiResult<TaskMaterialUsageModel>> addTaskMaterial({
-    required String plannedWorkId,
-    required String taskId,
-    required String materialItemId,
-    required double quantity,
-    required MaterialUnit unit,
-    String? note,
-  }) async {
-    added.add((materialItemId: materialItemId, quantity: quantity));
-    return Success<TaskMaterialUsageModel>(
-      TaskMaterialUsageModel.fromJson(<String, dynamic>{
-        'id': 'u1',
-        'materialItemId': materialItemId,
-        'materialCode': 'CBL-3X2.5',
-        'materialName': 'Кабель 3x2.5',
-        'quantity': quantity,
-        'unit': unit.wireValue,
-      }),
-    );
-  }
-
-  @override
-  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
-}
-
-Future<void> _pumpMaterials(
-  WidgetTester tester, {
-  required AppUser user,
-  required WorkRepository repository,
-  bool editable = true,
-}) async {
-  await tester.binding.setSurfaceSize(const Size(390, 1200));
-  addTearDown(() => tester.binding.setSurfaceSize(null));
-
-  await tester.pumpWidget(
-    ProviderScope(
-      overrides: <Override>[
-        currentUserProvider.overrideWithValue(user),
-        workRepositoryProvider.overrideWithValue(repository),
-      ],
-      child: MaterialApp(
-        home: Scaffold(
-          body: SingleChildScrollView(
-            child: TaskMaterialsSection(
-              plannedWorkId: 'w1',
-              taskId: 't1',
-              editable: editable,
-            ),
-          ),
+  Future<ApiResult<ServiceRequestDetailModel?>> getServiceRequestDetail(
+    String requestId,
+  ) async =>
+      Success<ServiceRequestDetailModel?>(
+        _detailFor(
+          id: requestId,
+          number: 'SR-202607-0044',
+          deviceName: 'Лифт №2',
         ),
-      ),
-    ),
-  );
-  await tester.pumpAndSettle();
+      );
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
+
+/// The detail read the request screen makes on open.
+///
+/// Answered by both list stubs because opening a request is a navigation these tests
+/// perform, and an unstubbed read would put an error banner on the screen they assert
+/// about. What the detail screen does with a full record is
+/// `service_request_detail_test.dart`'s subject; here it only has to agree with the row
+/// that was tapped.
+ServiceRequestDetailModel _detailFor({
+  required String id,
+  required String number,
+  String? deviceName,
+}) =>
+    ServiceRequestDetailModel.fromJson(<String, dynamic>{
+      'id': id,
+      'requestNumber': number,
+      'customer': <String, dynamic>{'id': 'c', 'name': 'Central Tower ХХК'},
+      'building': <String, dynamic>{'id': 'b', 'name': 'Төв байр'},
+      if (deviceName != null)
+        'device': <String, dynamic>{'id': 'd', 'name': deviceName},
+      'requestType': 'REPAIR',
+      'status': 'UNASSIGNED',
+      'isUrgent': false,
+      'description': 'Лифт зогссон.',
+      'contactName': 'Бат',
+      'contactPhone': '99112233',
+      'attachments': <dynamic>[],
+    });
+
+

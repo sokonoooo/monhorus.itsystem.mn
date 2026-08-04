@@ -8,6 +8,7 @@ import '../../domain/entities/risk_level.dart';
 import '../format.dart';
 import '../providers/project_providers.dart';
 import '../widgets/authenticated_image.dart';
+import '../widgets/floor_plan_markers.dart';
 import '../widgets/project_async_view.dart';
 import '../widgets/project_ui.dart';
 import '../widgets/risk_widgets.dart';
@@ -67,7 +68,12 @@ class FloorDetailScreen extends ConsumerWidget {
             ),
 
             const SectionHeading('Давхарын план зураг', topPadding: 4),
-            _FloorPlanSection(floorId: floorId),
+            _FloorPlanSection(
+              floorId: floorId,
+              floorName: current?.name ?? floorName,
+              buildingName: buildingName,
+              projectName: projectName,
+            ),
 
             const SectionHeading('Төхөөрөмжийн жагсаалт'),
             _DeviceList(
@@ -132,20 +138,37 @@ class _FloorHeader extends StatelessWidget {
   }
 }
 
-/// The floor plan.
+/// The floor plan, with a coloured dot per placed device.
 ///
-/// The prototype overlays a coloured dot per device at an x/y position on the plan.
-/// `FloorPlanDto` carries the image and nothing else — no pin, no marker, no
-/// coordinate — and no object DTO carries a point on a floor either, so there is
-/// nothing to place. The image is shown as imported and the caption says why the pins
-/// are absent, rather than scattering dots at made-up positions.
+/// `FloorPlanDto` carries the image alone, but the coordinate is not on it and never
+/// was: it is `planPosition` on each object, the normalised x/y an administrator
+/// placed on the admin web. The dots are read-only here — placing and moving them
+/// needs `object_master.manage`, which a technician deliberately does not hold.
 class _FloorPlanSection extends ConsumerWidget {
-  const _FloorPlanSection({required this.floorId});
+  const _FloorPlanSection({
+    required this.floorId,
+    required this.floorName,
+    required this.buildingName,
+    required this.projectName,
+  });
 
   final String floorId;
+  final String floorName;
+  final String buildingName;
+  final String projectName;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    // The same provider the device list below already watches, so the markers cost no
+    // extra request. Left unwatched without `object_master.view`: the objects endpoint
+    // would answer 403 and there would be nothing to draw anyway.
+    final List<ObjectListItemModel> objects = ref.watch(canViewDevicesProvider)
+        ? (ref.watch(floorObjectsProvider(floorId)).valueOrNull ??
+            const <ObjectListItemModel>[])
+        : const <ObjectListItemModel>[];
+    final List<ObjectListItemModel> onPlan = planMarkersOf(objects);
+    final int unplaced = unplacedOnPlanCount(objects);
+
     return ProjectAsyncView<FloorPlanModel?>(
       value: ref.watch(floorPlanProvider(floorId)),
       onRetry: () => ref.invalidate(floorPlanProvider(floorId)),
@@ -175,7 +198,26 @@ class _FloorPlanSection extends ConsumerWidget {
                 children: <Widget>[
                   Container(
                     color: EmployeeTokens.white,
-                    child: AuthenticatedImage(fileId: plan.fileId, height: 210),
+                    child: AuthenticatedImage.sizedToImage(
+                      fileId: plan.fileId,
+                      overlay: FloorPlanMarkerLayer(
+                        objects: onPlan,
+                        onTap: (ObjectListItemModel object) =>
+                            Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (BuildContext _) => DeviceDetailScreen(
+                              objectId: object.id,
+                              fallbackTitle:
+                                  object.code.isEmpty ? object.name : object.code,
+                              fallbackSubtitle: object.name,
+                              floorName: floorName,
+                              buildingName: buildingName,
+                              projectName: projectName,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
                   ),
                   Container(
                     padding: const EdgeInsets.all(11),
@@ -212,16 +254,21 @@ class _FloorPlanSection extends ConsumerWidget {
                 ],
               ),
             ),
-            const Padding(
-              padding: EdgeInsets.fromLTRB(
+            Padding(
+              padding: const EdgeInsets.fromLTRB(
                 EmployeeTokens.labelGutter,
                 0,
                 EmployeeTokens.labelGutter,
                 10,
               ),
               child: Text(
-                'Импортолсон план зураг. Төхөөрөмжийн байршлын цэг системд '
-                'хадгалагддаггүй тул зураг дээр тэмдэглэгээ харагдахгүй.',
+                <String>[
+                  'Тэмдэглэгээний өнгө нь тухайн төхөөрөмжийн эрсдэлийн түвшин. '
+                      'Дээр нь дарж дэлгэрэнгүйг харна.',
+                  // Said out loud, as the admin web says it: a plan with fewer dots
+                  // than the floor has devices otherwise reads as a rendering fault.
+                  if (unplaced > 0) 'Планд байрлуулаагүй $unplaced төхөөрөмж байна.',
+                ].join(' '),
                 style: EmployeeTokens.microNote,
               ),
             ),

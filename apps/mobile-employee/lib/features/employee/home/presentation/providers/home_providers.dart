@@ -85,6 +85,15 @@ class HomeOverview {
   /// The reader's own work. Empty whenever [identity] is unresolved, because an
   /// unfiltered list would be everyone's work under a personal heading.
   final List<PlannedWorkListItemModel> plannedWork;
+
+  /// `GET /service-requests` as it came back — WHICH IS NOT ONLY THE READER'S.
+  ///
+  /// The service-request read passes `includeUnclaimed: true` server-side, so the
+  /// response carries the entire open queue alongside the reader's own work. That
+  /// branch is deliberate — it is what the Ажил tab's "Нээлттэй" segment and
+  /// `POST /service-requests/:id/claim` are built on — but it means this list must
+  /// never be counted as "mine". Everything that claims to be the reader's counts
+  /// [assignedRequests] instead.
   final List<ServiceRequestListItemModel> requests;
 
   /// Today's entries. Scoped to the reader when [agendaScoped] is true; otherwise it
@@ -107,12 +116,37 @@ class HomeOverview {
 
   // -- Derived counters -------------------------------------------------------
 
+  /// The requests that are actually this reader's: named individually, or carried by
+  /// their team.
+  ///
+  /// THE FIGURES ON "МИНИЙ АЖИЛ" ARE COUNTED FROM HERE AND NEVER FROM [requests].
+  /// The unfiltered list includes the unclaimed queue, so every hero figure was
+  /// inflated by work nobody had taken — a technician with an empty plate and a busy
+  /// dispatch board was told they had nine active jobs.
+  ///
+  /// The test is the union the server itself bounds the list with; see
+  /// [ServiceRequestListItemModel.isAssignedTo]. With no employee card there is nothing
+  /// to compare against, so nothing counts as the reader's — which is the same answer
+  /// the personal blocks already give for that account, and they say why.
+  List<ServiceRequestListItemModel> get assignedRequests {
+    final EmployeeIdentity self = identity;
+    if (self is! ResolvedEmployeeIdentity) {
+      return const <ServiceRequestListItemModel>[];
+    }
+    return requests
+        .where((ServiceRequestListItemModel request) => request.isAssignedTo(
+              employeeId: self.employeeId,
+              teamId: self.employee.teamId,
+            ))
+        .toList(growable: false);
+  }
+
   List<PlannedWorkListItemModel> get outstandingPlannedWork => plannedWork
       .where((PlannedWorkListItemModel work) =>
           work.effectiveStatus?.isOutstanding ?? false)
       .toList(growable: false);
 
-  List<ServiceRequestListItemModel> get outstandingRequests => requests
+  List<ServiceRequestListItemModel> get outstandingRequests => assignedRequests
       .where((ServiceRequestListItemModel request) =>
           request.status?.isOutstanding ?? false)
       .toList(growable: false);
@@ -127,7 +161,7 @@ class HomeOverview {
           .where((PlannedWorkListItemModel work) =>
               work.effectiveStatus?.isInProgress ?? false)
           .length +
-      requests
+      assignedRequests
           .where((ServiceRequestListItemModel request) =>
               request.status?.isInProgress ?? false)
           .length;
@@ -147,7 +181,7 @@ class HomeOverview {
           .length;
 
   /// `REVISIT_REQUIRED` — the prototype's "Дахин очих".
-  int get revisitCount => requests
+  int get revisitCount => assignedRequests
       .where((ServiceRequestListItemModel request) =>
           request.status == ServiceRequestStatus.revisitRequired)
       .length;
@@ -158,6 +192,13 @@ class HomeOverview {
 
   /// What the "Яаралтай анхаарах" section lists: overdue planned work first, then
   /// requests the backend flagged urgent or at risk, soonest deadline first.
+  ///
+  /// Deliberately over [requests] and not [assignedRequests], and it is the ONE place
+  /// on this screen where the unclaimed queue belongs. The section does not claim the
+  /// rows are the reader's — it says they need attention — and an urgent request nobody
+  /// has taken is the thing a technician most needs to see; the Ажил tab's "Нээлттэй"
+  /// segment is where they take it. Counting those rows as the reader's own is what the
+  /// hero figures must not do, which is a different question and a different getter.
   List<HomeUrgentItem> get urgentItems {
     final List<HomeUrgentItem> items = <HomeUrgentItem>[
       for (final PlannedWorkListItemModel work in plannedWork)
@@ -309,10 +350,10 @@ final FutureProvider<HomeOverview> homeOverviewProvider =
         ? block(repository.getDashboardSummary)
         : Future<DashboardSummaryModel?>.value(),
     employeeId != null && canReadPlannedWork
-        ? block(() => repository.listPlannedWork(employeeId))
+        ? block(repository.listPlannedWork)
         : Future<PaginatedData<PlannedWorkListItemModel>?>.value(),
     employeeId != null && canReadRequests
-        ? block(() => repository.listServiceRequests(employeeId))
+        ? block(repository.listServiceRequests)
         : Future<PaginatedData<ServiceRequestListItemModel>?>.value(),
     canReadPlannedWork || canReadRequests
         ? block(() => repository.getDayAgenda(

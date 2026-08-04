@@ -22,6 +22,14 @@ dependencies:
   # Value equality for entities
   equatable: ^2.0.7
 
+  # Fira Sans / Fira Sans Condensed. Fetched once and cached to disk.
+  #
+  # NOT the mock's Barlow: Barlow carries no Cyrillic at all — 0 of the 64 basic
+  # letters and none of Mongolian's Ө/ө/Ү/ү — so every string would silently fall
+  # back to the system face. Fira Sans is the same humanist-body/condensed-heading
+  # pairing with full Cyrillic. See the note in `employee_tokens.dart`.
+  google_fonts: ^6.2.1
+
   # Camera and gallery access for evidence photos.
   #
   # Chosen over `camera` because every flow here wants one still image, and the

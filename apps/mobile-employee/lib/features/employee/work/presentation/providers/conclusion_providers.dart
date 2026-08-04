@@ -39,9 +39,35 @@ class ConclusionGrants {
   /// backend's own PUT and /submit routes ask for.
   bool get canAuthor => _permissions.contains(PermissionKeys.serviceRequestUpdate);
 
-  /// Approving or returning, which this app deliberately does not offer: reviewing is a
-  /// different duty from recording and belongs to the web console.
+  /// The OFFICE's full authority over a request — every transition, and approving AND
+  /// returning a conclusion.
+  ///
+  /// Read so a dispatcher or a manager signed into this app is not narrowed by the field
+  /// rules below; it is never what a technician's controls are gated on, because the field
+  /// tier does not hold it and never will.
   bool get canReview => _permissions.contains(PermissionKeys.serviceRequestChangeStatus);
+
+  /// Saying where the job has got to: the six states in
+  /// `ServiceRequestStatus.isSelfProgress`, and nothing else.
+  ///
+  /// [canReview] counts too, because the office key is a strict superset — a control
+  /// gated on the narrow key alone would disappear for the one population that has always
+  /// been able to use it.
+  bool get canSelfProgress =>
+      _permissions.contains(PermissionKeys.serviceRequestSelfProgress) || canReview;
+
+  /// Settling a submitted conclusion. APPROVE only — returning one is not offered by this
+  /// app at all, and `service_request.approve_report` could not reach it if it were.
+  bool get canApproveConclusion =>
+      _permissions.contains(PermissionKeys.serviceRequestApproveReport) || canReview;
+
+  /// True once the permission array has actually arrived, so a screen can tell "no
+  /// grants" apart from "not asked yet".
+  ///
+  /// The set is empty between login and the first `/auth/me`. Every gate above reads false
+  /// until then and a control stays hidden — but the EXPLANATION beside it must not claim
+  /// a permission is missing when nobody has looked yet.
+  bool get isKnown => _permissions.isNotEmpty;
 }
 
 final Provider<ConclusionGrants> conclusionGrantsProvider = Provider<ConclusionGrants>(
@@ -144,29 +170,64 @@ class EquipmentDraft {
   }
 }
 
+/// Which of the conclusion's two visit-level photo sets a capture belongs to.
+///
+/// A visit photograph is not equipment evidence: the server stores these on the report and
+/// checks them as `BEFORE_PHOTO` and `AFTER_PHOTO`, while a card's photos hang off its
+/// item and satisfy neither. The two are separate slots here for the same reason.
+enum VisitPhotoSlot {
+  before('Ажлын өмнөх зураг'),
+  after('Ажлын дараах зураг');
+
+  const VisitPhotoSlot(this.label);
+
+  final String label;
+
+  /// The key [ConclusionEditorState.uploadingFor] carries while this slot is uploading.
+  ///
+  /// Prefixed so it can never collide with an object id, which is what that field
+  /// otherwise holds.
+  String get uploadKey => 'visit:$name';
+}
+
 class ConclusionEditorState {
   const ConclusionEditorState({
     required this.report,
     required this.drafts,
     required this.conclusion,
     required this.recommendation,
+    required this.beforePhotoIds,
+    required this.afterPhotoIds,
+    this.score = '',
     this.saving = false,
     this.uploadingFor,
     this.message,
     this.failed = false,
     this.itemErrors = const <String, String>{},
+    this.missing = const <WorkReportRequirement>[],
   });
 
   final WorkReportModel report;
 
   /// Ordered so the cards do not reshuffle as values are typed.
   final List<EquipmentDraft> drafts;
+
+  /// The visit's own score, as typed. Held as text so a half-entered "1" is not read as a
+  /// score of 1 and so an emptied field clears rather than sticking at its last number.
+  final String score;
   final String conclusion;
   final String recommendation;
 
+  /// The visit's two evidence sets, as the working copy rather than as loaded: a photo
+  /// added or removed here must survive until the next save, and reading them back off
+  /// [report] is what previously made both sets impossible to change from this app.
+  final List<String> beforePhotoIds;
+  final List<String> afterPhotoIds;
+
   final bool saving;
 
-  /// The object whose evidence upload is in flight, so only that card shows progress.
+  /// The object — or [VisitPhotoSlot.uploadKey] — whose upload is in flight, so only that
+  /// strip shows progress.
   final String? uploadingFor;
 
   final String? message;
@@ -175,34 +236,52 @@ class ConclusionEditorState {
   /// Server refusals keyed by objectId, printed against the card they belong to.
   final Map<String, String> itemErrors;
 
+  /// The mandatory VISIT-LEVEL fields the server says are still empty.
+  ///
+  /// The server's own answer, never recomputed here: `workReportCompleteness` is the one
+  /// authority on what "бүрэн" means, and a second local rule would eventually disagree
+  /// with it. Refreshed from every save response and from a refused submission, so it
+  /// names what is missing right now rather than at load.
+  final List<WorkReportRequirement> missing;
+
   bool get isEditable => report.status.isEditable;
 
   /// True when nothing would produce a ReportItem, which is what keeps the conclusion out
   /// of Үзлэг ба дүгнэлт.
   bool get hasNoEquipment => drafts.isEmpty;
 
+  bool isMissing(WorkReportRequirement requirement) => missing.contains(requirement);
+
   ConclusionEditorState copyWith({
     WorkReportModel? report,
     List<EquipmentDraft>? drafts,
+    String? score,
     String? conclusion,
     String? recommendation,
+    List<String>? beforePhotoIds,
+    List<String>? afterPhotoIds,
     bool? saving,
     String? uploadingFor,
     bool clearUploading = false,
     String? message,
     bool? failed,
     Map<String, String>? itemErrors,
+    List<WorkReportRequirement>? missing,
   }) {
     return ConclusionEditorState(
       report: report ?? this.report,
       drafts: drafts ?? this.drafts,
+      score: score ?? this.score,
       conclusion: conclusion ?? this.conclusion,
       recommendation: recommendation ?? this.recommendation,
+      beforePhotoIds: beforePhotoIds ?? this.beforePhotoIds,
+      afterPhotoIds: afterPhotoIds ?? this.afterPhotoIds,
       saving: saving ?? this.saving,
       uploadingFor: clearUploading ? null : (uploadingFor ?? this.uploadingFor),
       message: message,
       failed: failed ?? false,
       itemErrors: itemErrors ?? this.itemErrors,
+      missing: missing ?? this.missing,
     );
   }
 }
@@ -270,8 +349,17 @@ class ConclusionEditor extends FamilyAsyncNotifier<ConclusionEditorState, Conclu
     return ConclusionEditorState(
       report: report,
       drafts: drafts,
+      score: report.score?.toString() ?? '',
       conclusion: report.conclusion ?? '',
       recommendation: report.recommendation ?? '',
+      beforePhotoIds:
+          report.beforePhotos.map((WorkReportPhotoModel photo) => photo.id).toList(),
+      afterPhotoIds:
+          report.afterPhotos.map((WorkReportPhotoModel photo) => photo.id).toList(),
+      missing: WorkReportRequirement.values
+          .where((WorkReportRequirement requirement) =>
+              report.missing.contains(requirement.wireValue))
+          .toList(),
     );
   }
 
@@ -280,6 +368,8 @@ class ConclusionEditor extends FamilyAsyncNotifier<ConclusionEditorState, Conclu
   void _set(ConclusionEditorState next) => state = AsyncData<ConclusionEditorState>(next);
 
   // -- Editing ---------------------------------------------------------------
+
+  void setScore(String value) => _set(_now.copyWith(score: value));
 
   void setConclusion(String value) => _set(_now.copyWith(conclusion: value));
 
@@ -398,13 +488,63 @@ class ConclusionEditor extends FamilyAsyncNotifier<ConclusionEditorState, Conclu
     );
   }
 
+  /// Attaches a photograph to the VISIT rather than to a piece of equipment.
+  ///
+  /// The same two-step upload the equipment strips use — the file is parked on the uploader
+  /// and only the id is held — but landing in `beforePhotoIds`/`afterPhotoIds`, which are
+  /// the two lists `workReportCompleteness` actually counts.
+  Future<String?> attachVisitPhoto(VisitPhotoSlot slot, CapturedPhoto photo) async {
+    _set(_now.copyWith(uploadingFor: slot.uploadKey));
+
+    final ApiResult<WorkReportPhotoModel> result =
+        await ref.read(workRepositoryProvider).uploadWorkReportPhoto(photo);
+
+    return result.when(
+      success: (WorkReportPhotoModel uploaded) {
+        final ConclusionEditorState now = _now;
+        _set(
+          now.copyWith(
+            clearUploading: true,
+            beforePhotoIds: slot == VisitPhotoSlot.before
+                ? <String>[...now.beforePhotoIds, uploaded.id]
+                : null,
+            afterPhotoIds: slot == VisitPhotoSlot.after
+                ? <String>[...now.afterPhotoIds, uploaded.id]
+                : null,
+          ),
+        );
+        return null;
+      },
+      failure: (Failure failure) {
+        _set(_now.copyWith(clearUploading: true, message: failure.message, failed: true));
+        return failure.message;
+      },
+    );
+  }
+
+  void removeVisitPhoto(VisitPhotoSlot slot, String photoId) {
+    final ConclusionEditorState now = _now;
+    List<String> without(List<String> ids) =>
+        ids.where((String id) => id != photoId).toList();
+
+    _set(
+      now.copyWith(
+        beforePhotoIds: slot == VisitPhotoSlot.before ? without(now.beforePhotoIds) : null,
+        afterPhotoIds: slot == VisitPhotoSlot.after ? without(now.afterPhotoIds) : null,
+      ),
+    );
+  }
+
   // -- Writing ---------------------------------------------------------------
 
   SaveWorkReportRequest _payload() {
     final ConclusionEditorState now = _now;
 
     return SaveWorkReportRequest(
-      score: null,
+      // The VISIT's own score, which is a separate mandatory field from every card's. It
+      // was hard-coded null here, so `SCORE` could never leave `missing` and no conclusion
+      // written on this app could ever be submitted.
+      score: int.tryParse(now.score.trim()),
       conclusion: now.conclusion.trim().isEmpty ? null : now.conclusion.trim(),
       recommendation:
           now.recommendation.trim().isEmpty ? null : now.recommendation.trim(),
@@ -429,10 +569,10 @@ class ConclusionEditor extends FamilyAsyncNotifier<ConclusionEditorState, Conclu
             ),
           )
           .toList(),
-      beforePhotoIds:
-          now.report.beforePhotos.map((WorkReportPhotoModel photo) => photo.id).toList(),
-      afterPhotoIds:
-          now.report.afterPhotos.map((WorkReportPhotoModel photo) => photo.id).toList(),
+      // The working copy, not what was loaded: echoing `report.beforePhotos` back meant a
+      // photo added on this screen was never sent and a removed one came straight back.
+      beforePhotoIds: now.beforePhotoIds,
+      afterPhotoIds: now.afterPhotoIds,
     );
   }
 
@@ -479,15 +619,20 @@ class ConclusionEditor extends FamilyAsyncNotifier<ConclusionEditorState, Conclu
         return null;
       },
       failure: (Failure failure) {
+        final List<WorkReportRequirement> refused = _missingOf(failure);
         _set(
           _now.copyWith(
             saving: false,
-            message: _explain(failure),
+            message: _explain(failure, refused),
             failed: true,
             itemErrors: _fieldErrorsOf(failure),
+            // Only overwritten when the refusal actually named requirements: a 403 or a
+            // network failure says nothing about completeness, and blanking the list on
+            // one would tell the technician nothing is missing.
+            missing: refused.isEmpty ? null : refused,
           ),
         );
-        return _explain(failure);
+        return _explain(failure, refused);
       },
     );
   }
@@ -495,10 +640,26 @@ class ConclusionEditor extends FamilyAsyncNotifier<ConclusionEditorState, Conclu
   void dismissMessage() => _set(_now.copyWith(message: null));
 }
 
-/// The server's per-field refusals, keyed so each lands on its own card.
+/// The server's PER-OBJECT refusals, keyed so each lands on its own card.
+///
+/// The requirement keys are filtered out rather than passed through: `itemErrors` is looked
+/// up by object id, so a `SCORE` entry matched no card and was silently discarded — the
+/// server named the missing field and the screen threw it away.
 Map<String, String> _fieldErrorsOf(Failure failure) {
   if (failure is! ServerFailure) return const <String, String>{};
-  return failure.fieldErrors;
+  return <String, String>{
+    for (final MapEntry<String, String> entry in failure.fieldErrors.entries)
+      if (WorkReportRequirement.fromWire(entry.key) == null) entry.key: entry.value,
+  };
+}
+
+/// The mandatory fields a refusal named, in the order the requirement list declares them.
+List<WorkReportRequirement> _missingOf(Failure failure) {
+  if (failure is! ServerFailure) return const <WorkReportRequirement>[];
+  return WorkReportRequirement.values
+      .where((WorkReportRequirement requirement) =>
+          failure.fieldErrors.containsKey(requirement.wireValue))
+      .toList();
 }
 
 /// A refusal in the words the technician needs.
@@ -506,7 +667,17 @@ Map<String, String> _fieldErrorsOf(Failure failure) {
 /// A 403 and a stale-conflict are distinct outcomes with distinct remedies, and reporting
 /// either as "сүлжээний алдаа" would send somebody to check their signal over a permission
 /// problem.
-String _explain(Failure failure) {
+///
+/// AN INCOMPLETE-CONCLUSION REFUSAL NAMES THE FIELDS. "Дүгнэлт дутуу тул илгээх боломжгүй."
+/// on its own is unactionable — it is the whole complaint — so the server's own list is
+/// appended to it here as well as being marked against each control.
+String _explain(Failure failure, [List<WorkReportRequirement> missing = const <WorkReportRequirement>[]]) {
+  if (missing.isNotEmpty) {
+    final String named = missing
+        .map((WorkReportRequirement requirement) => requirement.label)
+        .join(', ');
+    return 'Дутуу байна: $named. Эдгээрийг бөглөөд дахин илгээнэ үү.';
+  }
   if (failure is ServerFailure) {
     switch (failure.code) {
       case 'FORBIDDEN':

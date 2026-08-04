@@ -162,15 +162,22 @@ describe('FloorDetailPage', () => {
     expect(screen.getByRole('button', { name: 'Зураг солих' })).toBeInTheDocument();
   });
 
-  it('blocks object linking until a plan exists', async () => {
+  /**
+   * The plan image was never an API requirement: `assertFloorUsable` checks the floor's
+   * kind, tenant and active flag and nothing else. A floor whose drawing has not been
+   * scanned yet still has real equipment on it, so registering it must not wait on a file.
+   */
+  it('registers objects on a floor that has no plan image yet', async () => {
     vi.spyOn(projectService, 'getFloor').mockResolvedValue(makeFloor({ hasPlanImage: false }));
     vi.spyOn(projectService, 'getFloorPlan').mockResolvedValue(null);
 
     renderFloor([PERMISSIONS.OBJECT_VIEW, PERMISSIONS.OBJECT_MANAGE, PERMISSIONS.OBJECT_MASTER_VIEW]);
 
-    expect(await screen.findByText('План зураг хавсаргасны дараа объект холбоно.')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Тоноглол нэмэх' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Байгаа объект холбох' })).toBeDisabled();
+    expect(await screen.findByRole('button', { name: 'Тоноглол нэмэх' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Байгаа объект холбох' })).toBeEnabled();
+    expect(
+      screen.queryByText('План зураг хавсаргасны дараа объект холбоно.'),
+    ).not.toBeInTheDocument();
   });
 
   it('enables object linking once the plan exists', async () => {

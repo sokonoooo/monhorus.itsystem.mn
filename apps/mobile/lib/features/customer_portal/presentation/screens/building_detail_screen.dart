@@ -60,7 +60,6 @@ class BuildingDetailScreen extends ConsumerWidget {
                       floors: items,
                       onFloorTap: (FloorModel floor) => _openFloor(ctx, floor),
                     ),
-                    const RiskLegend(),
                     const SectionCaption('Давхрууд'),
                     for (final FloorModel floor in items)
                       _FloorRow(

@@ -43,11 +43,19 @@ class WorkRemoteDataSource {
   ///
   /// `status` filters on the EFFECTIVE status, so `OVERDUE` is a legal value here
   /// even though it is never persisted.
+  ///
+  /// `includeArchived` defaults to ON here, which is the opposite of the home screen's
+  /// read. The endpoint drops ARCHIVED records unless asked, and a planned work is
+  /// archived the moment its report is approved — so leaving the flag off made the
+  /// board's "Дууссан" section unable to hold the very rows it enumerates, and a
+  /// technician's finished job disappeared the day it was signed off. Home leaves it
+  /// off deliberately, because there the rows are a counter rather than a list.
   Future<PaginatedData<PlannedWorkListItemModel>> listPlannedWork({
     String? employeeId,
     String? teamId,
     PlannedWorkEffectiveStatus? status,
     String? search,
+    bool includeArchived = true,
     int page = 1,
     int limit = 100,
     String sortBy = 'plannedEndDate',
@@ -61,6 +69,7 @@ class WorkRemoteDataSource {
         if (teamId != null) 'teamId': teamId,
         if (status != null) 'status': status.wireValue,
         if (search != null && search.isNotEmpty) 'search': search,
+        if (includeArchived) 'includeArchived': true,
         'page': page,
         'limit': limit,
         'sortBy': sortBy,
@@ -159,11 +168,7 @@ class WorkRemoteDataSource {
     );
   }
 
-  // -- Sub-task materials ----------------------------------------------------
-  //
-  // Addressed through the sub-task rather than the work, which is also how the server
-  // checks the pairing: sending both ids lets it refuse a task id that belongs to a
-  // different planned work instead of trusting the task id on its own.
+  // -- Material catalogue ----------------------------------------------------
 
   /// GET /materials — the catalogue, active rows only.
   Future<PaginatedData<MaterialItemModel>> listMaterialItems({int limit = 200}) {
@@ -175,59 +180,6 @@ class WorkRemoteDataSource {
         json! as Map<String, dynamic>,
         MaterialItemModel.fromJson,
       ),
-    );
-  }
-
-  /// GET /planned-work/:id/tasks/:taskId/materials
-  Future<List<TaskMaterialUsageModel>> listTaskMaterials({
-    required String plannedWorkId,
-    required String taskId,
-  }) {
-    return _client.request<List<TaskMaterialUsageModel>>(
-      path: '/planned-work/$plannedWorkId/tasks/$taskId/materials',
-      method: 'GET',
-      decoder: (Object? json) => (json as List<dynamic>? ?? <dynamic>[])
-          .whereType<Map<String, dynamic>>()
-          .map(TaskMaterialUsageModel.fromJson)
-          .toList(),
-    );
-  }
-
-  /// POST /planned-work/:id/tasks/:taskId/materials
-  Future<TaskMaterialUsageModel> addTaskMaterial({
-    required String plannedWorkId,
-    required String taskId,
-    required String materialItemId,
-    required double quantity,
-    required MaterialUnit unit,
-    String? note,
-  }) {
-    return _client.request<TaskMaterialUsageModel>(
-      path: '/planned-work/$plannedWorkId/tasks/$taskId/materials',
-      method: 'POST',
-      data: <String, dynamic>{
-        'materialItemId': materialItemId,
-        'quantity': quantity,
-        'unit': unit.wireValue,
-        // Omitted rather than sent null: the body schema is strict, and `usedBy` defaults
-        // server-side to the caller's own employee record, which is the common case here.
-        if (note != null && note.isNotEmpty) 'note': note,
-      },
-      decoder: (Object? json) =>
-          TaskMaterialUsageModel.fromJson(json! as Map<String, dynamic>),
-    );
-  }
-
-  /// DELETE /planned-work/:id/tasks/:taskId/materials/:usageId
-  Future<void> removeTaskMaterial({
-    required String plannedWorkId,
-    required String taskId,
-    required String usageId,
-  }) {
-    return _client.request<void>(
-      path: '/planned-work/$plannedWorkId/tasks/$taskId/materials/$usageId',
-      method: 'DELETE',
-      decoder: (Object? _) {},
     );
   }
 
@@ -246,6 +198,118 @@ class WorkRemoteDataSource {
       method: 'POST',
       data: const <String, dynamic>{},
       decoder: (Object? _) {},
+    );
+  }
+
+  /// POST /service-requests/:id/status — where the job has got to.
+  ///
+  /// The endpoint accepts two populations. `service_request.change_status` is the office's
+  /// full authority; `service_request.self_progress` is the field's, and is bounded
+  /// server-side to `SELF_PROGRESS_STATUSES` on a request that names the caller or their
+  /// team. This transport does not know which the caller is and must not guess: it sends
+  /// what it was given and lets the server refuse.
+  ///
+  /// `reason` is sent only when there is one. WAITING is the single state a technician can
+  /// reach that requires it, and the server answers a missing one with a 400 naming the
+  /// `reason` field — which the screen prints against the input rather than as a banner.
+  Future<ServiceRequestDetailModel> changeServiceRequestStatus({
+    required String requestId,
+    required ServiceRequestStatus status,
+    String? reason,
+  }) {
+    return _client.request<ServiceRequestDetailModel>(
+      path: '/service-requests/$requestId/status',
+      method: 'POST',
+      data: <String, dynamic>{
+        'status': status.wireValue,
+        if (reason != null && reason.isNotEmpty) 'reason': reason,
+      },
+      decoder: (Object? json) =>
+          ServiceRequestDetailModel.fromJson(json! as Map<String, dynamic>),
+    );
+  }
+
+  /// POST /service-requests/:id/report/approve — settles a submitted conclusion.
+  ///
+  /// There is deliberately no `returnWorkReport` beside this. Returning still requires
+  /// `service_request.change_status`, because it is a judgement passed on somebody else's
+  /// work, and a client method for a route the field tier can never reach would only ever
+  /// produce a 403.
+  Future<WorkReportModel> approveWorkReport(String requestId) {
+    return _client.request<WorkReportModel>(
+      path: '/service-requests/$requestId/report/approve',
+      method: 'POST',
+      data: const <String, dynamic>{},
+      decoder: (Object? json) => WorkReportModel.fromJson(json! as Map<String, dynamic>),
+    );
+  }
+
+  /// GET /service-requests/:id — one request in full, or null when the caller may not
+  /// see it.
+  ///
+  /// This is the only read that carries `description`, `contactName`, `contactPhone`
+  /// and `attachments`; none of the four is on `ServiceRequestListItemDto`, so a detail
+  /// screen built from a list row can only ever show a location.
+  ///
+  /// THE 404 IS AN ORDINARY OUTCOME, not a fault. The route is assignment-scoped: a
+  /// staff caller without an oversight permission is bounded to their own and their
+  /// team's requests plus the unclaimed pool, and anything else is reported as missing
+  /// rather than as forbidden — deliberately, so a by-id endpoint cannot be used to
+  /// probe for other people's request ids. It is mapped to null here, exactly as
+  /// [getInspectionReport] maps its own, so the screen can say "this is no longer
+  /// yours" instead of apologising for a server error.
+  ///
+  /// The unclaimed pool is admitted by that same scope (`includeUnclaimed: true`),
+  /// which is what keeps opening a "Нээлттэй" row working.
+  Future<ServiceRequestDetailModel?> getServiceRequestDetail(String requestId) async {
+    try {
+      return await _client.request<ServiceRequestDetailModel>(
+        path: '/service-requests/$requestId',
+        method: 'GET',
+        decoder: (Object? json) =>
+            ServiceRequestDetailModel.fromJson(json! as Map<String, dynamic>),
+      );
+    } on ServerException catch (error) {
+      if (error.statusCode == 404) return null;
+      rethrow;
+    }
+  }
+
+  /// GET /service-requests, as the server scopes it — the reader's own requests.
+  ///
+  /// NO `employeeId` FILTER, for the same reason [listPlannedWork] is now called
+  /// without one from "Миний": `resolveAssignedWorkFilter` bounds a non-oversight
+  /// caller to the work assigned to them OR to their team, and a client-supplied
+  /// `employeeId` ANDs with that predicate — it can only subtract, and what it
+  /// subtracts is every request handed to the reader's team.
+  ///
+  /// NO `status` filter either: a request assigned to somebody moves through nine
+  /// statuses and this list is not a queue of one of them.
+  ///
+  /// WHAT COMES BACK IS NOT ONLY THE READER'S. The service-request read passes
+  /// `includeUnclaimed: true` server-side, so the response also carries the open pool —
+  /// the rows the "Нээлттэй" segment exists for. The caller must subtract them; see
+  /// [ServiceRequestListItemModel.isUnclaimed]. That is done in the provider rather
+  /// than here, because this transport must not decide what a list means.
+  Future<PaginatedData<ServiceRequestListItemModel>> listAssignedServiceRequests({
+    int limit = 100,
+  }) {
+    return _client.request<PaginatedData<ServiceRequestListItemModel>>(
+      path: '/service-requests',
+      method: 'GET',
+      queryParameters: <String, dynamic>{
+        'page': 1,
+        'limit': limit,
+        // Newest first, so a request assigned a minute ago is on the first page even
+        // when the reader carries more than `limit` of them.
+        'sortBy': 'createdAt',
+        'sortDir': 'desc',
+      },
+      decoder: (Object? json) =>
+          PaginatedData<ServiceRequestListItemModel>.fromJson(
+        json! as Map<String, dynamic>,
+        ServiceRequestListItemModel.fromJson,
+      ),
     );
   }
 

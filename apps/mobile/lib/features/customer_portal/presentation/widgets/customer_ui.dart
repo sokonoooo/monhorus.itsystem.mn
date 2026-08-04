@@ -124,11 +124,11 @@ class ScorePercentBadge extends StatelessWidget {
             borderRadius: BorderRadius.circular(CustomerTokens.radiusInput),
             border: Border.all(color: CustomerTokens.faint),
           ),
-          child: const Row(
+          child: Row(
             mainAxisSize: MainAxisSize.min,
             children: <Widget>[
-              RiskGlyph(level: null, size: 9),
-              SizedBox(width: 5),
+              const RiskGlyph(level: null, size: 9),
+              const SizedBox(width: 5),
               Text(unassessedLabel, style: CustomerTokens.rowSub),
             ],
           ),
@@ -712,7 +712,7 @@ class Breadcrumb extends StatelessWidget {
         children: <Widget>[
           for (int i = 0; i < parts.length; i++) ...<Widget>[
             if (i > 0)
-              const Text('→', style: CustomerTokens.sectionLabel),
+              Text('→', style: CustomerTokens.sectionLabel),
             Text(
               parts[i],
               style: CustomerTokens.rowSub.copyWith(

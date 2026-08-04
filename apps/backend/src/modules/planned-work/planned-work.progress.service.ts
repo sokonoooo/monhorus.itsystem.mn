@@ -90,11 +90,74 @@ export function derivedTaskState(task: IPlannedWorkTask): {
   return { status, completedAt: task.completedAt ?? new Date() };
 }
 
+/**
+ * Stamps the two sticky instants the duration is measured between.
+ *
+ * Both are write-once. Nothing here ever clears or moves a stamp that already exists, and
+ * that is the whole point: [derivedTaskState] above nulls `completedAt` the moment a task
+ * drops out of DONE and hands out a fresh `new Date()` the next time it re-enters, and it
+ * runs on every recalculation — including the one a photo deletion triggers. A duration
+ * built on that would jump every time evidence was touched. These two record when the
+ * physical work started and when its quantity was finished, so once observed they are
+ * facts about the past and are never rewritten.
+ *
+ * Returns true when it wrote something, so callers that only save on a change can tell.
+ */
+export function applyStickyTaskTimestamps(
+  task: Pick<
+    IPlannedWorkTask,
+    'explicitlyStarted' | 'completedQuantity' | 'totalQuantity' | 'startedAt' | 'quantityCompletedAt'
+  >,
+  now: Date = new Date(),
+): boolean {
+  let stamped = false;
+
+  // Truthiness rather than `=== null`, because a document written before these fields
+  // existed carries no value at all on paths a projection left out, and a strict null test
+  // would quietly never stamp it.
+  if (!task.startedAt && (task.explicitlyStarted || task.completedQuantity > 0)) {
+    task.startedAt = now;
+    stamped = true;
+  }
+
+  // `totalQuantity > 0` guards the same corner `deriveTaskStatus` guards: a zero-total task
+  // is not "already complete" the instant it is created.
+  const quantityComplete =
+    task.totalQuantity > 0 && task.completedQuantity >= task.totalQuantity;
+  if (!task.quantityCompletedAt && quantityComplete) {
+    task.quantityCompletedAt = now;
+    stamped = true;
+  }
+
+  return stamped;
+}
+
+/**
+ * How long the sub-task took, in whole minutes, or null when that cannot be said yet.
+ *
+ * Null rather than zero while either endpoint is missing — an unfinished sub-task has no
+ * duration — and null for a skipped one, which is excluded from every other progress
+ * figure too. Paused time is not subtracted: this codebase never nets pause time out of
+ * anything, and a duration that silently did would not agree with any other figure on the
+ * screen.
+ */
+export function taskDurationMinutes(
+  task: Pick<IPlannedWorkTask, 'skipped' | 'startedAt' | 'quantityCompletedAt'>,
+): number | null {
+  if (task.skipped) return null;
+  if (!task.startedAt || !task.quantityCompletedAt) return null;
+  return Math.max(
+    0,
+    Math.round((task.quantityCompletedAt.getTime() - task.startedAt.getTime()) / 60_000),
+  );
+}
+
 /** Applies the derivation to a task document in memory. Caller saves. */
 export function applyDerivedTaskState(task: Doc<IPlannedWorkTask>): void {
   const derived = derivedTaskState(task);
   task.status = derived.status;
   task.completedAt = derived.completedAt;
+  applyStickyTaskTimestamps(task);
 }
 
 export function progressOfTasks(tasks: readonly IPlannedWorkTask[]): ProgressSummary {
@@ -160,7 +223,10 @@ export async function recalculatePlannedWorkProgress(
 
   for (const task of tasks) {
     const derived = derivedTaskState(task);
-    if (task.status !== derived.status || (task.completedAt?.getTime() ?? null) !==
+    // Never a clear, only a first write, so re-deriving after a photo deletion cannot
+    // disturb a stamp that is already there.
+    const stamped = applyStickyTaskTimestamps(task);
+    if (stamped || task.status !== derived.status || (task.completedAt?.getTime() ?? null) !==
       (derived.completedAt?.getTime() ?? null)) {
       task.status = derived.status;
       task.completedAt = derived.completedAt;

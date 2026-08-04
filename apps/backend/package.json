@@ -13,7 +13,10 @@
     "seed:dev": "tsx src/scripts/seed-dev-data.ts",
     "migrate:task-note": "tsx src/scripts/rename-task-conclusion-to-note.ts",
     "migrate:technician-permissions": "tsx src/scripts/converge-technician-permissions.ts",
-    "backfill:user-roles": "tsx src/scripts/backfill-user-roles.ts"
+    "migrate:system-role-permissions": "tsx src/scripts/converge-system-role-permissions.ts",
+    "backfill:user-roles": "tsx src/scripts/backfill-user-roles.ts",
+    "backfill:report-assessment-history": "tsx src/scripts/backfill-report-assessment-history.ts",
+    "backfill:assessment-judged-by": "tsx src/scripts/backfill-assessment-judged-by.ts"
   },
   "dependencies": {
     "@monhorus/shared": "*",

@@ -17,11 +17,71 @@ class RiskLevelCountModel {
   }
 }
 
+/// Mirrors `ReportRollupDto` in
+/// packages/shared/src/types/report-record.types.ts.
+///
+/// The node's standing as one figure: [score] is the *worst* assessed object beneath it
+/// and [riskLevel] that score's band. Both are null for a node whose equipment has never
+/// been assessed, which is a distinct state from a low score and must never render as a
+/// zero.
+///
+/// The band is banded server-side on read rather than stored, because the thresholds are
+/// a runtime setting — so the app takes [riskLevel] as sent and never derives it from
+/// [score]. [worstObjectName] is the object that produced the figure, which is what makes
+/// the number actionable rather than merely alarming.
+class RollupModel {
+  const RollupModel({
+    required this.score,
+    required this.riskLevel,
+    required this.assessedCount,
+    required this.unassessedCount,
+    required this.worstObjectId,
+    required this.worstObjectName,
+    required this.calculatedAt,
+  });
+
+  final int? score;
+  final RiskLevel? riskLevel;
+  final int assessedCount;
+  final int unassessedCount;
+  final String? worstObjectId;
+  final String? worstObjectName;
+  final DateTime? calculatedAt;
+
+  factory RollupModel.fromJson(Object? raw) {
+    if (raw is! Map<String, dynamic>) return RollupModel.empty;
+    return RollupModel(
+      score: parseInt(raw['score']),
+      riskLevel: RiskLevel.fromWire(raw['riskLevel'] as String?),
+      assessedCount: parseInt(raw['assessedCount']) ?? 0,
+      unassessedCount: parseInt(raw['unassessedCount']) ?? 0,
+      worstObjectId: emptyToNull(raw['worstObjectId']),
+      worstObjectName: raw['worstObjectName'] as String?,
+      calculatedAt: parseDate(raw['calculatedAt']),
+    );
+  }
+
+  static const RollupModel empty = RollupModel(
+    score: null,
+    riskLevel: null,
+    assessedCount: 0,
+    unassessedCount: 0,
+    worstObjectId: null,
+    worstObjectName: null,
+    calculatedAt: null,
+  );
+
+  /// True only when the server sent both halves. A score without a band, or a band
+  /// without a score, is not renderable as a figure and falls back to "Үнэлгээгүй".
+  bool get hasScore => score != null && riskLevel != null;
+}
+
 /// Mirrors `RiskSummaryDto` in packages/shared/src/types/project.types.ts.
 ///
-/// Deliberately a set of per-band counts and never a single rolled-up score: the
-/// backend comment cites requirements section 19.2 as leaving the aggregation method
-/// unapproved, so this app must not invent one either.
+/// Per-band counts, which answer a different question from [RollupModel]: the counts say
+/// how the equipment is distributed, the rollup says how bad the worst of it is. Both
+/// travel on the same DTO and the backend expects both to be shown — "42, and eleven of
+/// the fourteen panels have never been looked at" is not the same statement as "42".
 class RiskSummaryModel {
   const RiskSummaryModel({
     required this.counts,
@@ -108,6 +168,7 @@ class ProjectModel {
     required this.floorCount,
     required this.objectCount,
     required this.riskSummary,
+    required this.rollup,
     required this.createdAt,
     required this.updatedAt,
     required this.deleteBlockers,
@@ -129,6 +190,7 @@ class ProjectModel {
   final int floorCount;
   final int objectCount;
   final RiskSummaryModel riskSummary;
+  final RollupModel rollup;
   final DateTime? createdAt;
   final DateTime? updatedAt;
 
@@ -154,6 +216,7 @@ class ProjectModel {
       floorCount: parseInt(json['floorCount']) ?? 0,
       objectCount: parseInt(json['objectCount']) ?? 0,
       riskSummary: RiskSummaryModel.fromJson(json['riskSummary']),
+      rollup: RollupModel.fromJson(json['rollup']),
       createdAt: parseDate(json['createdAt']),
       updatedAt: parseDate(json['updatedAt']),
       deleteBlockers: parseStringList(json['deleteBlockers']),
@@ -181,6 +244,7 @@ class BuildingModel {
     required this.floorCount,
     required this.objectCount,
     required this.riskSummary,
+    required this.rollup,
     required this.createdAt,
     required this.updatedAt,
     required this.deleteBlockers,
@@ -200,6 +264,7 @@ class BuildingModel {
   final int floorCount;
   final int objectCount;
   final RiskSummaryModel riskSummary;
+  final RollupModel rollup;
   final DateTime? createdAt;
   final DateTime? updatedAt;
   final List<String> deleteBlockers;
@@ -220,6 +285,7 @@ class BuildingModel {
       floorCount: parseInt(json['floorCount']) ?? 0,
       objectCount: parseInt(json['objectCount']) ?? 0,
       riskSummary: RiskSummaryModel.fromJson(json['riskSummary']),
+      rollup: RollupModel.fromJson(json['rollup']),
       createdAt: parseDate(json['createdAt']),
       updatedAt: parseDate(json['updatedAt']),
       deleteBlockers: parseStringList(json['deleteBlockers']),
@@ -255,6 +321,7 @@ class FloorModel {
     required this.hasPlanImage,
     required this.objectCount,
     required this.riskSummary,
+    required this.rollup,
     required this.createdAt,
     required this.updatedAt,
     required this.deleteBlockers,
@@ -278,6 +345,7 @@ class FloorModel {
   final bool hasPlanImage;
   final int objectCount;
   final RiskSummaryModel riskSummary;
+  final RollupModel rollup;
   final DateTime? createdAt;
   final DateTime? updatedAt;
   final List<String> deleteBlockers;
@@ -300,6 +368,7 @@ class FloorModel {
       hasPlanImage: json['hasPlanImage'] as bool? ?? false,
       objectCount: parseInt(json['objectCount']) ?? 0,
       riskSummary: RiskSummaryModel.fromJson(json['riskSummary']),
+      rollup: RollupModel.fromJson(json['rollup']),
       createdAt: parseDate(json['createdAt']),
       updatedAt: parseDate(json['updatedAt']),
       deleteBlockers: parseStringList(json['deleteBlockers']),

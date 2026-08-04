@@ -47,6 +47,18 @@ export function PlannedWorkListPage(): ReactElement {
 
   const canCreate = can(PERMISSIONS.PLANNED_WORK_CREATE);
 
+  /**
+   * Archived work is shown here by default.
+   *
+   * A planned work is archived the instant its report is approved — see
+   * `archiveAfterReportApproval` — and the endpoint drops ARCHIVED records unless the
+   * caller asks for them. This page never asked, so a finished job vanished from the
+   * menu the moment it was signed off, taking its report with it. Archiving still means
+   * "history", which is why the toggle below can put the board back into the
+   * open-work-only view; what it must not mean is "gone".
+   */
+  const showArchived = searchParams.get('archived') !== 'off';
+
   const query = useMemo<PlannedWorkListQuery>(() => {
     const page = Number.parseInt(searchParams.get('page') ?? '1', 10);
     return {
@@ -61,6 +73,7 @@ export function PlannedWorkListPage(): ReactElement {
         : {}),
       ...(searchParams.get('from') ? { from: searchParams.get('from')! } : {}),
       ...(searchParams.get('to') ? { to: searchParams.get('to')! } : {}),
+      ...(searchParams.get('archived') !== 'off' ? { includeArchived: true } : {}),
       sortBy: 'plannedStartDate',
       sortDir: 'desc',
     };
@@ -106,8 +119,8 @@ export function PlannedWorkListPage(): ReactElement {
     setSearchParams(next);
   }
 
-  const hasFilters = ['search', 'status', 'reportStatus', 'from', 'to'].some((key) =>
-    searchParams.get(key),
+  const hasFilters = ['search', 'status', 'reportStatus', 'from', 'to', 'archived'].some(
+    (key) => searchParams.get(key),
   );
 
   const columns: ReadonlyArray<Column<PlannedWorkListItemDto>> = [
@@ -290,6 +303,18 @@ export function PlannedWorkListPage(): ReactElement {
             onChange={(event) => updateParam('to', event.target.value)}
             className={FILTER_INPUT}
           />
+        </div>
+
+        <div className="flex items-end">
+          <label className="flex cursor-pointer items-center gap-2 pb-2 text-sm text-slate-700">
+            <input
+              type="checkbox"
+              checked={showArchived}
+              onChange={(event) => updateParam('archived', event.target.checked ? '' : 'off')}
+              className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+            />
+            Архивласныг харуулах
+          </label>
         </div>
 
         {hasFilters && (

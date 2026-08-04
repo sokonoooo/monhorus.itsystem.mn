@@ -2,7 +2,6 @@ import {
   PERMISSIONS,
   createPlannedWorkSchema,
   createPlannedWorkTaskSchema,
-  createTaskMaterialUsageSchema,
   plannedWorkListQuerySchema,
   plannedWorkMaterialsSchema,
   plannedWorkTransitionSchema,
@@ -23,7 +22,6 @@ import {
   updatePlannedWorkReportSchema,
   updatePlannedWorkSchema,
   updatePlannedWorkTaskSchema,
-  updateTaskMaterialUsageSchema,
 } from '@monhorus/shared';
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import { z } from 'zod';
@@ -42,7 +40,6 @@ import { requirePermission } from '../../middlewares/authorize.middleware';
 import { validate } from '../../middlewares/validate.middleware';
 import { inspectionReportRouter } from '../inspection-report/inspection-report.routes';
 import { upload } from '../storage/storage.service';
-import * as materialService from '../material/material.service';
 import * as plannedWorkService from './planned-work.service';
 import {
   approveReport,
@@ -60,7 +57,6 @@ const objectId = z.string().regex(/^[a-f\d]{24}$/i, 'ID буруу формат�
 const workParams = z.object({ plannedWorkId: objectId });
 const taskParams = z.object({ plannedWorkId: objectId, taskId: objectId });
 const photoParams = z.object({ plannedWorkId: objectId, taskId: objectId, fileId: objectId });
-const usageParams = z.object({ plannedWorkId: objectId, taskId: objectId, usageId: objectId });
 
 export const plannedWorkRouter = Router();
 
@@ -83,6 +79,16 @@ plannedWorkRouter.use(
   inspectionReportRouter,
 );
 
+/**
+ * The list.
+ *
+ * `planned_work.view` says who may call this; the auth context passed to the service says
+ * which records the answer may contain. Both are required, and the second is not optional
+ * plumbing: without it the filter is built entirely from query parameters and a technician
+ * who omits `employeeId` receives every job in the company. See
+ * `resolveAssignedWorkFilter` in planned-work.scope.ts for the predicate and for which
+ * permissions lift it.
+ */
 plannedWorkRouter.get(
   '/',
   requirePermission(PERMISSIONS.PLANNED_WORK_VIEW),
@@ -93,6 +99,7 @@ plannedWorkRouter.get(
         res,
         await plannedWorkService.listPlannedWork(
           req.query as unknown as PlannedWorkListQueryInput,
+          requireAuth(req),
         ),
       );
     } catch (error) {
@@ -274,97 +281,6 @@ plannedWorkRouter.post(
         meta(req),
       );
       ok(res, result, 'Биелэлт бүртгэгдлээ.');
-    } catch (error) {
-      next(error);
-    }
-  },
-);
-
-// -- Sub-task material usage -------------------------------------------------
-//
-// Attached to the SUB-TASK rather than to the work, because "which job used the cable" is
-// the question maintenance asks and a work-level total cannot answer it. Kept strictly
-// apart from `relatedObjects`: the objects are the equipment a sub-task ASSESSES, these
-// are the resources it CONSUMED, and mixing them would make a report claim that a spool of
-// cable had been inspected.
-//
-// Reading needs `material.view`; writing rides on `planned_work.record_progress`, the same
-// key that lets the person doing the job record what they did — recording what it consumed
-// is the same act, and gating it on `material.manage` would mean only a catalogue
-// administrator could fill in a technician's sheet.
-
-plannedWorkRouter.get(
-  '/:plannedWorkId/tasks/:taskId/materials',
-  requirePermission(PERMISSIONS.MATERIAL_VIEW),
-  validate({ params: taskParams }),
-  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    try {
-      const result = await materialService.listTaskMaterialUsage(
-        pathParam(req, 'plannedWorkId'),
-        pathParam(req, 'taskId'),
-      );
-      ok(res, result);
-    } catch (error) {
-      next(error);
-    }
-  },
-);
-
-plannedWorkRouter.post(
-  '/:plannedWorkId/tasks/:taskId/materials',
-  requirePermission(PERMISSIONS.PLANNED_WORK_RECORD_PROGRESS),
-  validate({ params: taskParams, body: createTaskMaterialUsageSchema }),
-  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    try {
-      const result = await materialService.addTaskMaterialUsage(
-        pathParam(req, 'plannedWorkId'),
-        pathParam(req, 'taskId'),
-        req.body,
-        requireAuth(req),
-        meta(req),
-      );
-      created(res, result, 'Материал бүртгэгдлээ.');
-    } catch (error) {
-      next(error);
-    }
-  },
-);
-
-plannedWorkRouter.patch(
-  '/:plannedWorkId/tasks/:taskId/materials/:usageId',
-  requirePermission(PERMISSIONS.PLANNED_WORK_RECORD_PROGRESS),
-  validate({ params: usageParams, body: updateTaskMaterialUsageSchema }),
-  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    try {
-      const result = await materialService.updateTaskMaterialUsage(
-        pathParam(req, 'plannedWorkId'),
-        pathParam(req, 'taskId'),
-        pathParam(req, 'usageId'),
-        req.body,
-        requireAuth(req),
-        meta(req),
-      );
-      ok(res, result, 'Материалын бүртгэл шинэчлэгдлээ.');
-    } catch (error) {
-      next(error);
-    }
-  },
-);
-
-plannedWorkRouter.delete(
-  '/:plannedWorkId/tasks/:taskId/materials/:usageId',
-  requirePermission(PERMISSIONS.PLANNED_WORK_RECORD_PROGRESS),
-  validate({ params: usageParams }),
-  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    try {
-      await materialService.removeTaskMaterialUsage(
-        pathParam(req, 'plannedWorkId'),
-        pathParam(req, 'taskId'),
-        pathParam(req, 'usageId'),
-        requireAuth(req),
-        meta(req),
-      );
-      ok(res, null, 'Материалын бүртгэл устлаа.');
     } catch (error) {
       next(error);
     }

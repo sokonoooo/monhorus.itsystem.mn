@@ -129,8 +129,14 @@ export const updatePlannedWorkTaskSchema = z
  * Progress entry, available to a worker holding planned_work.record_progress.
  *
  * The band is deliberately absent: section 10.1 derives it from the score, so accepting
- * one here would let a caller label a 92 as critical. `Дүгнэлт` is absent too - a sub-task
- * carries a `note` (Тайлбар) and the conclusion belongs to the consolidated report.
+ * one here would let a caller label a 92 as critical.
+ *
+ * `Дүгнэлт` used to be absent as well, on the rule that a sub-task carries only a `note`
+ * (Тайлбар) and the conclusion belongs to the consolidated report. That rule is reversed:
+ * each sub-task's result is fanned out to its related equipment as its own ReportItem, and
+ * an item written with no conclusion left the Дүгнэлт column of Үзлэг ба дүгнэлт blank for
+ * every planned-work row while a manual object assessment filled it. The consolidated
+ * report keeps its own conclusion; this one describes the equipment the sub-task covers.
  */
 export const recordTaskProgressSchema = z
   .object({
@@ -140,6 +146,8 @@ export const recordTaskProgressSchema = z
     /** A deliberately skipped task is excluded from the completion gate. */
     skipped: z.boolean().optional(),
     note: z.string().trim().max(4000).nullish(),
+    /** Reaches the ReportItem of every object this sub-task covers. */
+    conclusion: z.string().trim().max(4000).nullish(),
     score: z
       .number()
       .int('Оноо бүхэл тоо байна.')

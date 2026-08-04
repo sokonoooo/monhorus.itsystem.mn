@@ -6,22 +6,26 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../auth/domain/entities/app_user.dart';
 import '../../../../auth/presentation/providers/auth_provider.dart';
 import '../../../presentation/theme/employee_tokens.dart';
-import '../../../presentation/widgets/employee_top_bar.dart';
 import '../../data/models/dashboard_summary_model.dart';
 import '../../data/models/work_models.dart';
 import '../../domain/entities/employee_identity.dart';
 import '../format.dart';
 import '../providers/home_providers.dart';
 import '../theme/home_tones.dart';
+import '../widgets/blueprint_ui.dart';
 import '../widgets/home_async_view.dart';
 import '../widgets/home_cards.dart';
 import '../widgets/home_ui.dart';
 import '../../../work/presentation/screens/service_request_detail_screen.dart';
 
-/// Tab 1 — "Нүүр": `s-home` in `electro-employee-app.html`.
+/// Tab 1 — "Нүүр", in the steel blueprint direction.
 ///
-/// Three things, in the prototype's order: what is on this technician's plate, what
-/// their day looks like, and what has been sent to them.
+/// Three things, in the same order they have always been in: what is on this
+/// technician's plate, what their day looks like, and what has been sent to them.
+/// What changed is only how they are drawn — the dark [SteelHero] band replaces the
+/// white hero card and the four pastel mini tiles, and the day's figures are now the
+/// stair inside it. Nothing about which figure is shown, or where it comes from,
+/// moved with it.
 ///
 /// Every figure comes from the API. The prototype's static demo numbers are not
 /// reproduced, and neither are the two blocks behind them that no endpoint supports:
@@ -29,12 +33,16 @@ import '../../../work/presentation/screens/service_request_detail_screen.dart';
 /// `/dashboard/summary` is organisation-wide with no self-scoping, so it is only
 /// ever labelled as such.
 ///
-/// The screen turns on one question — which employee record this account is. The
-/// backend answers it nowhere directly: `/auth/me` reports a user id and a permission
-/// set but no `employeeId`, and neither `/planned-work` nor `/service-requests`
-/// applies any server-side scoping. "Миний ажил" therefore exists only as a
-/// client-supplied filter, and when the link cannot be established the personal
-/// blocks are withheld and explained rather than filled with everyone's work.
+/// The screen turns on one question — which employee record this account is.
+/// `GET /employees/me` answers it directly, resolving the `Employee.systemUser` link
+/// from the session, and the list endpoints now scope themselves to the caller's own
+/// and their team's work for anybody without an oversight permission. So "Миний ажил"
+/// is no longer a client-supplied filter that the app could get wrong.
+///
+/// The identity is still the pivot, for a different reason: an account with no employee
+/// card gets no personal figures, and that must be SAID rather than shown as an empty
+/// week. When the link cannot be established the personal blocks are withheld and
+/// explained rather than filled with everyone's work.
 class HomeTabScreen extends ConsumerStatefulWidget {
   const HomeTabScreen({super.key});
 
@@ -68,83 +76,141 @@ class _HomeTabScreenState extends ConsumerState<HomeTabScreen> {
   @override
   Widget build(BuildContext context) {
     final AppUser? user = ref.watch(currentUserProvider);
+    final AsyncValue<HomeOverview> overview = ref.watch(homeOverviewProvider);
 
     return Scaffold(
       backgroundColor: EmployeeTokens.bg,
-      body: SafeArea(
-        bottom: false,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: <Widget>[
-            _HomeHeader(user: user),
-            Expanded(
-              child: RefreshIndicator(
-                onRefresh: _refresh,
-                color: EmployeeTokens.ink,
-                child: HomeAsyncView<HomeOverview>(
-                  value: ref.watch(homeOverviewProvider),
-                  onRetry: () => ref.invalidate(homeOverviewProvider),
-                  builder: (BuildContext ctx, HomeOverview overview) =>
-                      _HomeBody(overview: overview),
-                ),
+      // Deliberately no top SafeArea: the hero band runs under the status bar and
+      // pads itself past it. Wrapping it would put a strip of page ground above the
+      // one dark surface in the app.
+      body: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          _HomeHero(user: user, overview: overview),
+          Expanded(
+            child: RefreshIndicator(
+              onRefresh: _refresh,
+              color: EmployeeTokens.ink,
+              child: HomeAsyncView<HomeOverview>(
+                value: overview,
+                onRetry: () => ref.invalidate(homeOverviewProvider),
+                builder: (BuildContext ctx, HomeOverview data) =>
+                    _HomeBody(overview: data),
               ),
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
 }
 
-/// `.home-head` — the greeting, the date, and the shared `.hdr-actions` pair.
+/// The dark band: the greeting, the date, the one sentence that says what today is,
+/// and the stair of the day's figures.
 ///
-/// The two buttons are not this tab's own: they are [EmployeeHeaderActions], which
-/// every tab draws in the same order (calendar, then bell) and which owns the single
-/// unread count so no two headers can disagree about it.
-class _HomeHeader extends StatelessWidget {
-  const _HomeHeader({required this.user});
+/// It reads the overview directly rather than sitting inside [HomeAsyncView],
+/// because it is pinned above the scrolling body and must draw before the body has
+/// anything to show. Until the request lands there are no figures, so it draws no
+/// stair — four zeroes would be a claim the screen cannot make yet.
+class _HomeHero extends StatelessWidget {
+  const _HomeHero({required this.user, required this.overview});
 
   final AppUser? user;
+  final AsyncValue<HomeOverview> overview;
 
   @override
   Widget build(BuildContext context) {
     final String name = user?.fullName ?? '';
     final DateTime now = DateTime.now();
+    final HomeOverview? data = overview.valueOrNull;
 
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(kHomeGutter, 12, kHomeGutter, 12),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: <Widget>[
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: <Widget>[
-                Text(
-                  name.isEmpty
-                      ? 'Өдрийн мэнд'
-                      : 'Өдрийн мэнд, ${givenNameOf(name)}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: EmployeeTokens.headerTitle.copyWith(
-                    fontWeight: FontWeight.w900,
-                  ),
-                ),
-                const SizedBox(height: 3),
-                Text(
-                  formatDateWithWeekday(now),
-                  style: EmployeeTokens.rowSub
-                      .copyWith(fontWeight: FontWeight.w600),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 10),
-          const EmployeeHeaderActions(),
-        ],
-      ),
+    return SteelHero(
+      title: name.isEmpty ? 'Өдрийн мэнд' : 'Өдрийн мэнд, ${givenNameOf(name)}',
+      subtitle: formatDateWithWeekday(now).toUpperCase(),
+      headline: _headline(data),
+      stair: _stair(data),
+      action: const HeroHeaderActions(),
     );
+  }
+
+  /// One sentence naming the state of the day.
+  ///
+  /// Scoped, it is about the reader. Unscoped, it names the organisation out loud,
+  /// because the figures underneath it are everybody's and a personal phrasing over
+  /// them would be the one dishonest thing this screen could say.
+  String _headline(HomeOverview? data) {
+    if (data == null) {
+      return overview.hasError
+          ? 'Мэдээлэл ачаалж чадсангүй'
+          : 'Өнөөдрийн ачааллыг ачаалж байна';
+    }
+    if (!data.isScoped) return 'Байгууллагын өнөөдрийн ачаалал';
+    if (data.overdueCount > 0) {
+      return '${data.overdueCount} ажил хугацаа хэтэрсэн';
+    }
+    if (data.activeCount > 0) {
+      return '${data.activeCount} идэвхтэй ажил хүлээгдэж байна';
+    }
+    return 'Хүлээгдэж буй ажил алга байна';
+  }
+
+  /// The four figures, banded by the risk ramp so urgency is legible before a single
+  /// number is read.
+  List<SteelStairBand> _stair(HomeOverview? data) {
+    if (data == null) return const <SteelStairBand>[];
+
+    if (data.isScoped) {
+      return <SteelStairBand>[
+        (
+          band: EmployeeTokens.accent,
+          count: '${data.activeCount}',
+          label: 'ИДЭВХТЭЙ',
+        ),
+        (
+          band: EmployeeTokens.orange,
+          count: '${data.inProgressCount}',
+          label: 'ХИЙГДЭЖ БУЙ',
+        ),
+        (
+          band: EmployeeTokens.red,
+          count: '${data.overdueCount}',
+          label: 'ХУГАЦАА ХЭТЭРСЭН',
+        ),
+        (
+          band: EmployeeTokens.green,
+          // A dash, not a zero: the figure lives on the employee record and its
+          // absence means "not reported", which is a different fact from "none".
+          count: data.completedTotal == null ? '—' : '${data.completedTotal}',
+          label: 'НИЙТ ХИЙСЭН',
+        ),
+      ];
+    }
+
+    final DashboardTodaySummaryModel? today = data.dashboard?.today;
+    if (today == null) return const <SteelStairBand>[];
+
+    return <SteelStairBand>[
+      (
+        band: EmployeeTokens.accent,
+        count: '${today.dueCount}',
+        label: 'ХҮЛЭЭГДЭЖ БУЙ',
+      ),
+      (
+        band: EmployeeTokens.red,
+        count: '${today.overdueCount}',
+        label: 'ХУГАЦАА ХЭТЭРСЭН',
+      ),
+      (
+        band: EmployeeTokens.orange,
+        count: '${today.urgentCount}',
+        label: 'ЯАРАЛТАЙ',
+      ),
+      (
+        band: EmployeeTokens.green,
+        count: '${today.completedCount}',
+        label: 'ДУУССАН',
+      ),
+    ];
   }
 }
 
@@ -157,30 +223,43 @@ class _HomeBody extends StatelessWidget {
   Widget build(BuildContext context) {
     final EmployeeIdentity identity = overview.identity;
 
+    final List<Widget> notices = <Widget>[
+      if (identity is UnresolvedEmployeeIdentity)
+        HomeNotice(
+          title: identity.reason,
+          body: identity.detail,
+          tone: Tone.yellow,
+          icon: Icons.info_outline,
+        ),
+      for (final String notice in overview.notices)
+        HomeNotice(
+          title: 'Зарим мэдээлэл ачаалагдсангүй',
+          body: notice,
+          tone: Tone.neutral,
+          icon: Icons.cloud_off_outlined,
+        ),
+    ];
+
     return ListView(
       // Always scrollable, so pull-to-refresh works even when the body is short.
       physics: const AlwaysScrollableScrollPhysics(),
-      padding: const EdgeInsets.only(top: 2),
+      padding: EdgeInsets.zero,
       children: <Widget>[
-        if (identity is UnresolvedEmployeeIdentity)
-          HomeNotice(
-            title: identity.reason,
-            body: identity.detail,
-            tone: Tone.yellow,
-            icon: Icons.info_outline,
-          ),
-        for (final String notice in overview.notices)
-          HomeNotice(
-            title: 'Зарим мэдээлэл ачаалагдсангүй',
-            body: notice,
-            tone: Tone.neutral,
-            icon: Icons.cloud_off_outlined,
-          ),
+        // The notices carry no top padding of their own and the hero is flush above
+        // them, so the gap is opened here rather than inside a widget four other
+        // screens draw.
+        if (notices.isNotEmpty) ...<Widget>[
+          const SizedBox(height: 16),
+          ...notices,
+        ],
         if (overview.isScoped)
           ..._personalBlocks(context)
         else
           ..._organisationBlocks(context),
         _AgendaSection(overview: overview),
+        // No calendar CTA under the agenda. It was a third way to the same screen —
+        // the header's calendar button is on every tab and the agenda itself is right
+        // above it — and the reader asked for it gone.
         const SizedBox(height: EmployeeTokens.scrollBottomSpacer),
       ],
     );
@@ -189,84 +268,50 @@ class _HomeBody extends StatelessWidget {
   // -- Scoped to the reader ---------------------------------------------------
 
   List<Widget> _personalBlocks(BuildContext context) {
-    final int active = overview.activeCount;
-    final int todayCount = overview.agenda.length;
-    final int? completedTotal = overview.completedTotal;
+    final List<HomeUrgentItem> urgent =
+        overview.urgentItems.take(4).toList(growable: false);
 
     return <Widget>[
-      HomeHeroCard(
-        label: 'Идэвхтэй ажил',
-        value: '$active',
-        note: '$todayCount өнөөдрийн ажил',
-        icon: Icons.assignment_outlined,
-      ),
-      HomeMiniGrid(
-        cards: <Widget>[
-          HomeMiniCard(
-            icon: Icons.play_circle_outline,
-            tone: HomeTokens.tileOrange,
-            value: '${overview.inProgressCount}',
-            label: 'Хийгдэж буй',
-          ),
-          HomeMiniCard(
-            icon: Icons.schedule_outlined,
-            tone: HomeTokens.tilePink,
-            value: '${overview.overdueCount}',
-            label: 'Хугацаа хэтэрсэн',
-          ),
-          HomeMiniCard(
-            icon: Icons.replay_outlined,
-            tone: HomeTokens.tilePlain,
-            value: '${overview.revisitCount}',
-            label: 'Дахин очих',
-          ),
-          HomeMiniCard(
-            icon: Icons.check_circle_outline,
-            tone: HomeTokens.tileMint,
-            // A dash, not a zero: the figure lives on the employee record and its
-            // absence means "not reported", which is a different fact from "none".
-            value: completedTotal == null ? '—' : '$completedTotal',
-            label: 'Нийт хийсэн',
-          ),
-        ],
-      ),
-      if (overview.workload != null) ...<Widget>[
-        const SectionHeading('Миний гүйцэтгэл'),
-        PerformanceStrip(
-          total: overview.workload!.total,
-          completed: overview.workload!.completedAssignments,
-          active: overview.workload!.activeAssignments,
-        ),
-      ],
-      const SectionHeading('Яаралтай анхаарах'),
-      if (overview.urgentItems.isEmpty)
+      const SectionHead(kicker: 'ЯАРАЛТАЙ АНХААРАХ'),
+      if (urgent.isEmpty)
         const HomeEmptyState(
           icon: Icons.verified_outlined,
           message: 'Яаралтай анхаарах ажил алга байна.',
           compact: true,
         )
       else
-        for (final HomeUrgentItem item in overview.urgentItems.take(4))
-          UrgentWorkCard(
-            item: item,
-            // Only a service-request row opens: the planned-work screen is the Ажил
-            // tab's and reaching it from here would be a second way in with its own
-            // back stack.
-            onTap: item.serviceRequestId == null
-                ? null
-                : () => Navigator.of(context).push(
-                      ServiceRequestDetailScreen.route(
-                        requestId: item.serviceRequestId!,
-                        requestNumber: item.reference,
-                        subject: item.title,
-                        location: item.location,
-                        buildingId: item.buildingId,
-                        buildingName: item.buildingName,
-                        statusLabel: item.statusLabel,
-                        slaLabel: item.detail,
-                      ),
-                    ),
-          ),
+        BlueprintRowList(
+          rows: <Widget>[
+            for (final HomeUrgentItem item in urgent)
+              BlueprintRow(
+                band: severityTone(item.band).foreground,
+                name: item.title,
+                subtitle: item.location.isEmpty
+                    ? (item.buildingName ?? '')
+                    : item.location,
+                stateLabel: item.statusLabel,
+                metaLabel: 'ЛАВЛАХ',
+                metaValue: item.reference,
+                // Only a service-request row opens: the planned-work screen is the
+                // Ажил tab's and reaching it from here would be a second way in with
+                // its own back stack.
+                onTap: item.serviceRequestId == null
+                    ? null
+                    : () => Navigator.of(context).push(
+                          ServiceRequestDetailScreen.route(
+                            requestId: item.serviceRequestId!,
+                            requestNumber: item.reference,
+                            subject: item.title,
+                            location: item.location,
+                            buildingId: item.buildingId,
+                            buildingName: item.buildingName,
+                            statusLabel: item.statusLabel,
+                            slaLabel: item.detail,
+                          ),
+                        ),
+              ),
+          ],
+        ),
     ];
   }
 
@@ -276,7 +321,7 @@ class _HomeBody extends StatelessWidget {
     final DashboardTodaySummaryModel? today = overview.dashboard?.today;
     if (today == null) {
       return <Widget>[
-        const SectionHeading('Миний ажил', topPadding: 4),
+        const SectionHead(kicker: 'МИНИЙ АЖИЛ'),
         const HomeEmptyState(
           icon: Icons.badge_outlined,
           message: 'Танд оногдсон ажлыг харуулах боломжгүй байна. '
@@ -287,12 +332,21 @@ class _HomeBody extends StatelessWidget {
     }
 
     return <Widget>[
-      const SectionHeading('Байгууллагын өнөөдрийн ачаалал', topPadding: 4),
-      OrganisationTodayCard(
-        due: today.dueCount,
-        overdue: today.overdueCount,
-        urgent: today.urgentCount,
-        completed: today.completedCount,
+      const SectionHead(kicker: 'БАЙГУУЛЛАГЫН ӨНӨӨДӨР'),
+      BlueprintFrame(
+        margin: const EdgeInsets.fromLTRB(
+          EmployeeTokens.gutter - 6,
+          14 - 6,
+          EmployeeTokens.gutter - 6,
+          0,
+        ),
+        child: OrganisationTodayCard(
+          due: today.dueCount,
+          overdue: today.overdueCount,
+          urgent: today.urgentCount,
+          completed: today.completedCount,
+          padding: const EdgeInsets.all(14),
+        ),
       ),
     ];
   }
@@ -317,10 +371,10 @@ class _AgendaSection extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       mainAxisSize: MainAxisSize.min,
       children: <Widget>[
-        SectionHeading(
-          overview.agendaScoped
-              ? 'Өнөөдрийн хуваарь'
-              : 'Өнөөдрийн хуваарь · бүх ажилтан',
+        SectionHead(
+          kicker: overview.agendaScoped
+              ? 'ӨНӨӨДРИЙН ХУВААРЬ'
+              : 'ӨНӨӨДРИЙН ХУВААРЬ · БҮХ АЖИЛТАН',
         ),
         if (events.isEmpty)
           const HomeEmptyState(
@@ -328,9 +382,11 @@ class _AgendaSection extends StatelessWidget {
             message: 'Өнөөдөр хуваарьт ажил алга байна.',
             compact: true,
           )
-        else
+        else ...<Widget>[
+          const SizedBox(height: 12),
           for (final CalendarEventModel event in events)
             AgendaEventCard(event: event),
+        ],
       ],
     );
   }

@@ -1,8 +1,14 @@
 import {
+  LOAD_MEASUREMENT_KINDS,
+  LOAD_MEASUREMENT_PHASES,
+  LOAD_MEASUREMENT_UNITS,
   OBJECT_CATEGORIES,
   OBJECT_ICONS,
   OBJECT_STATUSES,
   RISK_LEVELS,
+  type LoadMeasurementKind,
+  type LoadMeasurementPhase,
+  type LoadMeasurementUnit,
   type ObjectCategory,
   type ObjectIcon,
   type ObjectStatus,
@@ -90,6 +96,18 @@ export interface IEquipmentAttributes {
   warrantyUntil: Date | null;
 }
 
+/**
+ * Placement on the floor plan image (section 11.2).
+ *
+ * Stored normalised to 0..1 of the plan's width and height rather than in pixels. The plan
+ * is one replaceable file that may be PNG, JPG, WEBP or PDF at any resolution, so a pixel
+ * pair would point at a different part of the drawing the moment the image is swapped.
+ */
+export interface IPlanPosition {
+  x: number;
+  y: number;
+}
+
 /** Denormalised head of the append-only assessment history, for list rendering. */
 export interface ILatestAssessment {
   assessment: Types.ObjectId;
@@ -117,6 +135,11 @@ export interface IObject {
    * audited on both sides.
    */
   floor: Types.ObjectId | null;
+  /**
+   * Where the object was pinned on that floor's plan, or null when it was never placed.
+   * Meaningless without `floor`, so the service clears it whenever the floor link goes.
+   */
+  planPosition: IPlanPosition | null;
   status: ObjectStatus;
   description: string | null;
   notes: string | null;
@@ -170,6 +193,16 @@ const equipmentAttributesSchema = new Schema<IEquipmentAttributes>(
   { _id: false },
 );
 
+const planPositionSchema = new Schema<IPlanPosition>(
+  {
+    // 0..1, enforced here as well as in the shared schema: the service is not the only
+    // writer of an object document, and a coordinate outside the plan is unusable.
+    x: { type: Number, required: true, min: 0, max: 1 },
+    y: { type: Number, required: true, min: 0, max: 1 },
+  },
+  { _id: false },
+);
+
 const latestAssessmentSchema = new Schema<ILatestAssessment>(
   {
     assessment: { type: Schema.Types.ObjectId, ref: 'ObjectAssessment', required: true },
@@ -194,7 +227,8 @@ const objectSchema = new Schema<IObject>(
     objectType: { type: Schema.Types.ObjectId, ref: 'ObjectType', required: true, index: true },
     customer: { type: Schema.Types.ObjectId, ref: 'Customer', required: true, index: true },
     floor: { type: Schema.Types.ObjectId, ref: 'ObjectNode', default: null, index: true },
-    status: { type: String, enum: OBJECT_STATUSES, required: true, default: 'ACTIVE', index: true },
+    planPosition: { type: planPositionSchema, default: null },
+    status:{ type: String, enum: OBJECT_STATUSES, required: true, default: 'ACTIVE', index: true },
     description: { type: String, default: null, trim: true, maxlength: 2000 },
     notes: { type: String, default: null, trim: true, maxlength: 2000 },
     photos: { type: [{ type: Schema.Types.ObjectId, ref: 'StoredFile' }], default: [] },
@@ -231,19 +265,80 @@ export const ObjectRecord: Model<IObject> = model<IObject>('Object', objectSchem
  * 17.15 forbids deleting log or status history. Every mutation path is blocked at the
  * model layer, exactly as the audit log and the material ledger are.
  */
+/**
+ * One reading in the unit it was taken in — "Multiple Load Units".
+ *
+ * Embedded rather than referenced: a reading has no life outside the assessment that took
+ * it, and the assessment collection is append-only, so the sub-document inherits that
+ * immutability for free. `_id: false` because nothing ever addresses a single reading.
+ *
+ * NOT summable. The kW head above (`measuredLoadKw`) is the only quantity any roll-up
+ * touches; these are observations shown beside the assessment. See
+ * `constants/load-measurement.ts`.
+ */
+export interface ILoadMeasurement {
+  kind: LoadMeasurementKind;
+  value: number;
+  unit: LoadMeasurementUnit;
+  phase: LoadMeasurementPhase | null;
+}
+
+const loadMeasurementSubSchema = new Schema<ILoadMeasurement>(
+  {
+    kind: { type: String, enum: LOAD_MEASUREMENT_KINDS, required: true },
+    value: { type: Number, required: true, min: 0 },
+    unit: { type: String, enum: LOAD_MEASUREMENT_UNITS, required: true },
+    // The null is an enum member here, not an absence: a non-phase-specific reading is a
+    // valid reading, and mongoose would otherwise refuse the stored default.
+    phase: { type: String, enum: [...LOAD_MEASUREMENT_PHASES, null], default: null },
+  },
+  { _id: false },
+);
+
 export interface IObjectAssessment {
   object: Types.ObjectId;
   previousScore: number | null;
   newScore: number;
   riskLevel: RiskLevel;
+  /**
+   * WHO SIGNED THIS FINDING OFF — never who wrote it.
+   *
+   * The approver of the report the finding arrived on, falling back to whoever raised it
+   * when the path has no separate approval step, and the recorder themselves on the manual
+   * assessment screen where the two are one person. It answers "on whose authority does
+   * this equipment now carry this score", which is what an audit record is asked.
+   */
   assessedBy: Types.ObjectId | null;
   assessedByName: string | null;
+  /**
+   * WHO ACTUALLY MADE THE JUDGEMENT — the technician who wrote the Дүгнэлт this row
+   * carries, where the producer recorded one per piece of equipment.
+   *
+   * Separate from `assessedBy` because the two are genuinely different people and merging
+   * them would leave one field meaning "the judge, or else the signer" — a value nobody
+   * could read without knowing which of the two it happened to be. Null means no
+   * per-equipment author was recorded, NOT that the approver wrote it; a reader that wants
+   * a name falls back to `assessedBy` and says which it is showing.
+   *
+   * Populated today only from a planned-work sub-task's `conclusionBy`. The
+   * service-request conclusion and the consolidation carry no per-object author of their
+   * own (a consolidated item inherits whatever its source item carried).
+   */
+  judgedBy: Types.ObjectId | null;
+  judgedByName: string | null;
   assessedAt: Date;
   photos: Types.ObjectId[];
   conclusion: string | null;
   recommendation: string | null;
   actionTaken: string | null;
+  /**
+   * The authoritative, summable kW figure. Unchanged by the readings list below: the floor
+   * roll-up sums this and only this, and an ACTIVE_POWER reading is required to agree with
+   * it rather than replace it.
+   */
   measuredLoadKw: number | null;
+  /** Amps, volts and kW as read on site. Empty when only the kW box was filled in. */
+  measurements: ILoadMeasurement[];
   repairRequired: boolean;
   revisitRequired: boolean;
   revisitDate: Date | null;
@@ -251,6 +346,18 @@ export interface IObjectAssessment {
   revisitOwnerName: string | null;
   /** Set when the assessment was raised from a request or a planned work. */
   sourceLabel: string | null;
+  /**
+   * The report finding this row was raised from, when it did not come from the manual
+   * assessment screen.
+   *
+   * `sourceReportItem` is the idempotency key of the whole history write: `syncItems`
+   * upserts one item per (report, object), so the item's id survives every re-approval and
+   * re-publish of the same report and identifies the finding rather than the attempt to
+   * apply it. Null for a manual assessment, which is an event with no correctable record
+   * behind it and so deduplicates against nothing.
+   */
+  sourceReport: Types.ObjectId | null;
+  sourceReportItem: Types.ObjectId | null;
   createdAt: Date;
 }
 
@@ -262,23 +369,33 @@ const objectAssessmentSchema = new Schema<IObjectAssessment>(
     riskLevel: { type: String, enum: RISK_LEVELS, required: true, index: true },
     assessedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
     assessedByName: { type: String, default: null },
+    judgedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+    judgedByName: { type: String, default: null },
     assessedAt: { type: Date, required: true },
     photos: { type: [{ type: Schema.Types.ObjectId, ref: 'StoredFile' }], default: [] },
     conclusion: { type: String, default: null, maxlength: 4000 },
     recommendation: { type: String, default: null, maxlength: 4000 },
     actionTaken: { type: String, default: null, maxlength: 2000 },
     measuredLoadKw: { type: Number, default: null, min: 0 },
+    measurements: { type: [loadMeasurementSubSchema], default: [] },
     repairRequired: { type: Boolean, default: false },
     revisitRequired: { type: Boolean, default: false },
     revisitDate: { type: Date, default: null },
     revisitOwner: { type: Schema.Types.ObjectId, ref: 'Employee', default: null },
     revisitOwnerName: { type: String, default: null },
     sourceLabel: { type: String, default: null },
+    sourceReport: { type: Schema.Types.ObjectId, ref: 'Report', default: null },
+    sourceReportItem: { type: Schema.Types.ObjectId, ref: 'ReportItem', default: null },
   },
   { timestamps: { createdAt: true, updatedAt: false }, versionKey: false },
 );
 
 objectAssessmentSchema.index({ object: 1, assessedAt: -1 });
+/**
+ * The lookup behind the idempotency guard, sparse because only report-raised rows carry
+ * the key and a manual assessment must not collide with the many other manual ones.
+ */
+objectAssessmentSchema.index({ sourceReportItem: 1, newScore: 1 }, { sparse: true });
 
 const IMMUTABLE = new Error('Үнэлгээний бүртгэлийг өөрчлөх, устгах боломжгүй.');
 

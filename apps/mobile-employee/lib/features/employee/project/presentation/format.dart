@@ -7,6 +7,8 @@
 library;
 
 import '../../../../core/util/format.dart';
+import '../data/models/object_models.dart';
+import '../domain/entities/object_enums.dart';
 
 export '../../../../core/util/format.dart';
 
@@ -54,3 +56,13 @@ String joinParts(List<String?> parts) => parts
     .whereType<String>()
     .where((String part) => part.isNotEmpty)
     .join(' · ');
+
+/// `41.2 А (L1)` — one load reading, in the unit it was taken in.
+///
+/// The single place a reading becomes text, so the editor, the report sheet and the
+/// device screen cannot drift apart on how a phase is shown.
+String formatLoadMeasurement(LoadMeasurementModel reading) {
+  final String amount = '${formatDecimal(reading.value)} ${reading.unit.label}';
+  final LoadMeasurementPhase? phase = reading.phase;
+  return phase == null ? amount : '$amount (${phase.wireValue})';
+}

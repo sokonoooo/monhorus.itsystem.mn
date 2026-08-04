@@ -6,6 +6,7 @@ import '../../../../../core/error/failure.dart';
 import '../../../../../core/media/photo_capture.dart';
 import '../../../../../core/network/api_result.dart';
 import '../../../shared/service_request_models.dart';
+import '../../../shared/service_request_vocabulary.dart';
 import '../../domain/entities/planned_work_enums.dart';
 import '../../domain/repositories/work_repository.dart';
 import '../datasources/work_remote_data_source.dart';
@@ -77,8 +78,36 @@ class WorkRepositoryImpl implements WorkRepository {
   }
 
   @override
+  Future<ApiResult<PaginatedData<ServiceRequestListItemModel>>>
+      listAssignedServiceRequests() {
+    return _guard(() => _remote.listAssignedServiceRequests());
+  }
+
+  @override
   Future<ApiResult<void>> claimServiceRequest(String requestId) {
     return _guard(() => _remote.claimServiceRequest(requestId));
+  }
+
+  @override
+  Future<ApiResult<ServiceRequestDetailModel?>> getServiceRequestDetail(
+    String requestId,
+  ) {
+    return _guard(() => _remote.getServiceRequestDetail(requestId));
+  }
+
+  @override
+  Future<ApiResult<ServiceRequestDetailModel>> changeServiceRequestStatus({
+    required String requestId,
+    required ServiceRequestStatus status,
+    String? reason,
+  }) {
+    return _guard(
+      () => _remote.changeServiceRequestStatus(
+        requestId: requestId,
+        status: status,
+        reason: reason,
+      ),
+    );
   }
 
   @override
@@ -100,6 +129,11 @@ class WorkRepositoryImpl implements WorkRepository {
   }
 
   @override
+  Future<ApiResult<WorkReportModel>> approveWorkReport(String requestId) {
+    return _guard(() => _remote.approveWorkReport(requestId));
+  }
+
+  @override
   Future<ApiResult<WorkReportPhotoModel>> uploadWorkReportPhoto(CapturedPhoto photo) {
     return _guard(() => _remote.uploadWorkReportPhoto(photo));
   }
@@ -107,52 +141,6 @@ class WorkRepositoryImpl implements WorkRepository {
   @override
   Future<ApiResult<PaginatedData<MaterialItemModel>>> listMaterialItems() {
     return _guard(() => _remote.listMaterialItems());
-  }
-
-  @override
-  Future<ApiResult<List<TaskMaterialUsageModel>>> listTaskMaterials({
-    required String plannedWorkId,
-    required String taskId,
-  }) {
-    return _guard(
-      () => _remote.listTaskMaterials(plannedWorkId: plannedWorkId, taskId: taskId),
-    );
-  }
-
-  @override
-  Future<ApiResult<TaskMaterialUsageModel>> addTaskMaterial({
-    required String plannedWorkId,
-    required String taskId,
-    required String materialItemId,
-    required double quantity,
-    required MaterialUnit unit,
-    String? note,
-  }) {
-    return _guard(
-      () => _remote.addTaskMaterial(
-        plannedWorkId: plannedWorkId,
-        taskId: taskId,
-        materialItemId: materialItemId,
-        quantity: quantity,
-        unit: unit,
-        note: note,
-      ),
-    );
-  }
-
-  @override
-  Future<ApiResult<void>> removeTaskMaterial({
-    required String plannedWorkId,
-    required String taskId,
-    required String usageId,
-  }) {
-    return _guard(
-      () => _remote.removeTaskMaterial(
-        plannedWorkId: plannedWorkId,
-        taskId: taskId,
-        usageId: usageId,
-      ),
-    );
   }
 
   @override

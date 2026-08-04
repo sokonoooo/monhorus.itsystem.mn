@@ -60,6 +60,14 @@
 	     network privacy, which prompts once on first connection. -->
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Монхорус нь дотоод сүлжээн дэх серверт холбогдоход энэ зөвшөөрлийг ашиглана.</string>
+	<!-- Дуудлагын зураг. iOS terminates the process the first time a camera or
+	     photo-library picker is presented without these keys, so they are required
+	     rather than optional: a service request cannot be sent without at least one
+	     picture of the fault. -->
+	<key>NSCameraUsageDescription</key>
+	<string>Монхорус нь засварын дуудлагад хавсаргах зургийг авахад камерыг ашиглана.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Монхорус нь засварын дуудлагад хавсаргах зургийг таны зургийн сангаас сонгоно.</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UILaunchStoryboardName</key>

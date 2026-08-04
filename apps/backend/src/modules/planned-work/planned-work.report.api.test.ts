@@ -1,5 +1,6 @@
 import { PERMISSIONS } from '@monhorus/shared';
 import type { Express } from 'express';
+import { Types } from 'mongoose';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
@@ -18,10 +19,15 @@ import {
 } from '../../test/helpers';
 import { AuditLog } from '../audit/audit-log.model';
 import { Employee } from '../employee/employee.model';
-import { ObjectRecord, ObjectType } from '../object-master/object-master.models';
+import {
+  ObjectAssessment,
+  ObjectRecord,
+  ObjectType,
+} from '../object-master/object-master.models';
 import { Customer, ObjectNode } from '../objects/object.models';
 import { Report, ReportItem } from '../report-record/report-record.model';
-import { PlannedWork, PlannedWorkReport } from './planned-work.models';
+import { applyReportToEquipment } from '../report-record/report-record.service';
+import { PlannedWork, PlannedWorkReport, PlannedWorkTask } from './planned-work.models';
 import { writeCanonicalPlannedWorkReport } from './planned-work.transition.service';
 
 const API = '/api/v1';
@@ -123,6 +129,7 @@ async function completeTask(workId: string, taskId: string, quantity = 10): Prom
     .send({
       completedQuantity: quantity,
       note: 'Самбар хэвийн ажиллаж байна.',
+      conclusion: 'Самбар цаашид ашиглахад тохиромжтой.',
       score: 88,
       recommendation: 'Дараагийн үзлэгийг хагас жилийн дараа хийх.',
     });
@@ -748,11 +755,15 @@ describe('canonical report write-through', () => {
     expect(canonical?.overallScore).toBe(88);
 
     const items = await ReportItem.find({ report: canonical?._id });
+    // Exactly two: the sub-task naming no equipment contributed nothing.
+    expect(items).toHaveLength(2);
     expect(items.map((item) => String(item.object)).sort()).toEqual([objectA, objectB].sort());
     for (const item of items) {
       expect(item.score).toBe(88);
-      // The sub-task's Тайлбар is the per-object observation; the Дүгнэлт stays consolidated.
+      // The sub-task's Тайлбар is the per-object observation and its Дүгнэлт the verdict;
+      // one score and one write-up fanned to every object the sub-task covers.
       expect(item.observation).toBe('Самбар хэвийн ажиллаж байна.');
+      expect(item.conclusion).toBe('Самбар цаашид ашиглахад тохиромжтой.');
       expect(item.recommendation).toBe('Дараагийн үзлэгийг хагас жилийн дараа хийх.');
       // Before + after photos travel as the item's evidence.
       expect(item.evidenceAttachments).toHaveLength(2);
@@ -824,6 +835,238 @@ describe('canonical report write-through', () => {
     }
   });
 
+  /**
+   * The equipment's HISTORY, not just its head.
+   *
+   * The device detail screen's Үнэлгээний түүх table reads `ObjectAssessment`. A conclusion
+   * approved through Үзлэг ба дүгнэлт used to move `latestAssessment` and write no row at
+   * all, so the evaluation moved the score and then vanished from the record.
+   */
+  it('writes exactly one history row for the object on approval', async () => {
+    const objectA = await seedEquipment();
+
+    const workId = await createWork();
+    const taskId = await addTask(workId, 10, { relatedObjectIds: [objectA] });
+    await transition(workId, 'PLAN');
+    await transition(workId, 'START');
+    await completeTask(workId, taskId);
+    await transition(workId, 'COMPLETE');
+    await fillReport(workId);
+    await submitReport(workId);
+
+    // The DRAFT canonical row exists by now and is still only a claim: no history yet.
+    expect(await ObjectAssessment.countDocuments({ object: objectA })).toBe(0);
+
+    const approved = await request(app)
+      .post(`${API}/planned-work/${workId}/report/approve`)
+      .set('Authorization', `Bearer ${approverToken}`);
+    expect(approved.status).toBe(200);
+
+    const rows = await ObjectAssessment.find({ object: objectA });
+    expect(rows).toHaveLength(1);
+    const row = rows[0]!;
+
+    const canonical = await Report.findOne({ sourceType: 'PLANNED_WORK', sourceId: workId });
+    const item = await ReportItem.findOne({ report: canonical?._id, object: objectA });
+
+    expect(row.newScore).toBe(88);
+    // The band is derived from the score, never carried from the caller.
+    expect(row.riskLevel).toBe('NORMAL');
+    // First finding about this equipment, so there is no previous figure to report.
+    expect(row.previousScore).toBeNull();
+    // WHO SIGNED IT OFF: the reviewer who approved, not a default.
+    expect(row.assessedByName).toBe(canonical?.approvedByName);
+    expect(String(row.assessedBy)).toBe(String(canonical?.approvedBy));
+    /*
+     * WHO JUDGED IT: the technician whose Дүгнэлт this row carries.
+     *
+     * The two are different people here — the author holds no approval permission — and
+     * the row used to name only the approver, so the device history credited the verdict
+     * to someone who never looked at the panel. `judgedBy` comes from the sub-task's
+     * `conclusionBy`, one item at a time, and does not displace the sign-off above it.
+     */
+    const task = await PlannedWorkTask.findById(taskId);
+    expect(task?.conclusionBy).not.toBeNull();
+    expect(String(row.judgedBy)).toBe(String(task?.conclusionBy));
+    expect(row.judgedByName).toBe(task?.conclusionByName);
+    expect(String(row.judgedBy)).toBe(author.userId);
+    expect(String(row.judgedBy)).not.toBe(String(row.assessedBy));
+    // And it travelled through the report item, which is where the fan-out put it.
+    expect(String(item?.judgedBy)).toBe(String(task?.conclusionBy));
+    expect(item?.judgedByName).toBe(task?.conclusionByName);
+    // WHEN: the report's own event time, the same instant the head carries.
+    expect(row.assessedAt.toISOString()).toBe(canonical?.occurredAt.toISOString());
+    // Traceable back to the finding it came from, which is also the idempotency key.
+    expect(String(row.sourceReportItem)).toBe(String(item?._id));
+    expect(String(row.sourceReport)).toBe(String(canonical?._id));
+    expect(row.sourceLabel).toBe(canonical?.sourceReference);
+    // The sub-task's write-up travelled with it.
+    expect(row.conclusion).toBe('Самбар цаашид ашиглахад тохиромжтой.');
+    expect(row.recommendation).toBe('Дараагийн үзлэгийг хагас жилийн дараа хийх.');
+    expect(row.actionTaken).toBe('Самбар хэвийн ажиллаж байна.');
+
+    // The head now points at a row that EXISTS. It used to be a fabricated ObjectId
+    // referencing nothing.
+    const object = await ObjectRecord.findById(objectA);
+    expect(String(object?.latestAssessment?.assessment)).toBe(String(row._id));
+  });
+
+  /**
+   * A scored sub-task with no Дүгнэлт has no author to stamp — `applyConclusion` clears
+   * the triple when the text is blank — so the finding reaches equipment with a sign-off
+   * and nothing else. The history row must say exactly that: the approver in `assessedBy`,
+   * and NULL in `judgedBy` rather than the approver's name copied across, which would make
+   * the field claim they wrote a verdict they only approved.
+   */
+  it('records the approver and leaves the judge null when the sub-task carries no verdict', async () => {
+    const objectA = await seedEquipment();
+
+    const workId = await createWork();
+    const taskId = await addTask(workId, 10, { relatedObjectIds: [objectA] });
+    await transition(workId, 'PLAN');
+    await transition(workId, 'START');
+
+    for (const kind of ['BEFORE', 'AFTER']) {
+      await request(app)
+        .post(`${API}/planned-work/${workId}/tasks/${taskId}/photos`)
+        .set('Authorization', `Bearer ${authorToken}`)
+        .field('kind', kind)
+        .attach('file', Buffer.from('image-bytes'), {
+          filename: `${kind.toLowerCase()}.png`,
+          contentType: 'image/png',
+        });
+    }
+
+    // Scored, noted, recommended — everything the completion gate asks for — and left
+    // without a Дүгнэлт, which the gate does not ask for.
+    const progress = await request(app)
+      .post(`${API}/planned-work/${workId}/tasks/${taskId}/progress`)
+      .set('Authorization', `Bearer ${authorToken}`)
+      .send({
+        completedQuantity: 10,
+        note: 'Ажиглалт бичсэн.',
+        score: 74,
+        recommendation: 'Дараагийн үзлэгээр дахин харах.',
+      });
+    expect(progress.status).toBe(200);
+
+    await transition(workId, 'COMPLETE');
+    await fillReport(workId);
+    await submitReport(workId);
+    const approved = await request(app)
+      .post(`${API}/planned-work/${workId}/report/approve`)
+      .set('Authorization', `Bearer ${approverToken}`);
+    expect(approved.status).toBe(200);
+
+    const canonical = await Report.findOne({ sourceType: 'PLANNED_WORK', sourceId: workId });
+    const item = await ReportItem.findOne({ report: canonical?._id, object: objectA });
+    expect(item?.judgedBy).toBeNull();
+    expect(item?.judgedByName).toBeNull();
+
+    const row = await ObjectAssessment.findOne({ object: objectA });
+    expect(row?.newScore).toBe(74);
+    expect(String(row?.assessedBy)).toBe(String(canonical?.approvedBy));
+    expect(row?.assessedByName).toBe(canonical?.approvedByName);
+    expect(row?.judgedBy).toBeNull();
+    expect(row?.judgedByName).toBeNull();
+  });
+
+  /**
+   * Re-publishing is routine: `applyReportSafely` re-runs over the same upserted items
+   * whenever the report is settled again. History must not grow a row per attempt.
+   */
+  it('does not duplicate the history row when the report is applied again', async () => {
+    const objectA = await seedEquipment();
+
+    const workId = await createWork();
+    const taskId = await addTask(workId, 10, { relatedObjectIds: [objectA] });
+    await transition(workId, 'PLAN');
+    await transition(workId, 'START');
+    await completeTask(workId, taskId);
+    await transition(workId, 'COMPLETE');
+    await fillReport(workId);
+    await submitReport(workId);
+    await request(app)
+      .post(`${API}/planned-work/${workId}/report/approve`)
+      .set('Authorization', `Bearer ${approverToken}`);
+
+    expect(await ObjectAssessment.countDocuments({ object: objectA })).toBe(1);
+    const first = await ObjectAssessment.findOne({ object: objectA });
+
+    const canonical = await Report.findOne({ sourceType: 'PLANNED_WORK', sourceId: workId });
+
+    // Re-run the whole publish twice over, as a repeated approval or a replayed apply does.
+    const work = await PlannedWork.findById(workId);
+    await writeCanonicalPlannedWorkReport(work!, 'APPROVED', replayActor());
+    await applyReportToEquipment(canonical!._id);
+    await applyReportToEquipment(canonical!._id);
+
+    const rows = await ObjectAssessment.find({ object: objectA });
+    expect(rows).toHaveLength(1);
+    // The same row, not a rewritten one: the collection is append-only.
+    expect(String(rows[0]?._id)).toBe(String(first?._id));
+    // The author survives the replay untouched. `judgedBy` is not part of the idempotency
+    // key — that stays `(sourceReportItem, newScore)` — so a republish carrying the same
+    // verdict matches the existing row instead of appending a second one for the name.
+    expect(String(rows[0]?.judgedBy)).toBe(author.userId);
+    expect((await ObjectRecord.findById(objectA))?.latestAssessment?.score).toBe(88);
+  });
+
+  /**
+   * RETRACTION: `syncItems` deletes the item for equipment the report no longer names.
+   * The history row it produced is deliberately KEPT.
+   *
+   * `ObjectAssessment` blocks every update and delete hook at the model layer (rule 17.15
+   * forbids deleting log or status history), so removing it is not merely questionable, it
+   * is refused by the schema. The row also records something that genuinely happened: a
+   * reviewer approved that figure and it moved the equipment's standing at the time.
+   * Withdrawing the finding is a later event, not a reason to erase the earlier one — and
+   * the row stays traceable through `sourceReport`/`sourceLabel`, so a reader can always
+   * see which report it came from and that the report no longer carries it.
+   */
+  it('keeps the history row when the report stops naming the object', async () => {
+    const objectA = await seedEquipment();
+    const objectB = await seedEquipment();
+
+    const workId = await createWork();
+    const taskId = await addTask(workId, 10, { relatedObjectIds: [objectA, objectB] });
+    await transition(workId, 'PLAN');
+    await transition(workId, 'START');
+    await completeTask(workId, taskId);
+    await transition(workId, 'COMPLETE');
+    await fillReport(workId);
+    await submitReport(workId);
+    await request(app)
+      .post(`${API}/planned-work/${workId}/report/approve`)
+      .set('Authorization', `Bearer ${approverToken}`);
+
+    expect(await ObjectAssessment.countDocuments({ object: objectB })).toBe(1);
+    const retained = await ObjectAssessment.findOne({ object: objectB });
+
+    // The sub-task stops naming objectB, and the report is rewritten from it. Written to
+    // the sub-task directly because the work is archived by approval and its editing
+    // endpoints are closed by then — the retraction under test is `syncItems`, not the
+    // route that reaches it.
+    await PlannedWorkTask.updateOne(
+      { _id: taskId },
+      { $set: { relatedObjects: [new Types.ObjectId(objectA)] } },
+    );
+
+    const work = await PlannedWork.findById(workId);
+    await writeCanonicalPlannedWorkReport(work!, 'APPROVED', replayActor());
+
+    const canonical = await Report.findOne({ sourceType: 'PLANNED_WORK', sourceId: workId });
+    // The finding is gone from the report, which is what retraction means there.
+    expect(await ReportItem.countDocuments({ report: canonical?._id, object: objectB })).toBe(0);
+
+    // The history row survives it, unchanged and still pointing at the report.
+    const after = await ObjectAssessment.find({ object: objectB });
+    expect(after).toHaveLength(1);
+    expect(String(after[0]?._id)).toBe(String(retained?._id));
+    expect(after[0]?.newScore).toBe(88);
+    expect(String(after[0]?.sourceReport)).toBe(String(canonical?._id));
+  });
+
   it('refuses a sub-task naming another customer’s equipment', async () => {
     const other = await Customer.create({ code: 'OT', name: 'Өөр ХХК' });
     const foreignObject = await seedEquipment(String(other._id));
@@ -844,6 +1087,92 @@ describe('canonical report write-through', () => {
 
     expect(response.status).toBe(400);
     expect(response.body.message).toContain('өөр харилцагчид');
+  });
+
+  /**
+   * The other half of the guard, and the one the web picker has to respect: the equipment
+   * here belongs to the RIGHT customer, so tenancy passes and only the location rule can
+   * refuse it. A picker offering the whole customer's equipment would produce exactly this.
+   */
+  it('refuses equipment that sits outside the sub-task’s floor', async () => {
+    const type =
+      (await ObjectType.findOne({ code: 'PWEQ' })) ??
+      (await ObjectType.create({ code: 'PWEQ', name: 'Самбар', category: 'EQUIPMENT' }));
+    const elsewhere = await ObjectRecord.create({
+      code: 'PW-OBJ-ELSEWHERE',
+      name: 'Өөр давхрын самбар',
+      category: 'EQUIPMENT',
+      objectType: type._id,
+      customer: objects.customerId,
+      floor: objects.foreignFloorId,
+    });
+
+    const workId = await createWork();
+    const onFloor = await request(app)
+      .post(`${API}/planned-work/${workId}/tasks`)
+      .set('Authorization', `Bearer ${authorToken}`)
+      .send({
+        floorId: objects.floorId,
+        title: 'Өөр давхрын тоноглол дээр ажиллах',
+        unit: 'PIECE',
+        totalQuantity: 1,
+        plannedStartDate: '2026-07-05T00:00:00.000Z',
+        plannedEndDate: '2099-07-20T00:00:00.000Z',
+        relatedObjectIds: [String(elsewhere._id)],
+      });
+
+    expect(onFloor.status).toBe(400);
+    expect(onFloor.body.message).toContain('байршилд хамаарахгүй');
+
+    // Naming no floor widens the rule to the whole building — but this object is in a
+    // different building, so it is still refused. Nothing lets it through.
+    const floorless = await request(app)
+      .post(`${API}/planned-work/${workId}/tasks`)
+      .set('Authorization', `Bearer ${authorToken}`)
+      .send({
+        title: 'Давхаргүй дэд ажил',
+        unit: 'PIECE',
+        totalQuantity: 1,
+        plannedStartDate: '2026-07-05T00:00:00.000Z',
+        plannedEndDate: '2099-07-20T00:00:00.000Z',
+        relatedObjectIds: [String(elsewhere._id)],
+      });
+
+    expect(floorless.status).toBe(400);
+    expect(floorless.body.message).toContain('байршилд хамаарахгүй');
+  });
+
+  /**
+   * The conclusion is a per-item field, so a sub-task covering several objects writes the
+   * same verdict onto each. This is what fills the Дүгнэлт column of Үзлэг ба дүгнэлт for
+   * a planned-work row, which stayed blank while a sub-task was barred from carrying one.
+   */
+  it('carries an edited sub-task Дүгнэлт onto every one of its objects', async () => {
+    const objectA = await seedEquipment();
+    const objectB = await seedEquipment();
+
+    const workId = await createWork();
+    const taskId = await addTask(workId, 10, { relatedObjectIds: [objectA, objectB] });
+    await transition(workId, 'PLAN');
+    await transition(workId, 'START');
+    await completeTask(workId, taskId, 10);
+
+    // Correcting the write-up after the fact must reach the items, not just the task.
+    const corrected = await request(app)
+      .post(`${API}/planned-work/${workId}/tasks/${taskId}/progress`)
+      .set('Authorization', `Bearer ${authorToken}`)
+      .send({ completedQuantity: 10, conclusion: 'Дахин шалгалт шаардлагагүй.' });
+    expect(corrected.status).toBe(200);
+    expect(corrected.body.data.tasks[0].conclusion).toBe('Дахин шалгалт шаардлагагүй.');
+
+    await transition(workId, 'COMPLETE');
+
+    const canonical = await Report.findOne({ sourceType: 'PLANNED_WORK', sourceId: workId });
+    const items = await ReportItem.find({ report: canonical?._id });
+    expect(items).toHaveLength(2);
+    for (const item of items) {
+      expect(item.conclusion).toBe('Дахин шалгалт шаардлагагүй.');
+    }
   });
 });
 

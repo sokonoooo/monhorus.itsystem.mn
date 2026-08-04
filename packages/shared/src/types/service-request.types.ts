@@ -1,4 +1,5 @@
 import type {
+  DispatchBoardColumnId,
   ServiceRequestStatus,
   ServiceRequestType,
   SlaState,
@@ -122,7 +123,11 @@ export interface ExtendSlaRequest {
 }
 
 export interface DispatchBoardColumnDto {
-  status: ServiceRequestStatus;
+  /** Stable key from DISPATCH_BOARD_COLUMNS. Not a status: the open column covers two. */
+  id: DispatchBoardColumnId;
+  /** Every status this column collects, so a consumer never has to re-derive the mapping. */
+  statuses: ServiceRequestStatus[];
+  label: string;
   total: number;
   items: ServiceRequestListItemDto[];
 }

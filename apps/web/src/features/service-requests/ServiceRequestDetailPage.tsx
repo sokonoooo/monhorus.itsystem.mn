@@ -12,6 +12,7 @@ import { useParams } from 'react-router-dom';
 
 import { Button } from '../../components/ui/Button';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
+import { RequestAttachments } from './RequestAttachments';
 import { WorkReportPanel } from './WorkReportPanel';
 import { RequestStatusBadge, SlaBadge, UrgentBadge } from '../../components/ui/DomainBadges';
 import { PageHeader } from '../../components/ui/PageHeader';
@@ -233,6 +234,10 @@ export function ServiceRequestDetailPage(): ReactElement {
                 {request.description}
               </p>
             </div>
+          </Card>
+
+          <Card title={`Хавсралт (${request.attachments.length})`}>
+            <RequestAttachments attachments={request.attachments} />
           </Card>
 
           <Card title="Төлөвийн түүх">

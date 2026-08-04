@@ -1,4 +1,4 @@
-import { PERMISSIONS } from '@monhorus/shared';
+import { PERMISSIONS, type PlannedWorkFloorProgressDto } from '@monhorus/shared';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -6,9 +6,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../../lib/api-client';
 import * as fileUrl from '../../lib/file-url';
 import { plannedWorkService } from '../../services/planned-work.service';
+import { objectMasterService } from '../../services/object-master.service';
 import { objectService } from '../../services/object.service';
 import { dispatchService } from '../../services/service-request.service';
 import {
+  makeObjectListItem,
+  makeObjectNode,
+  makePage,
   makePlannedWork,
   makePlannedWorkReport,
   makePlannedWorkTask,
@@ -17,6 +21,37 @@ import { renderWithAuth } from '../../test/render';
 import { PlannedWorkDetailPage } from './PlannedWorkDetailPage';
 
 const WORK_ID = '507f1f77bcf86cd799439061';
+const TASK_ONE = '507f1f77bcf86cd799439071';
+const TASK_TWO = '507f1f77bcf86cd799439072';
+
+function makeFloorProgress(
+  overrides: Partial<PlannedWorkFloorProgressDto> = {},
+): PlannedWorkFloorProgressDto {
+  return {
+    floorId: 'f1',
+    floorName: '1 давхар',
+    taskCount: 1,
+    totalQuantity: 10,
+    completedQuantity: 4,
+    remainingQuantity: 6,
+    progressPercent: 40,
+    ...overrides,
+  };
+}
+
+/** A work spread over two floors, so section boundaries are observable. */
+function twoFloorWork() {
+  return makePlannedWork({
+    tasks: [
+      makePlannedWorkTask({ id: TASK_ONE, title: 'Самбарын үзлэг', floorId: 'f1', floorName: '1 давхар' }),
+      makePlannedWorkTask({ id: TASK_TWO, title: 'Гэрэлтүүлгийн үзлэг', floorId: 'f2', floorName: '2 давхар' }),
+    ],
+    floorProgress: [
+      makeFloorProgress(),
+      makeFloorProgress({ floorId: 'f2', floorName: '2 давхар', progressPercent: 80 }),
+    ],
+  });
+}
 
 function renderDetail(permissions: readonly string[]) {
   return renderWithAuth(<PlannedWorkDetailPage />, {
@@ -41,6 +76,7 @@ describe('PlannedWorkDetailPage', () => {
     vi.restoreAllMocks();
     vi.spyOn(objectService, 'children').mockResolvedValue([]);
     vi.spyOn(dispatchService, 'employeeCandidates').mockResolvedValue([]);
+    vi.spyOn(objectMasterService, 'list').mockResolvedValue(makePage([]));
   });
 
   it('shows the backend supplied progress and completion blockers', async () => {
@@ -86,6 +122,30 @@ describe('PlannedWorkDetailPage', () => {
       screen.getByText(/Түр зогсолт төлөвлөсөн хугацааг сунгадаггүй/),
     ).toBeInTheDocument();
     expect(screen.getByText('Материал хүлээгдэж байна')).toBeInTheDocument();
+  });
+
+  it('prints a closed pause shorter than an hour instead of truncating it to zero', async () => {
+    vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(
+      makePlannedWork({
+        pauseHistory: [
+          {
+            pausedAt: '2026-07-10T00:00:00.000Z',
+            pausedById: 'u1',
+            pausedByName: 'Тест Хэрэглэгч',
+            reason: 'Материал хүлээгдэж байна',
+            resumedAt: '2026-07-10T00:45:00.000Z',
+            resumedById: 'u1',
+            resumedByName: 'Тест Хэрэглэгч',
+            durationMinutes: 45,
+          },
+        ],
+      }),
+    );
+
+    renderDetail([PERMISSIONS.PLANNED_WORK_VIEW]);
+
+    // Math.floor(45 / 60) used to render this whole episode as "(0ц)".
+    expect(await screen.findByText(/\(45 мин\)/)).toBeInTheDocument();
   });
 
   it('shows the overdue banner with the instant the breach was recorded', async () => {
@@ -231,6 +291,28 @@ describe('PlannedWorkDetailPage', () => {
     expect(screen.queryByRole('menuitem', { name: 'Устгах' })).not.toBeInTheDocument();
   });
 
+  /**
+   * Read-only is not the same as unreachable. The list hid archived work, so the report
+   * an approval had just filed could not be opened by anyone; the detail page itself was
+   * always willing to render it.
+   */
+  it('keeps an archived work readable, report included', async () => {
+    vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(
+      makePlannedWork({
+        lifecycleStatus: 'ARCHIVED',
+        effectiveStatus: 'ARCHIVED',
+        report: makePlannedWorkReport({ status: 'APPROVED', visibleToCustomer: true }),
+        availableActions: [],
+        completionBlockers: [],
+      }),
+    );
+
+    renderDetail([PERMISSIONS.PLANNED_WORK_VIEW]);
+
+    expect(await screen.findByText('Архивласан')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Тайлан' })).toBeInTheDocument();
+  });
+
   it('lists a material as a name, a quantity and a unit', async () => {
     vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(
       makePlannedWork({
@@ -312,10 +394,13 @@ describe('PlannedWorkDetailPage', () => {
     await user.click(screen.getByRole('menuitem', { name: 'Биелэлт' }));
     const dialog = await screen.findByRole('dialog');
 
-    // Section 10.1 keeps Дүгнэлт on the consolidated report, never on a sub-task.
-    expect(within(dialog).queryByLabelText('Дүгнэлт')).not.toBeInTheDocument();
-
+    // A sub-task now carries its own Дүгнэлт. It used to be barred from having one, on
+    // the rule that the conclusion belonged to the consolidated report alone — but the
+    // rows in Үзлэг ба дүгнэлт ARE the per-object items fanned out from a sub-task, so
+    // that rule left their Дүгнэлт column permanently empty. The consolidated report
+    // still keeps its own conclusion; this is an addition to it.
     await user.type(within(dialog).getByLabelText('Тайлбар'), 'Холболт чангалсан');
+    await user.type(within(dialog).getByLabelText('Дүгнэлт'), 'Ашиглалтад тэнцэнэ');
     await user.type(within(dialog).getByLabelText(/^Үнэлгээ/), '88');
     await user.click(within(dialog).getByRole('button', { name: 'Бүртгэх' }));
 
@@ -324,9 +409,398 @@ describe('PlannedWorkDetailPage', () => {
     });
     const payload = record.mock.calls[0]![2] as Record<string, unknown>;
     expect(payload.note).toBe('Холболт чангалсан');
+    expect(payload.conclusion).toBe('Ашиглалтад тэнцэнэ');
     expect(payload.score).toBe(88);
+    // The band is still derived by the backend and never sent from here.
     expect(payload).not.toHaveProperty('riskLevel');
-    expect(payload).not.toHaveProperty('conclusion');
+  });
+
+  /**
+   * The equipment a sub-task covers.
+   *
+   * This is the whole reason a planned-work result reaches Үзлэг ба дүгнэлт: the report
+   * emits one item per related object, so a sub-task saved with none is invisible there
+   * no matter how it was scored. The form defaulted to sending none, which is what these
+   * cover.
+   */
+  describe('sub-task equipment', () => {
+    // Real ObjectIds: the shared schema validates the ids before the request is made, so
+    // a readable placeholder would fail the form rather than reach the service.
+    const PANEL_ID = '507f1f77bcf86cd799439161';
+    const LIGHT_ID = '507f1f77bcf86cd799439162';
+    const FLOOR_ONE = '507f1f77bcf86cd799439121';
+    const FLOOR_TWO = '507f1f77bcf86cd799439122';
+    const PANEL = makeObjectListItem({ id: PANEL_ID, code: 'DB-1', name: 'Самбар 1' });
+    const LIGHT = makeObjectListItem({ id: LIGHT_ID, code: 'LT-1', name: 'Гэрэлтүүлэг 1' });
+
+    beforeEach(() => {
+      vi.spyOn(objectService, 'children').mockResolvedValue([
+        makeObjectNode({ id: FLOOR_ONE, name: '1 давхар', kind: 'FLOOR' }),
+        makeObjectNode({ id: FLOOR_TWO, name: '2 давхар', kind: 'FLOOR' }),
+      ]);
+      vi.spyOn(objectMasterService, 'list').mockResolvedValue(makePage([PANEL, LIGHT]));
+    });
+
+    async function openNewTaskForm(
+      user: ReturnType<typeof userEvent.setup>,
+    ): Promise<HTMLElement> {
+      await user.click(await screen.findByRole('button', { name: 'Дэд ажил нэмэх' }));
+      return screen.findByRole('dialog', { name: 'Шинэ дэд ажил' });
+    }
+
+    it('sends the picked equipment when a sub-task is created', async () => {
+      vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(makePlannedWork());
+      const create = vi
+        .spyOn(plannedWorkService, 'createTask')
+        .mockResolvedValue(makePlannedWork());
+      const user = userEvent.setup();
+
+      renderDetail([PERMISSIONS.PLANNED_WORK_VIEW, PERMISSIONS.PLANNED_WORK_UPDATE]);
+
+      const dialog = await openNewTaskForm(user);
+      await user.type(within(dialog).getByLabelText(/Дэд ажлын нэр/), 'Самбар шалгах');
+      await user.type(within(dialog).getByLabelText(/Хийх тоо хэмжээ/), '4');
+
+      await waitFor(() =>
+        expect(within(dialog).getByLabelText(/Хамрах тоноглол/)).toBeInTheDocument(),
+      );
+      await user.selectOptions(within(dialog).getByLabelText(/Хамрах тоноглол/), PANEL_ID);
+      await user.selectOptions(within(dialog).getByLabelText(/Хамрах тоноглол/), LIGHT_ID);
+
+      await user.click(within(dialog).getByRole('button', { name: 'Хадгалах' }));
+
+      await waitFor(() => expect(create).toHaveBeenCalled());
+      const payload = create.mock.calls[0]![1] as Record<string, unknown>;
+      expect(payload.relatedObjectIds).toEqual([PANEL_ID, LIGHT_ID]);
+    });
+
+    it('pre-populates from the saved task and sends the edited equipment on update', async () => {
+      vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(
+        makePlannedWork({
+          tasks: [
+            makePlannedWorkTask({
+              floorId: FLOOR_ONE,
+              // The shared fixture's readable 'e1' is not an ObjectId, and an update
+              // re-sends every field, so it would fail the schema before the service.
+              assignedEmployeeId: null,
+              relatedObjects: [{ id: PANEL_ID, name: 'Самбар 1' }],
+            }),
+          ],
+        }),
+      );
+      const update = vi
+        .spyOn(plannedWorkService, 'updateTask')
+        .mockResolvedValue(makePlannedWork());
+      const user = userEvent.setup();
+
+      renderDetail([PERMISSIONS.PLANNED_WORK_VIEW, PERMISSIONS.PLANNED_WORK_UPDATE]);
+
+      await openTaskMenu(user);
+      await user.click(screen.getByRole('menuitem', { name: 'Засах' }));
+      const dialog = await screen.findByRole('dialog');
+
+      // What was saved is what the form opens with; an edit must not silently drop it.
+      expect(within(dialog).getByRole('button', { name: 'Самбар 1 хасах' })).toBeInTheDocument();
+
+      await user.selectOptions(within(dialog).getByLabelText(/Хамрах тоноглол/), LIGHT_ID);
+      await user.click(within(dialog).getByRole('button', { name: 'Хадгалах' }));
+
+      await waitFor(() => expect(update).toHaveBeenCalled());
+      const payload = update.mock.calls[0]![2] as Record<string, unknown>;
+      expect(payload.relatedObjectIds).toEqual([PANEL_ID, LIGHT_ID]);
+    });
+
+    it('clears equipment the new floor cannot contain, and says so', async () => {
+      vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(makePlannedWork());
+      const create = vi
+        .spyOn(plannedWorkService, 'createTask')
+        .mockResolvedValue(makePlannedWork());
+      const user = userEvent.setup();
+
+      renderDetail([PERMISSIONS.PLANNED_WORK_VIEW, PERMISSIONS.PLANNED_WORK_UPDATE]);
+
+      const dialog = await openNewTaskForm(user);
+      await user.type(within(dialog).getByLabelText(/Дэд ажлын нэр/), 'Самбар шалгах');
+      await user.type(within(dialog).getByLabelText(/Хийх тоо хэмжээ/), '4');
+      await user.selectOptions(within(dialog).getByLabelText('Давхар'), FLOOR_ONE);
+      await user.selectOptions(within(dialog).getByLabelText(/Хамрах тоноглол/), PANEL_ID);
+      // The chip, not the <option> of the same text still sitting in the select.
+      expect(within(dialog).getByRole('button', { name: 'Самбар 1 хасах' })).toBeInTheDocument();
+
+      // Equipment on floor 1 cannot be on floor 2, so the backend would refuse the save.
+      // The selection goes rather than the save 400ing, and the user is told why.
+      await user.selectOptions(within(dialog).getByLabelText('Давхар'), FLOOR_TWO);
+      expect(
+        within(dialog).queryByRole('button', { name: 'Самбар 1 хасах' }),
+      ).not.toBeInTheDocument();
+      expect(within(dialog).getByText(/Давхар өөрчлөгдсөн тул сонгосон тоноглол цуцлагдлаа/))
+        .toBeInTheDocument();
+
+      await user.click(within(dialog).getByRole('button', { name: 'Хадгалах' }));
+      await waitFor(() => expect(create).toHaveBeenCalled());
+      expect((create.mock.calls[0]![1] as Record<string, unknown>).relatedObjectIds).toEqual([]);
+    });
+
+    it('keeps the selection when the floor is cleared, because the building still contains it', async () => {
+      vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(makePlannedWork());
+      const user = userEvent.setup();
+
+      renderDetail([PERMISSIONS.PLANNED_WORK_VIEW, PERMISSIONS.PLANNED_WORK_UPDATE]);
+
+      const dialog = await openNewTaskForm(user);
+      await user.selectOptions(within(dialog).getByLabelText('Давхар'), FLOOR_ONE);
+      await user.selectOptions(within(dialog).getByLabelText(/Хамрах тоноглол/), PANEL_ID);
+
+      // Widening, not narrowing: a floorless sub-task admits anything in the building.
+      await user.selectOptions(within(dialog).getByLabelText('Давхар'), '');
+      expect(within(dialog).getByRole('button', { name: 'Самбар 1 хасах' })).toBeInTheDocument();
+      expect(
+        within(dialog).queryByText(/Давхар өөрчлөгдсөн тул сонгосон тоноглол цуцлагдлаа/),
+      ).not.toBeInTheDocument();
+    });
+
+    /**
+     * The query, not merely "something rendered".
+     *
+     * The picker asked for `limit: 200`, which `objectListQuerySchema` rejects before the
+     * handler runs, so every request 400ed and the catch turned the field into an empty,
+     * dead select. A test that only mocked the service and asserted on rows could not see
+     * that, because a mock answers any query. This asserts what is actually sent.
+     */
+    it('asks for the equipment page the API will serve, and offers what comes back', async () => {
+      vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(makePlannedWork());
+      const list = vi
+        .spyOn(objectMasterService, 'list')
+        .mockResolvedValue(makePage([PANEL, LIGHT]));
+      const user = userEvent.setup();
+
+      renderDetail([PERMISSIONS.PLANNED_WORK_VIEW, PERMISSIONS.PLANNED_WORK_UPDATE]);
+
+      const dialog = await openNewTaskForm(user);
+
+      // No floor named yet, so the scope is the parent building — the same scope the
+      // backend admits equipment from for a floorless sub-task.
+      await waitFor(() => expect(list).toHaveBeenCalledWith({ buildingId: 'b1', limit: 100 }));
+
+      await user.selectOptions(within(dialog).getByLabelText('Давхар'), FLOOR_ONE);
+      await waitFor(() => expect(list).toHaveBeenCalledWith({ floorId: FLOOR_ONE, limit: 100 }));
+
+      // The cap the shared schema enforces. Above it the request is a 400, not a bigger page.
+      for (const [query] of list.mock.calls) {
+        expect(query?.limit ?? 0).toBeLessThanOrEqual(100);
+      }
+
+      expect(within(dialog).getByRole('option', { name: 'DB-1 · Самбар 1' })).toBeInTheDocument();
+      expect(
+        within(dialog).getByRole('option', { name: 'LT-1 · Гэрэлтүүлэг 1' }),
+      ).toBeInTheDocument();
+    });
+
+    it('saves a sub-task with no equipment picked, sending an empty list', async () => {
+      vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(makePlannedWork());
+      const create = vi
+        .spyOn(plannedWorkService, 'createTask')
+        .mockResolvedValue(makePlannedWork());
+      const user = userEvent.setup();
+
+      renderDetail([PERMISSIONS.PLANNED_WORK_VIEW, PERMISSIONS.PLANNED_WORK_UPDATE]);
+
+      const dialog = await openNewTaskForm(user);
+      await user.type(within(dialog).getByLabelText(/Дэд ажлын нэр/), 'Самбар шалгах');
+      await user.type(within(dialog).getByLabelText(/Хийх тоо хэмжээ/), '4');
+      await user.click(within(dialog).getByRole('button', { name: 'Хадгалах' }));
+
+      await waitFor(() => expect(create).toHaveBeenCalled());
+      expect((create.mock.calls[0]![1] as Record<string, unknown>).relatedObjectIds).toEqual([]);
+      // Nothing was rejected on the way: equipment is not a requirement.
+      expect(
+        screen.queryByText('Оруулсан мэдээлэл шаардлага хангахгүй байна.'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('presents the empty selection as optional rather than as a validation failure', async () => {
+      vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(makePlannedWork());
+      const user = userEvent.setup();
+
+      renderDetail([PERMISSIONS.PLANNED_WORK_VIEW, PERMISSIONS.PLANNED_WORK_UPDATE]);
+
+      const dialog = await openNewTaskForm(user);
+
+      // The label says it, so the claim survives even if the notice is scrolled past.
+      expect(within(dialog).getByLabelText('Хамрах тоноглол (заавал бус)')).toBeInTheDocument();
+      expect(
+        within(dialog).getByText('Тоноглол заавал биш — сонгоогүй ч хадгална.'),
+      ).toBeInTheDocument();
+      expect(
+        within(dialog).getByText(
+          /Тоноглол сонгоогүй бол энэ дэд ажлын дүгнэлт Үзлэг ба дүгнэлт хэсэгт харагдахгүй/,
+        ),
+      ).toBeInTheDocument();
+      // A validation message would be announced as one; this is not that.
+      expect(within(dialog).queryByRole('alert')).not.toBeInTheDocument();
+    });
+
+    it('says the scope holds no registered equipment instead of leaving a dead select', async () => {
+      vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(makePlannedWork());
+      vi.spyOn(objectMasterService, 'list').mockResolvedValue(makePage([]));
+      const user = userEvent.setup();
+
+      renderDetail([PERMISSIONS.PLANNED_WORK_VIEW, PERMISSIONS.PLANNED_WORK_UPDATE]);
+
+      const dialog = await openNewTaskForm(user);
+      expect(
+        await within(dialog).findByText(/Энэ барилгад бүртгэлтэй тоноглол алга/),
+      ).toBeInTheDocument();
+
+      await user.selectOptions(within(dialog).getByLabelText('Давхар'), FLOOR_ONE);
+      expect(
+        await within(dialog).findByText(/Энэ давхарт бүртгэлтэй тоноглол алга/),
+      ).toBeInTheDocument();
+      expect(within(dialog).getByLabelText(/Хамрах тоноглол/)).toBeDisabled();
+    });
+
+    it('says the equipment list failed to load rather than passing it off as empty', async () => {
+      vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(makePlannedWork());
+      vi.spyOn(objectMasterService, 'list').mockRejectedValue(new Error('network'));
+      const user = userEvent.setup();
+
+      renderDetail([PERMISSIONS.PLANNED_WORK_VIEW, PERMISSIONS.PLANNED_WORK_UPDATE]);
+
+      const dialog = await openNewTaskForm(user);
+      expect(
+        await within(dialog).findByText(/Тоноглолын жагсаалтыг ачаалж чадсангүй/),
+      ).toBeInTheDocument();
+    });
+
+    it('admits when the scope holds more equipment than one page can offer', async () => {
+      vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(makePlannedWork());
+      vi.spyOn(objectMasterService, 'list').mockResolvedValue({
+        ...makePage([PANEL, LIGHT]),
+        total: 140,
+        totalPages: 2,
+      });
+      const user = userEvent.setup();
+
+      renderDetail([PERMISSIONS.PLANNED_WORK_VIEW, PERMISSIONS.PLANNED_WORK_UPDATE]);
+
+      const dialog = await openNewTaskForm(user);
+      expect(
+        await within(dialog).findByText(/Нийт 140 тоноглолоос эхний 2 нь жагсав/),
+      ).toBeInTheDocument();
+    });
+
+    it('lists a sub-task’s equipment in its expanded row', async () => {
+      vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(
+        makePlannedWork({
+          tasks: [
+            makePlannedWorkTask({
+              relatedObjects: [
+                { id: PANEL_ID, name: 'Самбар 1' },
+                { id: LIGHT_ID, name: 'Гэрэлтүүлэг 1' },
+              ],
+            }),
+          ],
+        }),
+      );
+      const user = userEvent.setup();
+
+      renderDetail([PERMISSIONS.PLANNED_WORK_VIEW]);
+
+      const expander = await screen.findByRole('button', {
+        name: 'Самбарын үзлэг — хамрах тоноглол',
+      });
+      // Closed until asked for: the row is a summary, the equipment is the detail.
+      expect(expander).toHaveAttribute('aria-expanded', 'false');
+      expect(screen.queryByText('Хамрах тоноглол (2)')).not.toBeInTheDocument();
+
+      await user.click(expander);
+
+      expect(screen.getByText('Хамрах тоноглол (2)')).toBeInTheDocument();
+      expect(screen.getByText('Самбар 1')).toBeInTheDocument();
+      expect(screen.getByText('Гэрэлтүүлэг 1')).toBeInTheDocument();
+    });
+
+    it('says so in the expanded row when a sub-task covers nothing', async () => {
+      vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(
+        makePlannedWork({ tasks: [makePlannedWorkTask({ relatedObjects: [] })] }),
+      );
+      const user = userEvent.setup();
+
+      renderDetail([PERMISSIONS.PLANNED_WORK_VIEW]);
+
+      await user.click(
+        await screen.findByRole('button', { name: 'Самбарын үзлэг — хамрах тоноглол' }),
+      );
+
+      expect(
+        screen.getByText(/Тоноглол сонгоогүй: энэ дэд ажлын үр дүн Үзлэг ба дүгнэлт/),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it('warns that a sub-task with no equipment keeps its Дүгнэлт out of Үзлэг ба дүгнэлт', async () => {
+    vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(
+      makePlannedWork({ tasks: [makePlannedWorkTask({ relatedObjects: [] })] }),
+    );
+    const user = userEvent.setup();
+
+    renderDetail([PERMISSIONS.PLANNED_WORK_VIEW, PERMISSIONS.PLANNED_WORK_RECORD_PROGRESS]);
+
+    await openTaskMenu(user);
+    await user.click(screen.getByRole('menuitem', { name: 'Биелэлт' }));
+    const dialog = await screen.findByRole('dialog');
+
+    expect(
+      within(dialog).getByText(/Тоноглол сонгоогүй бол энэ дүгнэлт Үзлэг ба дүгнэлт/),
+    ).toBeInTheDocument();
+  });
+
+  it('names who wrote the sub-task Дүгнэлт and how long the work took', async () => {
+    vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(
+      makePlannedWork({
+        tasks: [
+          makePlannedWorkTask({
+            conclusion: 'Тусгаарлагч хэвийн.',
+            conclusionById: 'u9',
+            conclusionByName: 'Батаа Энхтөр',
+            conclusionAt: '2026-07-29T06:30:00.000Z',
+            durationMinutes: 150,
+          }),
+        ],
+      }),
+    );
+    const user = userEvent.setup();
+
+    renderDetail([PERMISSIONS.PLANNED_WORK_VIEW]);
+
+    await openTaskMenu(user);
+    await user.click(screen.getByRole('menuitem', { name: 'Дэлгэрэнгүй' }));
+    const drawer = await screen.findByRole('dialog', { name: /дэлгэрэнгүй/ });
+
+    // The verdict alone is anonymous — anyone on the job can overwrite it.
+    expect(within(drawer).getByText('Дүгнэлт бичсэн')).toBeInTheDocument();
+    expect(within(drawer).getByText(/Батаа Энхтөр ·/)).toBeInTheDocument();
+
+    // 150 minutes, not "2ц" and not a bare 150.
+    expect(within(drawer).getByText('Гүйцэтгэсэн хугацаа')).toBeInTheDocument();
+    expect(within(drawer).getByText('2 цаг 30 мин')).toBeInTheDocument();
+  });
+
+  it('says nothing rather than zero for a sub-task with no duration yet', async () => {
+    vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(
+      makePlannedWork({ tasks: [makePlannedWorkTask({ durationMinutes: null })] }),
+    );
+    const user = userEvent.setup();
+
+    renderDetail([PERMISSIONS.PLANNED_WORK_VIEW]);
+
+    await openTaskMenu(user);
+    await user.click(screen.getByRole('menuitem', { name: 'Дэлгэрэнгүй' }));
+    const drawer = await screen.findByRole('dialog', { name: /дэлгэрэнгүй/ });
+
+    const label = within(drawer).getByText('Гүйцэтгэсэн хугацаа');
+    expect(label.parentElement).toHaveTextContent('-');
+    expect(within(drawer).queryByText('0 мин')).not.toBeInTheDocument();
   });
 
   it('opens a sub-task attachment as an enlarged preview and offers a download', async () => {
@@ -397,6 +871,112 @@ describe('PlannedWorkDetailPage', () => {
 
     const drawer = await screen.findByRole('dialog', { name: /дэлгэрэнгүй/ });
     expect(within(drawer).getByText('Гурван самбар шалгасан')).toBeInTheDocument();
+  });
+
+  it('files each sub-task under the floor it is planned on', async () => {
+    vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(twoFloorWork());
+
+    renderDetail([PERMISSIONS.PLANNED_WORK_VIEW]);
+
+    const first = await screen.findByRole('table', { name: '1 давхар дэд ажил' });
+    const second = screen.getByRole('table', { name: '2 давхар дэд ажил' });
+
+    expect(within(first).getByText('Самбарын үзлэг')).toBeInTheDocument();
+    expect(within(first).queryByText('Гэрэлтүүлгийн үзлэг')).not.toBeInTheDocument();
+    expect(within(second).getByText('Гэрэлтүүлгийн үзлэг')).toBeInTheDocument();
+
+    // The floor rollup is the section header now, not a separate read-only list.
+    expect(screen.queryByText('Давхрын биелэлт')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^1 давхар/ })).toHaveTextContent('1 дэд ажил');
+  });
+
+  it('collects the floorless sub-tasks into a trailing unassigned section', async () => {
+    vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(
+      makePlannedWork({
+        tasks: [
+          makePlannedWorkTask({ id: TASK_ONE, floorId: 'f1', floorName: '1 давхар' }),
+          makePlannedWorkTask({
+            id: TASK_TWO,
+            title: 'Ерөнхий цэвэрлэгээ',
+            floorId: null,
+            floorName: null,
+          }),
+        ],
+        floorProgress: [
+          makeFloorProgress(),
+          makeFloorProgress({ floorId: '', floorName: 'Давхар заагаагүй' }),
+        ],
+      }),
+    );
+
+    renderDetail([PERMISSIONS.PLANNED_WORK_VIEW]);
+
+    const unassigned = await screen.findByRole('table', { name: 'Давхар заагаагүй дэд ажил' });
+    expect(within(unassigned).getByText('Ерөнхий цэвэрлэгээ')).toBeInTheDocument();
+
+    // Last, because a missing floor is a leftover rather than a place in the building.
+    const headings = screen.getAllByRole('heading', { level: 3 });
+    expect(headings.at(-1)).toHaveTextContent('Давхар заагаагүй');
+  });
+
+  it('applies one column choice to every floor section', async () => {
+    vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(twoFloorWork());
+    const user = userEvent.setup();
+
+    renderDetail([PERMISSIONS.PLANNED_WORK_VIEW]);
+
+    const first = await screen.findByRole('table', { name: '1 давхар дэд ажил' });
+    expect(within(first).getByRole('columnheader', { name: 'Ажилтан' })).toBeInTheDocument();
+
+    // The planned-material card carries a picker of its own; the sub-task one comes first.
+    await user.click(screen.getAllByRole('button', { name: 'Багана' })[0]!);
+    await user.click(screen.getByLabelText('Ажилтан'));
+
+    for (const name of ['1 давхар дэд ажил', '2 давхар дэд ажил']) {
+      const table = screen.getByRole('table', { name });
+      expect(
+        within(table).queryByRole('columnheader', { name: 'Ажилтан' }),
+      ).not.toBeInTheDocument();
+    }
+  });
+
+  it('remembers which floor sections the user closed', async () => {
+    vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(twoFloorWork());
+    const user = userEvent.setup();
+
+    const first = renderDetail([PERMISSIONS.PLANNED_WORK_VIEW]);
+
+    // Open by default: this page IS the work, so it does not start behind a click per floor.
+    const toggle = await screen.findByRole('button', { name: /^1 давхар/ });
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('table', { name: '1 давхар дэд ажил' })).not.toBeInTheDocument();
+    // The other section is untouched.
+    expect(screen.getByRole('table', { name: '2 давхар дэд ажил' })).toBeInTheDocument();
+
+    first.unmount();
+    renderDetail([PERMISSIONS.PLANNED_WORK_VIEW]);
+
+    const reopened = await screen.findByRole('button', { name: /^1 давхар/ });
+    expect(reopened).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('table', { name: '1 давхар дэд ажил' })).not.toBeInTheDocument();
+  });
+
+  it('labels the material card as the PLAN rather than a bare "Материал"', async () => {
+    vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(
+      makePlannedWork({ materials: [{ name: 'Кабель 3x2.5', quantity: 100, unit: 'METRE' }] }),
+    );
+
+    renderDetail([PERMISSIONS.PLANNED_WORK_VIEW]);
+
+    // What a job is expected to need is not a record of what it was issued, so the heading
+    // says which of the two this is.
+    expect(
+      await screen.findByRole('heading', { name: 'Төлөвлөсөн материал' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Материал' })).not.toBeInTheDocument();
   });
 
   it('shows an error state when the work cannot be loaded', async () => {

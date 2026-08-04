@@ -77,13 +77,13 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: <Widget>[
                   const SizedBox(height: 8),
-                  const Text(
+                  Text(
                     'Monhorus',
                     textAlign: TextAlign.center,
                     style: CustomerTokens.display,
                   ),
                   const SizedBox(height: 4),
-                  const Text(
+                  Text(
                     'Цахилгааны үйлчилгээний удирдлагын систем',
                     textAlign: TextAlign.center,
                     style: CustomerTokens.emptyText,
@@ -96,7 +96,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: <Widget>[
-                          const Text('Нэвтрэх', style: CustomerTokens.headerTitle),
+                          Text('Нэвтрэх', style: CustomerTokens.headerTitle),
                           const SizedBox(height: 16),
 
                           if (failure != null) ...<Widget>[
@@ -160,7 +160,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
                           // V1 has no self-service recovery. Saying so here avoids
                           // support tickets asking for the missing link.
-                          const Text(
+                          Text(
                             'Нууц үгээ мартсан бол системийн администратортой '
                             'холбогдоно уу. Өөрөө сэргээх боломжгүй.',
                             textAlign: TextAlign.center,

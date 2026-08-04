@@ -8,14 +8,17 @@ import '../../../../../core/media/photo_capture.dart';
 import '../../../../../core/network/api_result.dart';
 import '../../../../auth/domain/entities/app_user.dart';
 import '../../../../auth/presentation/providers/auth_provider.dart';
+import '../../../home/presentation/providers/home_providers.dart';
 import '../../../identity/employee_self.dart';
 import '../../../identity/employee_self_provider.dart';
 import '../../../shared/service_request_models.dart';
+import '../../../shared/service_request_vocabulary.dart';
 import '../../data/datasources/work_remote_data_source.dart';
 import '../../data/models/employee_link_model.dart';
 import '../../data/models/inspection_report_model.dart';
 import '../../data/models/planned_work_model.dart';
 import '../../data/models/task_material_model.dart';
+import '../../data/models/work_report_model.dart';
 import '../../data/repositories/work_repository_impl.dart';
 import '../../domain/entities/planned_work_enums.dart';
 import '../../domain/entities/work_identity.dart';
@@ -76,10 +79,17 @@ class WorkGrants {
   /// Whether the caller supervises planned work rather than merely carrying it out.
   ///
   /// Mirrors `OVERSIGHT_PERMISSIONS` in
-  /// apps/backend/src/modules/planned-work/planned-work.scope.ts. Holding any one of
-  /// these lifts the assignment scope server-side, so the app must not narrow its own
+  /// apps/backend/src/modules/planned-work/planned-work.scope.ts — the WRITE set, and
+  /// deliberately not the read union beside it. Holding one of these lifts the
+  /// assignment scope on writes server-side, so the app must not narrow its own
   /// controls for a dispatcher or a manager who is legitimately acting on somebody
   /// else's job.
+  ///
+  /// `READ_OVERSIGHT_PERMISSIONS` — `invoice.view`, `report.view`, `dispatch.view` —
+  /// is NOT mirrored here and must not be added. Those keys widen what an account may
+  /// SEE, and this getter decides which buttons to draw: an accountant who can read
+  /// every job in the company still cannot start one, so mirroring them would offer a
+  /// control whose only outcome is a 403.
   ///
   /// The four keys the TECHNICIAN default grants — view, change_status,
   /// record_progress, submit_report — are deliberately absent, and adding one here
@@ -271,7 +281,7 @@ class PlannedWorkBoard {
     required this.active,
     required this.upcoming,
     required this.finished,
-    this.isUnfiltered = false,
+    this.identityProblem,
   });
 
   final List<PlannedWorkListItemModel> overdue;
@@ -279,10 +289,15 @@ class PlannedWorkBoard {
   final List<PlannedWorkListItemModel> upcoming;
   final List<PlannedWorkListItemModel> finished;
 
-  /// True when no `employeeId` filter could be applied and this is every planned
-  /// work in the system rather than the caller's own. The screen must say so:
-  /// unlabelled, it is indistinguishable from a very busy technician's queue.
-  final bool isUnfiltered;
+  /// Set when the account could not be matched to an employee card, which the screen
+  /// must say out loud.
+  ///
+  /// It is carried ALONGSIDE the rows rather than thrown in their place, because the
+  /// two facts are now independent: the server bounds the list by itself, so a list
+  /// still arrives — it is simply empty, and an empty list with no explanation reads
+  /// as "you have no work" when the truth is "nobody can be given work under this
+  /// login until an administrator links it".
+  final WorkIdentityProblem? identityProblem;
 
   bool get isEmpty =>
       overdue.isEmpty && active.isEmpty && upcoming.isEmpty && finished.isEmpty;
@@ -307,7 +322,7 @@ class PlannedWorkBoard {
 
   factory PlannedWorkBoard.from(
     List<PlannedWorkListItemModel> items, {
-    bool isUnfiltered = false,
+    WorkIdentityProblem? identityProblem,
   }) {
     final List<PlannedWorkListItemModel> overdue = <PlannedWorkListItemModel>[];
     final List<PlannedWorkListItemModel> active = <PlannedWorkListItemModel>[];
@@ -358,7 +373,7 @@ class PlannedWorkBoard {
       active: active,
       upcoming: upcoming,
       finished: finished,
-      isUnfiltered: isUnfiltered,
+      identityProblem: identityProblem,
     );
   }
 }
@@ -388,81 +403,468 @@ class WorkScopeUnavailable implements Exception {
   String toString() => 'WorkScopeUnavailable: $title';
 }
 
-/// Whether the user has explicitly asked to see the unfiltered system-wide list.
-///
-/// Off by default and never set automatically. It exists because an account that
-/// cannot be matched to an employee card would otherwise have a completely dead tab,
-/// while `planned_work.view` already exposes every planned work in the system to it.
-/// So the data is offered — but only on a deliberate tap, and only under a banner
-/// that says what it is. The dishonest version of this feature is the one that
-/// silently drops the `employeeId` filter and keeps the heading "Миний ажил".
-final NotifierProvider<UnfilteredWorkController, bool>
-    showUnfilteredWorkProvider =
-    NotifierProvider<UnfilteredWorkController, bool>(
-        UnfilteredWorkController.new);
-
-class UnfilteredWorkController extends Notifier<bool> {
-  @override
-  bool build() => false;
-
-  void enable() => state = true;
-  void disable() => state = false;
-}
-
 /// The board for the currently selected planned-work scope.
 ///
-/// Both server-side filters this can send — `employeeId` and `teamId` — come from
-/// the resolved identity. When the identity is unresolved the provider raises rather
-/// than quietly dropping the filter: an unfiltered `GET /planned-work` returns every
-/// planned work in the system, and presenting that as "Миний ажил" would be a lie
-/// the user has no way to detect. The unfiltered list is reachable, but only through
-/// [showUnfilteredWorkProvider] and only labelled as what it is.
+/// "МИНИЙ" SENDS NO FILTER, AND THAT IS THE FIX RATHER THAN A SHORTCUT.
 ///
-/// [WorkScope.open] is not served here — the pool that segment names is service
-/// requests, which [PlannedWorkBoard] cannot hold — so the screen watches
-/// [openRequestPoolProvider] for it instead and this provider is not read while it is
-/// selected. The filter below therefore only has to tell "багийн" from "миний", and an
-/// open scope arriving anyway reads as "миний": narrowed to the caller's own id, never
-/// as the unfiltered system-wide list.
+/// It used to send `employeeId=<me>`, because `GET /planned-work` took no auth context
+/// and answered every job in the company to anyone who omitted it. That filter could
+/// never express the rule the server actually applies: assignment scope admits a caller
+/// named individually OR belonging to the assigned team, and `employeeId` and `teamId`
+/// AND together server-side, so a technician whose only work was assigned to their TEAM
+/// saw an empty "Миний" and concluded they had nothing to do. Sending both was not the
+/// answer; there was no way to ask for a union from the outside at all.
+///
+/// The server now bounds the list itself — `resolveAssignedWorkFilter` in
+/// apps/backend/src/modules/planned-work/planned-work.scope.ts — with exactly that union,
+/// for every caller without an oversight permission. So the honest request for "my work"
+/// is the one with no filter on it: the answer is scoped by the same policy that decides
+/// what the caller may act on, and it cannot drift from it. A dispatcher or manager, who
+/// legitimately sees everything, gets everything here too, which is correct: this app is
+/// not the place that decides what their reach is.
+///
+/// This is also why the old "show me the unfiltered system-wide list" escape hatch is
+/// gone. It existed because an unlinked account had a completely dead tab while
+/// `planned_work.view` exposed the whole company anyway. Both halves of that premise are
+/// false now: the unfiltered request is the same request "Миний" already makes, and for a
+/// scoped caller it returns the same scoped rows — a button offering "all planned work"
+/// would have been offering a promise the server no longer keeps.
+///
+/// "БАГИЙН" STILL FILTERS, because it is a narrowing and not a scope: it answers "what is
+/// my team carrying", which is a strict subset of what the server would return anyway, and
+/// `teamId` is honoured as additional narrowing on top of the enforced predicate.
+///
+/// The identity is still resolved on both segments, for one reason only — an account with
+/// no employee card must be TOLD so. See [PlannedWorkBoard.identityProblem]: it is carried
+/// with the rows rather than thrown in their place, because the list itself succeeds now.
+///
+/// [WorkScope.open] is not served here — the pool that segment names is service requests,
+/// which [PlannedWorkBoard] cannot hold — so the screen watches [openRequestPoolProvider]
+/// for it instead and this provider is not read while it is selected. An open scope
+/// arriving anyway reads as "миний".
 final FutureProvider<PlannedWorkBoard> plannedWorkBoardProvider =
     FutureProvider<PlannedWorkBoard>((Ref ref) async {
   final WorkScope scope = ref.watch(workScopeProvider);
-  final bool unfiltered = ref.watch(showUnfilteredWorkProvider);
   final bool teamScope = scope == WorkScope.team;
 
-  if (unfiltered) {
-    final WorkRepository repository = ref.watch(workRepositoryProvider);
-    final PaginatedData<PlannedWorkListItemModel> all =
-        _unwrap(await repository.listPlannedWork());
-    return PlannedWorkBoard.from(all.items, isUnfiltered: true);
+  final WorkIdentity identity = await ref.watch(workIdentityProvider.future);
+  final WorkRepository repository = ref.watch(workRepositoryProvider);
+
+  if (teamScope) {
+    // The one segment that genuinely cannot be drawn without the card: a team filter
+    // needs a team id, and there is nowhere else to get one.
+    if (identity is! ResolvedWorkIdentity) {
+      final UnresolvedWorkIdentity unresolved =
+          identity as UnresolvedWorkIdentity;
+      throw WorkScopeUnavailable(unresolved.title, detail: unresolved.detail);
+    }
+    if (identity.teamId == null) {
+      throw const WorkScopeUnavailable(
+        'Та багт бүртгэгдээгүй байна',
+        detail:
+            'Таны ажилтны карт ямар нэг багт хамааруулагдаагүй тул багийн ажлыг '
+            'шүүх боломжгүй. Багийн бүртгэлээ администратороор хийлгэнэ үү.',
+      );
+    }
+
+    final PaginatedData<PlannedWorkListItemModel> team = _unwrap(
+      await repository.listPlannedWork(teamId: identity.teamId),
+    );
+    return PlannedWorkBoard.from(team.items);
+  }
+
+  final PaginatedData<PlannedWorkListItemModel> page =
+      _unwrap(await repository.listPlannedWork());
+
+  return PlannedWorkBoard.from(
+    page.items,
+    identityProblem:
+        identity is UnresolvedWorkIdentity ? identity.problem : null,
+  );
+});
+
+// -- The reader's own service requests ---------------------------------------
+
+/// The service requests assigned to the reader, plus a note when the read failed.
+///
+/// A value rather than a thrown failure because this list is drawn ALONGSIDE the
+/// planned-work board: a `/service-requests` that refuses must not blank the board that
+/// answered, and an empty section with no explanation would read as "no requests" when
+/// the truth is "we could not ask".
+class AssignedRequests {
+  const AssignedRequests({required this.items, this.notice});
+
+  static const AssignedRequests none =
+      AssignedRequests(items: <ServiceRequestListItemModel>[]);
+
+  final List<ServiceRequestListItemModel> items;
+
+  /// The backend's own message, when the read failed.
+  final String? notice;
+}
+
+/// `GET /service-requests`, narrowed to the rows that are actually the reader's.
+///
+/// THIS IS THE LIST THE "МИНИЙ" SEGMENT WAS MISSING. A request assigned to a technician
+/// had nowhere to appear at all: [PlannedWorkBoard] holds `PlannedWorkListItemModel` and
+/// structurally cannot carry a service request, so the moment a request left the
+/// "Нээлттэй" pool it left the Ажил tab entirely — the assignment was correct
+/// server-side and invisible in the app.
+///
+/// TWO SUBTRACTIONS, and both are necessary:
+///
+///   * **The unclaimed pool.** The service-request list read passes
+///     `includeUnclaimed: true` server-side — deliberately, because that branch is what
+///     the "Нээлттэй" segment and `POST /:id/claim` are built on — so the response
+///     carries the whole open queue as well as the reader's work. Those rows belong to
+///     nobody and must not appear under "Миний".
+///   * **Everybody else's.** An oversight caller (a dispatcher) is not bounded by the
+///     server's predicate at all and gets the organisation's requests. "Миний" means
+///     mine for them too.
+///
+/// Both fall out of one test: [ServiceRequestListItemModel.isAssignedTo], the union the
+/// server itself uses — named individually OR carried by the reader's team.
+///
+/// Without a resolved identity there is nothing to compare against, so the answer is an
+/// empty list rather than a guess. The board says why in that case: an account with no
+/// employee card carries [PlannedWorkBoard.identityProblem].
+final FutureProvider<AssignedRequests> assignedRequestsProvider =
+    FutureProvider<AssignedRequests>((Ref ref) async {
+  final AppUser? user = ref.watch(currentUserProvider);
+  // The same key the pool's read is gated on, and read from the effective set rather
+  // than inferred from the role. Absent, the section is simply not drawn: the "Нээлттэй"
+  // segment already names this permission, and repeating the refusal on a second list
+  // would say the same thing twice.
+  if (!(user?.has(PermissionKeys.serviceRequestView) ?? false)) {
+    return AssignedRequests.none;
   }
 
   final WorkIdentity identity = await ref.watch(workIdentityProvider.future);
-  if (identity is! ResolvedWorkIdentity) {
-    final UnresolvedWorkIdentity unresolved =
-        identity as UnresolvedWorkIdentity;
-    throw WorkScopeUnavailable(unresolved.title, detail: unresolved.detail);
+  if (identity is! ResolvedWorkIdentity) return AssignedRequests.none;
+
+  final ApiResult<PaginatedData<ServiceRequestListItemModel>> result =
+      await ref.watch(workRepositoryProvider).listAssignedServiceRequests();
+
+  return result.when(
+    success: (PaginatedData<ServiceRequestListItemModel> page) {
+      final List<ServiceRequestListItemModel> mine = page.items
+          .where((ServiceRequestListItemModel request) => request.isAssignedTo(
+                employeeId: identity.employeeId,
+                teamId: identity.teamId,
+              ))
+          .toList()
+        ..sort(_byOutstandingThenUrgency);
+      return AssignedRequests(items: mine);
+    },
+    failure: (Failure failure) => AssignedRequests(
+      items: const <ServiceRequestListItemModel>[],
+      notice: failure.message,
+    ),
+  );
+});
+
+/// Live work first, then whatever will breach first.
+///
+/// The list is not filtered by status — a request the reader closed this morning is
+/// still theirs and hiding it would look like the row vanished — but a finished job is
+/// never the thing to read first, so it sinks below everything outstanding.
+int _byOutstandingThenUrgency(
+  ServiceRequestListItemModel a,
+  ServiceRequestListItemModel b,
+) {
+  final bool left = a.status?.isOutstanding ?? true;
+  final bool right = b.status?.isOutstanding ?? true;
+  if (left != right) return left ? -1 : 1;
+  return WorkRemoteDataSource.compareByUrgency(a, b);
+}
+
+/// The "Миний" segment's whole content: the planned-work board AND the reader's
+/// requests, which are two record types and one queue.
+///
+/// Composed here rather than merged into [PlannedWorkBoard] because the two lists are
+/// genuinely different records with different detail screens; what they share is only
+/// the sentence "this is what I have to do today", which is a fact about the screen.
+class MyWorkBoard {
+  const MyWorkBoard({
+    required this.plannedWork,
+    required this.requests,
+    this.requestsNotice,
+  });
+
+  final PlannedWorkBoard plannedWork;
+  final List<ServiceRequestListItemModel> requests;
+
+  /// Set when the request read failed while the board still answered.
+  final String? requestsNotice;
+
+  bool get isEmpty => plannedWork.isEmpty && requests.isEmpty;
+
+  /// The requests still expecting something of the reader.
+  ///
+  /// A status this build does not know does not count, which is what `HomeOverview`
+  /// does with the same rows — the two tabs print the same figure and must not
+  /// disagree about it.
+  List<ServiceRequestListItemModel> get outstandingRequests => requests
+      .where((ServiceRequestListItemModel request) =>
+          request.status?.isOutstanding ?? false)
+      .toList(growable: false);
+
+  // The three KPI figures cover the WHOLE segment, requests included. They used to be
+  // the board's alone, which was right when the board was all there was; leaving them
+  // there now would print "3 идэвхтэй" above a list of five things to do.
+
+  int get activeCount => plannedWork.openCount + outstandingRequests.length;
+
+  int get dueTodayCount {
+    final DateTime endOfDay = DateTime.now().toLocal();
+    final DateTime midnight = DateTime(
+      endOfDay.year,
+      endOfDay.month,
+      endOfDay.day,
+      23,
+      59,
+      59,
+    );
+    final int requestsDue = outstandingRequests
+        .where((ServiceRequestListItemModel request) {
+          final DateTime? due = request.slaDueAt?.toLocal();
+          return due != null && !due.isAfter(midnight);
+        })
+        .length;
+    return plannedWork.dueTodayCount() + requestsDue;
   }
 
-  if (teamScope && identity.teamId == null) {
-    throw const WorkScopeUnavailable(
-      'Та багт бүртгэгдээгүй байна',
-      detail:
-          'Таны ажилтны карт ямар нэг багт хамааруулагдаагүй тул багийн ажлыг '
-          'шүүх боломжгүй. Багийн бүртгэлээ администратороор хийлгэнэ үү.',
+  /// Past the deadline, on the backend's own verdict in both halves — the derived
+  /// `OVERDUE` status and the computed `slaState`. Nothing here subtracts dates.
+  int get overdueCount =>
+      plannedWork.overdue.length +
+      outstandingRequests
+          .where((ServiceRequestListItemModel request) =>
+              request.slaState == SlaState.breached ||
+              request.slaState == SlaState.late)
+          .length;
+}
+
+/// What the two planned-work segments render.
+///
+/// "Багийн" contributes no requests, and not because the API could not answer: the
+/// segment asks "what is my TEAM carrying", `serviceRequestListQuerySchema` has no team
+/// filter, and the rows this app can identify as the team's are exactly the ones already
+/// in "Миний". A team segment that quietly showed the reader's own requests would be
+/// answering a different question than its label.
+final FutureProvider<MyWorkBoard> myWorkBoardProvider =
+    FutureProvider<MyWorkBoard>((Ref ref) async {
+  final PlannedWorkBoard board = await ref.watch(plannedWorkBoardProvider.future);
+  if (ref.watch(workScopeProvider) == WorkScope.team) {
+    return MyWorkBoard(
+      plannedWork: board,
+      requests: const <ServiceRequestListItemModel>[],
     );
   }
 
-  final WorkRepository repository = ref.watch(workRepositoryProvider);
-  final PaginatedData<PlannedWorkListItemModel> page = _unwrap(
-    await repository.listPlannedWork(
-      employeeId: teamScope ? null : identity.employeeId,
-      teamId: teamScope ? identity.teamId : null,
-    ),
+  final AssignedRequests requests =
+      await ref.watch(assignedRequestsProvider.future);
+  return MyWorkBoard(
+    plannedWork: board,
+    requests: requests.items,
+    requestsNotice: requests.notice,
   );
-
-  return PlannedWorkBoard.from(page.items);
 });
+
+// -- One request, in full ----------------------------------------------------
+
+/// `GET /service-requests/:id`, for the detail screen.
+///
+/// The screen used to render purely from the list row it was handed, which is why it
+/// could show a location and nothing else: `ServiceRequestListItemDto` carries no
+/// description, no contact and no attachments. This is the read that carries all three.
+///
+/// `null` is the route's 404 and is NOT an error state. The endpoint is
+/// assignment-scoped, so a request that stopped being the caller's — reassigned while
+/// they were looking at the list, say — answers "missing" rather than "forbidden". The
+/// screen turns that into a sentence; an `AsyncError` would turn it into an apology for
+/// something that did not go wrong.
+///
+/// Family-keyed on the request id and left `autoDispose`-free for the same reason the
+/// other reads here are: it is invalidated by the actions that change it.
+final FutureProviderFamily<ServiceRequestDetailModel?, String>
+    serviceRequestDetailProvider =
+    FutureProvider.family<ServiceRequestDetailModel?, String>(
+        (Ref ref, String requestId) async {
+  final WorkRepository repository = ref.watch(workRepositoryProvider);
+  return _unwrap(await repository.getServiceRequestDetail(requestId));
+});
+
+/// Whether the server's assignment scope would admit this caller on this REQUEST.
+///
+/// The service-request twin of [resolvePlannedWorkAssignment], and it exists for the same
+/// reason: `assertSelfProgressAllowed` and `assertReportApprovalAllowed` in
+/// apps/backend/src/modules/service-request/self-progress.policy.ts bound both writes to a
+/// request that names the caller or their team, so a control offered on anything else can
+/// only ever produce a 403.
+///
+/// THE UNCLAIMED POOL IS NOT ADMITTED HERE, and that is the one place this differs from the
+/// read the screen is built on. `GET /service-requests/:id` passes `includeUnclaimed: true`
+/// — which is what lets a technician open a "Нээлттэй" row and read the fault before
+/// deciding to take it — while the write policy passes false. A request nobody holds is
+/// readable and not yet actionable; claiming it is the separate act that changes that.
+///
+/// PERMISSIVE WHEN UNSURE, exactly as the planned-work mirror is: only positive knowledge
+/// narrows the screen, so an unresolved identity or a permission set that has not arrived
+/// yet leaves the control drawn rather than hiding it from somebody entitled to it.
+PlannedWorkAssignment resolveRequestAssignment({
+  required ServiceRequestDetailModel request,
+  required WorkIdentity? identity,
+  required WorkGrants grants,
+}) {
+  if (!grants.isKnown) return PlannedWorkAssignment.unrestricted;
+  if (grants.hasPlannedWorkOversight) return PlannedWorkAssignment.unrestricted;
+
+  if (identity == null) return PlannedWorkAssignment.unrestricted;
+  if (identity is UnresolvedWorkIdentity) {
+    /*
+     * "We could not ask" is not "you are nobody".
+     *
+     * `notLinked` is a definite answer — no employee card means no assignment can name this
+     * caller, which is exactly what a null `auth.employeeId` means server-side — so it
+     * blocks. `lookupFailed` is a network or server problem and says nothing about who the
+     * caller is; hiding the controls on it would let one failed `GET /employees/me` make a
+     * technician's own job read as somebody else's until they restarted the app.
+     */
+    return identity.problem == WorkIdentityProblem.notLinked
+        ? PlannedWorkAssignment.notAssigned
+        : PlannedWorkAssignment.unrestricted;
+  }
+  if (identity is! ResolvedWorkIdentity) return PlannedWorkAssignment.notAssigned;
+
+  return request.isAssignedTo(
+    employeeId: identity.employeeId,
+    teamId: identity.teamId,
+  )
+      ? PlannedWorkAssignment.assigned
+      : PlannedWorkAssignment.notAssigned;
+}
+
+// -- Acting on one request ---------------------------------------------------
+
+/// What the detail screen is currently doing to a request, and how it went.
+///
+/// Keyed per request rather than held as one flag, for the same reason [ClaimState] is: two
+/// detail screens can be on the navigation stack at once, and a transition in flight on one
+/// must not disable the other.
+class RequestActionState {
+  const RequestActionState({this.pending, this.message, this.failed = false});
+
+  /// The wire value of the transition in flight, or `'APPROVE'` for the conclusion. Null
+  /// when nothing is running.
+  final String? pending;
+
+  /// The outcome to show once it settles. Cleared by [ServiceRequestActionController.dismiss].
+  final String? message;
+  final bool failed;
+
+  bool get isBusy => pending != null;
+}
+
+final NotifierProviderFamily<ServiceRequestActionController, RequestActionState, String>
+    serviceRequestActionProvider =
+    NotifierProvider.family<ServiceRequestActionController, RequestActionState, String>(
+  ServiceRequestActionController.new,
+);
+
+/// The two writes the detail screen offers: move the request on, and settle its conclusion.
+///
+/// EVERY SUCCESS INVALIDATES THE SAME FOUR READS, and each one is load-bearing rather than
+/// defensive. The detail itself obviously moved. The reader's own request list carries the
+/// row's status and is a sibling screen that will not re-read on its own. The open pool can
+/// gain or lose the row — UNASSIGNED is not reachable from here, but a request that leaves
+/// NEW does leave the pool. And the Нүүр tab counts the same rows: leaving it stale showed a
+/// technician a hero figure that disagreed with the screen they had just changed.
+class ServiceRequestActionController extends FamilyNotifier<RequestActionState, String> {
+  @override
+  RequestActionState build(String requestId) => const RequestActionState();
+
+  /// Moves the request to [status]. Returns null on success, or the refusal to show.
+  ///
+  /// The permitted set is NOT re-checked here. The screen decides which buttons exist from
+  /// `selfProgressTargets` and the live grants; the server decides whether the move
+  /// happens. A third opinion in the middle is only somewhere for the two to drift apart.
+  Future<String?> moveTo(ServiceRequestStatus status, {String? reason}) async {
+    if (state.isBusy) return null;
+    state = RequestActionState(pending: status.wireValue);
+
+    final ApiResult<ServiceRequestDetailModel> result =
+        await ref.read(workRepositoryProvider).changeServiceRequestStatus(
+              requestId: arg,
+              status: status,
+              reason: reason,
+            );
+
+    return result.when(
+      // The response IS the re-read record, but it is discarded rather than published: the
+      // detail is a `FutureProvider.family` with no state to write into, and inventing a
+      // second store for it would be a second version of the same request.
+      success: (ServiceRequestDetailModel _) {
+        state = RequestActionState(message: 'Төлөв "${status.label}" боллоо.');
+        _refresh();
+        return null;
+      },
+      failure: (Failure failure) {
+        state = RequestActionState(message: _explainAction(failure), failed: true);
+        return _explainAction(failure);
+      },
+    );
+  }
+
+  /// Approves the submitted conclusion. Returns null on success.
+  Future<String?> approveConclusion() async {
+    if (state.isBusy) return null;
+    state = const RequestActionState(pending: 'APPROVE');
+
+    final ApiResult<WorkReportModel> result =
+        await ref.read(workRepositoryProvider).approveWorkReport(arg);
+
+    return result.when(
+      success: (WorkReportModel _) {
+        state = const RequestActionState(message: 'Дүгнэлт батлагдлаа.');
+        _refresh();
+        return null;
+      },
+      failure: (Failure failure) {
+        state = RequestActionState(message: _explainAction(failure), failed: true);
+        return _explainAction(failure);
+      },
+    );
+  }
+
+  void dismiss() => state = const RequestActionState();
+
+  void _refresh() {
+    ref.invalidate(serviceRequestDetailProvider(arg));
+    ref.invalidate(assignedRequestsProvider);
+    ref.invalidate(openRequestPoolProvider);
+    ref.invalidate(homeOverviewProvider);
+  }
+}
+
+/// A refusal in the words a technician can act on.
+///
+/// A 403 here is not "something went wrong". It is one of two specific things — the key is
+/// missing, or the job is not this caller's — and the server's own message says which, so
+/// it is passed through rather than replaced. What must NOT happen is a permission refusal
+/// or a rejected transition being reported as a network problem, which sends somebody to
+/// check their signal over a rule.
+String _explainAction(Failure failure) {
+  if (failure is AuthFailure) {
+    return failure.message;
+  }
+  if (failure is ServerFailure) {
+    final String? reason = failure.fieldErrors['reason'];
+    if (reason != null) return reason;
+    return failure.message;
+  }
+  return failure.message;
+}
 
 // -- The unclaimed pool ------------------------------------------------------
 
@@ -577,6 +979,15 @@ class ClaimController extends Notifier<ClaimState> {
             ClaimState(message: '${request.requestNumber} ажлыг өөртөө авлаа.');
         // The claimed request is now assigned work, so the planned queue is stale too.
         ref.invalidate(plannedWorkBoardProvider);
+        // ...and so is the "Миний" request list the row has just moved INTO. This is
+        // the invalidation that makes the notice above the pool true: without it the
+        // claimed request left the pool and appeared nowhere until the next refresh.
+        ref.invalidate(assignedRequestsProvider);
+        // The Нүүр tab counts the same rows and is a sibling tab rather than a pushed
+        // route, so it is already built and will not re-read on its own. Leaving it
+        // stale showed a technician a hero figure that disagreed with the list they had
+        // just changed, until they thought to pull it down.
+        ref.invalidate(homeOverviewProvider);
       },
       failure: (Failure failure) {
         state = ClaimState(message: _claimMessage(failure), failed: true);
@@ -586,6 +997,9 @@ class ClaimController extends Notifier<ClaimState> {
     // Re-read either way. On success the row has left the pool; on failure the usual
     // cause is that it left the pool a moment earlier, in somebody else's hands.
     ref.invalidate(openRequestPoolProvider);
+    // The request's own record now names an assignee either way — this caller, or the
+    // colleague who won the race — so a detail screen already holding it is stale.
+    ref.invalidate(serviceRequestDetailProvider(request.id));
   }
 
   void dismiss() => state = const ClaimState();
@@ -606,9 +1020,9 @@ String _claimMessage(Failure failure) {
   return failure.message;
 }
 
-// -- Sub-task materials ------------------------------------------------------
+// -- Material catalogue ------------------------------------------------------
 
-/// The catalogue, loaded once per session and shared by every sub-task sheet.
+/// The material catalogue, loaded once per session.
 ///
 /// Gated on `material.view` rather than assumed from the role, like every other read in
 /// this tab: a deployed role can hold strictly less than the shipped default, and a picker
@@ -623,77 +1037,6 @@ final FutureProvider<List<MaterialItemModel>> materialCatalogueProvider =
       _unwrap(await ref.watch(workRepositoryProvider).listMaterialItems());
   return page.items;
 });
-
-/// Which sub-task's materials to load. A record so the family key compares by value.
-typedef TaskRef = ({String plannedWorkId, String taskId});
-
-/// What one sub-task consumed, and the writes that change it.
-///
-/// Re-reads after every write rather than patching the list in memory. A usage row is an
-/// event the server stamps — with who used it and when — so the row that comes back is not
-/// the row that was sent, and echoing the local guess would show a technician a date and a
-/// name the server did not actually record.
-final AsyncNotifierProviderFamily<TaskMaterialsNotifier, List<TaskMaterialUsageModel>, TaskRef>
-    taskMaterialsProvider = AsyncNotifierProvider.family<TaskMaterialsNotifier,
-        List<TaskMaterialUsageModel>, TaskRef>(TaskMaterialsNotifier.new);
-
-class TaskMaterialsNotifier
-    extends FamilyAsyncNotifier<List<TaskMaterialUsageModel>, TaskRef> {
-  @override
-  Future<List<TaskMaterialUsageModel>> build(TaskRef arg) async {
-    final AppUser? user = ref.watch(currentUserProvider);
-    if (!(user?.has(PermissionKeys.materialView) ?? false)) {
-      return const <TaskMaterialUsageModel>[];
-    }
-    return _unwrap(
-      await ref.watch(workRepositoryProvider).listTaskMaterials(
-            plannedWorkId: arg.plannedWorkId,
-            taskId: arg.taskId,
-          ),
-    );
-  }
-
-  Future<String?> add({
-    required String materialItemId,
-    required double quantity,
-    required MaterialUnit unit,
-    String? note,
-  }) async {
-    final ApiResult<TaskMaterialUsageModel> result =
-        await ref.read(workRepositoryProvider).addTaskMaterial(
-              plannedWorkId: arg.plannedWorkId,
-              taskId: arg.taskId,
-              materialItemId: materialItemId,
-              quantity: quantity,
-              unit: unit,
-              note: note,
-            );
-
-    return result.when(
-      success: (_) {
-        ref.invalidateSelf();
-        return null;
-      },
-      failure: (Failure failure) => failure.message,
-    );
-  }
-
-  Future<String?> remove(String usageId) async {
-    final ApiResult<void> result = await ref.read(workRepositoryProvider).removeTaskMaterial(
-          plannedWorkId: arg.plannedWorkId,
-          taskId: arg.taskId,
-          usageId: usageId,
-        );
-
-    return result.when(
-      success: (_) {
-        ref.invalidateSelf();
-        return null;
-      },
-      failure: (Failure failure) => failure.message,
-    );
-  }
-}
 
 // -- Detail ------------------------------------------------------------------
 

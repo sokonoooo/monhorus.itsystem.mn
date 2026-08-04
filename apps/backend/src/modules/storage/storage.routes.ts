@@ -7,35 +7,106 @@ import { z } from 'zod';
 
 import { AppError } from '../../common/errors/app-error';
 import { ERROR_CODES } from '../../common/errors/error-codes';
+import {
+  assertInCustomerScope,
+  resolveCustomerScope,
+} from '../../common/security/customer-scope';
+import type { AuthContext } from '../../common/types/express';
 import { created, ok } from '../../common/utils/api-response.util';
 import { pathParam } from '../../common/utils/path-param.util';
 import { buildRequestMeta as meta } from '../../common/utils/request-meta.util';
 import { authenticate, enforcePasswordChange, requireAuth } from '../../middlewares/authenticate.middleware';
-import { requirePermission } from '../../middlewares/authorize.middleware';
+import { requireAnyPermission, requirePermission } from '../../middlewares/authorize.middleware';
 import { validate } from '../../middlewares/validate.middleware';
 import { recordAudit } from '../audit/audit.service';
 import { EmployeeDocument } from '../employee/employee-document.model';
 import { toEmployeeDocumentDto } from '../employee/employee.mapper';
 import { Employee } from '../employee/employee.model';
-import { StoredFile, type StoredFileOwnerType } from './stored-file.model';
+import { ObjectRecord } from '../object-master/object-master.models';
+import { ObjectNode } from '../objects/object.models';
+import { ServiceRequest } from '../service-request/service-request.model';
+import { StoredFile, type IStoredFile, type StoredFileOwnerType } from './stored-file.model';
 import { deleteStoredFile, resolveStoredFilePath, upload } from './storage.service';
 
 const objectId = z.string().regex(/^[a-f\d]{24}$/i, 'ID буруу форматтай байна.');
 
 /**
- * Permission required to download a file, by owning entity.
+ * Permissions that admit a download, by owning entity. Holding ANY of them passes the
+ * guard; the tenant question is answered separately, by `assertFileInCustomerScope`.
  *
  * Exhaustive by construction: adding an owner type to the model without extending this
  * map is a compile error, so a new attachment kind can never default to being readable
  * by anyone who can guess a file id.
+ *
+ * The portal keys sit beside their staff counterparts rather than replacing them because
+ * the two answer the same question for different populations — "may you look at floor
+ * plans at all". Section "Customer self-service" in permissions.ts is explicit that a
+ * portal key is necessary and never sufficient: every one of the three owner kinds below
+ * that accepts a portal key is also resolved back to its customer before a byte is
+ * served. `EMPLOYEE` and `PLANNED_WORK_TASK` stay staff-only — an HR document and an
+ * internal work task are not customer-facing, so there is no portal key to accept.
  */
-const DOWNLOAD_PERMISSION_BY_OWNER: Record<StoredFileOwnerType, PermissionKey> = {
-  EMPLOYEE: PERMISSIONS.EMPLOYEE_VIEW,
-  SERVICE_REQUEST: PERMISSIONS.SERVICE_REQUEST_VIEW,
-  PLANNED_WORK_TASK: PERMISSIONS.PLANNED_WORK_VIEW,
-  FLOOR_PLAN: PERMISSIONS.OBJECT_VIEW,
-  OBJECT: PERMISSIONS.OBJECT_MASTER_VIEW,
+const DOWNLOAD_PERMISSIONS_BY_OWNER: Record<StoredFileOwnerType, readonly PermissionKey[]> = {
+  EMPLOYEE: [PERMISSIONS.EMPLOYEE_VIEW],
+  SERVICE_REQUEST: [PERMISSIONS.SERVICE_REQUEST_VIEW, PERMISSIONS.PORTAL_SERVICE_REQUEST_VIEW],
+  PLANNED_WORK_TASK: [PERMISSIONS.PLANNED_WORK_VIEW],
+  FLOOR_PLAN: [PERMISSIONS.OBJECT_VIEW, PERMISSIONS.PORTAL_FLOOR_VIEW],
+  OBJECT: [PERMISSIONS.OBJECT_MASTER_VIEW, PERMISSIONS.PORTAL_OBJECT_VIEW],
 };
+
+/**
+ * Resolves a file back to the organisation that owns it and refuses a caller outside it.
+ *
+ * The permission answers "may you look at this module"; this answers "at whose records".
+ * Without it a portal key would be a master key: this route is keyed on the file id alone,
+ * so one customer holding `portal.floor.view` could read every other tenant's floor plan
+ * by guessing 24 hex characters.
+ *
+ * A no-op for staff — `resolveCustomerScope` returns a STAFF scope and `assertInCustomerScope`
+ * permits everything — so cross-tenant staff access is exactly what it was.
+ *
+ * The two staff-only owner kinds are refused outright rather than left to fall through.
+ * They are unreachable today because the guard above admits no portal key for them, but a
+ * customer arriving here at all would mean a permission was granted that never should have
+ * been, and the safe answer to that is no.
+ *
+ * Reported as not-found, matching every other customer-scoped read: a forbidden reply for
+ * an id that exists in another tenant confirms the file is real.
+ */
+async function assertFileInCustomerScope(
+  auth: AuthContext,
+  file: Pick<IStoredFile, 'ownerType' | 'ownerId'>,
+): Promise<void> {
+  const scope = resolveCustomerScope(auth);
+  if (scope.mode === 'STAFF') return;
+
+  const notFound = 'Файл олдсонгүй.';
+
+  switch (file.ownerType) {
+    case 'FLOOR_PLAN': {
+      // `uploadFloorPlan` parks the image on the floor node itself, so the owner id is
+      // the floor and its denormalised `customer` is the answer.
+      const floor = await ObjectNode.findById(file.ownerId).select('customer kind');
+      assertInCustomerScope(scope, floor?.kind === 'FLOOR' ? floor.customer : null, notFound);
+      return;
+    }
+    case 'OBJECT': {
+      // Assessment evidence is parked on the uploader until an assessment claims it for
+      // the object. An unclaimed file resolves to no object and is therefore refused.
+      const object = await ObjectRecord.findById(file.ownerId).select('customer');
+      assertInCustomerScope(scope, object?.customer, notFound);
+      return;
+    }
+    case 'SERVICE_REQUEST': {
+      // Same shape: an attachment is parked on the uploader until the request claims it.
+      const serviceRequest = await ServiceRequest.findById(file.ownerId).select('customer');
+      assertInCustomerScope(scope, serviceRequest?.customer, notFound);
+      return;
+    }
+    default:
+      throw AppError.forbidden();
+  }
+}
 
 /**
  * The one exception to the table above: a caller may fetch the photo on their OWN employee
@@ -73,7 +144,8 @@ fileRouter.use(authenticate, enforcePasswordChange);
 /**
  * Authenticated download. The permission required depends on the owning entity, so a
  * caller who may not view employees cannot read an employee's documents by guessing
- * a file id.
+ * a file id, and the owning entity is then resolved back to its organisation so a
+ * customer cannot read another tenant's file by guessing one either.
  */
 fileRouter.get(
   '/:fileId',
@@ -86,11 +158,15 @@ fileRouter.get(
         throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Файл олдсонгүй.');
       }
 
-      const requiredPermission = DOWNLOAD_PERMISSION_BY_OWNER[file.ownerType];
+      const accepted = DOWNLOAD_PERMISSIONS_BY_OWNER[file.ownerType];
+      const permitted = accepted.some((key) => auth.permissions.has(key));
 
-      if (!auth.permissions.has(requiredPermission) && !(await isOwnProfilePhoto(auth, file))) {
+      if (!permitted && !(await isOwnProfilePhoto(auth, file))) {
         throw AppError.forbidden();
       }
+
+      // The guard above says the caller may look at this kind of file; this says whose.
+      await assertFileInCustomerScope(auth, file);
 
       const absolutePath = resolveStoredFilePath(file.storageKey);
       if (!fs.existsSync(absolutePath)) {
@@ -122,10 +198,35 @@ fileRouter.get(
  * request to belong to yet. The file is parked against the uploader's own id and
  * claimed by the request on creation. Access still requires service_request.view,
  * and an unclaimed file is only reachable by a caller with that permission.
+ *
+ * The portal key sits beside the staff one for the same reason it does on
+ * `POST /service-requests`: a customer who may raise a request must be able to
+ * photograph what they are raising it about. Without it the two halves of one form
+ * disagreed — the request was accepted and the picture was 403'd — which is why the
+ * customer app shipped with no photo field at all.
+ *
+ * Accepting a portal key here opens no cross-tenant door, because this route writes
+ * rather than reads and everything it writes is keyed on the caller:
+ *
+ *   * `ownerId` and `uploadedBy` are taken from the authenticated session, never from
+ *     the request, so an upload can only ever be parked on the caller themselves.
+ *   * The file is not readable by the uploader either until a request claims it —
+ *     `assertFileInCustomerScope` resolves a SERVICE_REQUEST file through
+ *     `ServiceRequest.findById(ownerId)`, and a parked file's owner is a user id, which
+ *     matches no request and is therefore refused.
+ *   * `createServiceRequest` only claims files this same account uploaded, so the id
+ *     minted here cannot be handed to another tenant's request either.
+ *
+ * There is consequently no scope question to ask at upload time: the permission asks
+ * "may you attach files at all", and there is no "whose records" until the request
+ * that claims the file names them.
  */
 fileRouter.post(
   '/service-request-attachments',
-  requirePermission(PERMISSIONS.SERVICE_REQUEST_CREATE),
+  requireAnyPermission(
+    PERMISSIONS.SERVICE_REQUEST_CREATE,
+    PERMISSIONS.PORTAL_SERVICE_REQUEST_CREATE,
+  ),
   upload.single('file'),
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {

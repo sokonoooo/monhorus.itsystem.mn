@@ -9,7 +9,12 @@ import 'features/auth/presentation/screens/login_screen.dart';
 import 'features/employee/presentation/screens/employee_shell_screen.dart';
 import 'features/employee/presentation/theme/employee_tokens.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  // Resolve Barlow and Barlow Condensed before the first frame. Without this the
+  // app paints one frame in the system face and reflows once the fonts land, which
+  // is very visible on the condensed headings.
+  await EmployeeTokens.preload();
   runApp(const ProviderScope(child: MonhorusEmployeeApp()));
 }
 
@@ -86,13 +91,13 @@ class _CustomerNotSupportedScreen extends ConsumerWidget {
                     color: EmployeeTokens.muted,
                   ),
                   const SizedBox(height: 20),
-                  const Text(
+                  Text(
                     'Энэ апп зөвхөн ажилтнуудад зориулагдсан',
                     textAlign: TextAlign.center,
                     style: EmployeeTokens.screenTitle,
                   ),
                   const SizedBox(height: 10),
-                  const Text(
+                  Text(
                     'Таны бүртгэл харилцагчийн эрхтэй байна. Харилцагчийн '
                     'Monhorus аппаар нэвтэрнэ үү.',
                     textAlign: TextAlign.center,
@@ -120,7 +125,7 @@ class _SplashScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Scaffold(
+    return Scaffold(
       body: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -129,8 +134,8 @@ class _SplashScreen extends StatelessWidget {
               'Monhorus',
               style: EmployeeTokens.display,
             ),
-            SizedBox(height: 20),
-            CircularProgressIndicator(),
+            const SizedBox(height: 20),
+            const CircularProgressIndicator(),
           ],
         ),
       ),

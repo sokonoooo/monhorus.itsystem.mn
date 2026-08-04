@@ -19,6 +19,11 @@ calendarRouter.use(authenticate, enforcePasswordChange);
  * The calendar has no permission of its own: it is a projection of planned work and
  * service requests, and each source is filtered by the permission that governs it. A
  * caller who can read at least one source gets a calendar containing only that source.
+ *
+ * THE GUARD IS NOT THE SCOPE. Every technician holds both view keys, so passing this line
+ * says nothing about whose schedule the caller may read. That second question is answered
+ * inside `buildCalendar`, by the same `resolveAssignedWorkFilter` the two list endpoints
+ * use — see its note there. Do not mistake this guard for the boundary.
  */
 calendarRouter.get(
   '/',
