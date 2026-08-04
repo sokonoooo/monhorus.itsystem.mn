@@ -323,8 +323,15 @@ class _CreateRequestSheetState extends ConsumerState<CreateRequestSheet> {
                             fontWeight: FontWeight.w700,
                           ),
                         ),
+                        // No hours are named here on purpose. The window is the
+                        // `sla.urgent_hours` / `sla.standard_hours` setting (1-720),
+                        // the backend is the sole authority for the deadline, and the
+                        // customer role holds portal keys only - no `settings.view` -
+                        // so this app cannot read the values in force. Printing 6/24
+                        // would be a promise the server may not honour.
                         subtitle: Text(
-                          'Яаралтай дуудлагын SLA 6 цаг, энгийн дуудлагынх 24 цаг.',
+                          'Яаралтай дуудлагыг эхэнд авч үзнэ. Гүйцэтгэх эцсийн '
+                          'хугацааг хүсэлтийг хүлээн авах үед тогтооно.',
                           style: CustomerTokens.rowSub,
                         ),
                       ),

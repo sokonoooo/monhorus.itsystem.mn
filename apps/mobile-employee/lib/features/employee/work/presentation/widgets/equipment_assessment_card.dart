@@ -221,11 +221,16 @@ class _EquipmentAssessmentCardState extends ConsumerState<EquipmentAssessmentCar
               enabled: widget.editable,
             ),
             const SizedBox(height: 4),
-            // The scale in words, exactly as the object assessment sheet states it. The
-            // band itself is the server's to decide.
+            // The bands by NAME, never by score range — the same rule RiskLegend states
+            // and the object assessment sheet follows. The boundaries are configurable
+            // server-side (`riskBandsOf`) and neither mobile role can read
+            // `GET /settings` (403), so a printed "21-40" is a number this app cannot
+            // verify and the server can silently contradict. This line used to print the
+            // five ranges while claiming to mirror the sheet, which it did not. The
+            // names are interpolated from the enum so they cannot drift from the chips.
             Text(
-              '81-100 хэвийн · 61-80 анхаарах · 41-60 засварлах · 21-40 ноцтой · '
-              '0-20 ашиглах боломжгүй',
+              'Эрсдэлийн түвшнийг систем оноогоор тодорхойлно: '
+              '${RiskLevel.values.map((RiskLevel level) => level.label).join(' · ')}',
               style: EmployeeTokens.rowSub,
             ),
 

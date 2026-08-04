@@ -1,6 +1,7 @@
 import {
   DASHBOARD_CUSTOM_WIDGET_KEY,
   DEFAULT_DASHBOARD_LAYOUT,
+  INVOICE_REVENUE_STATUSES,
   PERMISSIONS,
   PLANNED_WORK_STATUS_LABELS,
   RISK_LEVELS,
@@ -321,7 +322,9 @@ async function financeBlock(now: Date): Promise<DashboardFinanceSummary> {
 
   const [monthRows, statusRows, overdueRows] = await Promise.all([
     Invoice.aggregate<{ _id: null; revenue: number }>([
-      { $match: { issueDate: { $gte: from }, status: { $ne: 'CANCELLED' } } },
+      // Same set as the MONTHLY_REVENUE KPI, from the same constant: the two are one
+      // number reached by two code paths and must never disagree. A draft is not revenue.
+      { $match: { issueDate: { $gte: from }, status: { $in: INVOICE_REVENUE_STATUSES } } },
       { $group: { _id: null, revenue: { $sum: '$total' } } },
     ]),
     Invoice.aggregate<{ _id: string; count: number; total: number }>([

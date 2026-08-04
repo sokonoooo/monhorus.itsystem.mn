@@ -83,6 +83,87 @@ void main() {
       expect(find.text('Шинэ хүсэлт үүсгэх'), findsNothing);
     });
 
+    testWidgets(
+        'says nothing has been assessed rather than that everything is normal',
+        (WidgetTester tester) async {
+      // An estate nobody has inspected yet: no band counts at all, twelve devices
+      // waiting. `deviceTotal` is non-zero, which is exactly the shape that used to
+      // reach the all-clear line.
+      final FakeCustomerPortalRepository repository =
+          FakeCustomerPortalRepository(
+        buildings: <BuildingModel>[
+          buildingFixture(normal: 0, attention: 0, unassessed: 12),
+        ],
+      );
+
+      await pumpPhone(
+        tester,
+        wrapCustomerScreen(
+          CustomerHomeScreen(onOpenTab: (_) {}),
+          repository: repository,
+        ),
+      );
+
+      expect(find.text('Бүх төхөөрөмж хэвийн ажиллаж байна'), findsNothing);
+      expect(
+        find.text('12 төхөөрөмж хараахан үнэлэгдээгүй байна'),
+        findsOneWidget,
+      );
+      // And the twelve are on the stair, not silently dropped from it.
+      expect(find.text('ҮНЭЛГЭЭГҮЙ'), findsOneWidget);
+      expect(find.text('12'), findsOneWidget);
+    });
+
+    testWidgets('keeps the all-normal line only when everything was assessed',
+        (WidgetTester tester) async {
+      final FakeCustomerPortalRepository repository =
+          FakeCustomerPortalRepository(
+        buildings: <BuildingModel>[
+          buildingFixture(normal: 12, attention: 0, unassessed: 0),
+        ],
+      );
+
+      await pumpPhone(
+        tester,
+        wrapCustomerScreen(
+          CustomerHomeScreen(onOpenTab: (_) {}),
+          repository: repository,
+        ),
+      );
+
+      expect(find.text('Бүх төхөөрөмж хэвийн ажиллаж байна'), findsOneWidget);
+      // Nothing unassessed, so the sixth column stays off and the stair keeps the
+      // five it is laid out for.
+      expect(find.text('ҮНЭЛГЭЭГҮЙ'), findsNothing);
+    });
+
+    testWidgets('splits the headline when only some devices were assessed',
+        (WidgetTester tester) async {
+      final FakeCustomerPortalRepository repository =
+          FakeCustomerPortalRepository(
+        buildings: <BuildingModel>[
+          buildingFixture(normal: 40, attention: 0, unassessed: 7),
+        ],
+      );
+
+      await pumpPhone(
+        tester,
+        wrapCustomerScreen(
+          CustomerHomeScreen(onOpenTab: (_) {}),
+          repository: repository,
+        ),
+      );
+
+      expect(
+        find.text('Үнэлсэн 40 төхөөрөмж хэвийн, 7 нь үнэлгээгүй байна'),
+        findsOneWidget,
+      );
+      // 40 + 7 is every device the customer has, and both figures are on screen.
+      expect(find.text('40'), findsOneWidget);
+      expect(find.text('7'), findsOneWidget);
+      expect(find.text('ҮНЭЛГЭЭГҮЙ'), findsOneWidget);
+    });
+
     testWidgets('every read went out carrying the session customer id',
         (WidgetTester tester) async {
       final FakeCustomerPortalRepository repository =

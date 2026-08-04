@@ -15,6 +15,7 @@ import { Button } from '../../components/ui/Button';
 import { PageHeader } from '../../components/ui/PageHeader';
 import { useToast } from '../../components/ui/ToastProvider';
 import { FILTER_INPUT, FILTER_LABEL } from '../../components/ui/control-styles';
+import { useSlaHours } from '../../hooks/use-sla-hours';
 import { ApiError } from '../../lib/api-client';
 import { serviceRequestService } from '../../services/service-request.service';
 import { Field, Section, SelectInput, TextInput } from '../employees/FormControls';
@@ -32,6 +33,7 @@ export function ServiceRequestCreatePage(): ReactElement {
   const navigate = useNavigate();
   const { notify } = useToast();
   const chain = useLocationChain();
+  const slaHours = useSlaHours();
 
   const [requestType, setRequestType] = useState<ServiceRequestType | ''>('');
   const [isUrgent, setIsUrgent] = useState(false);
@@ -208,7 +210,14 @@ export function ServiceRequestCreatePage(): ReactElement {
 
               <Field
                 label="Яаралтай эсэх"
-                hint={isUrgent ? 'SLA 6 цаг' : 'SLA 24 цаг'}
+                // Silence rather than a guess: the deadline is computed server-side from
+                // the Тохиргоо values, and a caller who cannot read them (DISPATCH and
+                // SALES hold no `settings.view`) must not state a number for them.
+                hint={
+                  slaHours
+                    ? `SLA ${isUrgent ? slaHours.urgent : slaHours.standard} цаг`
+                    : undefined
+                }
               >
                 <label className="flex items-center gap-2 py-1.5 text-sm text-slate-700">
                   <input

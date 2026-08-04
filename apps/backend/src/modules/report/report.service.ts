@@ -1,4 +1,5 @@
 import {
+  INVOICE_REVENUE_STATUSES,
   KPI_FORMULAS,
   KPI_KEYS,
   KPI_LABELS,
@@ -441,6 +442,17 @@ async function employeePerformanceReport(query: ReportQueryInput): Promise<Repor
   const ids = employees.map((employee) => employee._id);
   const range = withinRange('createdAt', query);
 
+  /**
+   * `elapsedHours` is wall-clock time from the request being raised to it being closed —
+   * nights, weekends and waiting for a part included. Nothing in the schema records labour
+   * time, so no column here can claim hours worked.
+   *
+   * It is also a property of the request, not of the assignee: after the $unwind every
+   * technician on a shared request sees the same elapsed span. Summing it would charge one
+   * 24-hour call to three people as 72 hours, so it is averaged over the requests each
+   * technician closed. An average cannot be added up across rows, which is exactly the
+   * misreading a total invited.
+   */
   const grouped = await ServiceRequest.aggregate<{
     _id: Types.ObjectId;
     assigned: number;
@@ -448,7 +460,8 @@ async function employeePerformanceReport(query: ReportQueryInput): Promise<Repor
     onTime: number;
     revisits: number;
     returned: number;
-    totalHours: number;
+    elapsedHours: number;
+    resolved: number;
   }>([
     { $match: { assignedEmployees: { $in: ids }, ...range } },
     { $unwind: '$assignedEmployees' },
@@ -474,7 +487,7 @@ async function employeePerformanceReport(query: ReportQueryInput): Promise<Repor
         },
         revisits: { $sum: { $cond: [{ $eq: ['$status', 'REVISIT_REQUIRED'] }, 1, 0] } },
         returned: { $sum: { $cond: [{ $eq: ['$status', 'RETURNED'] }, 1, 0] } },
-        totalHours: {
+        elapsedHours: {
           $sum: {
             $cond: [
               { $ne: ['$completedAt', null] },
@@ -483,6 +496,7 @@ async function employeePerformanceReport(query: ReportQueryInput): Promise<Repor
             ],
           },
         },
+        resolved: { $sum: { $cond: [{ $ne: ['$completedAt', null] }, 1, 0] } },
       },
     },
   ]);
@@ -499,7 +513,12 @@ async function employeePerformanceReport(query: ReportQueryInput): Promise<Repor
       completed,
       // Null rather than zero with no completed work: a rate over an empty set is undefined.
       onTimeRate: completed > 0 ? Math.round(((stats?.onTime ?? 0) / completed) * 100) : null,
-      totalHours: stats ? Math.round(stats.totalHours * 10) / 10 : 0,
+      // Null over an empty set, as with the rate above: an average of nothing is undefined,
+      // and a zero here would read as "closed instantly".
+      avgElapsedHours:
+        stats && stats.resolved > 0
+          ? Math.round((stats.elapsedHours / stats.resolved) * 10) / 10
+          : null,
       revisits: stats?.revisits ?? 0,
       returned: stats?.returned ?? 0,
     };
@@ -514,7 +533,12 @@ async function employeePerformanceReport(query: ReportQueryInput): Promise<Repor
       { key: 'assigned', label: 'Хуваарилсан', format: 'NUMBER', align: 'right' },
       { key: 'completed', label: 'Дууссан', format: 'NUMBER', align: 'right' },
       { key: 'onTimeRate', label: 'Хугацаандаа', format: 'PERCENT', align: 'right' },
-      { key: 'totalHours', label: 'Нийт цаг', format: 'NUMBER', align: 'right' },
+      {
+        key: 'avgElapsedHours',
+        label: 'Хүсэлтийн дундаж хугацаа (ц)',
+        format: 'NUMBER',
+        align: 'right',
+      },
       { key: 'revisits', label: 'Дахин очилт', format: 'NUMBER', align: 'right' },
       { key: 'returned', label: 'Буцаалт', format: 'NUMBER', align: 'right' },
     ],
@@ -816,7 +840,13 @@ export async function buildKpis(dateFrom: string, dateTo: string): Promise<KpiSu
     ]),
     ServiceRequest.countDocuments({ ...range, status: 'REVISIT_REQUIRED' }),
     Invoice.aggregate<{ _id: null; revenue: number; receivable: number }>([
-      { $match: { issueDate: { $gte: from, $lte: to }, status: { $ne: 'CANCELLED' } } },
+      /**
+       * The published formula is "sent and paid", so a draft is not revenue: it has not
+       * left the building and can still be edited or dropped. OVERDUE is not matched here
+       * because it is not a stored status — an overdue invoice is a SENT one whose due
+       * date has passed, and it is already counted.
+       */
+      { $match: { issueDate: { $gte: from, $lte: to }, status: { $in: INVOICE_REVENUE_STATUSES } } },
       {
         $group: {
           _id: null,

@@ -131,6 +131,9 @@ BuildingModel buildingFixture({
   String code = 'MAIN',
   bool hasCritical = false,
   int critical = 0,
+  int normal = 40,
+  int attention = 3,
+  int unassessed = 2,
 }) {
   return BuildingModel.fromJson(<String, dynamic>{
     'id': id,
@@ -147,6 +150,9 @@ BuildingModel buildingFixture({
     'floorCount': 8,
     'objectCount': 312,
     'riskSummary': riskSummaryJson(
+      normal: normal,
+      attention: attention,
+      unassessed: unassessed,
       critical: critical,
       hasCritical: hasCritical,
     ),

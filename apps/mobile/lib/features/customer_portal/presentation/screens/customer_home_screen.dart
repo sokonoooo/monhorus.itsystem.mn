@@ -68,6 +68,19 @@ class CustomerHomeScreen extends ConsumerWidget {
                         count: summary.countOf(level),
                         label: level.shortLabel.toUpperCase(),
                       ),
+                    // The five bands only ever account for the devices somebody has
+                    // assessed. Without this column the figures on the hero sum to
+                    // fewer devices than the customer owns, with nothing saying so.
+                    // Added only when there are some, so the common case keeps the
+                    // five columns the stair is laid out for on a phone.
+                    if (summary.unassessedCount > 0)
+                      (
+                        // No band colour exists for "no band"; the hero hairline is
+                        // the neutral the dark band already uses for this state.
+                        band: CustomerTokens.heroLine,
+                        count: summary.unassessedCount,
+                        label: unassessedLabel.toUpperCase(),
+                      ),
                   ],
             action: const _HeroNotificationBell(),
           ),
@@ -90,8 +103,13 @@ class CustomerHomeScreen extends ConsumerWidget {
     );
   }
 
-  /// The one sentence the hero exists for. Worst state first; the neutral line only
-  /// when the API really did report nothing wrong.
+  /// The one sentence the hero exists for. Worst state first; the "all normal" line
+  /// only when every device was actually assessed and none of them came back bad.
+  ///
+  /// `deviceTotal` is `assessedTotal + unassessedCount`, so an all-clear read off the
+  /// total alone is reached by a customer whose equipment has never been inspected -
+  /// which is the opposite of what it says. Silence about the unassessed is not
+  /// available here: this is the largest type on the screen.
   String _headline(CustomerHomeSummary? summary) {
     if (summary == null) return 'Барилгын эрсдэлийн тойм';
     if (summary.criticalCount > 0) {
@@ -101,6 +119,16 @@ class CustomerHomeScreen extends ConsumerWidget {
       return '${summary.attentionCount} төхөөрөмж анхаарал шаардаж байна';
     }
     if (summary.deviceTotal == 0) return 'Бүртгэлтэй объект алга байна';
+    // Nothing has been looked at, so there is nothing to call normal.
+    if (summary.assessedTotal == 0) {
+      return '${summary.unassessedCount} төхөөрөмж хараахан үнэлэгдээгүй байна';
+    }
+    // Past the two guards above, every assessed device is in the normal band - so the
+    // claim is true of them, and only of them.
+    if (summary.unassessedCount > 0) {
+      return 'Үнэлсэн ${summary.assessedTotal} төхөөрөмж хэвийн, '
+          '${summary.unassessedCount} нь үнэлгээгүй байна';
+    }
     return 'Бүх төхөөрөмж хэвийн ажиллаж байна';
   }
 }

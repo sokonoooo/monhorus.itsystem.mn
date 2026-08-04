@@ -37,7 +37,10 @@ export const REPORT_DESCRIPTIONS: Record<ReportKey, string> = {
   RISK_ASSESSMENT: '5 түвшин, объектын түүх, засварын шаардлага, дахин үзлэг.',
   SLA: 'Хугацаанд багтсан, ойртсон, зөрчсөн ажил; төрөл, харилцагч, ажилтнаар.',
   CUSTOMER: 'Үйлчилгээ, ажил, үнэлгээ, нэхэмжлэл, SLA.',
-  EMPLOYEE_PERFORMANCE: 'Хийсэн ажил, нийт цаг, хугацаандаа дууссан, дахин очилт, буцаалт.',
+  // No labour time is recorded anywhere in the system, so this report promises elapsed
+  // request time — raised to closed — rather than hours worked.
+  EMPLOYEE_PERFORMANCE:
+    'Хийсэн ажил, хүсэлтийн дундаж хугацаа (үүссэнээс дууссан хүртэл), хугацаандаа дууссан, дахин очилт, буцаалт.',
   INVOICE_RECEIVABLE: 'Ноорог, илгээсэн, төлөгдсөн, хугацаа хэтэрсэн, нийт авлага.',
   AUDIT_LOG: 'Хэн, хэзээ, ямар өөрчлөлт хийсэн.',
   TECHNICAL_REPORT: 'Нэгдсэн тайлангийн сан: үнэлгээ, төлөвлөгөөт ажил, үйлчилгээ, нэгтгэл.',

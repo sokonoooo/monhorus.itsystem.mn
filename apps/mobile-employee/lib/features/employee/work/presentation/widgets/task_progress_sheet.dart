@@ -22,7 +22,9 @@ import 'work_ui.dart';
 ///    the CUMULATIVE total. The sheet adds the increment to what was already done and
 ///    sends the sum, which is why the preview line spells out both numbers — a
 ///    technician who reads "20" in the stepper and "21/21" in the preview can see
-///    which one the system is about to store.
+///    which one the system is about to store. It follows that the stepper opens at
+///    zero and no other value: anything pre-filled here is not a suggestion on screen,
+///    it is work posted to the server by a single tap on Хадгалах.
 ///
 /// 2. Reaching DONE is not a matter of quantity. The backend derives a task's status
 ///    from quantity AND an evidence gate — before photo, after photo, Тайлбар,
@@ -106,12 +108,16 @@ class _TaskProgressSheetState extends ConsumerState<_TaskProgressSheet> {
     _recommendation = TextEditingController(text: widget.task.recommendation ?? '');
     _score = TextEditingController(text: widget.task.score?.toString() ?? '');
 
-    // The prototype opens at half the remainder, minimum one. Anything above the
-    // remainder is meaningless, so a finished task opens at zero.
-    final double half = (_remaining / 2).roundToDouble();
-    _today = _remaining <= 0
-        ? 0
-        : (half < 1 ? 1.0 : half).clamp(0, _remaining).toDouble();
+    // Opens at zero, ALWAYS. This field is today's increment, and nothing is known
+    // about today until the technician steps it up — so zero is not a guess at the
+    // amount, it is the absence of one, and it is the only opening value that cannot
+    // be wrong. The sheet used to open at half the remainder because the prototype's
+    // demo data did; since `_submit` adds this to `completedQuantity` and posts the
+    // sum, a technician who opened the sheet to fix a note and tapped Хадгалах
+    // recorded half the outstanding work as done. Do not seed this from the record
+    // either: `completedQuantity` is the CUMULATIVE total, so starting there would
+    // double it on save.
+    _today = 0;
   }
 
   @override
@@ -222,6 +228,12 @@ class _TaskProgressSheetState extends ConsumerState<_TaskProgressSheet> {
 
     if (_noteError != null || _scoreError != null) return;
 
+    // The stepper opens at zero, so a save with nothing stepped is a save with no
+    // quantity entered. On a task that has never been touched that is refused outright
+    // — there is nothing to record and no earlier figure to keep. On a task already
+    // part-done it is allowed and deliberately writes the SAME cumulative figure back,
+    // because a text-only correction to the note, score or Дүгнэлт is a legitimate
+    // second visit to this sheet and must not be forced to invent a quantity.
     if (_today <= 0 && widget.task.completedQuantity <= 0) {
       setState(() => _submitError = 'Өнөөдөр хийсэн тоо хэмжээг оруулна уу.');
       return;

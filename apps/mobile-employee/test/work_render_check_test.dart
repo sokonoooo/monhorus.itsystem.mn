@@ -991,7 +991,15 @@ void main() {
     await tester.tap(find.text('Өнөөдрийн гүйцэтгэл оруулах').first);
     await tester.pumpAndSettle();
     expect(find.text('Өнөөдрийн гүйцэтгэл оруулах'), findsWidgets);
-    expect(find.text('8'), findsOneWidget); // half of the 16 remaining
+    // Zero, not half the remainder. The stepper is today's increment and the sheet posts
+    // it added to `completedQuantity`, so anything pre-filled here is work recorded by a
+    // tap alone — which is exactly what "8" used to be on this 16-piece sub-task.
+    // Scoped to the sheet: the card behind it prints its own "0 Хийсэн" counter.
+    expect(
+      find.descendant(of: find.byType(BottomSheet), matching: find.text('0')),
+      findsOneWidget,
+    );
+    expect(find.text('8'), findsNothing);
     expect(tester.takeException(), isNull);
 
     // The evidence section. t2 has no photos, so both strips are nothing but their
@@ -1178,6 +1186,119 @@ void main() {
     expect(sent, isNotNull);
     expect(sent!.conclusion, 'Дахин шалгалт шаардлагагүй.');
     expect(sent.toJson()['conclusion'], 'Дахин шалгалт шаардлагагүй.');
+
+    // Nothing was stepped, so the quantity is written back UNCHANGED — 1 of 1, exactly
+    // what the record already said. A text-only correction may not move the figure.
+    expect(sent.completedQuantity, 1);
+
+    expect(tester.takeException(), isNull);
+  });
+
+  /// THE DATA-INTEGRITY BUG. The stepper used to open at half the remaining quantity,
+  /// carried over from the prototype's demo data — and `_submit` adds it to
+  /// `completedQuantity` and POSTS the sum. So opening this sheet on a 16-piece sub-task
+  /// and tapping Хадгалах recorded 8 pieces of work that nobody had done. The assertion
+  /// is that the sheet starts from nothing and that "nothing" cannot be saved.
+  testWidgets('the progress sheet pre-fills no quantity and refuses an empty save', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 1200));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    _StubDetailCapturingProgress.lastRequest = null;
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: <Override>[
+          currentUserProvider.overrideWithValue(_user),
+          workIdentityProvider.overrideWith((Ref ref) async => _assignedIdentity),
+          plannedWorkDetailProvider.overrideWith(_StubDetailCapturingProgress.new),
+          inspectionReportProvider.overrideWith(_StubInspectionBlocked.new),
+        ],
+        child: const MaterialApp(
+          home: PlannedWorkDetailScreen(plannedWorkId: 'w1'),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // The untouched sub-task: 16 ширхэг planned, 0 done, 16 remaining.
+    await tester.scrollUntilVisible(
+      find.text('Өнөөдрийн гүйцэтгэл оруулах'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Өнөөдрийн гүйцэтгэл оруулах'));
+    await tester.pumpAndSettle();
+
+    final Finder sheetScrollable = find
+        .descendant(
+          of: find.byType(BottomSheet),
+          matching: find.byType(Scrollable),
+        )
+        .first;
+
+    // The preview spells out what the save would send, so it is the honest witness for
+    // the stepper's opening value: zero today, zero cumulative.
+    expect(find.textContaining('Өнөөдөр 0 нэмбэл'), findsOneWidget);
+    expect(find.textContaining('нийт гүйцэтгэл 0/16'), findsOneWidget);
+    // Half of 16, the figure the prototype used to arrive at. It must appear nowhere.
+    expect(find.textContaining('Өнөөдөр 8 нэмбэл'), findsNothing);
+    expect(find.textContaining('нийт гүйцэтгэл 8/16'), findsNothing);
+
+    // A bare tap on save sends NOTHING. The mandatory note is refused first — scrolled
+    // to because the field's error prints beneath it, below the fold of the sheet's own
+    // list, and a ListView does not build what is off-screen.
+    final Finder noteField = find.widgetWithText(
+      TextField,
+      'Хийсэн ажил, хэмжилт, дүгнэлтээ бичнэ үү...',
+    );
+    await tester.tap(find.text('Гүйцэтгэл хадгалах'));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(noteField, 200, scrollable: sheetScrollable);
+    await tester.pumpAndSettle();
+    expect(find.text('Тэмдэглэл заавал бичнэ.'), findsOneWidget);
+    expect(_StubDetailCapturingProgress.lastRequest, isNull);
+
+    // ...and with the note written, the missing quantity is refused in its turn, which
+    // is what stops a task with nothing recorded from being saved by a tap alone.
+    await tester.enterText(noteField, 'Шугам шалгаж эхэллээ.');
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Гүйцэтгэл хадгалах'));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(
+      find.text('Өнөөдөр хийсэн тоо хэмжээг оруулна уу.'),
+      200,
+      scrollable: sheetScrollable,
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Өнөөдөр хийсэн тоо хэмжээг оруулна уу.'), findsOneWidget);
+    expect(
+      _StubDetailCapturingProgress.lastRequest,
+      isNull,
+      reason: 'an empty progress sheet must reach the server with nothing',
+    );
+
+    // The stepper still works, and a deliberate entry is what gets through. Negative
+    // delta: the stepper is back UP the list, above everything just scrolled past.
+    final Finder plus = find.descendant(
+      of: find.byType(BottomSheet),
+      matching: find.byIcon(Icons.add),
+    );
+    await tester.scrollUntilVisible(plus, -200, scrollable: sheetScrollable);
+    await tester.pumpAndSettle();
+    await tester.tap(plus);
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Өнөөдөр 1 нэмбэл'), findsOneWidget);
+
+    await tester.tap(find.text('Гүйцэтгэл хадгалах'));
+    await tester.pumpAndSettle();
+
+    final RecordTaskProgressRequest? entered =
+        _StubDetailCapturingProgress.lastRequest;
+    expect(entered, isNotNull);
+    expect(entered!.completedQuantity, 1);
+    expect(entered.note, 'Шугам шалгаж эхэллээ.');
 
     expect(tester.takeException(), isNull);
   });
