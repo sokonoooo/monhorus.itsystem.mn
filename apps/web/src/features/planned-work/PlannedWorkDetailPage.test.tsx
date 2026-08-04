@@ -979,6 +979,22 @@ describe('PlannedWorkDetailPage', () => {
     expect(screen.queryByRole('heading', { name: 'Материал' })).not.toBeInTheDocument();
   });
 
+  /**
+   * The bug `lib/duration.ts` was written to kill: the summary rendered the paused total
+   * as `Math.floor(minutes / 1440) өдөр ...`, so a 45-minute pause printed `0 өдөр 0 цаг`
+   * — a real figure turned into a confident zero.
+   */
+  it('states a sub-day pause in minutes rather than as a zero day count', async () => {
+    vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(
+      makePlannedWork({ totalPausedMinutes: 45 }),
+    );
+
+    renderDetail([PERMISSIONS.PLANNED_WORK_VIEW]);
+
+    expect(await screen.findByText('45 мин')).toBeInTheDocument();
+    expect(screen.queryByText(/0 өдөр/)).not.toBeInTheDocument();
+  });
+
   it('shows an error state when the work cannot be loaded', async () => {
     vi.spyOn(plannedWorkService, 'getById').mockRejectedValue(
       new ApiError('Төлөвлөгөөт ажил олдсонгүй.', 'NOT_FOUND', 404),

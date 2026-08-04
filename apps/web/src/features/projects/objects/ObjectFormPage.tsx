@@ -62,6 +62,8 @@ export function ObjectFormPage(): ReactElement {
    * The bands currently in force, read from Тохиргоо. The red/black conditional fields are
    * decided against these rather than against a threshold written into this file, so a
    * re-banding in settings moves the requirement with it — exactly as the backend does.
+   *
+   * Null when they could not be read; see `requiresFindings` for what this form does then.
    */
   const bands = useRiskBands();
 
@@ -376,10 +378,22 @@ export function ObjectFormPage(): ReactElement {
    * backend makes, so the form asks for exactly the fields the backend is about to demand.
    */
   const parsedScore = initialScore.trim() === '' ? Number.NaN : Number(initialScore.trim());
-  const initialRiskLevel = Number.isFinite(parsedScore) ? riskLevelFor(parsedScore, bands) : null;
+  const scoreTyped = Number.isFinite(parsedScore);
+  const initialRiskLevel = scoreTyped && bands !== null ? riskLevelFor(parsedScore, bands) : null;
   // Section 10.1: the red and black bands require a conclusion, a recommendation and the
   // action taken. Nothing here decides where those bands start.
   const redOrBlack = initialRiskLevel === 'CRITICAL' || initialRiskLevel === 'OUT_OF_SERVICE';
+  /**
+   * Whether the three section 10.1 findings are demanded before anything is written.
+   *
+   * `bands === null` means the thresholds could not be read, so this form cannot tell
+   * which side of the line a typed score falls on. It asks for all three rather than
+   * guess: the object and the assessment are two calls, and skipping the check would let
+   * the second one fail after the object is already on record with its score thrown away.
+   * The form still states no threshold — it only asks for more.
+   */
+  const bandsUnknown = bands === null;
+  const requiresFindings = bandsUnknown ? scoreTyped : redOrBlack;
 
   async function handleSubmit(): Promise<void> {
     setFormError(null);
@@ -463,16 +477,17 @@ export function ObjectFormPage(): ReactElement {
      * assessment are two calls, and letting the second one fail leaves an object on record
      * whose score was thrown away.
      */
-    if (wantsAssessment && redOrBlack) {
+    if (wantsAssessment && requiresFindings) {
+      const because = bandsUnknown ? 'Үнэлгээний түвшин тодорхойгүй тул' : 'Улаан/хар төлөвт';
       const missing: Record<string, string> = {};
       if (!initialConclusion.trim()) {
-        missing['assessment.conclusion'] = 'Улаан/хар төлөвт дүгнэлт заавал.';
+        missing['assessment.conclusion'] = `${because} дүгнэлт заавал.`;
       }
       if (!initialRecommendation.trim()) {
-        missing['assessment.recommendation'] = 'Улаан/хар төлөвт зөвлөмж заавал.';
+        missing['assessment.recommendation'] = `${because} зөвлөмж заавал.`;
       }
       if (!initialActionTaken.trim()) {
-        missing['assessment.actionTaken'] = 'Улаан/хар төлөвт авах арга хэмжээ заавал.';
+        missing['assessment.actionTaken'] = `${because} авах арга хэмжээ заавал.`;
       }
       if (Object.keys(missing).length > 0) {
         setFieldErrors(missing);
@@ -985,7 +1000,7 @@ export function ObjectFormPage(): ReactElement {
               </Field>
               <Field
                 label="Дүгнэлт"
-                required={redOrBlack}
+                required={requiresFindings}
                 error={fieldErrors['assessment.conclusion']}
               >
                 <TextInput
@@ -996,7 +1011,7 @@ export function ObjectFormPage(): ReactElement {
               </Field>
               <Field
                 label="Зөвлөмж"
-                required={redOrBlack}
+                required={requiresFindings}
                 error={fieldErrors['assessment.recommendation']}
               >
                 <TextInput
@@ -1012,12 +1027,14 @@ export function ObjectFormPage(): ReactElement {
               */}
               <Field
                 label="Авах арга хэмжээ"
-                required={redOrBlack}
+                required={requiresFindings}
                 error={fieldErrors['assessment.actionTaken']}
                 hint={
                   redOrBlack
                     ? 'Улаан/хар төлөвт заавал'
-                    : 'Газар дээр нь хийсэн ажил'
+                    : requiresFindings
+                      ? 'Заавал'
+                      : 'Газар дээр нь хийсэн ажил'
                 }
               >
                 <TextInput
@@ -1032,6 +1049,16 @@ export function ObjectFormPage(): ReactElement {
               <p className="mt-2 text-xs text-amber-700">
                 Оруулсан оноо улаан/хар түвшинд байна: дүгнэлт, зөвлөмж, авах арга хэмжээ
                 гурвуулаа заавал.
+              </p>
+            )}
+
+            {/* No threshold is stated here — none is known. The form only says why it is
+                asking for all three. */}
+            {bandsUnknown && scoreTyped && (
+              <p className="mt-2 text-xs text-amber-700">
+                Үнэлгээний түвшний тохиргоог уншиж чадсангүй. Аль түвшинд байгааг
+                тодорхойлох боломжгүй тул дүгнэлт, зөвлөмж, авах арга хэмжээ гурвуулаа
+                заавал.
               </p>
             )}
 

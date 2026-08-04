@@ -352,8 +352,13 @@ class _OverallCard extends StatelessWidget {
               height: 1.15,
             ),
           ),
-          const SizedBox(height: 8),
-          ProgressRail(percent: work.progressPercent, color: railTone),
+          // No rail when the answer carried no percentage: an empty rail beside a
+          // dash would read as nought per cent, which is the figure the backend
+          // declined to state. The quantity line below still says what is known.
+          if (work.progressPercent case final double percent) ...<Widget>[
+            const SizedBox(height: 8),
+            ProgressRail(percent: percent, color: railTone),
+          ],
           const SizedBox(height: 9),
           Text(
             '${formatQuantity(work.completedQuantity)}/'
@@ -694,9 +699,14 @@ class _FloorRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final Color tone = floor.progressPercent >= 100
-        ? EmployeeTokens.green
-        : (floor.progressPercent > 0 ? EmployeeTokens.yellow : EmployeeTokens.line);
+    // A floor the answer gave no percentage for takes the neutral hairline: there is
+    // no reading to colour, and green or yellow would each be a claim of its own.
+    final double? percent = floor.progressPercent;
+    final Color tone = percent == null
+        ? EmployeeTokens.line
+        : (percent >= 100
+            ? EmployeeTokens.green
+            : (percent > 0 ? EmployeeTokens.yellow : EmployeeTokens.line));
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -721,8 +731,10 @@ class _FloorRow extends StatelessWidget {
             ),
           ],
         ),
-        const SizedBox(height: 5),
-        ProgressRail(percent: floor.progressPercent, color: tone),
+        if (percent != null) ...<Widget>[
+          const SizedBox(height: 5),
+          ProgressRail(percent: percent, color: tone),
+        ],
         const SizedBox(height: 5),
         Text(
           '${floor.taskCount} дэд ажил · '

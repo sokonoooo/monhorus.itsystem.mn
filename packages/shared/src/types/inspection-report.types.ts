@@ -108,10 +108,14 @@ export interface InspectionReportDto {
   conclusion: string | null;
   recommendation: string | null;
   /**
-   * Шинэчлэх шаардлагатай самбарууд / холболт: what must be replaced. Free text lines so an
+   * Шинэчлэх шаардлагатай самбарууд: what must be replaced. Free text lines so an
    * administrator can write what the printed report says, seeded from the worst findings.
    */
   replacementPanels: readonly string[];
+  /**
+   * Шинэчлэх шаардлагатай холболт. Never seeded: the sub-task data does not distinguish a
+   * самбар from a холболт, so this arrives empty and an administrator writes it.
+   */
   replacementConnections: readonly string[];
   /** True while the texts above are still exactly as the system composed them. */
   isAutoDraft: boolean;

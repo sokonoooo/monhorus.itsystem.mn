@@ -7,6 +7,12 @@
 /// on the device: a phone with a skewed clock would otherwise disagree with the
 /// dashboard about what is overdue, and a locally derived task status would let the
 /// UI claim a task is DONE while the evidence gate still refuses it.
+///
+/// The corollary is that a figure the answer did not carry stays null rather than
+/// being defaulted or reconstructed. `progressPercent` and a task's
+/// `remainingQuantity` are nullable for that reason: `?? 0` and
+/// `?? (total - completed)` were both the device answering a question the server had
+/// not, and the widgets omit the figure instead.
 library;
 
 import '../../domain/entities/planned_work_enums.dart';
@@ -121,8 +127,20 @@ class PlannedWorkTaskModel {
   final MaterialUnit unit;
   final double totalQuantity;
   final double completedQuantity;
-  final double remainingQuantity;
-  final double progressPercent;
+
+  /// What is left, as the server computed it. Null when the answer did not carry it.
+  ///
+  /// Deliberately not `totalQuantity - completedQuantity`: this file's own rule is
+  /// that "Nothing is recalculated on the device", and the subtraction was a second
+  /// opinion about a figure the server owns — it would keep printing a confident
+  /// "Үлдсэн" and keep driving the quantity stepper's ceiling off a number nobody
+  /// sent.
+  final double? remainingQuantity;
+
+  /// 0-100, as the server derived it. Null when the answer did not carry it; the
+  /// figure is omitted rather than shown as 0%, which would read as untouched work.
+  final double? progressPercent;
+
   final PlannedWorkTaskStatus status;
   final String? assignedEmployeeId;
   final String? assignedEmployeeName;
@@ -192,9 +210,8 @@ class PlannedWorkTaskModel {
       unit: MaterialUnit.fromWire(json['unit'] as String?),
       totalQuantity: total,
       completedQuantity: completed,
-      remainingQuantity:
-          parseDouble(json['remainingQuantity']) ?? (total - completed).clamp(0, total),
-      progressPercent: parseDoubleOr(json['progressPercent'], 0),
+      remainingQuantity: parseDouble(json['remainingQuantity']),
+      progressPercent: parseDouble(json['progressPercent']),
       status: PlannedWorkTaskStatus.fromWire(json['status'] as String?),
       // See parseObjectId: this field carries a stringified document when the
       // backend populates the relation, so anything that is not an id is dropped.
@@ -238,7 +255,10 @@ class PlannedWorkFloorProgressModel {
   final double totalQuantity;
   final double completedQuantity;
   final double remainingQuantity;
-  final double progressPercent;
+
+  /// Null when the answer carried no figure; the row omits the percentage and its
+  /// rail rather than drawing an empty one.
+  final double? progressPercent;
 
   factory PlannedWorkFloorProgressModel.fromJson(Map<String, dynamic> json) {
     return PlannedWorkFloorProgressModel(
@@ -248,7 +268,7 @@ class PlannedWorkFloorProgressModel {
       totalQuantity: parseDoubleOr(json['totalQuantity'], 0),
       completedQuantity: parseDoubleOr(json['completedQuantity'], 0),
       remainingQuantity: parseDoubleOr(json['remainingQuantity'], 0),
-      progressPercent: parseDoubleOr(json['progressPercent'], 0),
+      progressPercent: parseDouble(json['progressPercent']),
     );
   }
 }
@@ -412,7 +432,11 @@ class PlannedWorkListItemModel {
   final double totalQuantity;
   final double completedQuantity;
   final double remainingQuantity;
-  final double progressPercent;
+
+  /// 0-100, as the server derived it. Null when the answer carried no figure, which
+  /// the card and the detail header render as an absent percentage rather than 0%.
+  final double? progressPercent;
+
   final int taskCount;
   final List<NamedRefModel> assignedEmployees;
   final NamedRefModel? assignedTeam;
@@ -449,7 +473,7 @@ class PlannedWorkListItemModel {
       totalQuantity: parseDoubleOr(json['totalQuantity'], 0),
       completedQuantity: parseDoubleOr(json['completedQuantity'], 0),
       remainingQuantity: parseDoubleOr(json['remainingQuantity'], 0),
-      progressPercent: parseDoubleOr(json['progressPercent'], 0),
+      progressPercent: parseDouble(json['progressPercent']),
       taskCount: parseIntOr(json['taskCount'], 0),
       assignedEmployees:
           parseList<NamedRefModel>(json['assignedEmployees'], NamedRefModel.fromJson),
@@ -648,7 +672,10 @@ class PlannedWorkReportTaskLineModel {
   final MaterialUnit unit;
   final double totalQuantity;
   final double completedQuantity;
-  final double progressPercent;
+
+  /// Null when the answer carried no figure; the line drops the percentage segment.
+  final double? progressPercent;
+
   final PlannedWorkTaskStatus status;
   final String? note;
   final int? score;
@@ -665,7 +692,7 @@ class PlannedWorkReportTaskLineModel {
       unit: MaterialUnit.fromWire(json['unit'] as String?),
       totalQuantity: parseDoubleOr(json['totalQuantity'], 0),
       completedQuantity: parseDoubleOr(json['completedQuantity'], 0),
-      progressPercent: parseDoubleOr(json['progressPercent'], 0),
+      progressPercent: parseDouble(json['progressPercent']),
       status: PlannedWorkTaskStatus.fromWire(json['status'] as String?),
       note: parseString(json['note']),
       score: parseInt(json['score']),
@@ -707,7 +734,10 @@ class PlannedWorkReportPreviewModel {
   final String buildingName;
   final double totalQuantity;
   final double completedQuantity;
-  final double progressPercent;
+
+  /// Null when the answer carried no figure; the summary row drops the percentage.
+  final double? progressPercent;
+
   final bool completedLate;
   final int? delayMinutes;
   final int totalPausedMinutes;
@@ -727,7 +757,7 @@ class PlannedWorkReportPreviewModel {
       buildingName: parseStringOr(json['buildingName'], '-'),
       totalQuantity: parseDoubleOr(json['totalQuantity'], 0),
       completedQuantity: parseDoubleOr(json['completedQuantity'], 0),
-      progressPercent: parseDoubleOr(json['progressPercent'], 0),
+      progressPercent: parseDouble(json['progressPercent']),
       completedLate: parseBool(json['completedLate']),
       delayMinutes: parseInt(json['delayMinutes']),
       totalPausedMinutes: parseIntOr(json['totalPausedMinutes'], 0),

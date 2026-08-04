@@ -470,7 +470,9 @@ export function InspectionListPage(): ReactElement {
       </div>
 
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <RiskLegend bands={bands} />
+        {/* Null means the thresholds could not be read. The legend then says nothing
+            rather than printing the shipped defaults as though they were in force. */}
+        {bands === null ? <span /> : <RiskLegend bands={bands} />}
         <ColumnPicker controller={columnState} />
       </div>
 

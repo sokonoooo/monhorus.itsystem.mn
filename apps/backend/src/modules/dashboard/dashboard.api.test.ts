@@ -3,6 +3,7 @@ import type { Express } from 'express';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
+import { dayBounds } from '../../common/utils/day-bounds.util';
 import {
   createObjectFixture,
   createSuperUser,
@@ -13,6 +14,7 @@ import {
   type ObjectFixture,
 } from '../../test/helpers';
 import { ObjectAssessment, ObjectRecord, ObjectType } from '../object-master/object-master.models';
+import { PlannedWork, nextWorkNumber } from '../planned-work/planned-work.models';
 import { ServiceAgreement } from '../service-agreement/service-agreement.model';
 import { ServiceRequest, nextRequestNumber } from '../service-request/service-request.model';
 
@@ -52,6 +54,23 @@ async function seedRequest(overrides: Record<string, unknown> = {}): Promise<str
     ...overrides,
   });
   return String(created._id);
+}
+
+/** A planned work carrying a quantity rollup, which is what the average is weighted by. */
+async function seedPlannedWork(totalQuantity: number, completedQuantity: number): Promise<void> {
+  await PlannedWork.create({
+    workNumber: await nextWorkNumber(),
+    customer: fixture.customerId,
+    building: fixture.buildingId,
+    title: 'Урьдчилан сэргийлэх үзлэг',
+    plannedStartDate: new Date(Date.now() - 86_400_000),
+    plannedEndDate: new Date(Date.now() + 86_400_000),
+    originalPlannedEndDate: new Date(Date.now() + 86_400_000),
+    status: 'STARTED',
+    totalQuantity,
+    completedQuantity,
+    taskCount: 1,
+  });
 }
 
 /** An assessed object, written head-last because the head reference is required. */
@@ -259,12 +278,101 @@ describe('Dashboard API', () => {
     expect(today.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
 
+  /**
+   * "Near breach" is the configured share of the SLA window consumed, not "falls due
+   * before midnight". The two sets differ, and the dashboard used to serve the second
+   * under the first one's name.
+   */
+  it('counts near breach by the consumed ratio, not by the request falling due today', async () => {
+    // Falls due before midnight in the configured timezone, with essentially the whole
+    // window still to run. Anchored to the day boundary rather than to a fixed offset,
+    // because an offset from 23:30 lands tomorrow and would fail this half an hour a day.
+    await seedRequest({
+      status: 'ASSIGNED',
+      slaStartedAt: new Date(Date.now() - 1_000),
+      slaDueAt: dayBounds(new Date(), 'Asia/Ulaanbaatar').end,
+    });
+
+    const requests = (await summary()).requests as { slaNearBreach: number; dueToday: number };
+    expect(requests.slaNearBreach).toBe(0);
+    // Still due today: that figure is unchanged and keeps its own field.
+    expect(requests.dueToday).toBe(1);
+  });
+
+  it('counts a request past the near-breach ratio but not yet due', async () => {
+    // Twenty of a twenty-four hour window gone: past the 0.75 ratio, still open.
+    await seedRequest({
+      status: 'ASSIGNED',
+      slaStartedAt: new Date(Date.now() - 20 * 3_600_000),
+      slaDueAt: new Date(Date.now() + 4 * 3_600_000),
+    });
+    // Already breached, which is the other count and must not be double reported.
+    await seedRequest({
+      status: 'ASSIGNED',
+      slaStartedAt: new Date(Date.now() - 30 * 3_600_000),
+      slaDueAt: new Date(Date.now() - 6 * 3_600_000),
+    });
+    // Settled work leaves the SLA counts entirely.
+    await seedRequest({
+      status: 'COMPLETED',
+      completedAt: new Date(),
+      slaStartedAt: new Date(Date.now() - 20 * 3_600_000),
+      slaDueAt: new Date(Date.now() + 4 * 3_600_000),
+    });
+
+    const requests = (await summary()).requests as {
+      slaNearBreach: number;
+      slaBreached: number;
+    };
+    expect(requests.slaNearBreach).toBe(1);
+    expect(requests.slaBreached).toBe(1);
+  });
+
   it('drops zero-count slices so the legend shows only what exists', async () => {
     await seedRequest({ status: 'NEW' });
 
     const byStatus = (await summary()).requestsByStatus as { key: string; count: number }[];
     expect(byStatus).toHaveLength(1);
     expect(byStatus[0]).toEqual({ key: 'NEW', label: 'Шинэ', count: 1 });
+  });
+
+  /**
+   * The DTO has always documented this as a quantity-weighted mean. It was the plain mean
+   * of the per-work percentages, which lets a one-task job outweigh a hundred-task one.
+   */
+  it('weights average planned-work progress by quantity, not by work count', async () => {
+    await seedPlannedWork(1, 1); // finished, but one unit of work
+    await seedPlannedWork(100, 0); // untouched, and a hundred times the size
+
+    const plannedWork = (await summary()).plannedWork as {
+      total: number;
+      averageProgress: number | null;
+    };
+    expect(plannedWork.total).toBe(2);
+    expect(plannedWork.averageProgress).not.toBe(50);
+    // 1 of 101 units done.
+    expect(plannedWork.averageProgress).toBe(1);
+  });
+
+  /** Null is "nothing to report"; zero would assert that everything is at 0%. */
+  it('reports null average progress when there is no work to weigh', async () => {
+    const plannedWork = (await summary()).plannedWork as {
+      total: number;
+      averageProgress: number | null;
+    };
+    expect(plannedWork.total).toBe(0);
+    expect(plannedWork.averageProgress).toBeNull();
+  });
+
+  it('reports null rather than zero when work exists but carries no quantity', async () => {
+    await seedPlannedWork(0, 0);
+
+    const plannedWork = (await summary()).plannedWork as {
+      total: number;
+      averageProgress: number | null;
+    };
+    expect(plannedWork.total).toBe(1);
+    expect(plannedWork.averageProgress).toBeNull();
   });
 
   /** Omitted, not zeroed, so the UI can tell "no permission" from "genuinely zero". */

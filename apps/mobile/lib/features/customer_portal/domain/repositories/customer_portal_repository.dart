@@ -20,10 +20,14 @@ abstract interface class CustomerPortalRepository {
     ResolvedCustomerScope scope,
   );
 
+  /// One page of the customer's buildings. [page] is exposed because a caller that
+  /// sums over the result — the home summary — has to be able to read past the
+  /// first page; `PaginatedData.total` says whether it must.
   Future<ApiResult<PaginatedData<BuildingModel>>> listBuildings(
     ResolvedCustomerScope scope, {
     String? projectId,
     String? search,
+    int page,
   });
 
   Future<ApiResult<BuildingModel>> getBuilding(String buildingId);

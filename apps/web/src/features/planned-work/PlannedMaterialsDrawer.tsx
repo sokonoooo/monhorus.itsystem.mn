@@ -31,9 +31,13 @@ interface Row {
 /**
  * The material list of a planned work.
  *
- * Requirements 19.2 keeps V1 at "нэр/тоо": the name is typed rather than picked, because
- * there is no catalogue to pick from. The whole list is sent on save, so a row needs no
- * identifier of its own.
+ * Requirements 19.2 keeps V1 at "нэр/тоо": the name is typed rather than picked. The whole
+ * list is sent on save, so a row needs no identifier of its own.
+ *
+ * Not for want of a catalogue — `/materials` is mounted on the backend and
+ * `services/material.service.ts` is a complete client — but no screen calls it, so every
+ * name here is free text and un-normalised. Wiring the picker is a decision, not a defect
+ * fix.
  */
 export function PlannedMaterialsDrawer({
   work,

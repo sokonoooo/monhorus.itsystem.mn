@@ -8,6 +8,8 @@ import {
 } from '@monhorus/shared';
 import type { ReactElement } from 'react';
 
+import { formatMinutes } from '../../lib/duration';
+
 /**
  * Planned work badges.
  *
@@ -84,10 +86,7 @@ export function ReportStatusBadge({
 
 /** Marks a work that finished after its deadline. Preserved in reporting history. */
 export function LateBadge({ delayMinutes }: { delayMinutes: number | null }): ReactElement {
-  const suffix =
-    delayMinutes === null
-      ? ''
-      : ` (${Math.floor(delayMinutes / 1440)}ө ${Math.floor((delayMinutes % 1440) / 60)}ц)`;
+  const suffix = delayMinutes === null ? '' : ` (${formatMinutes(delayMinutes)})`;
   return <span className={`${BASE} ${RED}`}>Хоцорсон{suffix}</span>;
 }
 

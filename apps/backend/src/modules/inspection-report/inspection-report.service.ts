@@ -346,12 +346,11 @@ function composeRecommendation(issues: readonly InspectionReportIssueDto[]): str
 }
 
 /**
- * Lines seeded onto the replacement lists.
+ * Lines seeded onto the panel replacement list.
  *
  * "The worst findings" is read as the findings that set the overall level, which is what
- * makes them the worst. Both lists are seeded from the same set because nothing in the
- * sub-task data distinguishes a самбар from a холболт; the administrator edits the lists
- * down, and once they do, generation never touches the text again.
+ * makes them the worst. The administrator edits the list down, and once they do,
+ * generation never touches the text again.
  */
 function seedReplacementLines(
   issues: readonly InspectionReportIssueDto[],
@@ -372,13 +371,19 @@ interface ComposedNarrative {
 }
 
 function composeNarrative(context: ReportContext): ComposedNarrative {
-  const lines = seedReplacementLines(context.issues, context.overallLevel);
   return {
     issueSummary: composeIssueSummary(context.issues),
     conclusion: composeConclusion(context.tasks.length, context.overallLevel, context.issues),
     recommendation: composeRecommendation(context.issues),
-    replacementPanels: lines,
-    replacementConnections: [...lines],
+    replacementPanels: seedReplacementLines(context.issues, context.overallLevel),
+    /**
+     * Left empty deliberately. Nothing in the sub-task data distinguishes a самбар from a
+     * холболт, so the panel findings relabelled as connection findings would put a claim
+     * the system cannot support into a printed official act. The administrator fills this
+     * in from what was actually inspected; an empty list renders as an empty field in both
+     * the web editor and the mobile sheet.
+     */
+    replacementConnections: [],
   };
 }
 

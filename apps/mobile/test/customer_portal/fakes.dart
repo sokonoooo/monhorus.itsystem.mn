@@ -442,6 +442,7 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
     this.objectHistory,
     this.failure,
     this.uploadFailure,
+    this.buildingPageSize = 100,
   })  : buildings = buildings ?? <BuildingModel>[buildingFixture()],
         floors = floors ?? <FloorModel>[floorFixture()],
         objects = objects ?? <ObjectListItemModel>[objectFixture()],
@@ -452,6 +453,15 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
         requestDetail = requestDetail ?? serviceRequestFixture();
 
   final List<BuildingModel> buildings;
+
+  /// How many buildings one page of `GET /buildings` returns. Defaults to the
+  /// schema's own cap, so the ordinary test sees a single page.
+  final int buildingPageSize;
+
+  /// Page numbers `listBuildings` was called with, so a test can assert the caller
+  /// read past the first one instead of summing a truncated list.
+  final List<int> buildingPagesRequested = <int>[];
+
   final List<FloorModel> floors;
   final List<ObjectListItemModel> objects;
   final List<ServiceRequestListItemModel> requests;
@@ -519,9 +529,29 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
     ResolvedCustomerScope scope, {
     String? projectId,
     String? search,
+    int page = 1,
   }) async {
     requestedCustomerIds.add(scope.customerId);
-    return _result(_page(buildings));
+    buildingPagesRequested.add(page);
+
+    // Served in pages of [buildingPageSize] so a test can put more buildings behind
+    // the API than one page holds, the way `buildingListQuerySchema`'s `limit` cap
+    // means the real one does. `total` is always the whole set, which is the figure
+    // a caller must not confuse with the number of records it received.
+    final int start = (page - 1) * buildingPageSize;
+    final List<BuildingModel> slice = start >= buildings.length
+        ? const <BuildingModel>[]
+        : buildings.skip(start).take(buildingPageSize).toList(growable: false);
+
+    return _result(
+      PaginatedData<BuildingModel>(
+        items: slice,
+        page: page,
+        limit: buildingPageSize,
+        total: buildings.length,
+        totalPages: (buildings.length / buildingPageSize).ceil().clamp(1, 1 << 30),
+      ),
+    );
   }
 
   @override

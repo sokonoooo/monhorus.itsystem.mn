@@ -536,7 +536,7 @@ describe('findings and the overall safety level', () => {
 });
 
 describe('auto-composed draft', () => {
-  it('composes the narrative and seeds the replacement lists from the worst findings', async () => {
+  it('composes the narrative and seeds the panel list from the worst findings', async () => {
     const workId = await createWork();
     const taskId = await addTask(workId, { title: 'Гол самбар' });
     await transition(workId, 'PLAN');
@@ -556,7 +556,29 @@ describe('auto-composed draft', () => {
     expect(report.conclusion).toContain('Ноцтой эрсдэлтэй');
     expect(report.recommendation).toContain('Автомат таслуурыг солих.');
     expect(report.replacementPanels).toEqual(['1 давхар - Гол самбар']);
-    expect(report.replacementConnections).toEqual(['1 давхар - Гол самбар']);
+  });
+
+  /**
+   * The connection list used to arrive as a verbatim copy of the panel list. Nothing in
+   * the sub-task data distinguishes a самбар from a холболт, so that put an unsupported
+   * claim into a printed official act. It arrives empty and a human writes it.
+   */
+  it('never pre-fills the connection list from the panel findings', async () => {
+    const workId = await createWork();
+    const taskId = await addTask(workId, { title: 'Гол самбар' });
+    await transition(workId, 'PLAN');
+    await transition(workId, 'START');
+    await completeTask(workId, taskId, {
+      score: 25,
+      note: 'Автомат таслуур ажиллахгүй.',
+      recommendation: 'Автомат таслуурыг солих.',
+    });
+    expect((await generate(workId)).status).toBe(201);
+
+    const report = (await fetchReport(workId)).body.data;
+    expect(report.replacementConnections).toEqual([]);
+    // The panel list is unaffected: it is derived from findings about panels.
+    expect(report.replacementPanels).toEqual(['1 давхар - Гол самбар']);
   });
 
   it('clears isAutoDraft the moment an administrator edits the text', async () => {

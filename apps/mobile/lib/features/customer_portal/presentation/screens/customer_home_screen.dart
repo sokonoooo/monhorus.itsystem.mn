@@ -54,12 +54,16 @@ class CustomerHomeScreen extends ConsumerWidget {
         children: <Widget>[
           SteelHero(
             title: 'soko',
+            // The server's own `total`, not the number of records that arrived.
             subtitle: summary == null
                 ? 'Сайн байна уу, ${user?.fullName ?? 'Хэрэглэгч'}'
-                : '${summary.buildings.length} БАРИЛГА · '
+                : '${summary.buildingTotal} БАРИЛГА · '
                     '${_formatDate(DateTime.now())}',
             headline: _headline(summary),
-            stair: summary == null
+            // No stair unless the bands were summed over every building. A column
+            // per band summed over some of them is a different answer, not a
+            // smaller one, and five numbers on a dark band cannot caveat themselves.
+            stair: summary == null || !summary.coversEveryBuilding
                 ? const <RiskStairStep>[]
                 : <RiskStairStep>[
                     for (final RiskLevel level in RiskLevel.values)
@@ -112,6 +116,13 @@ class CustomerHomeScreen extends ConsumerWidget {
   /// available here: this is the largest type on the screen.
   String _headline(CustomerHomeSummary? summary) {
     if (summary == null) return 'Барилгын эрсдэлийн тойм';
+    // Same rule as the stair: a count of critical devices summed over part of the
+    // estate is not a fact about the estate, so the sentence says what it does know
+    // — how many buildings there are — instead of naming a figure it cannot stand
+    // behind.
+    if (!summary.coversEveryBuilding) {
+      return '${summary.buildingTotal} барилгын жагсаалт бүрэн ачаалагдсангүй';
+    }
     if (summary.criticalCount > 0) {
       return '${summary.criticalCount} төхөөрөмж яаралтай засвар шаардлагатай';
     }

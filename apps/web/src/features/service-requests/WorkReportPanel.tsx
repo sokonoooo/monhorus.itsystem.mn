@@ -63,8 +63,13 @@ interface MaterialRow {
 /**
  * What was used on the job, typed by hand.
  *
- * Requirements 19.2 keeps V1 at "нэр/тоо": there is no catalogue to pick from and no stock
- * balance to draw down, so a row is a name, a quantity and a unit.
+ * Requirements 19.2 keeps V1 at "нэр/тоо": there is no stock balance to draw down, so a
+ * row is a name, a quantity and a unit.
+ *
+ * The name is free text. A catalogue does exist — `/materials` is mounted on the backend
+ * and `services/material.service.ts` is a complete client — but nothing on this screen
+ * calls it, so every name typed here is un-normalised and two spellings of one item do
+ * not reconcile. Wiring the picker is a decision, not a defect fix.
  */
 function MaterialEditor({
   rows,

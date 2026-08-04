@@ -46,12 +46,23 @@ enum ServiceRequestStatus {
 
   bool get isActive => !isTerminal;
 
-  /// How far along the workflow this status sits, 0 to 1.
+  /// How far along the workflow this status sits, 0 to 1 — or null when the status
+  /// is not a point on that workflow at all.
   ///
   /// Used only for the thin progress rail the prototype draws on a request card. It
   /// is a display ordering of the statuses as the shared `DISPATCH_BOARD_COLUMNS`
-  /// lists them, not a claim about elapsed work.
-  double get progress {
+  /// lists them, not a claim about elapsed work. The backend reports no completion
+  /// figure for a service request — `GET /calendar` sends `progressPercent: null` for
+  /// one, because a request has no quantity to be a percentage of — so this is the
+  /// card's own positional reading and nothing more.
+  ///
+  /// Null for every status [order] does not contain. CANCELLED is the one that
+  /// mattered: it used to return 0.35, drawing a request that was called off as a
+  /// third of the way done, which is a figure nobody ever stated. UNASSIGNED,
+  /// WAITING, REVISIT_REQUIRED and RETURNED are null for the same reason — each sits
+  /// off the linear path, so there is no position to read. The card omits the rail
+  /// rather than drawing one at an invented fill.
+  double? get progress {
     const List<ServiceRequestStatus> order = <ServiceRequestStatus>[
       ServiceRequestStatus.newRequest,
       ServiceRequestStatus.unassigned,
@@ -65,7 +76,7 @@ enum ServiceRequestStatus {
       ServiceRequestStatus.completed,
     ];
     final int index = order.indexOf(this);
-    if (index < 0) return 0.35;
+    if (index < 0) return null;
     return (index + 1) / order.length;
   }
 }

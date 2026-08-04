@@ -1,11 +1,18 @@
-import { PERMISSIONS } from '@monhorus/shared';
+import {
+  PERMISSIONS,
+  SETTING_KEYS,
+  type SettingEntryDto,
+  type SettingsDto,
+} from '@monhorus/shared';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { invalidateRiskBands } from '../../../hooks/use-risk-bands';
 import { objectMasterService, objectTypeService } from '../../../services/object-master.service';
 import { objectService } from '../../../services/object.service';
 import { projectService } from '../../../services/project.service';
+import { settingsService } from '../../../services/settings.service';
 import {
   makeFloor,
   makeObjectDetail,
@@ -40,8 +47,54 @@ function renderFloorlessCreate() {
   });
 }
 
+function evalEntry(key: SettingEntryDto['key'], value: number): SettingEntryDto {
+  return {
+    key,
+    group: 'evaluation',
+    label: key,
+    hint: '',
+    type: 'integer',
+    value,
+    defaultValue: value,
+    isOverridden: false,
+    min: 1,
+    max: 100,
+    unit: 'оноо',
+    updatedByName: null,
+    updatedAt: null,
+  };
+}
+
+/**
+ * The thresholds this installation runs, as the form would read them from Тохиргоо.
+ *
+ * The form resolves the red/black band from these and from nothing else, so a test of the
+ * conditional fields has to state which thresholds are in force. These are the shipped
+ * figures, which is what the band comments in this file refer to.
+ */
+function evaluationSettings(): SettingsDto {
+  return {
+    canManage: true,
+    groups: [
+      {
+        group: 'evaluation',
+        label: 'Үнэлгээ',
+        description: '',
+        entries: [
+          evalEntry(SETTING_KEYS.EVAL_NORMAL_MIN, 81),
+          evalEntry(SETTING_KEYS.EVAL_ATTENTION_MIN, 61),
+          evalEntry(SETTING_KEYS.EVAL_SCHEDULE_REPAIR_MIN, 41),
+          evalEntry(SETTING_KEYS.EVAL_CRITICAL_MIN, 21),
+        ],
+      },
+    ],
+  };
+}
+
 describe('ObjectFormPage', () => {
   beforeEach(() => {
+    invalidateRiskBands();
+    vi.spyOn(settingsService, 'get').mockResolvedValue(evaluationSettings());
     vi.spyOn(projectService, 'getFloor').mockResolvedValue(makeFloor());
     vi.spyOn(projectService, 'listFloors').mockResolvedValue(makePage([makeFloor()]));
     vi.spyOn(objectTypeService, 'list').mockResolvedValue(makePage([makeObjectType()]));
@@ -199,6 +252,38 @@ describe('ObjectFormPage', () => {
         expect.objectContaining({ newScore: 95, actionTaken: null }),
       );
     });
+  });
+
+  /**
+   * `useRiskBands` returns null when the thresholds cannot be read, rather than passing off
+   * the shipped constants as the ones in force. This form then cannot tell which side of
+   * the line a score falls on, so it asks for all three findings and states no threshold —
+   * the alternative is writing the object and losing the assessment to a backend refusal.
+   */
+  it('demands all three findings, without naming a band, when the thresholds cannot be read', async () => {
+    invalidateRiskBands();
+    vi.spyOn(settingsService, 'get').mockRejectedValue(new Error('offline'));
+    const create = vi.spyOn(objectMasterService, 'create').mockResolvedValue(makeObjectDetail());
+    const user = userEvent.setup();
+
+    renderCreate();
+
+    await user.selectOptions(await screen.findByLabelText(/^Тоноглолын төрөл/), TYPE_ID);
+    await user.type(screen.getByLabelText(/^Код/), 'EQ-16');
+    await user.type(screen.getByLabelText(/^Нэр\*/), 'Хэвийн тоноглол');
+    // 95 would be green under the shipped thresholds, but no thresholds are known.
+    await user.type(screen.getByLabelText(/^Үнэлгээ/), '95');
+
+    expect(await screen.findByText(/тохиргоог уншиж чадсангүй/)).toBeInTheDocument();
+    // No band is stated in either direction.
+    expect(screen.queryByText(/улаан\/хар түвшинд байна/)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Хадгалах' }));
+
+    expect(
+      await screen.findByText('Үнэлгээний түвшин тодорхойгүй тул дүгнэлт заавал.'),
+    ).toBeInTheDocument();
+    expect(create).not.toHaveBeenCalled();
   });
 
   /**

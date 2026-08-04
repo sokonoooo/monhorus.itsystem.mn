@@ -56,13 +56,17 @@ class CustomerPortalRemoteDataSource {
     );
   }
 
-  /// GET /buildings.
+  /// GET /buildings. `buildingListQuerySchema` caps `limit` at 100, which is what
+  /// this asks for: the caller sums `riskSummary` across the answer, so a page that
+  /// stops short of the customer's buildings is a truncated sum. `total` on the
+  /// response says whether one page was enough, and the caller reads the rest when
+  /// it was not.
   Future<PaginatedData<BuildingModel>> listBuildings({
     required ResolvedCustomerScope scope,
     String? projectId,
     String? search,
     int page = 1,
-    int limit = 50,
+    int limit = 100,
   }) {
     return _client.request<PaginatedData<BuildingModel>>(
       path: '/buildings',

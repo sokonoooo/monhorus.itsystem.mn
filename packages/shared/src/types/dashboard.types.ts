@@ -75,8 +75,15 @@ export interface DashboardPlannedWorkSummary {
   inProgress: number;
   overdue: number;
   completed: number;
-  /** Quantity-weighted mean progress across non-archived work. */
-  averageProgress: number;
+  /**
+   * Quantity-weighted mean progress across non-archived work: summed completed quantity
+   * over summed total quantity, the same aggregation a single work's own percent uses.
+   *
+   * Null when there is nothing to weigh — no work, or no quantity recorded against any of
+   * it — following the convention `resolutionHours` uses for a figure that cannot yet be
+   * stated. Zero would assert that everything is at 0%.
+   */
+  averageProgress: number | null;
 }
 
 export interface DashboardFinanceSummary {
