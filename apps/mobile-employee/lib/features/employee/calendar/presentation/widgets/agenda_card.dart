@@ -14,6 +14,10 @@ import 'calendar_ui.dart';
 /// service reports `progressPercent: null` for a service request — a request has no
 /// quantity to be a percentage of, and rendering 0% would state a fact the backend
 /// declined to state.
+///
+/// [onTap] opens the record the entry projects. It is nullable because an entry whose
+/// source carries no id has nothing to open, and such a row must draw without an ink
+/// response rather than look tappable and swallow the tap.
 class AgendaCard extends StatelessWidget {
   const AgendaCard({
     super.key,
@@ -22,7 +26,7 @@ class AgendaCard extends StatelessWidget {
   });
 
   final CalendarEventModel event;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {

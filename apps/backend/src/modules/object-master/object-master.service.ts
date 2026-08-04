@@ -11,6 +11,7 @@ import {
   type CreateObjectInput,
   type LinkFloorObjectsInput,
   type ObjectAssessmentDto,
+  type ObjectCodeSuggestionDto,
   type ObjectDetailDto,
   type ObjectHistoryDto,
   type ObjectHistoryEntryDto,
@@ -454,6 +455,7 @@ async function findObjectOrThrow(
     { path: 'circuit.startPointObject', select: 'code name category' },
     { path: 'circuit.endPointObject', select: 'code name category' },
     { path: 'equipment.circuit', select: 'code name category' },
+    { path: 'equipment.panel', select: 'code name category' },
   ]);
   if (!object) throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Объект олдсонгүй.');
   return object;
@@ -471,6 +473,12 @@ export async function deleteBlockersOf(object: Doc<IObject>): Promise<string[]> 
   if (object.category === 'PANEL') {
     const circuits = await ObjectRecord.countDocuments({ 'circuit.panel': object._id });
     if (circuits > 0) blockers.push(`${circuits} хэлхээ энэ самбарт холбогдсон.`);
+
+    // The same rule as the circuits above and as the circuit's own devices below: a
+    // reference that would be left dangling blocks the delete rather than being cleared
+    // behind the caller's back. A mounted device is as real a dependant as a circuit.
+    const mounted = await ObjectRecord.countDocuments({ 'equipment.panel': object._id });
+    if (mounted > 0) blockers.push(`${mounted} тоноглол энэ самбарт байрлаж байна.`);
   }
 
   if (object.category === 'CIRCUIT') {
@@ -501,12 +509,20 @@ export async function getObjectById(
   const base = await toObjectListItemDto(object, { buildingNames });
   const figures = await loadFiguresOf(object);
 
-  const [childCircuits, childEquipment] = await Promise.all([
+  const [childCircuits, childEquipment, mountedEquipment] = await Promise.all([
     object.category === 'PANEL'
       ? ObjectRecord.find({ 'circuit.panel': object._id }).populate([...LIST_POPULATE]).sort({ code: 1 })
       : Promise.resolve([]),
     object.category === 'CIRCUIT'
       ? ObjectRecord.find({ 'equipment.circuit': object._id })
+          .populate([...LIST_POPULATE])
+          .sort({ code: 1 })
+      : Promise.resolve([]),
+    // Devices bolted into this enclosure. Read by the same shape as the circuits beside
+    // them, and independently of them: a device may be both mounted here and fed from a
+    // circuit here, and it belongs in both lists rather than being deduplicated away.
+    object.category === 'PANEL'
+      ? ObjectRecord.find({ 'equipment.panel': object._id })
           .populate([...LIST_POPULATE])
           .sort({ code: 1 })
       : Promise.resolve([]),
@@ -547,6 +563,7 @@ export async function getObjectById(
       object.category === 'EQUIPMENT'
         ? {
             circuit: objectRef(object.equipment?.circuit),
+            panel: objectRef(object.equipment?.panel),
             ratedPowerKw: object.equipment?.ratedPowerKw ?? null,
             quantity: object.equipment?.quantity ?? null,
             usageCoefficient: object.equipment?.usageCoefficient ?? null,
@@ -560,11 +577,74 @@ export async function getObjectById(
     childEquipment: await Promise.all(
       childEquipment.map((entry) => toObjectListItemDto(entry, { buildingNames })),
     ),
+    mountedEquipment: await Promise.all(
+      mountedEquipment.map((entry) => toObjectListItemDto(entry, { buildingNames })),
+    ),
     loadPercent: figures.percent,
     reserveKw: figures.reserve,
     canAssess,
     deleteBlockers: await deleteBlockersOf(object),
   };
+}
+
+// -- Code suggestion ---------------------------------------------------------
+
+/** Codes are stored in a 64-char field, and `-NN` has to fit inside it. */
+const MAX_CODE_LENGTH = 64;
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * The next free code for something registered under a panel.
+ *
+ * ON THE SERVER, NOT IN THE FORM. Uniqueness is per customer and is enforced by an index
+ * the client cannot see: a browser can only count the rows it happens to have fetched, so
+ * a client-side guess would propose a code already taken by a device on another floor and
+ * the user would discover it as a 409 after filling the whole form in. Asking the database
+ * is the only way to answer the question the database is going to be asked.
+ *
+ * A SUGGESTION, NOT A RESERVATION. Nothing is written and nothing is locked. The field
+ * stays editable, and two people opening the form at the same moment are both offered the
+ * same code — the unique (customer, code) index is what actually decides, and the second
+ * save is refused there exactly as it is today for a hand-typed duplicate.
+ *
+ * Derived as `<panel code>-NN` so a device's identifier reads as "the nth thing in
+ * CT-LDB-1" without a lookup. The scan is bounded by the number of codes already in that
+ * family, so a free one is always reached.
+ */
+export async function suggestObjectCode(
+  panelId: string,
+  scope: ResolvedCustomerScope,
+): Promise<ObjectCodeSuggestionDto> {
+  // Scoped, and narrowed to a PANEL: another tenant's panel — and any object that is not a
+  // panel — reads as not found rather than as a source of codes.
+  const panel = await ObjectRecord.findOne({
+    _id: panelId,
+    category: 'PANEL',
+    ...customerScopeFilter(scope),
+  }).select('code customer');
+  if (!panel) throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Самбар олдсонгүй.');
+
+  // Room kept for the longest suffix the loop below can produce, and a trailing dash on
+  // the panel's own code dropped so the result never reads `CT-LDB--01`.
+  const base = panel.code.slice(0, MAX_CODE_LENGTH - 5).replace(/-+$/, '');
+
+  const family = await ObjectRecord.find({
+    customer: panel.customer,
+    code: new RegExp(`^${escapeRegex(base)}-\\d+$`),
+  }).select('code');
+  const taken = new Set(family.map((entry) => entry.code));
+
+  // One more candidate than there are taken codes in the family guarantees a free one.
+  for (let sequence = 1; sequence <= taken.size + 1; sequence += 1) {
+    const candidate = `${base}-${String(sequence).padStart(2, '0')}`;
+    if (!taken.has(candidate)) return { code: candidate, basedOn: panel.code };
+  }
+
+  // Unreachable: the loop above runs once more than there are codes to collide with.
+  throw AppError.conflict(ERROR_CODES.DUPLICATE_KEY, 'Чөлөөтэй код олдсонгүй.');
 }
 
 // -- Create and update -------------------------------------------------------
@@ -681,6 +761,23 @@ export async function createObject(
             'CIRCUIT',
             customer._id,
             'equipment.circuitId',
+            ownerBuildingId,
+          )
+        : null,
+      /**
+       * The enclosure the device is mounted in, checked by exactly the same gate as every
+       * other object→object reference: it must exist, be a PANEL, belong to this customer,
+       * not be decommissioned, and stand in this object's building.
+       *
+       * Accepted alongside `circuitId` rather than instead of it. Nothing about this edge
+       * feeds the load calculation — see the comment on `IEquipmentAttributes.panel`.
+       */
+      panel: input.equipment.panelId
+        ? await assertRelatedObject(
+            input.equipment.panelId,
+            'PANEL',
+            customer._id,
+            'equipment.panelId',
             ownerBuildingId,
           )
         : null,
@@ -820,6 +917,17 @@ export async function updateObject(
             ownerBuildingId,
           )
         : (object.equipment?.circuit ?? null),
+      // Same "omitted means leave it alone" rule the circuit above follows, and the same
+      // reference gate. A mount is never inferred from a circuit or vice versa.
+      panel: input.equipment.panelId
+        ? await assertRelatedObject(
+            input.equipment.panelId,
+            'PANEL',
+            object.customer,
+            'equipment.panelId',
+            ownerBuildingId,
+          )
+        : (object.equipment?.panel ?? null),
       ratedPowerKw: input.equipment.ratedPowerKw ?? object.equipment?.ratedPowerKw ?? null,
       quantity: input.equipment.quantity ?? object.equipment?.quantity ?? null,
       usageCoefficient:

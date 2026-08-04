@@ -5,6 +5,7 @@
 // populates the relation — that one is asserted on directly, because a regression
 // there would send a stringified Mongoose document to an endpoint expecting an id.
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monhorus_employee/core/error/failure.dart';
@@ -158,6 +159,21 @@ Map<String, dynamic> _work() => <String, dynamic>{
           'missingEvidence': <dynamic>['Тайлбар', 'Үнэлгээ'],
         },
       ],
+    };
+
+/// A planned work carried by the reader's TEAM and naming nobody individually.
+///
+/// The shape the deleted "Багийн" segment existed for. It is in the unfiltered board
+/// because the server's own predicate is a union — assigned to me OR to my team — so a
+/// separate team segment could only ever have re-shown these rows under a second label.
+Map<String, dynamic> _teamWork() => <String, dynamic>{
+      ..._work(),
+      'id': 'w-team',
+      'workNumber': 'PW-202607-0002',
+      'title': 'Багийн сарын үзлэг',
+      'effectiveStatus': 'PLANNED',
+      'assignedEmployees': <dynamic>[],
+      'assignedTeam': <String, dynamic>{'id': 'team-a', 'name': 'А баг'},
     };
 
 /// The same record with no consolidated report row and its first sub-task finished.
@@ -391,11 +407,61 @@ const WorkIdentity _strangerIdentity = ResolvedWorkIdentity(
 );
 
 void main() {
-  testWidgets('list renders', (WidgetTester tester) async {
+  /// Taps a segment chip.
+  ///
+  /// The chip's own label is the ONLY heading each pane has now — the "ХҮСЭЛТ" and
+  /// "ТӨЛӨВЛӨГӨӨТ АЖИЛ" captions that used to sit inside the old "Миний" pane are gone,
+  /// because a caption repeating the name of the tab just pressed says nothing.
+  Future<void> selectSegment(WidgetTester tester, WorkScope scope) async {
+    await tester.tap(find.text(scope.label.toUpperCase()));
+    await tester.pumpAndSettle();
+  }
+
+  /// The chip label is the ONLY name each pane now has, so a clipped one is a segment
+  /// nobody can read. "ТӨЛӨВЛӨГӨӨТ" is about seventeen logical pixels wider than an
+  /// equal third of a 390-wide row, which is why [SegmentedTabs] shares the row out in
+  /// proportion to the labels — and why that has to be asserted rather than eyeballed:
+  /// nothing about an ellipsis throws, so it would pass every other test in this file.
+  testWidgets('every segment chip renders its whole label', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
     await tester.pumpWidget(
       ProviderScope(
         overrides: <Override>[
           currentUserProvider.overrideWithValue(_user),
+          assignedRequestsProvider
+              .overrideWith((Ref ref) async => AssignedRequests.none),
+        ],
+        child: const MaterialApp(home: WorkTabScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    for (final WorkScope scope in WorkScope.values) {
+      final RenderParagraph chip = tester.renderObject<RenderParagraph>(
+        find.text(scope.label.toUpperCase()),
+      );
+      expect(
+        chip.didExceedMaxLines,
+        isFalse,
+        reason: '"${scope.label}" does not fit its chip and is ellipsised',
+      );
+    }
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('the planned segment renders its board, grouped by status', (
+    WidgetTester tester,
+  ) async {
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: <Override>[
+          currentUserProvider.overrideWithValue(_user),
+          assignedRequestsProvider
+              .overrideWith((Ref ref) async => AssignedRequests.none),
           plannedWorkBoardProvider.overrideWith((Ref ref) async {
             return PlannedWorkBoard.from(<PlannedWorkListItemModel>[
               PlannedWorkListItemModel.fromJson(_work()),
@@ -408,8 +474,19 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Ажил'), findsOneWidget);
+    // The tab opens on "Хүсэлт", and each pane watches only its own provider, so the
+    // board is not merely hidden — it is not fetched at all until the chip is pressed.
+    expect(find.text('Цахилгаан самбарын сарын үзлэг'), findsNothing);
+
+    await selectSegment(tester, WorkScope.plannedWork);
+
     expect(find.text('Цахилгаан самбарын сарын үзлэг'), findsOneWidget);
+    // The four status groups stay: they are the triage order, and they name the
+    // server's own `effectiveStatus` bands.
     expect(find.text('ХУГАЦАА ХЭТЭРСЭН'), findsWidgets);
+    // The umbrella caption over them does not. One record type, one heading — and the
+    // segment chip already is it.
+    expect(find.text('ТӨЛӨВЛӨГӨӨТ АЖИЛ'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
@@ -418,6 +495,8 @@ void main() {
       ProviderScope(
         overrides: <Override>[
           currentUserProvider.overrideWithValue(_user),
+          assignedRequestsProvider
+              .overrideWith((Ref ref) async => AssignedRequests.none),
           plannedWorkBoardProvider.overrideWith((Ref ref) async {
             throw const WorkScopeUnavailable('Тест', detail: 'Тайлбар.');
           }),
@@ -426,6 +505,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
+    await selectSegment(tester, WorkScope.plannedWork);
 
     expect(find.text('Тест'), findsOneWidget);
     expect(find.text('Тайлбар.'), findsOneWidget);
@@ -447,7 +527,7 @@ void main() {
   // "an administrator has to link your login". These two cover the sentence and the
   // request that produced the empty list.
 
-  testWidgets('an unlinked account is told so, not shown an empty week', (
+  testWidgets('an unlinked account is told so in both assigned segments', (
     WidgetTester tester,
   ) async {
     final _ListRepository repository = _ListRepository();
@@ -455,7 +535,7 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: <Override>[
-          currentUserProvider.overrideWithValue(_user),
+          currentUserProvider.overrideWithValue(_userWithRequests),
           workRepositoryProvider.overrideWithValue(repository),
           // Exactly what `GET /employees/me` answering 404 produces.
           workIdentityProvider.overrideWith(
@@ -468,14 +548,22 @@ void main() {
     );
     await tester.pumpAndSettle();
 
+    // "Хүсэлт" is what the tab opens on, so this is the sentence the unlinked account
+    // actually meets. It used to be carried only by the planned-work board, which the
+    // split would have left it stranded on.
     expect(find.text('Ажилтны карт холбогдоогүй байна'), findsOneWidget);
     // Named as the person who has to act, which is the actionable half of the notice.
     expect(find.textContaining('Администратор'), findsOneWidget);
-
     // The wrong sentence: true about the rows, and about the wrong problem.
-    expect(find.text('Танд оноогдсон ажил алга'), findsNothing);
+    expect(find.text('Танд оногдсон хүсэлт алга'), findsNothing);
+    // With nobody to compare the rows against there is nothing to ask for.
+    expect(repository.requestCalls, 0);
 
-    // And the list was still asked for, with no filter: "Миний" no longer hand-builds a
+    await selectSegment(tester, WorkScope.plannedWork);
+
+    expect(find.text('Ажилтны карт холбогдоогүй байна'), findsOneWidget);
+    expect(find.text('Танд оногдсон төлөвлөгөөт ажил алга'), findsNothing);
+    // And the list was still asked for, with no filter: the tab no longer hand-builds a
     // scope the server contradicts.
     expect(repository.calls, <List<String?>>[
       <String?>[null, null],
@@ -483,7 +571,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('"Миний" asks for no filter and lets the server scope it', (
+  testWidgets('"Төлөвлөгөөт" asks for no filter and lets the server scope it', (
     WidgetTester tester,
   ) async {
     final _ListRepository repository = _ListRepository(
@@ -496,6 +584,8 @@ void main() {
       ProviderScope(
         overrides: <Override>[
           currentUserProvider.overrideWithValue(_user),
+          assignedRequestsProvider
+              .overrideWith((Ref ref) async => AssignedRequests.none),
           workRepositoryProvider.overrideWithValue(repository),
           // A technician on a team, named on nothing individually. Under the old
           // client-built filter this segment sent `employeeId=<me>`, which ANDs with
@@ -507,6 +597,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
+    await selectSegment(tester, WorkScope.plannedWork);
 
     expect(repository.calls, <List<String?>>[
       <String?>[null, null],
@@ -517,16 +608,43 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('"Багийн" still narrows explicitly, by team', (
+  // -- Dropping "Багийн" loses nothing ---------------------------------------
+  //
+  // THE REGRESSION THE REMOVAL COULD HAVE CAUSED, and the one this file has to rule
+  // out. "Багийн" was deleted on the claim that both reads are already scoped
+  // own-OR-team, so it could only narrow rows the type segments already carry. If that
+  // claim were wrong, work assigned to a technician's TEAM and naming nobody would now
+  // be unreachable in the whole app.
+
+  testWidgets('team-assigned work of both types survives the removal of "Багийн"', (
     WidgetTester tester,
   ) async {
-    final _ListRepository repository = _ListRepository();
+    await tester.binding.setSurfaceSize(const Size(390, 1600));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final _ListRepository repository = _ListRepository(
+      items: <PlannedWorkListItemModel>[
+        PlannedWorkListItemModel.fromJson(_teamWork()),
+      ],
+      requests: <ServiceRequestListItemModel>[
+        ServiceRequestListItemModel.fromJson(
+          _request(
+            id: 'r-team',
+            number: 'SR-202607-0101',
+            status: 'ASSIGNED',
+            deviceName: 'DB-2A самбар',
+            assignedTeam: <String, dynamic>{'id': 'team-a', 'name': 'А баг'},
+          ),
+        ),
+      ],
+    );
 
     await tester.pumpWidget(
       ProviderScope(
         overrides: <Override>[
-          currentUserProvider.overrideWithValue(_user),
+          currentUserProvider.overrideWithValue(_userWithRequests),
           workRepositoryProvider.overrideWithValue(repository),
+          // On team-a, and named individually on nothing at all.
           workIdentityProvider.overrideWith((Ref ref) async => _assignedIdentity),
         ],
         child: const MaterialApp(home: WorkTabScreen()),
@@ -534,23 +652,35 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('БАГИЙН'));
-    await tester.pumpAndSettle();
+    // The segment itself is gone.
+    expect(find.text('БАГИЙН'), findsNothing);
 
-    // A narrowing on top of the enforced scope, never a replacement for it.
-    expect(repository.calls.last, <String?>[null, 'team-a']);
+    // The team's REQUEST is under "Хүсэлт", found by `isAssignedTo`'s team half.
+    expect(find.text('SR-202607-0101'), findsOneWidget);
+
+    await selectSegment(tester, WorkScope.plannedWork);
+
+    // ...and the team's PLANNED WORK is under "Төлөвлөгөөт", in the normal status
+    // grouping rather than in a segment of its own.
+    expect(find.text('Багийн сарын үзлэг'), findsOneWidget);
+    expect(find.text('НАДАД ОНООГДСОН'), findsWidgets);
+
+    // With no `teamId` ever sent: the server's own union already contains these rows,
+    // and a client-side team filter could only subtract from it.
+    expect(repository.calls, <List<String?>>[
+      <String?>[null, null],
+    ]);
     expect(tester.takeException(), isNull);
   });
 
-  // -- "Миний" carries requests too ------------------------------------------
+  // -- One record type per segment -------------------------------------------
   //
-  // THE BUG THIS SEGMENT WAS BUILT AROUND: an assigned service request appeared
-  // nowhere. `PlannedWorkBoard` holds `PlannedWorkListItemModel` and structurally
-  // cannot carry a request, so the moment one was assigned it left the "Нээлттэй" pool
-  // and dropped out of the app entirely — correctly assigned server-side, invisible
-  // everywhere else.
+  // The requests were missing from the tab entirely before they had a list of their
+  // own: `PlannedWorkBoard` holds `PlannedWorkListItemModel` and structurally cannot
+  // carry a request, so the moment one was assigned it left the "Нээлттэй" pool and
+  // dropped out of the app — correctly assigned server-side, invisible everywhere else.
 
-  testWidgets('"Миний" lists assigned requests beside the planned work', (
+  testWidgets('each segment shows one record type, and only its own rows', (
     WidgetTester tester,
   ) async {
     await tester.binding.setSurfaceSize(const Size(390, 1600));
@@ -560,7 +690,7 @@ void main() {
       items: <PlannedWorkListItemModel>[
         PlannedWorkListItemModel.fromJson(_work()),
       ],
-      // One response, three kinds of row — which is what `GET /service-requests`
+      // One response, four kinds of row — which is what `GET /service-requests`
       // actually answers, because the read passes `includeUnclaimed: true`.
       requests: <ServiceRequestListItemModel>[
         // Mine, by name.
@@ -616,30 +746,58 @@ void main() {
           currentUserProvider.overrideWithValue(_userWithRequests),
           workRepositoryProvider.overrideWithValue(repository),
           workIdentityProvider.overrideWith((Ref ref) async => _assignedIdentity),
+          openRequestPoolProvider.overrideWith(
+            (Ref ref) async => OpenRequestPool(
+              items: <ServiceRequestListItemModel>[
+                ServiceRequestListItemModel.fromJson(
+                  _request(
+                    id: 'r-open',
+                    number: 'SR-202607-0044',
+                    status: 'UNASSIGNED',
+                    deviceName: 'Гал хамгаалагч',
+                  ),
+                ),
+              ],
+              total: 1,
+            ),
+          ),
         ],
         child: const MaterialApp(home: WorkTabScreen()),
       ),
     );
     await tester.pumpAndSettle();
 
-    // Both record types, under their own headings, in one scroll view.
-    expect(find.text('ХҮСЭЛТ'), findsOneWidget);
-    expect(find.text('ТӨЛӨВЛӨГӨӨТ АЖИЛ'), findsOneWidget);
+    // -- "Хүсэлт": requests, and no planned work at all.
     expect(find.text('SR-202607-0100'), findsOneWidget);
     expect(find.text('SR-202607-0101'), findsOneWidget);
-    expect(find.text('Цахилгаан самбарын сарын үзлэг'), findsOneWidget);
-
+    expect(find.text('Цахилгаан самбарын сарын үзлэг'), findsNothing);
+    // The only "ХҮСЭЛТ" on screen is the chip. The section heading that used to repeat
+    // it inside the pane is gone, and so is the planned-work caption beside it.
+    expect(find.text('ХҮСЭЛТ'), findsOneWidget);
+    expect(find.text('ТӨЛӨВЛӨГӨӨТ АЖИЛ'), findsNothing);
     // The unclaimed row is NOT here. It is the "Нээлттэй" segment's, and a queue
     // nobody has taken must not be shown as this technician's own work.
     expect(find.text('SR-202607-0044'), findsNothing);
     // Neither is a colleague's.
     expect(find.text('SR-202607-0077'), findsNothing);
-
     // A row that is already the reader's has nothing to claim.
     expect(find.text('Өөртөө авах'), findsNothing);
 
+    // -- "Төлөвлөгөөт": planned work, and no requests at all.
+    await selectSegment(tester, WorkScope.plannedWork);
+    expect(find.text('Цахилгаан самбарын сарын үзлэг'), findsOneWidget);
+    expect(find.text('SR-202607-0100'), findsNothing);
+    expect(find.text('SR-202607-0101'), findsNothing);
+
+    // -- "Нээлттэй": the pool, and nothing the reader already holds.
+    await selectSegment(tester, WorkScope.open);
+    expect(find.text('SR-202607-0044'), findsOneWidget);
+    expect(find.text('SR-202607-0100'), findsNothing);
+    expect(find.text('Цахилгаан самбарын сарын үзлэг'), findsNothing);
+
     // No `employeeId` on either read: the server bounds both lists itself, and a
-    // client-side filter can only subtract from the union it enforces.
+    // client-side filter can only subtract from the union it enforces. One call each,
+    // so switching segments does not re-fetch what is already held.
     expect(repository.calls, <List<String?>>[
       <String?>[null, null],
     ]);
@@ -691,7 +849,7 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('an account with nothing at all is told about both lists', (
+  testWidgets('an empty segment names the kind of work it has none of', (
     WidgetTester tester,
   ) async {
     await tester.pumpWidget(
@@ -706,10 +864,20 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('Танд оноогдсон ажил алга'), findsOneWidget);
-    // The old sentence spoke only of planned work, which is how a technician holding a
-    // service request was told they had nothing to do.
-    expect(find.textContaining('үйлчилгээний хүсэлт'), findsOneWidget);
+    // One sentence per record type, because there is now one list per record type. The
+    // old shared wording — "Танд оноогдсон ажил алга", covering both at once — could
+    // only ever be vague about which of the two was empty.
+    expect(find.text('Танд оногдсон хүсэлт алга'), findsOneWidget);
+    // ...and it names the other way onto a request, which is the actionable half.
+    expect(find.textContaining('Нээлттэй'), findsOneWidget);
+    expect(find.text('Танд оноогдсон ажил алга'), findsNothing);
+
+    await selectSegment(tester, WorkScope.plannedWork);
+
+    expect(find.text('Танд оногдсон төлөвлөгөөт ажил алга'), findsOneWidget);
+    // The team is named too: an empty board here means the team has nothing either,
+    // which is precisely what the deleted "Багийн" segment used to be asked.
+    expect(find.textContaining('таны багт ч'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 
@@ -723,13 +891,6 @@ void main() {
       ProviderScope(
         overrides: <Override>[
           currentUserProvider.overrideWithValue(_userWithRequests),
-          plannedWorkBoardProvider.overrideWith(
-            (Ref ref) async => PlannedWorkBoard.from(
-              <PlannedWorkListItemModel>[
-                PlannedWorkListItemModel.fromJson(_work()),
-              ],
-            ),
-          ),
           assignedRequestsProvider.overrideWith(
             (Ref ref) async => const AssignedRequests(
               items: <ServiceRequestListItemModel>[],
@@ -742,10 +903,36 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    // The board still drew, and the half that failed says so in the backend's words.
-    expect(find.text('Цахилгаан самбарын сарын үзлэг'), findsOneWidget);
+    // The failure is named in the backend's own words, and it is NOT allowed to pose as
+    // an empty week: the rows and the explanation are independent facts.
     expect(find.text('Үйлчилгээний хүсэлт ачаалагдсангүй'), findsOneWidget);
     expect(find.text('Сүлжээнд холбогдож чадсангүй.'), findsOneWidget);
+    expect(find.text('Танд оногдсон хүсэлт алга'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('without service_request.view the "Хүсэлт" segment names the key', (
+    WidgetTester tester,
+  ) async {
+    // The real provider: `_user` holds the four planned-work keys and not this one, so
+    // the gate must stop it before any request is attempted. A network call here would
+    // fail the test by itself — these tests have no server.
+    //
+    // It refuses out loud rather than drawing an empty list. That was the right trade
+    // while these rows were a section beside a board that had answered; alone in a pane
+    // of their own, silence would read as "you have no requests".
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: <Override>[currentUserProvider.overrideWithValue(_user)],
+        child: const MaterialApp(home: WorkTabScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Үйлчилгээний хүсэлт харах эрх байхгүй'), findsOneWidget);
+    expect(find.textContaining('service_request.view'), findsOneWidget);
+    // An explanation, not an error.
+    expect(find.text('Дахин оролдох'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
@@ -1263,9 +1450,10 @@ void main() {
 
   /// Opens the tab and taps through to the third segment.
   ///
-  /// `plannedWorkBoardProvider` is overridden in every case because the tab opens on
-  /// "Миний": without it the board would resolve the identity over a network these tests
-  /// have no server for, before the pool is ever reached.
+  /// `assignedRequestsProvider` is overridden in every case because "Хүсэлт" is what the
+  /// tab opens on: without it that pane would resolve the identity and read
+  /// `/service-requests` over a network these tests have no server for, before the pool
+  /// is ever reached.
   Future<void> pumpOpenSegment(
     WidgetTester tester, {
     required AppUser user,
@@ -1278,14 +1466,6 @@ void main() {
       ProviderScope(
         overrides: <Override>[
           currentUserProvider.overrideWithValue(user),
-          plannedWorkBoardProvider.overrideWith(
-            (Ref ref) async => PlannedWorkBoard.from(
-              const <PlannedWorkListItemModel>[],
-            ),
-          ),
-          // "Миний" is what the tab opens on and it now reads a second list, which
-          // would resolve the identity over a network these tests have no server for
-          // before the pool is ever reached.
           assignedRequestsProvider
               .overrideWith((Ref ref) async => AssignedRequests.none),
           ...overrides,
@@ -1295,8 +1475,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('НЭЭЛТТЭЙ'));
-    await tester.pumpAndSettle();
+    await selectSegment(tester, WorkScope.open);
   }
 
   testWidgets('the open segment lists the unclaimed pool, read-only', (
@@ -1395,6 +1574,8 @@ void main() {
     await pumpOpenSegment(tester, user: _user);
 
     expect(find.text('Нээлттэй дуудлагыг харах эрх байхгүй'), findsOneWidget);
+    // One notice, not two: the "Хүсэлт" pane names the same key, but each pane is
+    // rendered on its own, so the refusal is never said twice at once.
     expect(find.textContaining('service_request.view'), findsOneWidget);
     // An explanation, not an error: no retry, and no "all planned work" escape hatch,
     // which would answer a different question.

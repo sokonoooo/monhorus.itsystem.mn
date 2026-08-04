@@ -87,6 +87,18 @@ const circuitAttributesSchema = z.object({
 /** Section 4.2 equipment fields. */
 const equipmentAttributesSchema = z.object({
   circuitId: objectIdSchema.nullish(),
+  /**
+   * The panel enclosure this device is physically mounted inside — an RCD, a busbar, a
+   * meter, a surge arrester.
+   *
+   * Independent of `circuitId` and never a substitute for it. A device may carry both (a
+   * sub-panel's main breaker really is mounted in one panel and fed by a circuit from
+   * another), so the two are not mutually exclusive here. LOAD REACHES A DEVICE ONLY
+   * THROUGH ITS CIRCUIT: this edge is a statement about where the thing is, never about
+   * what it consumes, and the section 11.5 walk descends panel → circuit → equipment and
+   * never touches it. See `calculatedLoadOf` in the backend's `load.service.ts`.
+   */
+  panelId: objectIdSchema.nullish(),
   ratedPowerKw: z.number().positive('Нэрлэсэн чадал 0-ээс их байна.').nullish(),
   quantity: z.number().int('Тоо ширхэг бүхэл тоо байна.').positive('Тоо ширхэг 0-ээс их байна.').nullish(),
   usageCoefficient: z
@@ -256,6 +268,17 @@ export const objectListQuerySchema = z.object({
   unlinkedOnly: booleanQuerySchema.optional(),
   sortBy: z.enum(['code', 'name', 'createdAt']).default('code'),
   sortDir: sortDirSchema,
+});
+
+/**
+ * Asks the backend for the next free code under a panel.
+ *
+ * A suggestion, not a reservation: nothing is written and the caller stays free to type
+ * something else. It is a server question because uniqueness is a server fact — a client
+ * counting the rows it happens to have loaded would collide with the ones it has not.
+ */
+export const objectCodeSuggestionQuerySchema = z.object({
+  panelId: objectIdSchema,
 });
 
 /** Links or unlinks objects on a floor. The objects themselves are never copied. */
@@ -445,6 +468,7 @@ export type CreateObjectInput = z.infer<typeof createObjectSchema>;
 export type UpdateObjectInput = z.infer<typeof updateObjectSchema>;
 export type UpdateObjectPositionInput = z.infer<typeof updateObjectPositionSchema>;
 export type ObjectListQueryInput = z.infer<typeof objectListQuerySchema>;
+export type ObjectCodeSuggestionQueryInput = z.infer<typeof objectCodeSuggestionQuerySchema>;
 export type LinkFloorObjectsInput = z.infer<typeof linkFloorObjectsSchema>;
 export type LoadMeasurementInput = z.infer<typeof loadMeasurementSchema>;
 export type CreateObjectAssessmentInput = z.infer<typeof createObjectAssessmentSchema>;

@@ -104,8 +104,8 @@ class ServiceRequestListItemModel {
   ///
   /// This is the branch that makes `GET /service-requests` answer a technician with
   /// rows that are not theirs — deliberately, because the "Нээлттэй" segment and
-  /// `POST /:id/claim` are built on it — so any list that calls itself "Миний" has to
-  /// subtract it again.
+  /// `POST /:id/claim` are built on it — so the "Хүсэлт" segment, which lists only the
+  /// reader's own, has to subtract it again.
   bool get isUnclaimed => assignedEmployees.isEmpty && assignedTeam == null;
 
   /// Whether this row is the reader's own work.

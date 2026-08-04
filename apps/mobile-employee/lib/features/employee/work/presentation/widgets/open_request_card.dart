@@ -6,7 +6,7 @@ import '../../../shared/service_request_vocabulary.dart';
 import '../format.dart';
 import 'work_ui.dart';
 
-/// One service request row, in the "Нээлттэй" pool AND under "Хүсэлт" in "Миний".
+/// One service request row, in the "Хүсэлт" segment AND in the "Нээлттэй" pool.
 ///
 /// The same card for both, because it is the same record and the same facts; what
 /// differs is only whether [onClaim] is supplied. A row the reader already holds has

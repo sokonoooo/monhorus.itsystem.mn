@@ -96,6 +96,15 @@ export interface CircuitAttributesDto {
 /** Section 4.2 equipment fields. */
 export interface EquipmentAttributesDto {
   circuit: ObjectRefDto | null;
+  /**
+   * The panel enclosure the device is mounted inside, when it is one of the things that
+   * live in a panel rather than out on the floor: an RCD, a busbar, a meter, an arrester.
+   *
+   * A physical location, never a supply. A device may carry this AND a circuit, and only
+   * the circuit ever carries load — a panel-mounted device with no circuit contributes
+   * nothing to any total.
+   */
+  panel: ObjectRefDto | null;
   ratedPowerKw: number | null;
   quantity: number | null;
   usageCoefficient: number | null;
@@ -186,6 +195,15 @@ export interface ObjectDetailDto extends ObjectListItemDto {
   childCircuits: readonly ObjectListItemDto[];
   /** Equipment fed by this circuit, when the object is a circuit. */
   childEquipment: readonly ObjectListItemDto[];
+  /**
+   * Devices mounted inside this panel, when the object is a panel.
+   *
+   * A separate list from `childCircuits` because it answers a different question: what is
+   * bolted into the enclosure, rather than what is fed out of it. A device that carries
+   * both a circuit and this panel appears in both places, correctly — it is fed by the one
+   * and housed by the other. Empty for every other category.
+   */
+  mountedEquipment: readonly ObjectListItemDto[];
   loadPercent: LoadValueDto;
   reserveKw: LoadValueDto;
   /** True when the type registry marks this type as able to carry a conclusion. */
@@ -209,6 +227,20 @@ export interface ObjectListQuery {
   unlinkedOnly?: boolean;
   sortBy?: 'code' | 'name' | 'createdAt';
   sortDir?: 'asc' | 'desc';
+}
+
+/**
+ * A free code proposed for a new object under a panel.
+ *
+ * Derived from the panel's own code plus a sequence (`CT-LDB-1` → `CT-LDB-1-01`), skipping
+ * anything the customer already uses. It is a suggestion and nothing more: no reservation
+ * is taken, the field stays editable, and two callers asking at the same moment may be
+ * offered the same code — the unique index on (customer, code) is what actually decides.
+ */
+export interface ObjectCodeSuggestionDto {
+  code: string;
+  /** The panel code the suggestion was derived from, for the hint beside the field. */
+  basedOn: string;
 }
 
 // -- Assessment history ------------------------------------------------------
@@ -316,7 +348,13 @@ export interface FloorLoadSummaryDto {
   totalKw: LoadValueDto;
   measuredTotalKw: number | null;
   variance: LoadValueDto;
-  /** Equipment on the floor that is not fed by any panel circuit. */
+  /**
+   * Equipment on the floor that is neither fed by a panel circuit nor mounted in a panel.
+   *
+   * A device naming a panel is deliberately placed, not stranded, so it is excluded here
+   * even though it carries no load: the figure exists to surface an omission, and a
+   * registered mount is not one.
+   */
   unattachedEquipmentCount: number;
   unattachedEquipmentKw: LoadValueDto;
   /** Counts by latest risk level, plus how many objects were never assessed. */

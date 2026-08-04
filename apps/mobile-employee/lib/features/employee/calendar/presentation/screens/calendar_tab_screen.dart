@@ -15,8 +15,9 @@ import '../calendar_format.dart';
 import '../providers/calendar_providers.dart';
 import '../widgets/agenda_card.dart';
 import '../widgets/calendar_ui.dart';
-import '../widgets/event_detail_sheet.dart';
 import '../widgets/month_grid.dart';
+import '../../../work/presentation/screens/planned_work_detail_screen.dart';
+import '../../../work/presentation/screens/service_request_detail_screen.dart';
 
 /// "Хуанли" — pushed from the calendar button in every tab's `.hdr-actions`.
 ///
@@ -38,10 +39,16 @@ import '../widgets/month_grid.dart';
 /// assigned-or-team rule itself now, so the toggle had nothing left to toggle; it is
 /// gone rather than left on screen doing nothing, and there is no view state behind it.
 ///
-/// One thing the backend still does not do, which this screen is built around rather
-/// than around a pretence that it does: a calendar entry cannot be opened for work
-/// here. Recording progress and writing a report belong to the Ажил tab; tapping a row
-/// opens a read-only sheet built from the event itself.
+/// TAPPING A ROW OPENS THE RECORD. A calendar entry is never an entity of its own — it
+/// is a projection that carries the `source` and the `sourceId` of the planned work or
+/// service request behind it — so the row opens that record's own screen in the Ажил
+/// tab, where progress is recorded and the report is written.
+///
+/// It used to open a read-only sheet assembled from the event instead, on the argument
+/// that the detail screens belong to another tab. What the sheet actually did was show
+/// the reader the eight facts already printed on the row they had just tapped and then
+/// tell them to go and find the record themselves. The route it was avoiding is an
+/// ordinary pushed one, exactly like the one the Ажил tab's own lists push.
 class CalendarTabScreen extends ConsumerWidget {
   const CalendarTabScreen({super.key});
 
@@ -218,9 +225,41 @@ class _CalendarBody extends ConsumerWidget {
         for (final CalendarEventModel event in dayEvents)
           AgendaCard(
             event: event,
-            onTap: () => showCalendarEventSheet(context, event),
+            onTap: _openRecord(context, event),
           ),
     ];
+  }
+
+  /// Opens the planned work or the service request the entry is a projection of.
+  ///
+  /// Routed from `source` + `sourceId`, which is what `CalendarEventDto` carries for
+  /// exactly this purpose. The DTO also has a `detailPath` — `/planned-work/<id>` — but
+  /// it is a web route, this app has no path router, and parsing it would only recover
+  /// the pair already sitting on the model; it is deliberately not parsed at all.
+  ///
+  /// Null when the entry names no record, so the card is drawn untappable.
+  VoidCallback? _openRecord(BuildContext context, CalendarEventModel event) {
+    if (event.sourceId.isEmpty) return null;
+
+    final Route<void> route = switch (event.source) {
+      CalendarSource.plannedWork => PlannedWorkDetailScreen.route(
+          plannedWorkId: event.sourceId,
+          workNumber: event.reference,
+        ),
+      CalendarSource.serviceRequest => ServiceRequestDetailScreen.route(
+          requestId: event.sourceId,
+          requestNumber: event.reference,
+          subject: event.title,
+          location: <String>[
+            if (event.customerName != null) event.customerName!,
+            if (event.buildingName != null) event.buildingName!,
+          ].join(' · '),
+          buildingName: event.buildingName,
+          statusLabel: event.statusLabel,
+        ),
+    };
+
+    return () => Navigator.of(context).push(route);
   }
 }
 

@@ -114,6 +114,20 @@ export function ObjectFormPage(): ReactElement {
 
   // Equipment
   const [circuitId, setCircuitId] = useState('');
+  /**
+   * The enclosure the device is mounted in.
+   *
+   * Pre-filled from `?panelId=` when the form was opened by the "register on this panel"
+   * action, which is the whole point of that action: the panel, its customer and its floor
+   * all arrive with the route, leaving the user with a type and a name to supply. Kept
+   * apart from the circuit's `panelId` above — a device may name both a mount and a feed,
+   * and they are different panels as often as not.
+   */
+  const [equipmentPanelId, setEquipmentPanelId] = useState(
+    isEdit ? '' : (searchParams.get('panelId') ?? ''),
+  );
+  /** The panel code a suggested object code was derived from, for the hint beside it. */
+  const [codeBasedOn, setCodeBasedOn] = useState<string | null>(null);
   const [ratedPowerKw, setRatedPowerKw] = useState('');
   const [quantity, setQuantity] = useState('');
   const [usageCoefficient, setUsageCoefficient] = useState('');
@@ -187,6 +201,7 @@ export function ObjectFormPage(): ReactElement {
           setPermittedCapacityKw(object.circuit?.permittedCapacityKw?.toString() ?? '');
 
           setCircuitId(object.equipment?.circuit?.id ?? '');
+          setEquipmentPanelId(object.equipment?.panel?.id ?? '');
           setRatedPowerKw(object.equipment?.ratedPowerKw?.toString() ?? '');
           setQuantity(object.equipment?.quantity?.toString() ?? '');
           setUsageCoefficient(object.equipment?.usageCoefficient?.toString() ?? '');
@@ -268,6 +283,9 @@ export function ObjectFormPage(): ReactElement {
       setPanelId((current) =>
         current && !panelPage.items.some((item) => item.id === current) ? '' : current,
       );
+      setEquipmentPanelId((current) =>
+        current && !panelPage.items.some((item) => item.id === current) ? '' : current,
+      );
       setCircuitId((current) =>
         current && !circuitPage.items.some((item) => item.id === current) ? '' : current,
       );
@@ -306,6 +324,37 @@ export function ObjectFormPage(): ReactElement {
   useEffect(() => {
     setChosenFloorId('');
   }, [customerId]);
+
+  /**
+   * A code proposed for a device being registered into a panel.
+   *
+   * Asked of the backend, never guessed here: codes are unique per customer and this page
+   * has only ever seen a page of them, so a locally invented `-03` would collide with a
+   * device on a floor nobody opened. `CT-LDB-1` becomes `CT-LDB-1-01`, `-02`, and so on
+   * past whatever is already taken.
+   *
+   * A SUGGESTION, NOT A LOCK. It is written into the field only while the field is still
+   * empty — the functional update is what guarantees a code the user has begun typing is
+   * never overwritten by an answer arriving late — and the field stays editable afterwards.
+   */
+  useEffect(() => {
+    if (isEdit || category !== 'EQUIPMENT' || !equipmentPanelId) {
+      setCodeBasedOn(null);
+      return undefined;
+    }
+    let cancelled = false;
+    objectMasterService
+      .codeSuggestion(equipmentPanelId)
+      .then((suggestion) => {
+        if (cancelled) return;
+        setCode((current) => (current.trim() === '' ? suggestion.code : current));
+        setCodeBasedOn(suggestion.basedOn);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [isEdit, category, equipmentPanelId]);
 
   function numberOrNull(value: string): number | null {
     const trimmed = value.trim();
@@ -363,6 +412,7 @@ export function ObjectFormPage(): ReactElement {
           : {
               equipment: {
                 circuitId: circuitId || null,
+                panelId: equipmentPanelId || null,
                 ratedPowerKw: numberOrNull(ratedPowerKw),
                 quantity: numberOrNull(quantity),
                 usageCoefficient: numberOrNull(usageCoefficient),
@@ -722,7 +772,14 @@ export function ObjectFormPage(): ReactElement {
             />
           </Field>
 
-          <Field label="Код" required={!isEdit} error={fieldErrors.code}>
+          <Field
+            label="Код"
+            required={!isEdit}
+            error={fieldErrors.code}
+            // Said out loud that the value is only a proposal: it is editable like any
+            // other, and nothing has been reserved under it.
+            hint={codeBasedOn ? `${codeBasedOn} самбараас санал болгов. Засаж болно.` : undefined}
+          >
             <TextInput
               value={code}
               onChange={(value) => setCode(value.toUpperCase())}
@@ -836,6 +893,42 @@ export function ObjectFormPage(): ReactElement {
                   options={circuits.map((circuit) => ({
                     value: circuit.id,
                     label: `${circuit.name} (${circuit.code})`,
+                  }))}
+                  disabled={submitting || !customerId}
+                />
+              </Field>
+              {/*
+                Where the device is mounted, offered beside what feeds it.
+
+                Scoped to the same customer and building as the circuit picker above, and
+                for the same reason: the backend refuses a reference whose two ends stand in
+                different buildings, so anything wider would be offering a choice that can
+                only come back as a field error.
+
+                Independent of the circuit. Both may be set — a sub-panel's main breaker is
+                mounted in one panel and fed from another — and a mount carries no load
+                whatsoever; only the circuit does.
+              */}
+              <Field
+                label="Байрлах самбар"
+                error={fieldErrors['equipment.panelId']}
+                hint={
+                  effectiveBuildingId
+                    ? 'Самбарын дотор суурилуулсан бол сонгоно. Ачаалалд нөлөөлөхгүй.'
+                    : 'Самбарын дотор суурилуулсан бол сонгоно.'
+                }
+              >
+                <SelectInput
+                  value={equipmentPanelId}
+                  onChange={setEquipmentPanelId}
+                  placeholder={
+                    panels.length === 0 && effectiveBuildingId
+                      ? 'Энэ барилгад самбар алга'
+                      : 'Самбарт байрлуулахгүй'
+                  }
+                  options={panels.map((panel) => ({
+                    value: panel.id,
+                    label: `${panel.name} (${panel.code})`,
                   }))}
                   disabled={submitting || !customerId}
                 />

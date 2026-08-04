@@ -193,18 +193,26 @@ class HomeOverview {
   /// What the "Яаралтай анхаарах" section lists: overdue planned work first, then
   /// requests the backend flagged urgent or at risk, soonest deadline first.
   ///
-  /// Deliberately over [requests] and not [assignedRequests], and it is the ONE place
-  /// on this screen where the unclaimed queue belongs. The section does not claim the
-  /// rows are the reader's — it says they need attention — and an urgent request nobody
-  /// has taken is the thing a technician most needs to see; the Ажил tab's "Нээлттэй"
-  /// segment is where they take it. Counting those rows as the reader's own is what the
-  /// hero figures must not do, which is a different question and a different getter.
+  /// THE READER'S OWN WORK ONLY — over [assignedRequests], never over [requests].
+  ///
+  /// This section used to run over the unfiltered list on the argument that an urgent
+  /// request nobody has taken is the thing a technician most needs to see. It reads
+  /// differently on the page than it did in the argument: Нүүр is the reader's own
+  /// screen, and a row on it is read as "yours and late" no matter what the heading
+  /// says. The unclaimed pool put calls belonging to nobody — and, once the pool and a
+  /// colleague's rows arrive down the same read, potentially to somebody else — at the
+  /// top of a personal screen, four at a time, above the reader's actual overdue work.
+  ///
+  /// The open queue has not gone anywhere: it is the Ажил tab's "Нээлттэй" segment,
+  /// which is where a request is claimed and which is built for exactly this. The
+  /// predicate is not restated here — [assignedRequests] is the one copy of the
+  /// assigned-or-team rule the server itself bounds the list with.
   List<HomeUrgentItem> get urgentItems {
     final List<HomeUrgentItem> items = <HomeUrgentItem>[
       for (final PlannedWorkListItemModel work in plannedWork)
         if (work.effectiveStatus == PlannedWorkStatus.overdue)
           HomeUrgentItem.fromPlannedWork(work),
-      for (final ServiceRequestListItemModel request in requests)
+      for (final ServiceRequestListItemModel request in assignedRequests)
         if (request.needsAttention) HomeUrgentItem.fromRequest(request),
     ];
 
@@ -220,9 +228,16 @@ class HomeOverview {
     return items;
   }
 
-  /// Today's entries, earliest first.
+  /// What is LEFT of today, earliest first.
+  ///
+  /// "Өнөөдрийн хуваарь" is a list of what to go and do, so a job that is already done
+  /// is struck off it rather than left sitting at the top of the day with a green pill.
+  /// Which states count as done is [CalendarEventModel.isFinished], read from each
+  /// source's own vocabulary; the sort is unchanged.
   List<CalendarEventModel> get sortedAgenda {
-    final List<CalendarEventModel> sorted = agenda.toList();
+    final List<CalendarEventModel> sorted = agenda
+        .where((CalendarEventModel event) => !event.isFinished)
+        .toList();
     sorted.sort((CalendarEventModel a, CalendarEventModel b) {
       final DateTime? left = a.start;
       final DateTime? right = b.start;
@@ -233,6 +248,14 @@ class HomeOverview {
     });
     return sorted;
   }
+
+  /// The day had work on it and every last piece of it is done.
+  ///
+  /// Distinct from an empty [sortedAgenda], which is also what a day with nothing
+  /// scheduled looks like. The two deserve opposite sentences — one is an achievement
+  /// and the other is a blank diary — and without this the filter above would quietly
+  /// turn the first into the second.
+  bool get agendaAllFinished => agenda.isNotEmpty && sortedAgenda.isEmpty;
 }
 
 /// One row of "Яаралтай анхаарах", flattened from either source so the section can
@@ -248,6 +271,7 @@ class HomeUrgentItem {
     required this.isOverdue,
     required this.detail,
     this.serviceRequestId,
+    this.plannedWorkId,
     this.buildingId,
     this.buildingName,
   });
@@ -263,11 +287,12 @@ class HomeUrgentItem {
   /// A second line under the location: the SLA countdown, or the progress figure.
   final String detail;
 
-  /// Set only on a row that came from a service request.
-  ///
-  /// Present so the card can open the request; a planned-work row carries null and stays
-  /// unopenable, because that record's screen belongs to the Ажил tab.
+  /// Exactly one of these two is set, and it says which record the row is and how to
+  /// open it. Both null means the source gave the row no id, and such a row is drawn
+  /// as flat text rather than as something that can be tapped.
   final String? serviceRequestId;
+  final String? plannedWorkId;
+
   final String? buildingId;
   final String? buildingName;
 
@@ -282,6 +307,9 @@ class HomeUrgentItem {
       isOverdue: work.effectiveStatus == PlannedWorkStatus.overdue,
       detail: 'Явц ${formatPercent(work.progressPercent)} · '
           '${work.taskCount} task',
+      // Empty when a newer API version answered without one, which leaves the row
+      // untappable rather than pushing a detail screen onto a blank id.
+      plannedWorkId: work.id.isEmpty ? null : work.id,
     );
   }
 
@@ -299,7 +327,7 @@ class HomeUrgentItem {
       // authorised SLA extension. Subtracting dates on the device would disagree
       // with the dispatch board the moment a clock drifts.
       detail: 'SLA ${formatSlaRemaining(request.slaRemainingMinutes)}',
-      serviceRequestId: request.id,
+      serviceRequestId: request.id.isEmpty ? null : request.id,
       buildingId: request.building?.id,
       buildingName: request.building?.name,
     );

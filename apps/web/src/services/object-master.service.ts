@@ -4,6 +4,7 @@ import type {
   CreateObjectInput,
   CreateObjectTypeInput,
   ObjectAssessmentDto,
+  ObjectCodeSuggestionDto,
   ObjectDetailDto,
   ObjectHistoryDto,
   ObjectListItemDto,
@@ -72,6 +73,21 @@ export const objectMasterService = {
 
   async create(payload: CreateObjectInput): Promise<ObjectDetailDto> {
     return unwrap(await apiClient.post<ApiResponse<ObjectDetailDto>>('/objects-master', payload));
+  },
+
+  /**
+   * Asks for the next free code under a panel.
+   *
+   * The backend answers because uniqueness is per customer and enforced by an index this
+   * page cannot see. What comes back fills the field and nothing more — it is not reserved,
+   * and the user stays free to type over it.
+   */
+  async codeSuggestion(panelId: string): Promise<ObjectCodeSuggestionDto> {
+    return unwrap(
+      await apiClient.get<ApiResponse<ObjectCodeSuggestionDto>>('/objects-master/code-suggestion', {
+        params: { panelId },
+      }),
+    );
   },
 
   async update(objectId: string, payload: UpdateObjectInput): Promise<ObjectDetailDto> {

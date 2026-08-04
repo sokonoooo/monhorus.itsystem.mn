@@ -96,6 +96,7 @@ class CalendarEventModel {
     required this.title,
     required this.start,
     required this.end,
+    required this.status,
     required this.statusLabel,
     required this.isOverdue,
     required this.isUrgent,
@@ -114,6 +115,12 @@ class CalendarEventModel {
 
   /// For a request this is the SLA deadline, not a finish time.
   final DateTime? end;
+
+  /// The source record's own wire status — `COMPLETED`, `OVERDUE`, `ASSIGNED`…
+  ///
+  /// The two sources speak different vocabularies and neither is translated here; see
+  /// [isFinished], which is the only thing on this screen that reads it.
+  final String status;
 
   final String statusLabel;
   final bool isOverdue;
@@ -134,6 +141,7 @@ class CalendarEventModel {
       title: parseString(json['title']) ?? '',
       start: parseDate(json['start']),
       end: parseDate(json['end']),
+      status: parseString(json['status']) ?? '',
       statusLabel: parseString(json['statusLabel']) ?? '',
       isOverdue: parseBool(json['isOverdue']),
       isUrgent: parseBool(json['isUrgent']),
@@ -148,6 +156,41 @@ class CalendarEventModel {
         if (customerName != null) customerName!,
         if (buildingName != null) buildingName!,
       ].join(' · ');
+
+  /// True when this entry is done with — nothing further is owed on the record.
+  ///
+  /// Read through each source's OWN vocabulary rather than one shared list of words,
+  /// because the two do not agree on what a terminal state is:
+  ///
+  ///   * Planned work settles twice — `COMPLETED` when the work is finished and
+  ///     `ARCHIVED` once its report has been approved — and `CANCELLED` is called off.
+  ///     `GET /calendar` already drops cancelled planned work server-side
+  ///     (`status: { $ne: 'CANCELLED' }`), so that arm is a guard rather than an
+  ///     expectation.
+  ///   * A service request settles at `COMPLETED` or `CANCELLED`, which is exactly
+  ///     [ServiceRequestStatus.isTerminal].
+  ///
+  /// CANCELLED counts as finished on both sides deliberately. It is not a result, but
+  /// the question this getter answers is "is this still work the day owes?", and called-off
+  /// work is not — the neutral grey the calendar paints it is about honesty of colour,
+  /// which is a different question.
+  ///
+  /// `RETURNED` and `REVISIT_REQUIRED` are deliberately NOT finished: both are work
+  /// handed BACK to the technician, and hiding them would drop the very rows the day
+  /// most owes. Neither is `DRAFT` planned work — unstarted is not done.
+  ///
+  /// A status or a source this build does not recognise reads as unfinished. Dropping a
+  /// row the app cannot classify would hide work; keeping it costs one line.
+  bool get isFinished => switch (source) {
+        CalendarSource.plannedWork => switch (PlannedWorkStatus.fromWire(status)) {
+            final PlannedWorkStatus parsed =>
+              parsed.isFinished || parsed == PlannedWorkStatus.cancelled,
+            null => false,
+          },
+        CalendarSource.serviceRequest =>
+          ServiceRequestStatus.fromWire(status)?.isTerminal ?? false,
+        null => false,
+      };
 }
 
 /// Mirrors `CalendarResultDto`.

@@ -9,6 +9,7 @@ import '../../../presentation/theme/employee_tokens.dart';
 import '../../data/models/dashboard_summary_model.dart';
 import '../../data/models/work_models.dart';
 import '../../domain/entities/employee_identity.dart';
+import '../../domain/entities/work_enums.dart';
 import '../format.dart';
 import '../providers/home_providers.dart';
 import '../theme/home_tones.dart';
@@ -16,6 +17,7 @@ import '../widgets/blueprint_ui.dart';
 import '../widgets/home_async_view.dart';
 import '../widgets/home_cards.dart';
 import '../widgets/home_ui.dart';
+import '../../../work/presentation/screens/planned_work_detail_screen.dart';
 import '../../../work/presentation/screens/service_request_detail_screen.dart';
 
 /// Tab 1 — "Нүүр", in the steel blueprint direction.
@@ -282,37 +284,65 @@ class _HomeBody extends StatelessWidget {
       else
         BlueprintRowList(
           rows: <Widget>[
-            for (final HomeUrgentItem item in urgent)
-              BlueprintRow(
-                band: severityTone(item.band).foreground,
-                name: item.title,
-                subtitle: item.location.isEmpty
-                    ? (item.buildingName ?? '')
-                    : item.location,
-                stateLabel: item.statusLabel,
-                metaLabel: 'ЛАВЛАХ',
-                metaValue: item.reference,
-                // Only a service-request row opens: the planned-work screen is the
-                // Ажил tab's and reaching it from here would be a second way in with
-                // its own back stack.
-                onTap: item.serviceRequestId == null
-                    ? null
-                    : () => Navigator.of(context).push(
-                          ServiceRequestDetailScreen.route(
-                            requestId: item.serviceRequestId!,
-                            requestNumber: item.reference,
-                            subject: item.title,
-                            location: item.location,
-                            buildingId: item.buildingId,
-                            buildingName: item.buildingName,
-                            statusLabel: item.statusLabel,
-                            slaLabel: item.detail,
-                          ),
-                        ),
-              ),
+            for (final HomeUrgentItem item in urgent) _urgentRow(context, item),
           ],
         ),
     ];
+  }
+
+  /// One "Яаралтай анхаарах" row, opening the record it names.
+  ///
+  /// BOTH kinds open. A planned-work row used to be inert, on the rule that the
+  /// planned-work screen belongs to the Ажил tab and reaching it from here would be a
+  /// second way in with its own back stack. That was reversed: a second back stack is
+  /// what a pushed route IS, on this screen as on every other, and the cost of avoiding
+  /// it was a section that says "attend to this" about rows it then refuses to open.
+  /// Half the section was dead to the touch, and which half was invisible until tapped.
+  ///
+  /// A row with neither id is left untappable — see [HomeUrgentItem.serviceRequestId].
+  Widget _urgentRow(BuildContext context, HomeUrgentItem item) {
+    final Route<void>? route = _urgentRoute(item);
+
+    return BlueprintRow(
+      band: severityTone(item.band).foreground,
+      name: item.title,
+      subtitle: item.location.isEmpty ? (item.buildingName ?? '') : item.location,
+      stateLabel: item.statusLabel,
+      metaLabel: 'ЛАВЛАХ',
+      metaValue: item.reference,
+      onTap: route == null ? null : () => Navigator.of(context).push(route),
+    );
+  }
+
+  /// The detail route a row opens, or null when it carries no id to open one with.
+  ///
+  /// Every field the row already holds is handed to the screen, so the number, the
+  /// subject and the location are on screen in the first frame and the detail read
+  /// fills in behind them rather than replacing a spinner.
+  Route<void>? _urgentRoute(HomeUrgentItem item) {
+    final String? requestId = item.serviceRequestId;
+    if (requestId != null) {
+      return ServiceRequestDetailScreen.route(
+        requestId: requestId,
+        requestNumber: item.reference,
+        subject: item.title,
+        location: item.location,
+        buildingId: item.buildingId,
+        buildingName: item.buildingName,
+        statusLabel: item.statusLabel,
+        slaLabel: item.detail,
+      );
+    }
+
+    final String? workId = item.plannedWorkId;
+    if (workId != null) {
+      return PlannedWorkDetailScreen.route(
+        plannedWorkId: workId,
+        workNumber: item.reference,
+      );
+    }
+
+    return null;
   }
 
   // -- Not scoped: organisation figures, labelled as such ---------------------
@@ -358,6 +388,10 @@ class _HomeBody extends StatelessWidget {
 /// things: the reader's own day when the account is linked, and everybody's day when
 /// it is not. Labelling the second one as personal would be the one dishonest thing
 /// this screen could do.
+///
+/// Only unfinished work is listed; see [HomeOverview.sortedAgenda]. That makes an
+/// empty list ambiguous, so the empty state asks [HomeOverview.agendaAllFinished]
+/// which of the two blanks it is looking at.
 class _AgendaSection extends StatelessWidget {
   const _AgendaSection({required this.overview});
 
@@ -366,6 +400,7 @@ class _AgendaSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final List<CalendarEventModel> events = overview.sortedAgenda;
+    final bool finished = overview.agendaAllFinished;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -377,17 +412,61 @@ class _AgendaSection extends StatelessWidget {
               : 'ӨНӨӨДРИЙН ХУВААРЬ · БҮХ АЖИЛТАН',
         ),
         if (events.isEmpty)
-          const HomeEmptyState(
-            icon: Icons.event_available_outlined,
-            message: 'Өнөөдөр хуваарьт ажил алга байна.',
+          HomeEmptyState(
+            icon: finished
+                ? Icons.task_alt_outlined
+                : Icons.event_available_outlined,
+            // A day that was worked through and a day with nothing on it are opposite
+            // facts, and telling a technician who has just closed everything that
+            // nothing was ever scheduled reads as the app having lost their work.
+            message: finished
+                ? 'Өнөөдрийн хуваарь бүрэн дууссан.'
+                : 'Өнөөдөр хуваарьт ажил алга байна.',
             compact: true,
           )
         else ...<Widget>[
           const SizedBox(height: 12),
           for (final CalendarEventModel event in events)
-            AgendaEventCard(event: event),
+            AgendaEventCard(
+              event: event,
+              onTap: _agendaTap(context, event),
+            ),
         ],
       ],
     );
+  }
+
+  /// Opens the record the entry is a projection of.
+  ///
+  /// A calendar entry is never an entity of its own — it carries the `source` and the
+  /// `sourceId` of the planned work or service request behind it, which is precisely
+  /// what the two detail screens are keyed on. There is no `detailPath` on this model
+  /// to route from and none is needed; a path would only have to be parsed back into
+  /// the pair already present.
+  ///
+  /// Null when the entry names no source or carries no id, so the card draws itself as
+  /// something that cannot be opened rather than swallowing the tap.
+  VoidCallback? _agendaTap(BuildContext context, CalendarEventModel event) {
+    if (event.sourceId.isEmpty) return null;
+
+    final Route<void>? route = switch (event.source) {
+      CalendarSource.plannedWork => PlannedWorkDetailScreen.route(
+          plannedWorkId: event.sourceId,
+          workNumber: event.reference,
+        ),
+      CalendarSource.serviceRequest => ServiceRequestDetailScreen.route(
+          requestId: event.sourceId,
+          requestNumber: event.reference,
+          subject: event.title,
+          location: event.locationLabel,
+          buildingName: event.buildingName,
+          statusLabel: event.statusLabel,
+        ),
+      // A source a newer API adds. Nothing here knows which screen it would be.
+      null => null,
+    };
+
+    if (route == null) return null;
+    return () => Navigator.of(context).push(route);
   }
 }

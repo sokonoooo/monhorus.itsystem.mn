@@ -260,6 +260,134 @@ describe('ObjectFormPage', () => {
   });
 
   /**
+   * Registering a device into a panel enclosure.
+   *
+   * The route arrives carrying the panel, and the floor it is reached through supplies the
+   * customer and the building. What is left is a type and a name.
+   */
+  describe('registering onto a panel', () => {
+    const PANEL_ID = '507f1f77bcf86cd799439161';
+
+    /** The form as the "register on this panel" action opens it. */
+    function renderOnPanel() {
+      return renderWithAuth(<ObjectFormPage />, {
+        permissions: [PERMISSIONS.OBJECT_MASTER_VIEW, PERMISSIONS.OBJECT_MASTER_MANAGE],
+        route: `/floors/${FLOOR_ID}/objects/new?category=EQUIPMENT&panelId=${PANEL_ID}`,
+        path: '/floors/:floorId/objects/new',
+      });
+    }
+
+    beforeEach(() => {
+      vi.spyOn(objectMasterService, 'list').mockImplementation(async (query = {}) =>
+        makePage(
+          query.category === 'PANEL'
+            ? [makeObjectListItem({ id: PANEL_ID, code: 'DB-2A', name: 'Түгээх самбар 2A' })]
+            : [],
+        ),
+      );
+    });
+
+    it('pre-fills the panel and sends it with the new device', async () => {
+      vi.spyOn(objectMasterService, 'codeSuggestion').mockResolvedValue({
+        code: 'DB-2A-01',
+        basedOn: 'DB-2A',
+      });
+      const create = vi.spyOn(objectMasterService, 'create').mockResolvedValue(makeObjectDetail());
+      const user = userEvent.setup();
+
+      renderOnPanel();
+
+      const panelSelect = await screen.findByLabelText('Байрлах самбар');
+      await waitFor(() => expect(panelSelect).toHaveValue(PANEL_ID));
+
+      await user.selectOptions(screen.getByLabelText(/^Тоноглолын төрөл/), TYPE_ID);
+      await user.type(screen.getByLabelText(/^Нэр\*/), 'Гүйдэл алдалтын хамгаалалт');
+      await user.click(screen.getByRole('button', { name: 'Хадгалах' }));
+
+      await waitFor(() => {
+        expect(create).toHaveBeenCalledWith(
+          expect.objectContaining({
+            category: 'EQUIPMENT',
+            floorId: FLOOR_ID,
+            code: 'DB-2A-01',
+            // The mount is sent; no circuit was chosen and none was invented from it.
+            equipment: expect.objectContaining({ panelId: PANEL_ID, circuitId: null }),
+          }),
+        );
+      });
+    });
+
+    /**
+     * The code is a suggestion the server produced, and it stays a suggestion: typing over
+     * it is what gets registered.
+     */
+    it('fills the code from the backend suggestion and leaves it editable', async () => {
+      const suggest = vi.spyOn(objectMasterService, 'codeSuggestion').mockResolvedValue({
+        code: 'DB-2A-03',
+        basedOn: 'DB-2A',
+      });
+      const create = vi.spyOn(objectMasterService, 'create').mockResolvedValue(makeObjectDetail());
+      const user = userEvent.setup();
+
+      renderOnPanel();
+
+      const codeField = await screen.findByLabelText(/^Код/);
+      await waitFor(() => expect(codeField).toHaveValue('DB-2A-03'));
+      expect(suggest).toHaveBeenCalledWith(PANEL_ID);
+      // The field says where the value came from rather than presenting it as fixed.
+      expect(screen.getByText(/DB-2A самбараас санал болгов/)).toBeInTheDocument();
+
+      await user.clear(codeField);
+      await user.type(codeField, 'MY-OWN-01');
+      await user.selectOptions(screen.getByLabelText(/^Тоноглолын төрөл/), TYPE_ID);
+      await user.type(screen.getByLabelText(/^Нэр\*/), 'Гараар нэрлэсэн');
+      await user.click(screen.getByRole('button', { name: 'Хадгалах' }));
+
+      await waitFor(() => {
+        expect(create).toHaveBeenCalledWith(expect.objectContaining({ code: 'MY-OWN-01' }));
+      });
+    });
+
+    /** A suggestion that arrives late must not land on top of what the user has typed. */
+    it('never overwrites a code the user has already begun typing', async () => {
+      let release: (value: { code: string; basedOn: string }) => void = () => undefined;
+      vi.spyOn(objectMasterService, 'codeSuggestion').mockReturnValue(
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+      );
+      const user = userEvent.setup();
+
+      renderOnPanel();
+
+      const codeField = await screen.findByLabelText(/^Код/);
+      await user.type(codeField, 'TYPED-FIRST');
+
+      release({ code: 'DB-2A-01', basedOn: 'DB-2A' });
+
+      await waitFor(() => {
+        expect(screen.getByText(/DB-2A самбараас санал болгов/)).toBeInTheDocument();
+      });
+      expect(codeField).toHaveValue('TYPED-FIRST');
+    });
+
+    /** Nothing is asked for, and nothing is sent, when no panel is in play. */
+    it('asks for no code suggestion when the form was not opened from a panel', async () => {
+      const suggest = vi.spyOn(objectMasterService, 'codeSuggestion');
+
+      renderWithAuth(<ObjectFormPage />, {
+        permissions: [PERMISSIONS.OBJECT_MASTER_VIEW, PERMISSIONS.OBJECT_MASTER_MANAGE],
+        route: `/floors/${FLOOR_ID}/objects/new`,
+        path: '/floors/:floorId/objects/new',
+      });
+
+      const panelSelect = await screen.findByLabelText('Байрлах самбар');
+      expect(panelSelect).toHaveValue('');
+      expect(suggest).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
    * The backend refuses a connection whose two ends stand in different buildings, so a
    * dropdown listing the whole tenant was offering choices that could only come back as a
    * field error. These tests pin the query the form sends, because that query is the whole

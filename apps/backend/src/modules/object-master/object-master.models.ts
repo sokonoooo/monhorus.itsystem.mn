@@ -89,6 +89,23 @@ export interface ICircuitAttributes {
 /** Section 4.2 equipment fields. */
 export interface IEquipmentAttributes {
   circuit: Types.ObjectId | null;
+  /**
+   * The panel enclosure the device is mounted inside.
+   *
+   * The second object→panel edge in the schema, beside `circuit.panel`. Without it a
+   * circuit-less device — an RCD, a busbar, a meter, a surge arrester — could only be
+   * registered onto the floor and would never appear under the panel it physically lives
+   * in.
+   *
+   * NOT MUTUALLY EXCLUSIVE WITH `circuit`: a sub-panel's main breaker is genuinely both
+   * mounted in one panel and fed by a circuit out of another, and forcing a choice would
+   * make one of those two true facts unrecordable.
+   *
+   * LOAD NEVER FLOWS ALONG THIS EDGE. The section 11.5 walk descends panel → circuit →
+   * equipment and reads `equipment.circuit` only, so a device with both edges is counted
+   * exactly once (via its circuit) and a device with only this one contributes nothing.
+   */
+  panel: Types.ObjectId | null;
   ratedPowerKw: number | null;
   quantity: number | null;
   usageCoefficient: number | null;
@@ -184,6 +201,9 @@ const circuitAttributesSchema = new Schema<ICircuitAttributes>(
 const equipmentAttributesSchema = new Schema<IEquipmentAttributes>(
   {
     circuit: { type: Schema.Types.ObjectId, ref: 'Object', default: null, index: true },
+    // Indexed exactly like `circuit` above and `circuit.panel`: the panel detail page
+    // reads every device by this key, and the delete guard counts them.
+    panel: { type: Schema.Types.ObjectId, ref: 'Object', default: null, index: true },
     ratedPowerKw: { type: Number, default: null, min: 0 },
     quantity: { type: Number, default: null, min: 0 },
     usageCoefficient: { type: Number, default: null, min: 0, max: 1 },

@@ -3,6 +3,7 @@ import {
   createObjectAssessmentSchema,
   createObjectSchema,
   createObjectTypeSchema,
+  objectCodeSuggestionQuerySchema,
   objectListQuerySchema,
   objectTypeListQuerySchema,
   updateObjectPositionSchema,
@@ -11,6 +12,7 @@ import {
   type CreateObjectAssessmentInput,
   type CreateObjectInput,
   type CreateObjectTypeInput,
+  type ObjectCodeSuggestionQueryInput,
   type ObjectListQueryInput,
   type ObjectTypeListQueryInput,
   type UpdateObjectInput,
@@ -173,6 +175,30 @@ objectMasterRouter.post(
         meta(req),
       );
       created(res, result, 'Объект үүслээ.');
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+/**
+ * The next free code under a panel.
+ *
+ * REGISTERED BEFORE `/:objectId` ON PURPOSE. Express matches in declaration order, and a
+ * literal segment declared after the parameter would be swallowed by it and rejected by
+ * the 24-hex id validator as a malformed id.
+ *
+ * Gated on manage rather than view: it exists only to fill a field on the create form, and
+ * the sequence it exposes is a hint about what a tenant has already registered.
+ */
+objectMasterRouter.get(
+  '/code-suggestion',
+  requirePermission(PERMISSIONS.OBJECT_MASTER_MANAGE),
+  validate({ query: objectCodeSuggestionQuerySchema }),
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const query = req.query as unknown as ObjectCodeSuggestionQueryInput;
+      ok(res, await objectService.suggestObjectCode(query.panelId, scopeOf(req)));
     } catch (error) {
       next(error);
     }

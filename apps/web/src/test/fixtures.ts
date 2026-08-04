@@ -454,6 +454,7 @@ export function makeObjectDetail(overrides: Partial<ObjectDetailDto> = {}): Obje
     equipment: null,
     childCircuits: [],
     childEquipment: [],
+    mountedEquipment: [],
     loadPercent: { valueKw: 73.6, complete: true, reasons: [] },
     reserveKw: { valueKw: 6.6, complete: true, reasons: [] },
     canAssess: true,

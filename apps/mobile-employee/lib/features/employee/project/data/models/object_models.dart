@@ -300,6 +300,7 @@ class CircuitAttributesModel {
 class EquipmentAttributesModel {
   const EquipmentAttributesModel({
     required this.circuit,
+    required this.panel,
     required this.ratedPowerKw,
     required this.quantity,
     required this.usageCoefficient,
@@ -308,6 +309,13 @@ class EquipmentAttributesModel {
   });
 
   final ObjectRefModel? circuit;
+
+  /// The panel enclosure the device is mounted inside — an RCD, a busbar, a
+  /// meter, an arrester.
+  ///
+  /// Independent of [circuit]: a device may name both, and only the circuit ever
+  /// carries load. This one answers where the thing physically is.
+  final ObjectRefModel? panel;
   final double? ratedPowerKw;
   final int? quantity;
   final double? usageCoefficient;
@@ -318,6 +326,7 @@ class EquipmentAttributesModel {
     if (raw is! Map<String, dynamic>) return null;
     return EquipmentAttributesModel(
       circuit: ObjectRefModel.fromJson(raw['circuit']),
+      panel: ObjectRefModel.fromJson(raw['panel']),
       ratedPowerKw: parseDouble(raw['ratedPowerKw']),
       quantity: parseInt(raw['quantity']),
       usageCoefficient: parseDouble(raw['usageCoefficient']),
@@ -514,7 +523,11 @@ class ObjectDetailModel extends ObjectListItemModel {
     final String? panelLocation = panel?.location;
     if (panelLocation != null && panelLocation.isNotEmpty) return panelLocation;
 
-    final ObjectRefModel? parent = circuit?.panel ?? equipment?.circuit;
+    // The mount comes before the feed for a device that carries both: this line is
+    // labelled "Байршил", and where a thing is bolted answers that question better
+    // than what supplies it.
+    final ObjectRefModel? parent =
+        circuit?.panel ?? equipment?.panel ?? equipment?.circuit;
     if (parent != null) return parent.label;
 
     final List<String> parts = <String>[

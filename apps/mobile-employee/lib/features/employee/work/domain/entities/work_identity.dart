@@ -14,9 +14,10 @@ import 'package:equatable/equatable.dart';
 ///   - Telling an account with NO employee card that this is why it sees nothing. A
 ///     scoped caller the server cannot match to an employee is answered the empty
 ///     list, which is correct and unreadable without this.
-///   - [ResolvedWorkIdentity.teamId], which the "Багийн" segment narrows by and which
-///     `resolvePlannedWorkAssignment` compares against a record's `assignedTeam` to
-///     decide which controls it is honest to offer.
+///   - [ResolvedWorkIdentity.teamId], which decides whether a row assigned to a team
+///     is the reader's — `resolvePlannedWorkAssignment` and
+///     `ServiceRequestListItemModel.isAssignedTo` both compare it against a record's
+///     `assignedTeam` to work out which controls it is honest to offer.
 ///
 /// The id comes from `GET /employees/me`, which the server resolves from the current
 /// `Employee.systemUser` link on the authenticated session. It is a read, not a
@@ -41,8 +42,9 @@ class ResolvedWorkIdentity extends WorkIdentity {
   final String fullName;
   final String? positionName;
 
-  /// The team the "Багийн" segment filters on. Null when the employee record is not
-  /// attached to a team, in which case that segment has nothing it could ask for.
+  /// The team half of the own-OR-team assignment rule. Null when the employee record
+  /// is not attached to a team, in which case only rows naming them individually are
+  /// theirs.
   final String? teamId;
   final String? teamName;
 

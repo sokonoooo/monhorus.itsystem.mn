@@ -599,7 +599,14 @@ class InitialsAvatar extends StatelessWidget {
   }
 }
 
-/// `.tab-row` — equal-width outline chips; the active one fills with ink.
+/// `.tab-row` — outline chips across one row; the active one fills with ink.
+///
+/// The row is shared out IN PROPORTION TO THE LABELS rather than in equal thirds, and
+/// that is what lets a segment be named accurately. Equal thirds give each chip about
+/// 112 logical pixels on a 390-wide handset, which "ТӨЛӨВЛӨГӨӨТ" overruns by some
+/// seventeen — so the one segment whose name a reader is least likely to guess was the
+/// one rendered as "ТӨЛӨВЛӨГӨ…". Weighting by character count costs the short labels
+/// padding they were not using and reads as the same row of chips.
 class SegmentedTabs extends StatelessWidget {
   const SegmentedTabs({
     super.key,
@@ -626,6 +633,10 @@ class SegmentedTabs extends StatelessWidget {
           for (int i = 0; i < labels.length; i++) ...<Widget>[
             if (i > 0) const SizedBox(width: 7),
             Expanded(
+              // A proxy for the rendered width, and a deliberately coarse one: laying
+              // the text out twice to get the real figure would buy a couple of pixels
+              // of accuracy on a value that only has to stop the longest chip clipping.
+              flex: labels[i].length,
               child: _TabChip(
                 label: labels[i],
                 selected: i == selectedIndex,

@@ -736,6 +736,16 @@ describe('load calculation through the API', () => {
     expect(circuit.body.data.calculatedLoad.valueKw).toBe(0);
   });
 
+  /**
+   * The unattached figure means "somebody forgot to wire this up", and that is now a
+   * narrower claim than "has no circuit".
+   *
+   * Two circuit-less devices sit on this floor. One names nothing and is the oversight the
+   * figure exists to surface. The other names the panel it is bolted inside and is a
+   * deliberate placement, so it is excluded — without that, every floor carrying an RCD or
+   * a meter would raise the banner permanently. Neither contributes to `totalKw`: section
+   * 11.5 still counts panels only, and a mount carries no load.
+   */
   it('rolls a floor up to the panel total and reports unattached equipment separately', async () => {
     const chain = await buildChain();
     expect(chain.panel).toBeTruthy();
@@ -750,14 +760,27 @@ describe('load calculation through the API', () => {
       equipment: { ratedPowerKw: 3, quantity: 1 },
     });
 
+    const mountedType = await createType({ code: 'RCD', name: 'RCD', category: 'EQUIPMENT' });
+    const mounted = await createObject({
+      code: 'EQ-RCD',
+      name: 'Гүйдэл алдалтын хамгаалалт',
+      category: 'EQUIPMENT',
+      objectTypeId: mountedType,
+      floorId,
+      equipment: { panelId: chain.panel, ratedPowerKw: 7, quantity: 1 },
+    });
+    expect(mounted.status).toBe(201);
+
     const summary = await request(app)
       .get(`${API}/floors/${floorId}/load`)
       .set('Authorization', `Bearer ${token}`);
 
     expect(summary.status).toBe(200);
     expect(summary.body.data.panelCount).toBe(1);
-    // Section 11.5 counts panels only: the 3 kW loose device is not in the total.
+    // Section 11.5 counts panels only: neither circuit-less device is in the total, and
+    // the 7 kW mounted one did not reach it through the panel either.
     expect(summary.body.data.totalKw.valueKw).toBe(4.8);
+    // Only the device that names nothing. The panel-mounted one is placed, not stranded.
     expect(summary.body.data.unattachedEquipmentCount).toBe(1);
     expect(summary.body.data.unattachedEquipmentKw.valueKw).toBe(3);
   });
@@ -773,6 +796,347 @@ describe('load calculation through the API', () => {
     expect(summary.body.data.unassessedCount).toBe(3);
     expect(summary.body.data.riskCounts).toEqual([]);
     expect(summary.body.data.kvaNote).toContain('power factor');
+  });
+});
+
+/**
+ * Devices that live inside a panel enclosure — an RCD, a busbar, a meter, a surge arrester.
+ *
+ * Before `equipment.panel` existed the only object→panel edge was `circuit.panel`, so a
+ * circuit-less device could only be registered onto the floor and never appeared under the
+ * panel it is physically bolted inside. The edge that fixes that is a statement about
+ * LOCATION ONLY: every test below that touches a number exists to prove no load moved.
+ */
+describe('equipment mounted inside a panel', () => {
+  it('registers a device inside a panel with no circuit and lists it under the panel', async () => {
+    const chain = await buildChain();
+
+    const rcdType = await createType({ code: 'RCD', name: 'RCD', category: 'EQUIPMENT' });
+    const device = await createObject({
+      code: 'DB-2A-01',
+      name: 'Гүйдэл алдалтын хамгаалалт',
+      category: 'EQUIPMENT',
+      objectTypeId: rcdType,
+      floorId,
+      equipment: { panelId: chain.panel, ratedPowerKw: 2 },
+    });
+
+    expect(device.status).toBe(201);
+    expect(device.body.data.equipment.panel.id).toBe(chain.panel);
+    // No circuit was named and none was invented from the mount.
+    expect(device.body.data.equipment.circuit).toBeNull();
+
+    const panel = await request(app)
+      .get(`${API}/objects-master/${chain.panel}`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(panel.body.data.mountedEquipment.map((row: { id: string }) => row.id)).toEqual([
+      device.body.data.id,
+    ]);
+    // Its own list, beside the circuits fed out of the panel rather than mixed into them.
+    expect(panel.body.data.childCircuits.map((row: { id: string }) => row.id)).toEqual([
+      chain.circuit,
+    ]);
+  });
+
+  it('leaves a panel-mounted device out of the floor unattached count and its kW', async () => {
+    const chain = await buildChain();
+
+    const rcdType = await createType({ code: 'RCD', name: 'RCD', category: 'EQUIPMENT' });
+    await createObject({
+      code: 'DB-2A-01',
+      name: 'Гүйдэл алдалтын хамгаалалт',
+      category: 'EQUIPMENT',
+      objectTypeId: rcdType,
+      floorId,
+      equipment: { panelId: chain.panel, ratedPowerKw: 9 },
+    });
+
+    const summary = await request(app)
+      .get(`${API}/floors/${floorId}/load`)
+      .set('Authorization', `Bearer ${token}`);
+
+    // It has no circuit, but it is not an oversight: nothing to warn about.
+    expect(summary.body.data.unattachedEquipmentCount).toBe(0);
+    expect(summary.body.data.unattachedEquipmentKw.valueKw).toBe(0);
+  });
+
+  /**
+   * THE LOAD RULE, PROVEN.
+   *
+   * A device with both edges is reached by the section 11.5 walk exactly once — panel →
+   * circuit → equipment — so naming the panel as well cannot double it. The device's rated
+   * figures are chosen so a double count would be unmissable: 2 × 2 = 4 kW on top of the
+   * chain's 4.8 gives 8.8, and a doubled one would give 12.8.
+   */
+  it('counts a device carrying both a circuit and a panel exactly once, through the circuit', async () => {
+    const chain = await buildChain();
+
+    const bothType = await createType({ code: 'MAIN', name: 'Ерөнхий автомат', category: 'EQUIPMENT' });
+    const device = await createObject({
+      code: 'DB-2A-MAIN',
+      name: 'Дэд самбарын ерөнхий автомат',
+      category: 'EQUIPMENT',
+      objectTypeId: bothType,
+      floorId,
+      equipment: { circuitId: chain.circuit, panelId: chain.panel, ratedPowerKw: 2, quantity: 2 },
+    });
+    expect(device.status).toBe(201);
+    expect(device.body.data.equipment.circuit.id).toBe(chain.circuit);
+    expect(device.body.data.equipment.panel.id).toBe(chain.panel);
+
+    const circuit = await request(app)
+      .get(`${API}/objects-master/${chain.circuit}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(circuit.body.data.calculatedLoad.valueKw).toBe(8.8);
+
+    const panel = await request(app)
+      .get(`${API}/objects-master/${chain.panel}`)
+      .set('Authorization', `Bearer ${token}`);
+    // The same 4 kW, arriving once. The panel walk descends through its circuits and never
+    // reads a mount, so the device is not added a second time on the way past.
+    expect(panel.body.data.calculatedLoad.valueKw).toBe(8.8);
+
+    const summary = await request(app)
+      .get(`${API}/floors/${floorId}/load`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(summary.body.data.totalKw.valueKw).toBe(8.8);
+    expect(summary.body.data.unattachedEquipmentCount).toBe(0);
+  });
+
+  /** A mount adds nothing anywhere: the same floor, before and after, to the digit. */
+  it('leaves every floor load figure untouched when a panel-mounted device is added', async () => {
+    const chain = await buildChain();
+
+    const before = await request(app)
+      .get(`${API}/floors/${floorId}/load`)
+      .set('Authorization', `Bearer ${token}`);
+
+    const meterType = await createType({ code: 'METER', name: 'Тоолуур', category: 'EQUIPMENT' });
+    await createObject({
+      code: 'DB-2A-METER',
+      name: 'Цахилгаан тоолуур',
+      category: 'EQUIPMENT',
+      objectTypeId: meterType,
+      floorId,
+      equipment: { panelId: chain.panel, ratedPowerKw: 6, quantity: 3 },
+    });
+
+    const after = await request(app)
+      .get(`${API}/floors/${floorId}/load`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(after.body.data.totalKw).toEqual(before.body.data.totalKw);
+    expect(after.body.data.unattachedEquipmentKw).toEqual(before.body.data.unattachedEquipmentKw);
+    expect(after.body.data.unattachedEquipmentCount).toBe(before.body.data.unattachedEquipmentCount);
+    expect(after.body.data.variance).toEqual(before.body.data.variance);
+    // The device itself is registered and counted as a floor object; only the kW figures
+    // are unmoved.
+    expect(after.body.data.equipmentCount).toBe(before.body.data.equipmentCount + 1);
+  });
+
+  /** Inherited from `assertSameBuilding`: a cable does not run between two towers. */
+  it('refuses a panel that stands in another building', async () => {
+    const otherBuilding = await request(app)
+      .post(`${API}/buildings`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ projectId, code: 'BLD-9', name: 'Есдүгээр барилга' });
+    const otherFloor = await request(app)
+      .post(`${API}/floors`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        buildingId: otherBuilding.body.data.id,
+        code: 'B9-FL-1',
+        name: '1 давхар',
+        floorNumber: 1,
+      });
+
+    const panelType = await createType({ code: 'DB9', name: 'Самбар', category: 'PANEL' });
+    const remotePanel = await createObject({
+      code: 'DB-9A',
+      name: 'Хол самбар',
+      category: 'PANEL',
+      objectTypeId: panelType,
+      floorId: otherFloor.body.data.id,
+      panel: { capacityKw: 25 },
+    });
+
+    const rcdType = await createType({ code: 'RCD', name: 'RCD', category: 'EQUIPMENT' });
+    const response = await createObject({
+      code: 'EQ-FAR',
+      name: 'Өөр барилгын самбар руу',
+      category: 'EQUIPMENT',
+      objectTypeId: rcdType,
+      floorId,
+      equipment: { panelId: remotePanel.body.data.id },
+    });
+
+    expect(response.status).toBe(400);
+    expect(response.body.message).toContain('өөр барилгад');
+    expect(response.body.issues).toContainEqual({
+      field: 'equipment.panelId',
+      message: 'Зөвхөн нэг барилгын объектыг холбоно.',
+    });
+  });
+
+  /** The expected category is PANEL, so a circuit or another device is not a mount point. */
+  it('refuses a target that is not a panel', async () => {
+    const chain = await buildChain();
+
+    const rcdType = await createType({ code: 'RCD', name: 'RCD', category: 'EQUIPMENT' });
+    const response = await createObject({
+      code: 'EQ-BADTARGET',
+      name: 'Хэлхээ рүү суулгах гэсэн',
+      category: 'EQUIPMENT',
+      objectTypeId: rcdType,
+      floorId,
+      equipment: { panelId: chain.circuit },
+    });
+
+    expect(response.status).toBe(400);
+    expect(response.body.issues).toContainEqual({
+      field: 'equipment.panelId',
+      message: 'Объект олдсонгүй эсвэл ангилал таарахгүй.',
+    });
+  });
+
+  it('mounts a device into a panel through an update as well as at creation', async () => {
+    const chain = await buildChain();
+
+    const rcdType = await createType({ code: 'RCD', name: 'RCD', category: 'EQUIPMENT' });
+    const device = await createObject({
+      code: 'EQ-LATER',
+      name: 'Дараа суулгасан',
+      category: 'EQUIPMENT',
+      objectTypeId: rcdType,
+      floorId,
+      equipment: { ratedPowerKw: 1 },
+    });
+    expect(device.body.data.equipment.panel).toBeNull();
+
+    const updated = await request(app)
+      .patch(`${API}/objects-master/${device.body.data.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ equipment: { panelId: chain.panel } });
+
+    expect(updated.status).toBe(200);
+    expect(updated.body.data.equipment.panel.id).toBe(chain.panel);
+    // The rest of the block is untouched by naming a panel.
+    expect(updated.body.data.equipment.ratedPowerKw).toBe(1);
+  });
+
+  it('blocks deleting a panel that still has devices mounted in it', async () => {
+    const chain = await buildChain();
+
+    const rcdType = await createType({ code: 'RCD', name: 'RCD', category: 'EQUIPMENT' });
+    await createObject({
+      code: 'DB-2A-01',
+      name: 'Гүйдэл алдалтын хамгаалалт',
+      category: 'EQUIPMENT',
+      objectTypeId: rcdType,
+      floorId,
+      equipment: { panelId: chain.panel },
+    });
+
+    const panel = await request(app)
+      .get(`${API}/objects-master/${chain.panel}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(panel.body.data.deleteBlockers).toContain('1 тоноглол энэ самбарт байрлаж байна.');
+
+    const removal = await request(app)
+      .delete(`${API}/objects-master/${chain.panel}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(removal.status).toBe(409);
+  });
+
+  describe('code suggestion', () => {
+    it('derives the next free code from the panel code', async () => {
+      const chain = await buildChain();
+
+      const response = await request(app)
+        .get(`${API}/objects-master/code-suggestion`)
+        .query({ panelId: chain.panel })
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.data).toEqual({ code: 'DB-2A-01', basedOn: 'DB-2A' });
+    });
+
+    it('skips a code already taken and offers the next one', async () => {
+      const chain = await buildChain();
+
+      const rcdType = await createType({ code: 'RCD', name: 'RCD', category: 'EQUIPMENT' });
+      const first = await request(app)
+        .get(`${API}/objects-master/code-suggestion`)
+        .query({ panelId: chain.panel })
+        .set('Authorization', `Bearer ${token}`);
+
+      const registered = await createObject({
+        code: first.body.data.code,
+        name: 'Эхний тоноглол',
+        category: 'EQUIPMENT',
+        objectTypeId: rcdType,
+        floorId,
+        equipment: { panelId: chain.panel },
+      });
+      expect(registered.status).toBe(201);
+
+      const second = await request(app)
+        .get(`${API}/objects-master/code-suggestion`)
+        .query({ panelId: chain.panel })
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(second.body.data.code).toBe('DB-2A-02');
+      expect(second.body.data.code).not.toBe(first.body.data.code);
+    });
+
+    /**
+     * Nothing is reserved by asking.
+     *
+     * The suggestion is a hint on a field that stays editable, so registering under a code
+     * of the caller's own choosing has to work, and asking again afterwards must still
+     * offer `-01` — the hand-typed code is not in the panel's sequence and so does not
+     * consume a slot in it.
+     */
+    it('does not reserve the suggested code and accepts a hand-typed one instead', async () => {
+      const chain = await buildChain();
+
+      const suggestion = await request(app)
+        .get(`${API}/objects-master/code-suggestion`)
+        .query({ panelId: chain.panel })
+        .set('Authorization', `Bearer ${token}`);
+      expect(suggestion.body.data.code).toBe('DB-2A-01');
+
+      const rcdType = await createType({ code: 'RCD', name: 'RCD', category: 'EQUIPMENT' });
+      const registered = await createObject({
+        code: 'MY-OWN-CODE',
+        name: 'Гараар бичсэн код',
+        category: 'EQUIPMENT',
+        objectTypeId: rcdType,
+        floorId,
+        equipment: { panelId: chain.panel },
+      });
+
+      expect(registered.status).toBe(201);
+      expect(registered.body.data.code).toBe('MY-OWN-CODE');
+
+      const again = await request(app)
+        .get(`${API}/objects-master/code-suggestion`)
+        .query({ panelId: chain.panel })
+        .set('Authorization', `Bearer ${token}`);
+      expect(again.body.data.code).toBe('DB-2A-01');
+    });
+
+    it('refuses to derive a code from anything that is not a panel', async () => {
+      const chain = await buildChain();
+
+      const response = await request(app)
+        .get(`${API}/objects-master/code-suggestion`)
+        .query({ panelId: chain.circuit })
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(response.status).toBe(404);
+    });
   });
 });
 

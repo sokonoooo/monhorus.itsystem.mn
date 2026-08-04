@@ -19,28 +19,28 @@ import '../../../../auth/presentation/providers/auth_provider.dart';
 
 /// Tab 2 — "Ажил".
 ///
-/// Three segments over two different record types. "Миний" IS BOTH OF THEM: the
-/// technician's planned work, grouped by the server's `effectiveStatus` — overdue, then
-/// in flight, then scheduled, then finished — and, under its own heading, the service
-/// requests assigned to them. Nothing here decides what is late; a phone with a skewed
-/// clock would otherwise disagree with the dashboard.
+/// THREE SEGMENTS, ONE PER KIND OF THING TO DO. "Хүсэлт" is the service requests assigned
+/// to the reader or to their team; "Төлөвлөгөөт" is their planned work, grouped by the
+/// server's `effectiveStatus` — overdue, then in flight, then scheduled, then finished;
+/// "Нээлттэй" is the pool nobody holds yet. Nothing here decides what is late; a phone
+/// with a skewed clock would otherwise disagree with the dashboard.
 ///
-/// The requests were missing entirely until now, and the omission was structural rather
-/// than an oversight: this segment read [PlannedWorkBoard], which holds
-/// `PlannedWorkListItemModel` and cannot carry a service request, so a request assigned
-/// to a technician left the "Нээлттэй" pool and appeared in no list at all. See
-/// [myWorkBoardProvider].
+/// They used to be "Миний" / "Багийн" / "Нээлттэй", split by WHOSE work it was, which
+/// made the first segment carry two record types under two headings and forced a
+/// technician to scroll past a planned-work board to reach the request they had just been
+/// given. "Багийн" is gone rather than moved: both reads are already scoped own-OR-team,
+/// so it was a narrowing over rows these segments already contain and could not hold a row
+/// they do not. See [WorkScope].
 ///
-/// "Багийн" stays planned-work only — see that provider for why a team segment cannot
-/// answer the same question for requests.
+/// One pane per segment, and the switch is load-bearing rather than cosmetic: each pane
+/// watches only its own provider, so the planned-work read is not even issued while a
+/// request segment is on screen, and vice versa.
 ///
-/// "Нээлттэй" is the unclaimed pool, and it is SERVICE REQUESTS rather than planned
-/// work, because that is the only half of the question the API can answer:
-/// `GET /service-requests?status=UNASSIGNED` lists requests nobody holds, while
-/// `plannedWorkListQuerySchema` has no unassigned filter at all. It used to render a
-/// notice claiming no such endpoint existed and made no request whatsoever, which is
-/// the bug this segment now fixes. It is read-only: assignment is `dispatch.assign`,
-/// a dispatcher's permission.
+/// "Нээлттэй" is SERVICE REQUESTS rather than both types, because that is the only half of
+/// the question the API can answer: `GET /service-requests?status=UNASSIGNED` lists
+/// requests nobody holds, while `plannedWorkListQuerySchema` has no unassigned filter at
+/// all. It used to render a notice claiming no such endpoint existed and made no request
+/// whatsoever, which is the bug that segment now fixes.
 class WorkTabScreen extends ConsumerWidget {
   const WorkTabScreen({super.key});
 
@@ -69,13 +69,11 @@ class WorkTabScreen extends ConsumerWidget {
               child: RefreshIndicator(
                 color: EmployeeTokens.ink,
                 onRefresh: () => _refresh(ref, scope),
-                // Two panes rather than one, because the two segments read different
-                // providers over different record types. The pane switch is also what
-                // keeps `plannedWorkBoardProvider` unwatched — and therefore unfetched
-                // — while the pool is on screen.
-                child: scope.isPlannedWork
-                    ? _PlannedWorkPane(scope: scope)
-                    : const _OpenPoolPane(),
+                child: switch (scope) {
+                  WorkScope.requests => const _RequestsPane(),
+                  WorkScope.plannedWork => const _PlannedWorkPane(),
+                  WorkScope.open => const _OpenPoolPane(),
+                },
               ),
             ),
           ],
@@ -84,59 +82,77 @@ class WorkTabScreen extends ConsumerWidget {
     );
   }
 
-  /// Pull-to-refresh for whichever pane is showing.
+  /// Pull-to-refresh for whichever pane is showing, and only that one.
   ///
-  /// The planned-work pane refreshes the identity too: it feeds the list's only filter,
-  /// and an employee card linked since the last attempt is the likeliest reason an empty
-  /// tab would start working. The pool has no identity in it — it is the work nobody is
-  /// assigned to — so there is nothing there to re-resolve.
+  /// The two assigned segments re-resolve the identity as well: it decides whether the
+  /// list can be attributed to anybody at all, and an employee card linked since the last
+  /// attempt is the likeliest reason an empty tab would start working. The pool has no
+  /// identity in it — it is the work nobody is assigned to — so there is nothing there to
+  /// re-resolve.
   ///
   /// The future is awaited so the spinner lasts as long as the request, and its error is
   /// swallowed because the view below is already rendering that same failure —
   /// rethrowing here would only produce an unhandled async error.
   Future<void> _refresh(WidgetRef ref, WorkScope scope) async {
-    if (!scope.isPlannedWork) {
-      ref.invalidate(openRequestPoolProvider);
-      try {
-        await ref.read(openRequestPoolProvider.future);
-      } catch (_) {
-        // Rendered by WorkAsyncView.
-      }
-      return;
+    switch (scope) {
+      case WorkScope.requests:
+        ref
+          ..invalidate(workIdentityProvider)
+          ..invalidate(assignedRequestsProvider);
+      case WorkScope.plannedWork:
+        ref
+          ..invalidate(workIdentityProvider)
+          ..invalidate(plannedWorkBoardProvider);
+      case WorkScope.open:
+        ref.invalidate(openRequestPoolProvider);
     }
 
-    ref
-      ..invalidate(workIdentityProvider)
-      ..invalidate(plannedWorkBoardProvider)
-      // The second list this segment now draws. It is invalidated explicitly rather
-      // than left to the identity above, because it holds its own fetched rows.
-      ..invalidate(assignedRequestsProvider);
     try {
-      await ref.read(myWorkBoardProvider.future);
+      await switch (scope) {
+        WorkScope.requests => ref.read(assignedRequestsProvider.future),
+        WorkScope.plannedWork => ref.read(plannedWorkBoardProvider.future),
+        WorkScope.open => ref.read(openRequestPoolProvider.future),
+      };
     } catch (_) {
       // Rendered by WorkAsyncView.
     }
   }
 }
 
-/// The "Миний" and "Багийн" segments.
-class _PlannedWorkPane extends ConsumerWidget {
-  const _PlannedWorkPane({required this.scope});
-
-  final WorkScope scope;
+/// The "Хүсэлт" segment: the service requests this reader, or their team, is carrying.
+class _RequestsPane extends ConsumerWidget {
+  const _RequestsPane();
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final AsyncValue<MyWorkBoard> board = ref.watch(myWorkBoardProvider);
+    final AsyncValue<AssignedRequests> requests =
+        ref.watch(assignedRequestsProvider);
 
-    return WorkAsyncView<MyWorkBoard>(
-      value: board,
-      onRetry: () => ref
-        ..invalidate(plannedWorkBoardProvider)
-        ..invalidate(assignedRequestsProvider),
+    return WorkAsyncView<AssignedRequests>(
+      value: requests,
+      onRetry: () => ref.invalidate(assignedRequestsProvider),
       loading: const _BoardSkeleton(),
-      builder: (BuildContext context, MyWorkBoard data) =>
-          _Board(board: data, scope: scope),
+      builder: (BuildContext context, AssignedRequests data) =>
+          _RequestBoard(requests: data),
+    );
+  }
+}
+
+/// The "Төлөвлөгөөт" segment.
+class _PlannedWorkPane extends ConsumerWidget {
+  const _PlannedWorkPane();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final AsyncValue<PlannedWorkBoard> board =
+        ref.watch(plannedWorkBoardProvider);
+
+    return WorkAsyncView<PlannedWorkBoard>(
+      value: board,
+      onRetry: () => ref.invalidate(plannedWorkBoardProvider),
+      loading: const _BoardSkeleton(),
+      builder: (BuildContext context, PlannedWorkBoard data) =>
+          _PlannedBoard(board: data),
     );
   }
 }
@@ -223,19 +239,18 @@ class _OpenPool extends ConsumerWidget {
         Padding(
           padding: const EdgeInsets.only(top: 4),
           child: canClaim
-              // The promise is kept now. It was written before "Миний" could hold a
+              // The promise is kept now. It was written before the tab could hold a
               // service request at all, so a claimed request left this pool and showed
               // up in no list whatsoever — the sentence named a destination that did
-              // not exist. It names the section it actually lands in.
+              // not exist. It names the segment it actually lands in.
               ? const NoticeBanner(
                   tone: EmployeeTokens.muted,
                   icon: Icons.pan_tool_alt_outlined,
                   title: 'Ажлыг өөртөө авах боломжтой',
                   text:
                       'Эдгээр хүсэлт хэн нэгэнд хуваарилагдаагүй байна. "Өөртөө '
-                      'авах" дарвал тухайн ажил шууд танд оногдож, "Миний" '
-                      'хэсгийн "Хүсэлт" жагсаалтад шилжинэ. Нэг ажлыг зөвхөн нэг '
-                      'ажилтан авна.',
+                      'авах" дарвал тухайн ажил шууд танд оногдож, "Хүсэлт" '
+                      'хэсэгт шилжинэ. Нэг ажлыг зөвхөн нэг ажилтан авна.',
                 )
               : const NoticeBanner(
                   tone: EmployeeTokens.muted,
@@ -243,8 +258,8 @@ class _OpenPool extends ConsumerWidget {
                   title: 'Хуваарилалтыг диспетчер хийдэг',
                   text: 'Эдгээр хүсэлт хэн нэгэнд хуваарилагдаагүй байна. Танд '
                       '"service_request.claim" эрх байхгүй тул ажлыг өөрөө авах '
-                      'боломжгүй. Диспетчер танд хуваарилмагц "Миний" хэсгийн '
-                      '"Хүсэлт" жагсаалтад харагдана.',
+                      'боломжгүй. Диспетчер танд хуваарилмагц "Хүсэлт" хэсэгт '
+                      'харагдана.',
                 ),
         ),
         KpiStrip(
@@ -348,35 +363,43 @@ class _WorkHeader extends StatelessWidget {
   }
 }
 
-/// The grouped list. Always scrollable, so pull-to-refresh works even when the
-/// content is short enough not to overflow.
+/// The "Хүсэлт" segment's list. Always scrollable, so pull-to-refresh works even when
+/// the content is short enough not to overflow.
 ///
-/// Two record types under two headings, in one scroll view: the planned work the
-/// technician is carrying, and the service requests assigned to them. They are not
-/// interleaved, because they are not the same kind of thing and they open different
-/// screens; they share a list because a technician's day does not come in two halves.
-class _Board extends ConsumerWidget {
-  const _Board({required this.board, required this.scope});
+/// ONE RECORD TYPE AND THEREFORE NO GROUP HEADING. These rows used to sit under a
+/// "ХҮСЭЛТ" caption inside the old "Миний" pane, because a planned-work board sat under a
+/// second one directly below them. The segment chip says it now, and a caption repeating
+/// the name of the tab the reader just pressed is a heading that says nothing.
+///
+/// The same card the "Нээлттэй" segment draws, with the same tap: a request opens
+/// [ServiceRequestDetailScreen] carrying the row's own facts as that screen's opening
+/// placeholder, which it then fills in from the detail read. What it never carries here
+/// is "Өөртөө авах" — these rows are already the reader's, and a claim button on them
+/// would be an action with nothing to do.
+class _RequestBoard extends StatelessWidget {
+  const _RequestBoard({required this.requests});
 
-  final MyWorkBoard board;
-  final WorkScope scope;
+  final AssignedRequests requests;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final PlannedWorkBoard planned = board.plannedWork;
-    final WorkIdentityProblem? problem = planned.identityProblem;
+  Widget build(BuildContext context) {
+    final WorkIdentityProblem? problem = requests.identityProblem;
+    final String? notice = requests.notice;
 
-    if (board.isEmpty) {
+    // Nothing to show and nothing to apologise for. A failed read is excluded here on
+    // purpose: an empty list caused by a refusal is not an empty week, and the banner
+    // below says which it was.
+    if (requests.isEmpty && notice == null) {
       return ListView(
         physics: const AlwaysScrollableScrollPhysics(),
         children: <Widget>[
           // AN UNLINKED ACCOUNT IS TOLD SO, and this is the case where saying it matters
-          // most: the server answers a scoped caller with no employee card the empty list,
-          // which is correct and completely indistinguishable from a quiet week. "Танд
-          // оноогдсон ажил алга" would be a true sentence about the wrong problem — no
-          // amount of waiting fixes it, and the person holding the phone cannot fix it
-          // either. The Нүүр tab already says this for the same state; the wording is the
-          // problem's own, so the two tabs cannot drift apart.
+          // most: the server answers a scoped caller with no employee card the empty
+          // list, which is correct and completely indistinguishable from a quiet week.
+          // "Танд оногдсон хүсэлт алга" would be a true sentence about the wrong problem
+          // — no amount of waiting fixes it, and the person holding the phone cannot fix
+          // it either. The Нүүр tab already says this for the same state; the wording is
+          // the problem's own, so the two tabs cannot drift apart.
           if (problem != null)
             WorkEmptyState(
               icon: Icons.badge_outlined,
@@ -384,31 +407,19 @@ class _Board extends ConsumerWidget {
               message: problem.detail,
             )
           else
-            WorkEmptyState(
-              icon: Icons.event_available_outlined,
-              title: scope == WorkScope.team
-                  ? 'Багийн ажил алга'
-                  : 'Танд оноогдсон ажил алга',
-              // The sentence names BOTH lists now. "Төлөвлөгөөт ажил алга" was true and
-              // incomplete: it was said to a technician who might well be holding a
-              // service request, and it was the wording of the very bug this segment
-              // fixes.
-              message: scope == WorkScope.team
-                  ? 'Таны багт одоогоор төлөвлөгөөт ажил бүртгэгдээгүй байна.'
-                  : 'Одоогоор танд төлөвлөгөөт ажил ч, үйлчилгээний хүсэлт ч '
-                      'оноогоогүй байна. Ажил хуваарилагдмагц энд харагдана.',
+            const WorkEmptyState(
+              icon: Icons.assignment_outlined,
+              title: 'Танд оногдсон хүсэлт алга',
+              message: 'Одоогоор танд үйлчилгээний хүсэлт оноогоогүй байна. '
+                  'Диспетчер хуваарилах эсвэл "Нээлттэй" хэсгээс ажил өөртөө '
+                  'авмагц энд харагдана.',
             ),
         ],
       );
     }
 
-    final int dueToday = board.dueTodayCount;
-    final int overdue = board.overdueCount;
-
-    // An umbrella caption over the four status groups, so the planned work and the
-    // requests read as two named blocks rather than as five headings in a row. Only
-    // where there is a second block to tell it apart from.
-    final bool grouped = board.requests.isNotEmpty && !planned.isEmpty;
+    final int dueToday = requests.dueTodayCount;
+    final int overdue = requests.overdueCount;
 
     return ListView(
       physics: const AlwaysScrollableScrollPhysics(),
@@ -426,90 +437,38 @@ class _Board extends ConsumerWidget {
               text: problem.detail,
             ),
           ),
-        // The planned work still arrived, so the board is drawn and the half that did
-        // not is named rather than silently missing.
-        if (board.requestsNotice != null)
+        // The read failed, and it is named rather than left as a silently empty list.
+        if (notice != null)
           Padding(
             padding: const EdgeInsets.only(top: 4),
             child: NoticeBanner(
               tone: EmployeeTokens.yellow,
               icon: Icons.cloud_off_outlined,
               title: 'Үйлчилгээний хүсэлт ачаалагдсангүй',
-              text: board.requestsNotice!,
+              text: notice,
             ),
           ),
-        KpiStrip(
-          tiles: <KpiTile>[
-            KpiTile(value: '${board.activeCount}', label: 'Идэвхтэй'),
-            KpiTile(
-              value: '$dueToday',
-              label: 'Өнөөдөр',
-              tone: dueToday > 0 ? EmployeeTokens.yellow : EmployeeTokens.ink,
-            ),
-            KpiTile(
-              value: '$overdue',
-              label: 'Хэтэрсэн',
-              tone: overdue == 0 ? EmployeeTokens.ink : EmployeeTokens.red,
-            ),
-          ],
-        ),
-        // Requests first: they carry an SLA clock the planned board does not, and a
-        // request assigned minutes ago is the thing the reader came here to find.
-        _RequestSection(items: board.requests),
-        if (grouped)
-          SectionHeading(
-            'Төлөвлөгөөт ажил',
-            trailing: Text(
-              '${planned.total}',
-              style: EmployeeTokens.pillLabel
-                  .copyWith(color: EmployeeTokens.muted),
-            ),
+        // PER SEGMENT, NOT GLOBAL. The strip used to count both record types together,
+        // which was right while both were in one pane; printing that total above a list
+        // of two requests would read as "5 идэвхтэй" over five rows the reader cannot
+        // see. The combined figure for the whole day is the Нүүр tab's job.
+        if (!requests.isEmpty)
+          KpiStrip(
+            tiles: <KpiTile>[
+              KpiTile(value: '${requests.activeCount}', label: 'Идэвхтэй'),
+              KpiTile(
+                value: '$dueToday',
+                label: 'Өнөөдөр',
+                tone: dueToday > 0 ? EmployeeTokens.yellow : EmployeeTokens.ink,
+              ),
+              KpiTile(
+                value: '$overdue',
+                label: 'Хэтэрсэн',
+                tone: overdue == 0 ? EmployeeTokens.ink : EmployeeTokens.red,
+              ),
+            ],
           ),
-        _Section(
-          title: 'Хугацаа хэтэрсэн',
-          items: planned.overdue,
-          topPadding: grouped ? 10 : 8,
-        ),
-        _Section(title: 'Хийгдэж байгаа', items: planned.active),
-        _Section(
-          title: scope == WorkScope.team ? 'Багийн хуваарь' : 'Надад оноогдсон',
-          items: planned.upcoming,
-        ),
-        _Section(title: 'Дууссан', items: planned.finished),
-      ],
-    );
-  }
-}
-
-/// The reader's own service requests, under their own caption.
-///
-/// The same card the "Нээлттэй" segment draws, with the same tap: a request opens
-/// [ServiceRequestDetailScreen] carrying the row's own facts as that screen's opening
-/// placeholder, which it then fills in from the detail read. What it never carries here
-/// is "Өөртөө авах" — these rows are already the reader's, and a claim button on them
-/// would be an action with nothing to do.
-class _RequestSection extends StatelessWidget {
-  const _RequestSection({required this.items});
-
-  final List<ServiceRequestListItemModel> items;
-
-  @override
-  Widget build(BuildContext context) {
-    if (items.isEmpty) return const SizedBox.shrink();
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: <Widget>[
-        SectionHeading(
-          'Хүсэлт',
-          topPadding: 8,
-          trailing: Text(
-            '${items.length}',
-            style:
-                EmployeeTokens.pillLabel.copyWith(color: EmployeeTokens.muted),
-          ),
-        ),
-        for (final ServiceRequestListItemModel request in items)
+        for (final ServiceRequestListItemModel request in requests.items)
           OpenRequestCard(
             request: request,
             onTap: () => Navigator.of(context).push<void>(
@@ -525,6 +484,91 @@ class _RequestSection extends StatelessWidget {
               ),
             ),
           ),
+      ],
+    );
+  }
+}
+
+/// The "Төлөвлөгөөт" segment's grouped list. Always scrollable, so pull-to-refresh works
+/// even when the content is short enough not to overflow.
+///
+/// Four status groups and no umbrella caption above them: the pane holds one record type
+/// now, so "ТӨЛӨВЛӨГӨӨТ АЖИЛ" over "ХУГАЦАА ХЭТЭРСЭН" would be a heading above a heading.
+/// The four groups themselves stay — they are the triage order, and they name the
+/// server's own `effectiveStatus` bands rather than a re-decision made on the device.
+class _PlannedBoard extends StatelessWidget {
+  const _PlannedBoard({required this.board});
+
+  final PlannedWorkBoard board;
+
+  @override
+  Widget build(BuildContext context) {
+    final WorkIdentityProblem? problem = board.identityProblem;
+
+    if (board.isEmpty) {
+      return ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        children: <Widget>[
+          if (problem != null)
+            WorkEmptyState(
+              icon: Icons.badge_outlined,
+              title: problem.title,
+              message: problem.detail,
+            )
+          else
+            const WorkEmptyState(
+              icon: Icons.event_available_outlined,
+              title: 'Танд оногдсон төлөвлөгөөт ажил алга',
+              message: 'Одоогоор танд ч, таны багт ч төлөвлөгөөт ажил '
+                  'бүртгэгдээгүй байна. Хуваарилагдмагц энд харагдана.',
+            ),
+        ],
+      );
+    }
+
+    final int dueToday = board.dueTodayCount();
+    final int overdue = board.overdue.length;
+
+    return ListView(
+      physics: const AlwaysScrollableScrollPhysics(),
+      padding: const EdgeInsets.only(bottom: EmployeeTokens.scrollBottomSpacer),
+      children: <Widget>[
+        if (problem != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: NoticeBanner(
+              tone: EmployeeTokens.yellow,
+              icon: Icons.badge_outlined,
+              title: problem.title,
+              text: problem.detail,
+            ),
+          ),
+        KpiStrip(
+          tiles: <KpiTile>[
+            KpiTile(value: '${board.openCount}', label: 'Идэвхтэй'),
+            KpiTile(
+              value: '$dueToday',
+              label: 'Өнөөдөр',
+              tone: dueToday > 0 ? EmployeeTokens.yellow : EmployeeTokens.ink,
+            ),
+            KpiTile(
+              value: '$overdue',
+              label: 'Хэтэрсэн',
+              tone: overdue == 0 ? EmployeeTokens.ink : EmployeeTokens.red,
+            ),
+          ],
+        ),
+        _Section(
+          title: 'Хугацаа хэтэрсэн',
+          items: board.overdue,
+          topPadding: 8,
+        ),
+        _Section(title: 'Хийгдэж байгаа', items: board.active),
+        // Named for the reader even though the list is own-OR-team: a work assigned to
+        // the team IS assigned to everybody in it, which is precisely why the separate
+        // "Багийн" segment had nothing of its own to show.
+        _Section(title: 'Надад оноогдсон', items: board.upcoming),
+        _Section(title: 'Дууссан', items: board.finished),
       ],
     );
   }

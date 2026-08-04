@@ -301,6 +301,7 @@ class CircuitAttributesModel {
 class EquipmentAttributesModel {
   const EquipmentAttributesModel({
     required this.circuit,
+    required this.panel,
     required this.ratedPowerKw,
     required this.quantity,
     required this.usageCoefficient,
@@ -309,6 +310,13 @@ class EquipmentAttributesModel {
   });
 
   final ObjectMasterRefModel? circuit;
+
+  /// The panel enclosure the device is mounted inside, when it is one of the
+  /// things that live in a panel: an RCD, a busbar, a meter, an arrester.
+  ///
+  /// A physical location, never a supply, and independent of [circuit] — a device
+  /// may carry both. Only the circuit ever carries load.
+  final ObjectMasterRefModel? panel;
   final double? ratedPowerKw;
   final int? quantity;
   final double? usageCoefficient;
@@ -319,6 +327,7 @@ class EquipmentAttributesModel {
     if (raw is! Map<String, dynamic>) return null;
     return EquipmentAttributesModel(
       circuit: ObjectMasterRefModel.fromJson(raw['circuit']),
+      panel: ObjectMasterRefModel.fromJson(raw['panel']),
       ratedPowerKw: parseDouble(raw['ratedPowerKw']),
       quantity: parseInt(raw['quantity']),
       usageCoefficient: parseDouble(raw['usageCoefficient']),

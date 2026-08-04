@@ -8,9 +8,28 @@ import * as fileUrl from '../../../lib/file-url';
 import { objectMasterService } from '../../../services/object-master.service';
 import { projectService } from '../../../services/project.service';
 import { dispatchService } from '../../../services/service-request.service';
-import { makeFloor, makeObjectDetail, makeObjectHistory } from '../../../test/fixtures';
+import {
+  makeFloor,
+  makeObjectDetail,
+  makeObjectHistory,
+  makeObjectListItem,
+} from '../../../test/fixtures';
 import { renderWithAuth } from '../../../test/render';
 import { ObjectDetailPage } from './ObjectDetailPage';
+
+/**
+ * Where a header action leads.
+ *
+ * Only one route is mounted in a page test, so a navigation cannot be observed by what
+ * renders next. `useNavigate` is stubbed instead — everything else in the router is the
+ * real thing — because the destination, query string and all, is the assertion: it is what
+ * carries the panel, the floor and the category into the form.
+ */
+const navigate = vi.fn();
+vi.mock('react-router-dom', async () => {
+  const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
+  return { ...actual, useNavigate: () => navigate };
+});
 
 const OBJECT_ID = '507f1f77bcf86cd799439161';
 const FLOOR_ID = '507f1f77bcf86cd799439121';
@@ -71,6 +90,7 @@ function renderDetail(permissions: readonly string[]) {
 describe('ObjectDetailPage', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    navigate.mockClear();
     vi.spyOn(dispatchService, 'employeeCandidates').mockResolvedValue([]);
     vi.spyOn(objectMasterService, 'history').mockResolvedValue(makeObjectHistory());
     vi.spyOn(projectService, 'getFloor').mockResolvedValue(makeFloor());
@@ -118,6 +138,7 @@ describe('ObjectDetailPage', () => {
         panel: null,
         equipment: {
           circuit: { id: 'c1', code: 'HL-01', name: 'Коридор', category: 'CIRCUIT' },
+          panel: null,
           ratedPowerKw: 1.5,
           quantity: 4,
           usageCoefficient: 0.8,
@@ -791,6 +812,124 @@ describe('ObjectDetailPage', () => {
     expect(screen.getByText('Хэвийн')).toBeInTheDocument();
     // The old "band (score)" label form is gone.
     expect(screen.queryByText('Хэвийн (92)')).not.toBeInTheDocument();
+  });
+
+  /**
+   * A panel is an enclosure as well as a source of circuits, and until this list existed
+   * the things bolted inside it were invisible from it.
+   */
+  describe('devices mounted in the panel', () => {
+    const RCD = makeObjectListItem({
+      id: '507f1f77bcf86cd799439199',
+      code: 'DB-2A-01',
+      name: 'Гүйдэл алдалтын хамгаалалт',
+      category: 'EQUIPMENT',
+    });
+
+    it('lists them under their own heading, apart from the panel circuits', async () => {
+      vi.spyOn(objectMasterService, 'getById').mockResolvedValue(
+        makeObjectDetail({
+          mountedEquipment: [RCD],
+          childCircuits: [
+            makeObjectListItem({ id: 'c1', code: 'HL-01', name: 'Коридор', category: 'CIRCUIT' }),
+          ],
+        }),
+      );
+
+      renderDetail([PERMISSIONS.OBJECT_MASTER_VIEW]);
+
+      const mounted = await screen.findByRole('table', { name: 'Самбарт байрлах тоноглол' });
+      expect(within(mounted).getByText('Гүйдэл алдалтын хамгаалалт')).toBeInTheDocument();
+      expect(within(mounted).getByText('DB-2A-01')).toBeInTheDocument();
+      // The circuits fed out of the panel keep their own table: what is housed and what is
+      // supplied are two different questions.
+      expect(within(mounted).queryByText('Коридор')).not.toBeInTheDocument();
+      expect(screen.getByText('Энэ самбарын хэлхээнүүд')).toBeInTheDocument();
+    });
+
+    it('shows no such list on a panel with nothing mounted in it', async () => {
+      vi.spyOn(objectMasterService, 'getById').mockResolvedValue(makeObjectDetail());
+
+      renderDetail([PERMISSIONS.OBJECT_MASTER_VIEW]);
+
+      await screen.findByText('Түгээх самбар 2A');
+      expect(screen.queryByText('Самбарт байрлах тоноглол')).not.toBeInTheDocument();
+    });
+
+    /**
+     * The whole point of the action: the form opens knowing the panel, the floor (and so
+     * the customer) and the category, leaving a type and a name to supply.
+     */
+    it('opens the create form pre-filled with the panel, its floor and the category', async () => {
+      vi.spyOn(objectMasterService, 'getById').mockResolvedValue(makeObjectDetail());
+      const user = userEvent.setup();
+
+      renderDetail([PERMISSIONS.OBJECT_MASTER_VIEW, PERMISSIONS.OBJECT_MASTER_MANAGE]);
+
+      await user.click(await screen.findByRole('button', { name: 'Самбарт тоноглол бүртгэх' }));
+
+      expect(navigate).toHaveBeenCalledWith(
+        `/floors/${FLOOR_ID}/objects/new?category=EQUIPMENT&panelId=${OBJECT_ID}`,
+      );
+    });
+
+    it('offers the action only on a panel, and only to a caller who may manage objects', async () => {
+      vi.spyOn(objectMasterService, 'getById').mockResolvedValue(makeObjectDetail());
+
+      const readOnly = renderDetail([PERMISSIONS.OBJECT_MASTER_VIEW]);
+      await screen.findByText('Түгээх самбар 2A');
+      expect(
+        screen.queryByRole('button', { name: 'Самбарт тоноглол бүртгэх' }),
+      ).not.toBeInTheDocument();
+      readOnly.unmount();
+
+      vi.spyOn(objectMasterService, 'getById').mockResolvedValue(
+        makeObjectDetail({
+          category: 'CIRCUIT',
+          panel: null,
+          circuit: {
+            panel: null,
+            startPoint: null,
+            endPoint: null,
+            breakerRating: null,
+            cableType: null,
+            cableSectionMm2: null,
+            cableLengthM: null,
+            permittedCapacityKw: null,
+          },
+        }),
+      );
+      renderDetail([PERMISSIONS.OBJECT_MASTER_VIEW, PERMISSIONS.OBJECT_MASTER_MANAGE]);
+      await screen.findByText('Түгээх самбар 2A');
+      expect(
+        screen.queryByRole('button', { name: 'Самбарт тоноглол бүртгэх' }),
+      ).not.toBeInTheDocument();
+    });
+
+    /** Read on the device itself: where it sits, beside what feeds it. */
+    it('names the enclosure on the mounted device page', async () => {
+      vi.spyOn(objectMasterService, 'getById').mockResolvedValue(
+        makeObjectDetail({
+          category: 'EQUIPMENT',
+          panel: null,
+          equipment: {
+            circuit: null,
+            panel: { id: OBJECT_ID, code: 'DB-2A', name: 'Түгээх самбар 2A', category: 'PANEL' },
+            ratedPowerKw: null,
+            quantity: null,
+            usageCoefficient: null,
+            installedAt: null,
+            warrantyUntil: null,
+          },
+        }),
+      );
+
+      renderDetail([PERMISSIONS.OBJECT_MASTER_VIEW]);
+
+      expect(await screen.findByText('Байрлах самбар')).toBeInTheDocument();
+      // It has no circuit, and the page says so rather than implying the panel is one.
+      expect(screen.getByText('Холбогдоогүй')).toBeInTheDocument();
+    });
   });
 
   it('shows an error state when the object cannot be loaded', async () => {

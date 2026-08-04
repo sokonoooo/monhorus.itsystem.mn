@@ -240,6 +240,14 @@ export async function buildProjectGraph(projectId: string): Promise<ProjectGraph
    * A circuit belongs to a panel and equipment is fed by a circuit (section 11.4), which is
    * the connection an electrician actually reads. Drawn solid so it stands apart from the
    * dashed containment lines.
+   *
+   * A DEVICE MOUNTED IN A PANEL IS DRAWN, AND DRAWN DASHED. It appears as a node already —
+   * it sits on a floor like anything else — but leaving it hanging off the floor alone
+   * would show an RCD floating beside the panel it is bolted inside, which is the exact
+   * confusion this whole edge was added to end. Dashed rather than solid because the line
+   * already means "contains" everywhere else on this canvas and that is precisely what a
+   * mount is: no current flows along it, and the legend must not be made to lie. A device
+   * that is both mounted here and fed from a circuit gets both lines, which is the truth.
    */
   const presentObjects = new Set(objects.map((object) => `o-${String(object._id)}`));
 
@@ -254,6 +262,11 @@ export async function buildProjectGraph(projectId: string): Promise<ProjectGraph
     const circuitId = object.equipment?.circuit;
     if (circuitId && presentObjects.has(`o-${String(circuitId)}`)) {
       edges.push(edgeOf(`o-${String(circuitId)}`, target, false));
+    }
+
+    const mountPanelId = object.equipment?.panel;
+    if (mountPanelId && presentObjects.has(`o-${String(mountPanelId)}`)) {
+      edges.push(edgeOf(`o-${String(mountPanelId)}`, target, true));
     }
   }
 

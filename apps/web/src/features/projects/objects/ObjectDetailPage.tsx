@@ -198,6 +198,7 @@ export function ObjectDetailPage(): ReactElement {
   // load column on circuits and off equipment.
   const circuitColumnState = useTableColumns('object-child-circuits', childColumns);
   const equipmentColumnState = useTableColumns('object-child-equipment', childColumns);
+  const mountedColumnState = useTableColumns('object-panel-equipment', childColumns);
 
   /**
    * Assessment history, one recorded value per cell.
@@ -345,6 +346,26 @@ export function ObjectDetailPage(): ReactElement {
         ]}
         actions={
           <>
+            {/*
+              Registering a device straight into this enclosure.
+
+              Offered only on a panel, and only from a panel that sits on a floor: the form
+              is reached through the floor route, which is what supplies the customer and
+              the building the candidate list is scoped to. A floorless panel has no detail
+              page at all, so there is no case here that this misses.
+            */}
+            {canManage && object.category === 'PANEL' && object.floorId && (
+              <Button
+                variant="secondary"
+                onClick={() =>
+                  navigate(
+                    `/floors/${object.floorId ?? ''}/objects/new?category=EQUIPMENT&panelId=${object.id}`,
+                  )
+                }
+              >
+                Самбарт тоноглол бүртгэх
+              </Button>
+            )}
             {canAssess && object.canAssess && (
               <Button onClick={() => setAssessTarget(object)}>Үнэлгээ бүртгэх</Button>
             )}
@@ -441,6 +462,15 @@ export function ObjectDetailPage(): ReactElement {
             {object.equipment && (
               <>
                 <Row label="Тэжээх хэлхээ">{object.equipment.circuit?.name ?? 'Холбогдоогүй'}</Row>
+                {/*
+                  Where the device physically sits, read beside what feeds it rather than
+                  instead of it: the two are different facts and a device may carry both.
+                  Shown only when there is one, so a floor-mounted device reads exactly as
+                  it did before the mount existed.
+                */}
+                {object.equipment.panel && (
+                  <Row label="Байрлах самбар">{object.equipment.panel.name}</Row>
+                )}
                 <Row label="Нэрлэсэн чадал">
                   {object.equipment.ratedPowerKw === null
                     ? '-'
@@ -490,6 +520,28 @@ export function ObjectDetailPage(): ReactElement {
               rowKey={(row) => row.id}
               onRowClick={(row) => navigate(`${floorPath}/objects/${row.id}`)}
               emptyTitle="Хэлхээ алга"
+            />
+          </div>
+        )}
+
+        {/*
+          What is bolted inside this enclosure, beside the circuits fed out of it. A device
+          that is both mounted here and fed by a circuit here appears in both tables, which
+          is what it is: housed by the panel and supplied by the circuit.
+        */}
+        {object.mountedEquipment.length > 0 && (
+          <div className="overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-slate-200">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-5 py-3">
+              <h2 className="text-sm font-semibold text-slate-900">Самбарт байрлах тоноглол</h2>
+              <ColumnPicker controller={mountedColumnState} />
+            </div>
+            <DataTable
+              ariaLabel="Самбарт байрлах тоноглол"
+              columns={mountedColumnState.visibleColumns}
+              rows={object.mountedEquipment}
+              rowKey={(row) => row.id}
+              onRowClick={(row) => navigate(`${floorPath}/objects/${row.id}`)}
+              emptyTitle="Тоноглол алга"
             />
           </div>
         )}

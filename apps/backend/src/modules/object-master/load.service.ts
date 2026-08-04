@@ -64,6 +64,24 @@ export function equipmentLoad(object: Pick<IObject, 'equipment' | 'status'>): Lo
  * A circuit's load is the sum of the equipment it feeds; a panel's is the sum of its
  * circuits. Both walk the stored graph rather than a denormalised total, so a change to a
  * single device is reflected everywhere on the next read without a rebuild step.
+ *
+ * LOAD REACHES A DEVICE ONLY THROUGH ITS CIRCUIT.
+ *
+ * There are two object→panel edges in the schema: `circuit.panel`, which is a supply, and
+ * `equipment.panel`, which is a physical mount — where the RCD, the busbar or the meter is
+ * bolted. This walk descends panel → circuit → equipment and reads `equipment.circuit`
+ * only, so:
+ *
+ *   - a device with a circuit is counted through that circuit, whether or not it also
+ *     names a panel. It cannot be double-counted: the panel branch below never looks at
+ *     devices, only at circuits, and reaches the device solely through the circuit it is
+ *     fed by;
+ *   - a device that names a panel and no circuit contributes NOTHING. A mount is a claim
+ *     about location, never about consumption, and adding it to the panel total would
+ *     invent a formula section 11.5 does not define.
+ *
+ * This is why the function needs no change to accommodate the mount edge — and there is a
+ * test that fails if that ever stops being true.
  */
 export async function calculatedLoadOf(object: Doc<IObject>): Promise<LoadValueDto> {
   if (object.category === 'EQUIPMENT') return equipmentLoad(object);
@@ -167,9 +185,20 @@ export async function floorLoadSummary(
   const panelLoads = await Promise.all(panels.map((panel) => calculatedLoadOf(panel)));
   const totalKw = toDto(sumLoads(panelLoads));
 
-  // Equipment with no circuit is not reachable from any panel, so section 11.5 never
-  // counts it. Reported on its own so the omission is visible rather than silent.
-  const unattached = equipment.filter((entry) => !entry.equipment?.circuit);
+  /**
+   * Equipment with no circuit is not reachable from any panel, so section 11.5 never
+   * counts it. Reported on its own so the omission is visible rather than silent.
+   *
+   * A DEVICE MOUNTED IN A PANEL IS NOT UNATTACHED. This figure exists to surface things
+   * somebody forgot to wire up; a device that names `equipment.panel` was deliberately
+   * placed inside an enclosure, and every RCD, busbar and meter in the building would
+   * otherwise raise the "Хэлхээнд холбогдоогүй тоноглол" banner on every floor forever.
+   * It still contributes no load — nothing here changes that — it simply stops being
+   * reported as an oversight.
+   */
+  const unattached = equipment.filter(
+    (entry) => !entry.equipment?.circuit && !entry.equipment?.panel,
+  );
   const unattachedKw = toDto(sumLoads(unattached.map((entry) => equipmentLoad(entry))));
 
   const measuredReadings = panels

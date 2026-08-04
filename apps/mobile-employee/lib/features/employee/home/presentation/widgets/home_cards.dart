@@ -14,93 +14,109 @@ import 'home_ui.dart';
 // drift apart.
 
 /// One entry of today's agenda: a coloured left bar, a name and a mono meta line.
+///
+/// Opens the record behind it when [onTap] is given. A null [onTap] is not a styling
+/// choice — it is an entry whose source carries no id to open, and the card then draws
+/// with no ink response at all rather than looking tappable and doing nothing.
 class AgendaEventCard extends StatelessWidget {
-  const AgendaEventCard({super.key, required this.event});
+  const AgendaEventCard({super.key, required this.event, this.onTap});
 
   final CalendarEventModel event;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
     final Tone tone = event.isOverdue
         ? Tone.red
         : (event.isUrgent ? Tone.red : Tone.neutral);
+    final BorderRadius radius =
+        BorderRadius.circular(EmployeeTokens.radiusHomeCard);
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(kHomeGutter, 0, kHomeGutter, 7),
-      child: Container(
-        clipBehavior: Clip.antiAlias,
-        decoration: BoxDecoration(
-          color: EmployeeTokens.white,
-          borderRadius: BorderRadius.circular(EmployeeTokens.radiusHomeCard),
-          border: Border.all(
-            color: EmployeeTokens.line,
-            width: EmployeeTokens.hairline,
-          ),
-        ),
-        child: IntrinsicHeight(
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: <Widget>[
-              Container(width: 3, color: tone.foreground),
-              Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(11, 10, 11, 11),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: <Widget>[
-                      Row(
+      child: Material(
+        // The card's ground moves onto the Material so the ink splash lands on top of
+        // it rather than under it.
+        color: EmployeeTokens.white,
+        borderRadius: radius,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: radius,
+          child: Container(
+            clipBehavior: Clip.antiAlias,
+            decoration: BoxDecoration(
+              borderRadius: radius,
+              border: Border.all(
+                color: EmployeeTokens.line,
+                width: EmployeeTokens.hairline,
+              ),
+            ),
+            child: IntrinsicHeight(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: <Widget>[
+                  Container(width: 3, color: tone.foreground),
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(11, 10, 11, 11),
+                      child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
                         children: <Widget>[
-                          Expanded(
-                            child: Text(
-                              event.title,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              style: EmployeeTokens.detailValue,
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: <Widget>[
+                              Expanded(
+                                child: Text(
+                                  event.title,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: EmployeeTokens.detailValue,
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              EmployeePill(
+                                label: event.statusLabel.isEmpty
+                                    ? (event.source?.label ?? '')
+                                    : event.statusLabel,
+                                tone: event.isOverdue
+                                    ? Tone.red
+                                    : Tone.outline,
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 5),
+                          Text(
+                            <String>[
+                              formatAgendaSpan(event.start, event.end),
+                              event.reference,
+                              if (event.locationLabel.isNotEmpty) event.locationLabel,
+                            ].join(' · '),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: EmployeeTokens.microNote
+                                .merge(EmployeeTokens.mono)
+                                .copyWith(color: EmployeeTokens.muted, height: 1.5),
+                          ),
+                          if (event.progressPercent != null) ...<Widget>[
+                            const SizedBox(height: 8),
+                            ProgressRail(
+                              percent: event.progressPercent!,
+                              color: _progressColour(event.progressPercent!),
                             ),
-                          ),
-                          const SizedBox(width: 8),
-                          EmployeePill(
-                            label: event.statusLabel.isEmpty
-                                ? (event.source?.label ?? '')
-                                : event.statusLabel,
-                            tone: event.isOverdue
-                                ? Tone.red
-                                : Tone.outline,
-                          ),
+                            const SizedBox(height: 4),
+                            Text(
+                              'Явц ${formatPercent(event.progressPercent)}',
+                              style: EmployeeTokens.microNote,
+                            ),
+                          ],
                         ],
                       ),
-                      const SizedBox(height: 5),
-                      Text(
-                        <String>[
-                          formatAgendaSpan(event.start, event.end),
-                          event.reference,
-                          if (event.locationLabel.isNotEmpty) event.locationLabel,
-                        ].join(' · '),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: EmployeeTokens.microNote
-                            .merge(EmployeeTokens.mono)
-                            .copyWith(color: EmployeeTokens.muted, height: 1.5),
-                      ),
-                      if (event.progressPercent != null) ...<Widget>[
-                        const SizedBox(height: 8),
-                        ProgressRail(
-                          percent: event.progressPercent!,
-                          color: _progressColour(event.progressPercent!),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          'Явц ${formatPercent(event.progressPercent)}',
-                          style: EmployeeTokens.microNote,
-                        ),
-                      ],
-                    ],
+                    ),
                   ),
-                ),
+                ],
               ),
-            ],
+            ),
           ),
         ),
       ),
