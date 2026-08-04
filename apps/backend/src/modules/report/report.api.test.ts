@@ -7,15 +7,20 @@ import type { ReportStatus, ReportType } from '@monhorus/shared';
 import { Types } from 'mongoose';
 
 import {
+  createOrgFixture,
   createSuperUser,
   createUserWithPermissions,
   resetDomainCollections,
   startTestApp,
   stopTestApp,
+  type OrgFixture,
 } from '../../test/helpers';
+import { Employee } from '../employee/employee.model';
+import { Invoice } from '../invoice/invoice.model';
 import { ObjectAssessment, ObjectRecord, ObjectType } from '../object-master/object-master.models';
 import { Customer, ObjectNode } from '../objects/object.models';
 import { writeReport } from '../report-record/report-record.service';
+import { ServiceRequest, nextRequestNumber } from '../service-request/service-request.model';
 
 const API = '/api/v1';
 
@@ -176,6 +181,78 @@ async function seedReport(
     occurredAt: options.occurredAt ?? new Date('2026-07-01'),
   });
   return String(report._id);
+}
+
+async function seedEmployee(org: OrgFixture, code: string, lastName: string): Promise<Types.ObjectId> {
+  const employee = await Employee.create({
+    employeeCode: code,
+    firstName: 'Дорж',
+    lastName,
+    company: org.companyId,
+    department: org.departmentId,
+    position: org.positionId,
+    team: org.teamId,
+    employeeType: 'FULL_TIME',
+    employmentStartDate: new Date('2024-01-01'),
+    status: 'ACTIVE',
+  });
+  return employee._id;
+}
+
+/**
+ * A closed request with a known lifetime.
+ *
+ * `createdAt` is written through the driver: Mongoose marks the timestamp immutable, so a
+ * model-level update would silently keep the wall clock and the elapsed span under test
+ * would always be zero.
+ */
+async function seedClosedRequest(
+  hierarchy: Hierarchy,
+  assignees: Types.ObjectId[],
+  createdAt: Date,
+  completedAt: Date,
+): Promise<void> {
+  const created = await ServiceRequest.create({
+    requestNumber: await nextRequestNumber(),
+    customer: hierarchy.customerId,
+    building: hierarchy.buildingId,
+    floor: hierarchy.floorId,
+    requestType: 'STANDARD_CALL',
+    isUrgent: false,
+    description: 'Гэрэл асахгүй байна.',
+    contactName: 'Бат',
+    contactPhone: '99112233',
+    status: 'COMPLETED',
+    assignedEmployees: assignees,
+    slaStartedAt: createdAt,
+    slaDueAt: new Date(createdAt.getTime() + 4 * 3_600_000),
+  });
+
+  await ServiceRequest.collection.updateOne({ _id: created._id }, { $set: { createdAt, completedAt } });
+}
+
+/** One invoice of the given status and amount, issued now so both money windows see it. */
+async function seedInvoice(
+  customerId: string,
+  status: string,
+  total: number,
+  billingPeriod: string,
+): Promise<void> {
+  await Invoice.create({
+    invoiceNumber: `INV-TEST-${billingPeriod}-${status}`,
+    customer: customerId,
+    billingType: 'MONTHLY_SERVICE',
+    billingPeriod,
+    issueDate: new Date(),
+    dueDate: new Date(Date.now() + 7 * 86_400_000),
+    lines: [],
+    subtotal: total,
+    taxPercent: 0,
+    taxAmount: 0,
+    total,
+    currency: 'MNT',
+    status,
+  });
 }
 
 describe('Report and inspection API', () => {
@@ -419,6 +496,124 @@ describe('Report and inspection API', () => {
     expect(response.text).toContain('Тайлангийн №');
     expect(response.text).toContain('Тоноглолын үнэлгээ');
     expect(response.text).toMatch(/RPT-\d{6}-\d{4}/);
+  });
+
+  /**
+   * The time column measures the request's lifetime, not the technician's labour, and the
+   * system stores no labour time at all. Two assignees on one request therefore both see
+   * that request's whole elapsed span — which is why the figure is an average rather than
+   * a total: an average cannot be added across rows into hours nobody worked.
+   */
+  it('reports elapsed request time as an average, so a shared request is not counted twice as labour', async () => {
+    const hierarchy = await seedHierarchy();
+    const org = await createOrgFixture();
+    const alone = await seedEmployee(org, 'EMP-A', 'Ганц');
+    const shared = await seedEmployee(org, 'EMP-B', 'Хамтран');
+
+    const base = new Date('2026-07-10T00:00:00.000Z');
+    // One 24-hour call worked by both, one 2-hour call worked by the first alone.
+    await seedClosedRequest(hierarchy, [alone, shared], base, new Date('2026-07-11T00:00:00.000Z'));
+    await seedClosedRequest(hierarchy, [alone], base, new Date('2026-07-10T02:00:00.000Z'));
+
+    const response = await request(app)
+      .get(`${API}/reports/EMPLOYEE_PERFORMANCE?dateFrom=2026-07-01&dateTo=2026-07-31`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(response.status).toBe(200);
+
+    const columns = response.body.data.columns as { key: string; label: string }[];
+    const timeColumn = columns.find((column) => column.key === 'avgElapsedHours');
+    expect(timeColumn?.label).toBe('Хүсэлтийн дундаж хугацаа (ц)');
+    // The old label claimed hours worked, which nothing in the schema can support.
+    expect(columns.map((column) => column.label)).not.toContain('Нийт цаг');
+
+    const rows = response.body.data.rows as Record<string, unknown>[];
+    const aloneRow = rows.find((row) => row.employeeNumber === 'EMP-A');
+    const sharedRow = rows.find((row) => row.employeeNumber === 'EMP-B');
+
+    // 24h and 2h closed by the first: mean 13. The second closed only the 24h call.
+    expect(aloneRow?.avgElapsedHours).toBe(13);
+    expect(sharedRow?.avgElapsedHours).toBe(24);
+
+    // Only 26 hours of request lifetime exist in total. The old sum reported 26 + 24 = 50.
+    for (const row of rows) {
+      if (row.avgElapsedHours !== null) {
+        expect(Number(row.avgElapsedHours)).toBeLessThanOrEqual(24);
+      }
+    }
+
+    // An employee who closed nothing has no average, rather than an implied instant close.
+    const idle = await seedEmployee(org, 'EMP-C', 'Сул');
+    expect(idle).toBeTruthy();
+    const second = await request(app)
+      .get(`${API}/reports/EMPLOYEE_PERFORMANCE?dateFrom=2026-07-01&dateTo=2026-07-31`)
+      .set('Authorization', `Bearer ${token}`);
+    const idleRow = (second.body.data.rows as Record<string, unknown>[]).find(
+      (row) => row.employeeNumber === 'EMP-C',
+    );
+    expect(idleRow?.avgElapsedHours).toBeNull();
+  });
+
+  /**
+   * Section 15.3 carries the formula beside the value so a reader need not trust the
+   * number. That only holds if the code obeys the formula: "sent and paid" excludes a
+   * draft, which has not been issued and can still be edited away.
+   */
+  it('counts only sent and paid invoices as revenue, matching the published formula', async () => {
+    const hierarchy = await seedHierarchy();
+    await seedInvoice(hierarchy.customerId, 'DRAFT', 1_000_000, '2026-01');
+    await seedInvoice(hierarchy.customerId, 'SENT', 200_000, '2026-02');
+    await seedInvoice(hierarchy.customerId, 'PAID', 300_000, '2026-03');
+    await seedInvoice(hierarchy.customerId, 'CANCELLED', 500_000, '2026-04');
+
+    const now = new Date();
+    const dateFrom = new Date(now.getTime() - 86_400_000).toISOString();
+    const dateTo = new Date(now.getTime() + 86_400_000).toISOString();
+
+    const response = await request(app)
+      .get(`${API}/reports/kpi?dateFrom=${dateFrom}&dateTo=${dateTo}`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(response.status).toBe(200);
+    const revenue = response.body.data.values.find(
+      (value: { key: string }) => value.key === 'MONTHLY_REVENUE',
+    );
+    expect(revenue.value).toBe(500_000);
+    expect(revenue.formula).toBe('Илгээсэн болон төлөгдсөн нэхэмжлэлийн нийт дүн');
+  });
+
+  /**
+   * The dashboard tile and the KPI are one number reached by two code paths. Pinning them
+   * to each other is worth more than asserting each alone: a fix applied to one only is
+   * exactly how they drifted apart in the first place.
+   */
+  it('agrees with the dashboard on revenue for the same invoices', async () => {
+    const hierarchy = await seedHierarchy();
+    await seedInvoice(hierarchy.customerId, 'DRAFT', 1_000_000, '2026-01');
+    await seedInvoice(hierarchy.customerId, 'SENT', 200_000, '2026-02');
+    await seedInvoice(hierarchy.customerId, 'PAID', 300_000, '2026-03');
+    await seedInvoice(hierarchy.customerId, 'CANCELLED', 500_000, '2026-04');
+
+    const now = new Date();
+    // Every invoice above is issued now, so this window and the dashboard's
+    // month-to-date window contain exactly the same set.
+    const dateFrom = new Date(now.getTime() - 86_400_000).toISOString();
+    const dateTo = new Date(now.getTime() + 86_400_000).toISOString();
+
+    const kpi = await request(app)
+      .get(`${API}/reports/kpi?dateFrom=${dateFrom}&dateTo=${dateTo}`)
+      .set('Authorization', `Bearer ${token}`);
+    const dashboard = await request(app)
+      .get(`${API}/dashboard/summary`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(dashboard.status).toBe(200);
+    const reported = kpi.body.data.values.find(
+      (value: { key: string }) => value.key === 'MONTHLY_REVENUE',
+    ).value;
+
+    expect(dashboard.body.data.finance.monthRevenue).toBe(reported);
+    expect(reported).toBe(500_000);
   });
 
   it('hides the conclusion report from a caller without object_master.view', async () => {

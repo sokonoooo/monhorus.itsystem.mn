@@ -24,6 +24,17 @@ export const INVOICE_STATUS_LABELS: Record<InvoiceStatus, string> = {
   CANCELLED: 'Цуцалсан',
 };
 
+/**
+ * Which invoices count as revenue, kept beside the statuses so the dashboard and the
+ * report cannot drift apart — they are two code paths for one number.
+ *
+ * This is the stored form of `KPI_FORMULAS.MONTHLY_REVENUE`, "Илгээсэн болон төлөгдсөн
+ * нэхэмжлэлийн нийт дүн". A DRAFT is excluded because it has not been issued and can still
+ * be edited or dropped; CANCELLED is excluded because it was withdrawn. OVERDUE needs no
+ * entry: it is not stored, it is a SENT invoice past its due date, and it is already in.
+ */
+export const INVOICE_REVENUE_STATUSES: readonly InvoiceStatus[] = ['SENT', 'PAID'];
+
 export const INVOICE_EFFECTIVE_STATUSES = [
   'DRAFT',
   'SENT',

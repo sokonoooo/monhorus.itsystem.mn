@@ -1,11 +1,21 @@
-import { PERMISSIONS, type ObjectNodeDto } from '@monhorus/shared';
+import {
+  PERMISSIONS,
+  SETTING_KEYS,
+  type ObjectNodeDto,
+  type SettingEntryDto,
+  type SettingKey,
+  type SettingsDto,
+} from '@monhorus/shared';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { invalidateSlaHours } from '../../hooks/use-sla-hours';
+import { ApiError } from '../../lib/api-client';
 import * as fileUrl from '../../lib/file-url';
 import { objectService } from '../../services/object.service';
 import { serviceRequestService } from '../../services/service-request.service';
+import { settingsService } from '../../services/settings.service';
 import { makeCustomer, makeObjectNode } from '../../test/fixtures';
 import { renderWithAuth } from '../../test/render';
 import { ServiceRequestCreatePage } from './ServiceRequestCreatePage';
@@ -28,9 +38,46 @@ function selectContainingOption(label: string): HTMLSelectElement | undefined {
     | undefined;
 }
 
+/** A settings payload carrying just the two SLA windows the form reads. */
+function slaSettings(urgent: number, standard: number): SettingsDto {
+  const entry = (key: SettingKey, value: number): SettingEntryDto => ({
+    key,
+    group: 'sla',
+    label: key,
+    hint: '',
+    type: 'integer',
+    value,
+    defaultValue: value,
+    isOverridden: false,
+    min: 1,
+    max: 720,
+    unit: 'цаг',
+    updatedByName: null,
+    updatedAt: null,
+  });
+
+  return {
+    canManage: false,
+    groups: [
+      {
+        group: 'sla',
+        label: 'SLA',
+        description: '',
+        entries: [
+          entry(SETTING_KEYS.SLA_URGENT_HOURS, urgent),
+          entry(SETTING_KEYS.SLA_STANDARD_HOURS, standard),
+        ],
+      },
+    ],
+  };
+}
+
 describe('ServiceRequestCreatePage', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    // The hook caches a successful read for the page's lifetime, which in a suite is
+    // the whole file.
+    invalidateSlaHours();
     vi.spyOn(objectService, 'customers').mockResolvedValue([CUSTOMER]);
     vi.spyOn(objectService, 'rootNodes').mockResolvedValue([PROJECT]);
     vi.spyOn(objectService, 'children').mockResolvedValue([BUILDING]);
@@ -159,16 +206,48 @@ describe('ServiceRequestCreatePage', () => {
     expect(await screen.findByText('Хавсралт байхгүй байна.')).toBeInTheDocument();
   });
 
-  it('shows the SLA hint that matches the urgency toggle', async () => {
+  it('shows the SLA hours the settings actually hold, not 6/24', async () => {
     const user = userEvent.setup();
+    vi.spyOn(settingsService, 'get').mockResolvedValue(slaSettings(4, 48));
 
+    renderWithAuth(<ServiceRequestCreatePage />, {
+      permissions: [PERMISSIONS.SERVICE_REQUEST_CREATE, PERMISSIONS.SETTINGS_VIEW],
+    });
+
+    // The shipped defaults are 6 and 24; this installation runs 4 and 48, and the
+    // deadline the backend computes follows the settings, not the constants.
+    expect(await screen.findByText('SLA 48 цаг')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('checkbox', { name: /Яаралтай дуудлага/ }));
+    expect(await screen.findByText('SLA 4 цаг')).toBeInTheDocument();
+  });
+
+  it('says nothing about the SLA when the setting cannot be read', async () => {
+    const get = vi
+      .spyOn(settingsService, 'get')
+      .mockRejectedValue(new ApiError('Энэ үйлдлийг хийх эрх байхгүй байна.', 'FORBIDDEN', 403));
+
+    renderWithAuth(<ServiceRequestCreatePage />, {
+      permissions: [PERMISSIONS.SERVICE_REQUEST_CREATE, PERMISSIONS.SETTINGS_VIEW],
+    });
+
+    await waitFor(() => expect(get).toHaveBeenCalled());
+    // No fallback to the shipped 6/24: a number presented as the rule that may not be
+    // the rule is worse than no number, because the form is a promise to the customer.
+    await waitFor(() => expect(screen.queryByText(/SLA/)).not.toBeInTheDocument());
+  });
+
+  it('does not ask for settings a request-creating role may not read', async () => {
+    const get = vi.spyOn(settingsService, 'get').mockResolvedValue(slaSettings(6, 24));
+
+    // DISPATCH and SALES can raise a request and hold no `settings.view`; GET /settings
+    // would 403 for them.
     renderWithAuth(<ServiceRequestCreatePage />, {
       permissions: [PERMISSIONS.SERVICE_REQUEST_CREATE],
     });
 
-    expect(await screen.findByText('SLA 24 цаг')).toBeInTheDocument();
-
-    await user.click(screen.getByRole('checkbox', { name: /Яаралтай дуудлага/ }));
-    expect(await screen.findByText('SLA 6 цаг')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Хүсэлт үүсгэх' })).toBeInTheDocument();
+    expect(get).not.toHaveBeenCalled();
+    expect(screen.queryByText(/SLA/)).not.toBeInTheDocument();
   });
 });

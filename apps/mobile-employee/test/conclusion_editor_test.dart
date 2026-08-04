@@ -16,6 +16,7 @@ import 'package:monhorus_employee/core/network/api_result.dart';
 import 'package:monhorus_employee/features/auth/domain/entities/app_user.dart';
 import 'package:monhorus_employee/features/auth/presentation/providers/auth_provider.dart';
 import 'package:monhorus_employee/features/employee/project/data/models/object_models.dart';
+import 'package:monhorus_employee/features/employee/project/domain/entities/risk_level.dart';
 import 'package:monhorus_employee/features/employee/project/data/models/project_models.dart';
 import 'package:monhorus_employee/features/employee/shared/service_request_models.dart';
 import 'package:monhorus_employee/features/employee/work/data/models/work_report_model.dart';
@@ -202,7 +203,10 @@ Future<void> _pumpEditor(
   // Tall enough to build the whole form. The editor now also carries the visit's own
   // score and its two mandatory photo strips above the equipment, so a shorter surface
   // leaves the cards' own controls unbuilt — a ListView does not build what is off-screen.
-  await tester.binding.setSurfaceSize(const Size(390, 2200));
+  // Raised from 2200 when each card's score hint became the five band NAMES rather than
+  // five numeric ranges: the names wrap one line further, and two expanded cards pushed
+  // the save pill past the bottom edge, where it is built but cannot be tapped.
+  await tester.binding.setSurfaceSize(const Size(390, 2400));
   addTearDown(() => tester.binding.setSurfaceSize(null));
 
   await tester.pumpWidget(
@@ -950,6 +954,61 @@ void main() {
     expect(payload.beforePhotoIds, <String>['b1']);
     expect(payload.afterPhotoIds, <String>['a1']);
     expect(find.text('Хянуулахаар илгээлээ.'), findsOneWidget);
+  });
+
+  /// The band boundaries are runtime-configurable server-side (`riskBandsOf`) and neither
+  /// mobile role can read `GET /settings` — `SETTINGS_VIEW` is admin/management/finance
+  /// only, so the app gets a 403. The card used to print all five ranges
+  /// ("81-100 хэвийн · 61-80 анхаарах · …") under a comment claiming it mirrored the
+  /// object assessment sheet, which prints names alone. Numbers this app cannot verify and
+  /// the server can silently contradict were being scored against.
+  ///
+  /// The ABSENCE is the assertion. Checking only that the names are present would pass
+  /// just as happily with the ranges printed beside them.
+  testWidgets('an equipment card names the risk bands and quotes no score range', (
+    WidgetTester tester,
+  ) async {
+    await _pumpEditor(
+      tester,
+      repository: _ReportRepository(
+        initial: _report(
+          objects: <Map<String, dynamic>>[_object('o1', 'DB-01', 'Самбар 1')],
+        ),
+      ),
+    );
+
+    // The scale line lives inside the expanded body, beside the score field it explains.
+    await tester.tap(find.text('DB-01 · Самбар 1'));
+    await tester.pumpAndSettle();
+
+    final Finder card = find.byType(EquipmentAssessmentCard);
+
+    for (final RiskLevel level in RiskLevel.values) {
+      expect(
+        find.descendant(of: card, matching: find.textContaining(level.label)),
+        findsWidgets,
+        reason: '${level.label} must be named on the card',
+      );
+    }
+
+    // Read back off the tree rather than matched string by string, so a reworded or
+    // re-ordered range is caught as surely as the original one.
+    final Iterable<String> printed = tester
+        .widgetList<Text>(find.descendant(of: card, matching: find.byType(Text)))
+        .map((Text text) => text.data ?? text.textSpan?.toPlainText() ?? '');
+
+    final RegExp anyRange = RegExp(r'\d+\s*-\s*\d+');
+    for (final String line in printed) {
+      // "0-100" is the input domain of the score field itself — the range of a number
+      // the technician types, not a band boundary the server owns.
+      expect(
+        anyRange.hasMatch(line.replaceAll('0-100', '')),
+        isFalse,
+        reason: 'the card may not print a score band range, but shows: "$line"',
+      );
+    }
+
+    expect(tester.takeException(), isNull);
   });
 }
 
