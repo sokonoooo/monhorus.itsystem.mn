@@ -12,9 +12,10 @@
          runtime permission is not a compile-time fact. Mirrors apps/mobile-employee. -->
     <uses-permission android:name="android.permission.INTERNET"/>
     <application
-        android:label="monhorus_mobile"
+        android:label="Monhorus"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:networkSecurityConfig="@xml/network_security_config">
         <activity
             android:name=".MainActivity"
             android:exported="true"

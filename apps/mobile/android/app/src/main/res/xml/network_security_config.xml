@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Permits plaintext HTTP to the Monhorus server, and to nothing else.
+
+    The deployment at 103.87.255.221:3020 has no TLS: monhorus.itsystem.mn resolves to a
+    different host, so certbot cannot validate a certificate for it from that machine.
+    Android blocks cleartext by default in a release build (the template only enables it
+    in the debug source set), so without this file a release APK installs and launches
+    normally and then fails every single request — which surfaces to the user as
+    "сүлжээний алдаа" on a login that could never have succeeded.
+
+    base-config keeps the platform default of DENY for everything else, so this is one
+    hole for one address rather than a blanket usesCleartextTraffic="true".
+
+    REMOVE THIS FILE, and the android:networkSecurityConfig attribute in
+    AndroidManifest.xml, once the server is on HTTPS. See docs/DEPLOYMENT_MONHORUS_PROD.md
+    section 7 — the API origin is compiled in, so the apps must be rebuilt at that point
+    anyway.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">103.87.255.221</domain>
+    </domain-config>
+</network-security-config>

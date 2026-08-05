@@ -88,3 +88,11 @@ coverage/
 
 # -- Runtime upload storage (UPLOAD_DIR) --------------------------------------
 var/
+
+# -- Android release signing --------------------------------------------------
+# The keystore IS the apps' identity on every phone that has installed them. Committing
+# it would let anyone publish a build Android accepts as a legitimate update. The tracked
+# artefact is key.properties.example; the real values never enter the repository.
+key.properties
+*.jks
+*.keystore

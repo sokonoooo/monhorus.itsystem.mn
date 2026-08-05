@@ -1,0 +1,9 @@
+# Copy to key.properties and fill in. NEVER commit key.properties or the .jks itself.
+#
+# Losing this keystore (or its passwords) means these apps can never be updated in
+# place again -- Android identifies an app by its signature, so every phone would have
+# to uninstall and reinstall, losing local data. Back it up somewhere durable.
+storePassword=
+keyPassword=
+keyAlias=monhorus
+storeFile=/absolute/path/to/monhorus-release.jks
