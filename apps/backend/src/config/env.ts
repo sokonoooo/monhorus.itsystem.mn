@@ -2,6 +2,24 @@ import 'dotenv/config';
 import { z } from 'zod';
 
 /**
+ * An optional variable whose value may also arrive as the empty string.
+ *
+ * `.optional()` alone is not enough for anything read out of an env file. It
+ * tolerates an *absent* key, but a key written with no value is present and
+ * empty, so the inner check still runs and fails — `BOOTSTRAP_ADMIN_PASSWORD=`
+ * was rejected with "must contain at least 10 character(s)" and the process
+ * exited 1 in a restart loop.
+ *
+ * That is not a hypothetical. `bootstrap-head-admin.ts` ends by instructing the
+ * operator to clear BOOTSTRAP_ADMIN_PASSWORD, and blanking the value is the
+ * obvious reading of that; `.env.example` itself ships all three BOOTSTRAP_ keys
+ * with empty values, so copying the tracked template verbatim produced a backend
+ * that could not boot. Treating empty as absent makes both work.
+ */
+const optionalEnv = <T extends z.ZodTypeAny>(schema: T) =>
+  z.preprocess((value) => (value === '' ? undefined : value), schema.optional());
+
+/**
  * Environment contract. Parsed once at boot; the process refuses to start when a
  * required secret is missing or malformed.
  */
@@ -32,8 +50,8 @@ const envSchema = z.object({
    *
    * The defaults are the shipping values and are what production uses.
    */
-  RATE_LIMIT_CREDENTIAL_MAX: z.coerce.number().int().positive().optional(),
-  RATE_LIMIT_REFRESH_MAX: z.coerce.number().int().positive().optional(),
+  RATE_LIMIT_CREDENTIAL_MAX: optionalEnv(z.coerce.number().int().positive()),
+  RATE_LIMIT_REFRESH_MAX: optionalEnv(z.coerce.number().int().positive()),
 
   CORS_ORIGINS: z.string().default('http://localhost:5173'),
   APP_TIMEZONE: z.string().default('Asia/Ulaanbaatar'),
@@ -44,9 +62,9 @@ const envSchema = z.object({
    */
   UPLOAD_DIR: z.string().default('./var/uploads'),
 
-  BOOTSTRAP_ADMIN_EMAIL: z.string().email().optional(),
-  BOOTSTRAP_ADMIN_PASSWORD: z.string().min(10).optional(),
-  BOOTSTRAP_ADMIN_NAME: z.string().min(1).optional(),
+  BOOTSTRAP_ADMIN_EMAIL: optionalEnv(z.string().email()),
+  BOOTSTRAP_ADMIN_PASSWORD: optionalEnv(z.string().min(10)),
+  BOOTSTRAP_ADMIN_NAME: optionalEnv(z.string().min(1)),
 
   /**
    * Password given to every login `seed-dev-data` provisions for a seeded employee.
