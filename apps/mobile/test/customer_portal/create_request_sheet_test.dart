@@ -649,4 +649,205 @@ void main() {
       contains('Холбогч хэсгийг яаралтай шалгаж, ачааллыг салгана.'),
     );
   });
+
+  // -- The device's own pin --------------------------------------------------
+
+  /// The spot the register holds for the fixture device. Deliberately not a round
+  /// fraction of the plan, so a coordinate that survives to the payload cannot have
+  /// been produced by a tap the test made.
+  const PlanPositionModel registeredSpot = PlanPositionModel(x: 0.42, y: 0.61);
+
+  /// Opens the create sheet from the device page, with the plan already decoded.
+  Future<void> openSheetFromDevice(
+    WidgetTester tester,
+    FakeCustomerPortalRepository repository,
+  ) async {
+    await pumpPhoneWithPlan(
+      tester,
+      wrapCustomerScreen(
+        DeviceDetailScreen(objectId: objectFixture().id, pickPhoto: fakePick),
+        repository: repository,
+        user: customerWithCreateRight(),
+      ),
+    );
+
+    await tester.tap(find.text('Засварын хүсэлт илгээх'));
+    await tester.pumpAndSettle();
+    expect(find.byType(CreateRequestSheet), findsOneWidget);
+  }
+
+  /// A device that HAS been placed on its floor's drawing.
+  ///
+  /// The customer is standing in front of it; asking them to point at a plan to say
+  /// where a thing the register already located is would be asking for what the platform
+  /// knows. The coordinate is COPIED onto the request — no id, no reference — so the
+  /// record keeps saying where the fault was reported even if the object moves later.
+  testWidgets('a device with a registered position opens with its pin already placed',
+      (WidgetTester tester) async {
+    final FakeCustomerPortalRepository repository = FakeCustomerPortalRepository(
+      objectDetail: objectFixture(planPosition: registeredSpot),
+      floorPlan: floorPlanFixture(),
+      fileBytes: planPngBytes,
+    );
+
+    await openSheetFromDevice(tester, repository);
+
+    // Placed without a single tap, and said to be the register's rather than the
+    // reader's own mark.
+    expect(find.byType(FaultPin), findsOneWidget);
+    expect(
+      find.textContaining('Төхөөрөмжийн бүртгэлтэй байршлыг тэмдэглэлээ'),
+      findsOneWidget,
+    );
+
+    await completeAndSubmit(tester);
+
+    final PlanPositionModel? sent = repository.created.single.planPosition;
+    expect(sent, isNotNull);
+    // Exactly the register's value: copied, not re-derived from a rectangle.
+    expect(sent!.x, registeredSpot.x);
+    expect(sent.y, registeredSpot.y);
+    expect(repository.created.single.floorId, floorFixture().id);
+  });
+
+  /// The common case today — thirty-three of thirty-five objects are unplaced — so the
+  /// fallback is the ordinary path, not an edge. An empty plan under a device page reads
+  /// as a drawing that failed to load, so the absence is stated and a pin is asked for.
+  testWidgets('a device with no registered position says so and still accepts a pin',
+      (WidgetTester tester) async {
+    final FakeCustomerPortalRepository repository = FakeCustomerPortalRepository(
+      objectDetail: objectFixture(),
+      floorPlan: floorPlanFixture(),
+      fileBytes: planPngBytes,
+    );
+
+    await openSheetFromDevice(tester, repository);
+
+    expect(find.byType(FaultPin), findsNothing);
+    expect(
+      find.textContaining('Энэ төхөөрөмжийн байршил планд бүртгэгдээгүй'),
+      findsOneWidget,
+    );
+
+    // The general-request path is still fully available underneath.
+    await tapPlanAt(tester, 0.25, 0.5);
+    expect(find.byType(FaultPin), findsOneWidget);
+
+    await completeAndSubmit(tester);
+
+    final PlanPositionModel? sent = repository.created.single.planPosition;
+    expect(sent, isNotNull);
+    expect(sent!.x, closeTo(0.25, 0.02));
+    expect(sent.y, closeTo(0.5, 0.02));
+  });
+
+  /// The pin is placed, never locked. The register says where the equipment was
+  /// installed; the customer can see where it actually failed, and between the two the
+  /// person in the room wins.
+  testWidgets('the inherited pin can be moved and the moved spot is what is sent',
+      (WidgetTester tester) async {
+    final FakeCustomerPortalRepository repository = repositoryWithPlan();
+
+    await pumpPhoneWithPlan(
+      tester,
+      wrapCustomerScreen(
+        Scaffold(
+          body: CreateRequestSheet(
+            scope: testScope,
+            initialBuildingId: buildingFixture().id,
+            initialFloorId: floorFixture().id,
+            initialPlanPosition: registeredSpot,
+            deviceName: 'LDB-2F-02',
+            pickPhoto: fakePick,
+          ),
+        ),
+        repository: repository,
+        user: customerWithCreateRight(),
+      ),
+    );
+
+    expect(find.byType(FaultPin), findsOneWidget);
+
+    await tapPlanAt(tester, 0.8, 0.2);
+    expect(find.byType(FaultPin), findsOneWidget);
+    // The line stops claiming the register's authority once the reader has overruled it.
+    expect(
+      find.textContaining('Төхөөрөмжийн бүртгэлтэй байршлыг тэмдэглэлээ'),
+      findsNothing,
+    );
+
+    await completeAndSubmit(tester);
+
+    final PlanPositionModel? sent = repository.created.single.planPosition;
+    expect(sent, isNotNull);
+    expect(sent!.x, closeTo(0.8, 0.02));
+    expect(sent.y, closeTo(0.2, 0.02));
+    // And emphatically not the value it opened with.
+    expect(sent.x, isNot(closeTo(registeredSpot.x, 0.02)));
+  });
+
+  testWidgets('the inherited pin can be cleared and the request then carries none',
+      (WidgetTester tester) async {
+    final FakeCustomerPortalRepository repository = repositoryWithPlan();
+
+    await pumpPhoneWithPlan(
+      tester,
+      wrapCustomerScreen(
+        Scaffold(
+          body: CreateRequestSheet(
+            scope: testScope,
+            initialBuildingId: buildingFixture().id,
+            initialFloorId: floorFixture().id,
+            initialPlanPosition: registeredSpot,
+            deviceName: 'LDB-2F-02',
+            pickPhoto: fakePick,
+          ),
+        ),
+        repository: repository,
+        user: customerWithCreateRight(),
+      ),
+    );
+
+    final Finder clear = find.widgetWithText(TextButton, 'Тэмдэглэгээг арилгах');
+    await tester.ensureVisible(clear);
+    await tester.pumpAndSettle();
+    await tester.tap(clear);
+    await tester.pumpAndSettle();
+
+    expect(find.byType(FaultPin), findsNothing);
+
+    await completeAndSubmit(tester);
+    expect(repository.created.single.planPosition, isNull);
+  });
+
+  /// A coordinate with no drawing under it is meaningless, and the server refuses one
+  /// outright. A caller that hands the sheet a position but no floor must therefore get
+  /// no pin at all rather than a mark on whichever plan is picked next.
+  testWidgets('an inherited position with no floor places nothing',
+      (WidgetTester tester) async {
+    final FakeCustomerPortalRepository repository = repositoryWithPlan();
+
+    await pumpPhoneWithPlan(
+      tester,
+      wrapCustomerScreen(
+        Scaffold(
+          body: CreateRequestSheet(
+            scope: testScope,
+            initialBuildingId: buildingFixture().id,
+            initialPlanPosition: registeredSpot,
+            deviceName: 'LDB-2F-02',
+            pickPhoto: fakePick,
+          ),
+        ),
+        repository: repository,
+        user: customerWithCreateRight(),
+      ),
+    );
+
+    expect(find.byType(FloorPlanPinLayer), findsNothing);
+
+    await completeAndSubmit(tester);
+    expect(repository.created.single.planPosition, isNull);
+    expect(repository.created.single.floorId, isNull);
+  });
 }

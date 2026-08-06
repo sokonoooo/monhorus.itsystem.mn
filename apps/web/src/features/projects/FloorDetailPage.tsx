@@ -36,7 +36,6 @@ import {
 import { Field, TextInput } from '../employees/FormControls';
 import { FloorObjectPicker } from './FloorObjectPicker';
 import { FloorPlanPanel } from './FloorPlanPanel';
-import { FloorZonesPanel } from './FloorZonesPanel';
 import { ActiveBadge } from './ProjectListPage';
 
 function FloorEditDrawer({
@@ -564,21 +563,7 @@ export function FloorDetailPage(): ReactElement {
           />
         </div>
 
-        {/*
-          2. Zones on the floor.
-
-          Above the objects because it is the coarser division of the same floor — a request
-          names a zone, and an object sits inside one — and because this is the only screen
-          that writes the level at all.
-        */}
-        <FloorZonesPanel
-          floorId={floor.id}
-          floorCode={floor.code}
-          customerId={floor.customerId}
-          canManage={canManage && floor.isActive}
-        />
-
-        {/* 3. Objects linked to the floor. */}
+        {/* 2. Objects linked to the floor. */}
         {canViewObjects && (
           <div className="overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-slate-200">
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-5 py-3">

@@ -4,6 +4,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../../core/error/failure.dart';
 import '../../../../../core/util/json_parse.dart';
 import '../../../presentation/theme/employee_tokens.dart';
+import '../../../project/data/models/project_models.dart';
+import '../../../project/presentation/providers/project_providers.dart';
+import '../../../project/presentation/widgets/authenticated_image.dart';
+import '../../../project/presentation/widgets/floor_plan_markers.dart';
 import '../../../shared/service_request_models.dart';
 import '../../../shared/service_request_vocabulary.dart';
 import '../format.dart';
@@ -192,6 +196,19 @@ class ServiceRequestDetailScreen extends ConsumerWidget {
                   ),
                 ),
 
+                // Between the fault and the contact, because it answers the question the
+                // description raises and the "Байршил" row above cannot: not which floor,
+                // but where on it.
+                if (detail.planPosition != null &&
+                    (detail.floor?.id.isNotEmpty ?? false)) ...<Widget>[
+                  const SizedBox(height: 16),
+                  const FieldLabel('Гэмтлийн байршил'),
+                  _FaultPinSection(
+                    floorId: detail.floor!.id,
+                    pin: detail.planPosition!,
+                  ),
+                ],
+
                 const SizedBox(height: 16),
                 const FieldLabel('Холбоо барих'),
                 WorkCard(
@@ -278,6 +295,101 @@ class ServiceRequestDetailScreen extends ConsumerWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// The floor's plan with the reporter's pin on it.
+///
+/// READ-ONLY, AND NOT NEGOTIABLE. The coordinate is the customer's own account of where
+/// their problem is, made on the intake form; there is no gesture, no drag and no clear
+/// control here, because a technician who could move it would be editing somebody
+/// else's statement of the fault.
+///
+/// The drawing is fetched separately from the request. `ServiceRequestDetailDto` carries
+/// the coordinate but not the picture — the picture belongs to the FLOOR — so this is a
+/// second read, [floorPlanProvider], guarded by `object.view`, which the TECHNICIAN role
+/// holds. It is deliberately not folded into the request read: a request whose floor has
+/// no plan must still render in full.
+///
+/// `AuthenticatedImage.sizedToImage` rather than the default constructor, and that is
+/// the whole reason the pin lands where the customer put it. The default letterboxes the
+/// picture inside a fixed-height box, so the painted rectangle is smaller than the
+/// widget's and a fraction of the widget would miss the drawing by the height of the
+/// bars. Sizing the box from the image makes the two one rectangle, and `x, y` then
+/// needs no arithmetic at all.
+///
+/// THREE WAYS THIS HAS NOTHING TO DRAW, each of which gets a sentence rather than an
+/// empty box: the floor has no plan, the plan is a PDF or another non-image, and the
+/// read itself failed. A fourth — the bytes arrive but will not decode — is
+/// [AuthenticatedImage]'s own and is already said there.
+class _FaultPinSection extends ConsumerWidget {
+  const _FaultPinSection({required this.floorId, required this.pin});
+
+  final String floorId;
+  final PlanPositionModel pin;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final AsyncValue<FloorPlanModel?> plan = ref.watch(floorPlanProvider(floorId));
+
+    return plan.when(
+      data: (FloorPlanModel? drawing) {
+        if (drawing == null) {
+          return const _PlanNotice(
+            'Захиалагч гэмтлийн байршлыг планд тэмдэглэсэн ч энэ давхарт план '
+            'зураг импортлогдоогүй тул харуулах боломжгүй байна.',
+          );
+        }
+        if (!drawing.isImage) {
+          return _PlanNotice(
+            '${drawing.fileName} нь зураг биш файл тул тэмдэглэгээг энд харуулах '
+            'боломжгүй байна.',
+          );
+        }
+
+        return WorkCard(
+          margin: EdgeInsets.zero,
+          padding: EdgeInsets.zero,
+          child: Container(
+            color: EmployeeTokens.white,
+            child: AuthenticatedImage.sizedToImage(
+              fileId: drawing.fileId,
+              overlay: FloorPlanPinLayer(pin: pin),
+            ),
+          ),
+        );
+      },
+      loading: () => const WorkCard(
+        margin: EdgeInsets.zero,
+        child: Center(
+          child: SizedBox(
+            width: 20,
+            height: 20,
+            child: CircularProgressIndicator(strokeWidth: 2.2),
+          ),
+        ),
+      ),
+      error: (Object error, StackTrace _) => _PlanNotice(
+        error is Failure
+            ? error.message
+            : 'План зургийг татаж чадсангүй. Дахин оролдоно уу.',
+      ),
+    );
+  }
+}
+
+/// One honest line where a drawing would have been.
+class _PlanNotice extends StatelessWidget {
+  const _PlanNotice(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return WorkCard(
+      margin: EdgeInsets.zero,
+      child: Text(text, style: EmployeeTokens.rowSub),
     );
   }
 }

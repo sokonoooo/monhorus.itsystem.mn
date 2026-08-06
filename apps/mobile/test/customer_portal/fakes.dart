@@ -225,11 +225,17 @@ final Uint8List planPngBytes = base64Decode(
   'tHLR61eNTiUYtHLR61eNTikWMxANtHgkoTkECiAAAAAElFTkSuQmCC',
 );
 
+/// An object as the register holds it.
+///
+/// [planPosition] defaults to null because that is the ordinary case in the running
+/// database — only two of thirty-five objects have ever been placed on a drawing — so
+/// a test that wants a placed device must say so.
 ObjectDetailModel objectFixture({
   String id = '6e0000000000000000000003',
   String name = 'LDB-2F-02',
   int? score = 38,
   String? riskLevel = 'CRITICAL',
+  PlanPositionModel? planPosition,
 }) {
   return ObjectDetailModel.fromJson(<String, dynamic>{
     'id': id,
@@ -247,6 +253,7 @@ ObjectDetailModel objectFixture({
     'floorId': '6d0000000000000000000002',
     'floorName': '2-р давхар',
     'buildingName': 'Төв цамхаг',
+    'planPosition': planPosition?.toJson(),
     'status': 'ACTIVE',
     'latestAssessment': score == null
         ? null

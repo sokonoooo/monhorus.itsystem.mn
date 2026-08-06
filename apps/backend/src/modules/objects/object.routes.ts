@@ -29,7 +29,7 @@ import {
   enforcePasswordChange,
   requireAuth,
 } from '../../middlewares/authenticate.middleware';
-import { requireAnyPermission, requirePermission } from '../../middlewares/authorize.middleware';
+import { requirePermission } from '../../middlewares/authorize.middleware';
 import { validate } from '../../middlewares/validate.middleware';
 import { getRiskBands } from '../settings/settings.service';
 import { Customer, ObjectNode, type IObjectNode } from './object.models';
@@ -130,20 +130,15 @@ objectRouter.get(
  * Returns only the direct children of the requested parent, never the whole tree.
  * The dependent selector on the request form calls this once per level.
  *
- * Open to `portal.floor.view` as well as the staff key, because the customer app's
- * create-request sheet lists a floor's Өрөө/Бүс nodes through here and this is the only
- * route that returns them — a customer holds portal keys alone, so under the staff key
- * by itself the zone picker was refused 403 on every floor.
- *
- * Safe to widen because the scope is not the guard: `scopeOf` discards a customer
- * caller's requested `customerId` in favour of their own, and `customerScopeFilter`
- * then pins the query to it, so a customer reads their own hierarchy and no other's
- * however this is called. The pairing matches `/floors` and `/floors/:id`, which are
- * already `OBJECT_VIEW` or `PORTAL_FLOOR_VIEW`.
+ * Staff-only. It was briefly opened to `portal.floor.view` so the customer app's
+ * create-request sheet could list a floor's Өрөө/Бүс nodes; that sheet no longer collects
+ * a zone and neither mobile app reads this route, so the guard is back to the narrower of
+ * the two. The customer-facing hierarchy reads live on `/floors` and `/floors/:id`, which
+ * carry the portal key themselves.
  */
 objectRouter.get(
   '/nodes',
-  requireAnyPermission(PERMISSIONS.OBJECT_VIEW, PERMISSIONS.PORTAL_FLOOR_VIEW),
+  requirePermission(PERMISSIONS.OBJECT_VIEW),
   validate({ query: childrenQuerySchema }),
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
@@ -263,8 +258,10 @@ objectRouter.patch(
 /**
  * Removes a node, or refuses with the reasons it cannot go.
  *
- * The zone level's "remove". Archiving through `PATCH { isActive: false }` stays the
- * always-available alternative and is what a zone already named on a request gets.
+ * The general node "remove", and the only one that reaches the levels below a floor —
+ * `/projects`, `/buildings` and `/floors` each carry their own. Archiving through
+ * `PATCH { isActive: false }` stays the always-available alternative and is what a node
+ * something already references gets.
  */
 objectRouter.delete(
   '/nodes/:nodeId',

@@ -84,6 +84,92 @@ class FloorPlanMarkerLayer extends StatelessWidget {
   }
 }
 
+/// The fault pin's diameter. Larger than [kPlanMarkerDiameter] because there is only
+/// ever one of it — the crowding argument that keeps a device marker small does not
+/// apply — and because it has to be findable at a glance among the device dots it is
+/// drawn beside.
+const double kPlanPinDiameter = 30;
+
+/// The one point the customer marked when they raised the request, drawn read-only.
+///
+/// The geometry is [FloorPlanMarkerLayer]'s, and for the same reason:
+/// `AuthenticatedImage.sizedToImage` has already made this layer's box the painted
+/// drawing's own rectangle, so a stored coordinate multiplied by the box IS the point
+/// to draw at, offset by half the pin so the dot is centred on the spot rather than
+/// hung off its corner. There is no letterbox arithmetic here because there is no
+/// letterbox: the widget box and the picture are one rectangle. Nesting this inside the
+/// default [AuthenticatedImage] instead would silently shift the pin by the height of
+/// the bars.
+///
+/// NOTHING HERE PLACES OR MOVES THE PIN, and that is the point. The mark is the
+/// customer's statement of where their problem is, made on the intake form in the
+/// customer app; a technician who could drag it would be editing somebody else's
+/// account of the fault. There is no gesture recogniser in this file for that reason.
+class FloorPlanPinLayer extends StatelessWidget {
+  const FloorPlanPinLayer({super.key, required this.pin});
+
+  /// The recorded coordinate. Null draws nothing.
+  final PlanPositionModel? pin;
+
+  @override
+  Widget build(BuildContext context) {
+    final PlanPositionModel? placed = pin;
+    if (placed == null) return const SizedBox.shrink();
+
+    return LayoutBuilder(
+      builder: (BuildContext context, BoxConstraints constraints) {
+        final double width = constraints.maxWidth;
+        final double height = constraints.maxHeight;
+        // A degenerate box would pin the mark to a corner as though that were the
+        // recorded spot. Drawing nothing is the truthful answer.
+        if (!width.isFinite || !height.isFinite || width <= 0 || height <= 0) {
+          return const SizedBox.shrink();
+        }
+
+        return Stack(
+          children: <Widget>[
+            Positioned(
+              left: placed.x * width - kPlanPinDiameter / 2,
+              top: placed.y * height - kPlanPinDiameter / 2,
+              width: kPlanPinDiameter,
+              height: kPlanPinDiameter,
+              // Ignores pointers so it cannot swallow a tap meant for a device marker
+              // underneath it, which is the only interactive thing on this drawing.
+              child: const IgnorePointer(child: FaultPin()),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+/// The mark itself: the attention triad, ringed, with a cross inside.
+///
+/// Deliberately not one of the risk-band tones a [PlanMarker] wears. A band is an
+/// assessment the platform has recorded; this is a claim the customer made when they
+/// rang, and the two must not be read as the same kind of statement.
+@visibleForTesting
+class FaultPin extends StatelessWidget {
+  const FaultPin({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      label: 'Гэмтлийн тэмдэглэсэн байршил',
+      child: Container(
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: Tone.red.background,
+          border: Border.all(color: Tone.red.foreground, width: 2),
+        ),
+        child: Icon(Icons.close, size: 16, color: Tone.red.foreground),
+      ),
+    );
+  }
+}
+
 /// One device on the plan.
 @visibleForTesting
 class PlanMarker extends StatelessWidget {

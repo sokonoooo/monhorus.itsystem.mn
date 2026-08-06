@@ -58,6 +58,15 @@ import 'photo_source_sheet.dart';
 /// thing that narrows the location below the floor, and it does so by pointing at the
 /// place rather than by naming a record.
 ///
+/// A request raised from a device page arrives with that device's own registered spot
+/// already on the plan, through [initialPlanPosition]. What is sent is a COPY of the
+/// coordinate, not a reference to the object: the record says where the fault was
+/// reported, and stays true afterwards even if the equipment is moved or re-placed in
+/// the register. The inherited pin is left fully editable — the register is a drawing an
+/// administrator made and the customer is standing in front of the fault, so the
+/// customer wins — and the sheet says which of the two states the reader is in, because
+/// a pin that appeared on its own and a pin the reader dropped are different claims.
+///
 /// This sheet deliberately sends NO `deviceId`. That field names an `ObjectNode` of
 /// kind DEVICE, and every device screen in this app is built on the object-master
 /// register, which is a different collection — the id it holds resolves to nothing and
@@ -71,6 +80,7 @@ class CreateRequestSheet extends ConsumerStatefulWidget {
     required this.scope,
     this.initialBuildingId,
     this.initialFloorId,
+    this.initialPlanPosition,
     this.deviceName,
     this.initialDescription,
     this.initialUrgent = false,
@@ -80,6 +90,12 @@ class CreateRequestSheet extends ConsumerStatefulWidget {
   final ResolvedCustomerScope scope;
   final String? initialBuildingId;
   final String? initialFloorId;
+
+  /// The spot the pin starts on, copied from the equipment the request was raised
+  /// from. Honoured only alongside an [initialFloorId]: a point means nothing without
+  /// the drawing it was measured on. Null for a general request, and null for a device
+  /// the register has never placed — which is most of them.
+  final PlanPositionModel? initialPlanPosition;
 
   /// The device the request is about, for the subtitle. Display only — see the class
   /// note on why no id travels with it.
@@ -98,6 +114,7 @@ class CreateRequestSheet extends ConsumerStatefulWidget {
     required ResolvedCustomerScope scope,
     String? initialBuildingId,
     String? initialFloorId,
+    PlanPositionModel? initialPlanPosition,
     String? deviceName,
     String? initialDescription,
     bool initialUrgent = false,
@@ -118,6 +135,7 @@ class CreateRequestSheet extends ConsumerStatefulWidget {
           scope: scope,
           initialBuildingId: initialBuildingId,
           initialFloorId: initialFloorId,
+          initialPlanPosition: initialPlanPosition,
           deviceName: deviceName,
           initialDescription: initialDescription,
           initialUrgent: initialUrgent,
@@ -143,6 +161,12 @@ class _CreateRequestSheetState extends ConsumerState<CreateRequestSheet> {
   /// The spot on the floor's drawing, normalised 0..1. Cleared whenever the floor
   /// beneath it changes: a point on one plan means nothing on another.
   PlanPositionModel? _planPosition;
+
+  /// True while [_planPosition] is still the equipment's own registered spot, untouched.
+  /// Goes false the moment the customer moves or clears it, because from then on the pin
+  /// is their claim rather than the register's — and the sentence beside it must stop
+  /// saying otherwise.
+  bool _pinInherited = false;
 
   ServiceRequestType _requestType = ServiceRequestType.standardCall;
   late bool _isUrgent;
@@ -181,6 +205,11 @@ class _CreateRequestSheetState extends ConsumerState<CreateRequestSheet> {
     _contactPhone = TextEditingController(text: user?.phone ?? '');
     _buildingId = widget.initialBuildingId;
     _floorId = widget.initialFloorId;
+    // Guarded on the floor here rather than at the call site, so no caller can hand the
+    // sheet a coordinate with no drawing to measure it against — the same rule `_submit`
+    // enforces on the way out.
+    _planPosition = _floorId == null ? null : widget.initialPlanPosition;
+    _pinInherited = _planPosition != null;
     _isUrgent = widget.initialUrgent;
     _requestType = widget.initialUrgent
         ? ServiceRequestType.urgentCall
@@ -489,6 +518,29 @@ class _CreateRequestSheetState extends ConsumerState<CreateRequestSheet> {
   /// floor's plan.
   void _clearFloorPin() {
     _planPosition = null;
+    _pinInherited = false;
+  }
+
+  /// True when the request came from a device the register has never placed on a plan.
+  ///
+  /// Two of the thirty-five objects carry a position today, so this is the ordinary case
+  /// on the device page rather than an edge of it, and it gets a sentence of its own: an
+  /// empty plan where a pin was expected reads as a drawing that failed to load.
+  bool get _equipmentUnplaced =>
+      widget.deviceName != null && widget.initialPlanPosition == null;
+
+  /// The line above the drawing, which must always describe the state actually on screen.
+  String get _pinHint {
+    if (_pinInherited) {
+      return 'Төхөөрөмжийн бүртгэлтэй байршлыг тэмдэглэлээ. Асуудал өөр газар '
+          'гарсан бол дарж шилжүүлнэ үү.';
+    }
+    if (_planPosition != null) return 'Өөр газар дарвал тэмдэглэгээ шилжинэ.';
+    if (_equipmentUnplaced) {
+      return 'Энэ төхөөрөмжийн байршил планд бүртгэгдээгүй байна. Асуудал гарсан '
+          'газар дээр дарж тэмдэглэнэ үү.';
+    }
+    return 'Асуудал гарсан газар дээр дарж тэмдэглэнэ үү.';
   }
 
   /// The optional pin on [floorId]'s drawing.
@@ -521,9 +573,7 @@ class _CreateRequestSheetState extends ConsumerState<CreateRequestSheet> {
               mainAxisSize: MainAxisSize.min,
               children: <Widget>[
                 Text(
-                  _planPosition == null
-                      ? 'Асуудал гарсан газар дээр дарж тэмдэглэнэ үү.'
-                      : 'Өөр газар дарвал тэмдэглэгээ шилжинэ.',
+                  _pinHint,
                   style: CustomerTokens.rowSub.copyWith(height: 1.45),
                 ),
                 const SizedBox(height: 8),
@@ -533,10 +583,16 @@ class _CreateRequestSheetState extends ConsumerState<CreateRequestSheet> {
                   ),
                   child: AuthenticatedImage.sizedToImage(
                     fileId: data.fileId,
+                    // An inherited pin is placed, not locked: the register records
+                    // where the equipment was installed and the customer is looking at
+                    // where it failed, so the same tap that places a first pin moves
+                    // this one.
                     overlay: FloorPlanPinLayer(
                       pin: _planPosition,
-                      onTapAt: (PlanPositionModel position) =>
-                          setState(() => _planPosition = position),
+                      onTapAt: (PlanPositionModel position) => setState(() {
+                        _planPosition = position;
+                        _pinInherited = false;
+                      }),
                     ),
                   ),
                 ),
@@ -544,8 +600,7 @@ class _CreateRequestSheetState extends ConsumerState<CreateRequestSheet> {
                   Align(
                     alignment: Alignment.centerLeft,
                     child: TextButton.icon(
-                      onPressed: () =>
-                          setState(() => _planPosition = null),
+                      onPressed: () => setState(_clearFloorPin),
                       icon: const Icon(Icons.close, size: 16),
                       label: const Text('Тэмдэглэгээг арилгах'),
                     ),

@@ -87,19 +87,12 @@ export const objectService = {
     );
   },
 
-  /**
-   * Direct children of a node, optionally narrowed to one kind.
-   *
-   * The kind filter is what the zones section reads: a floor's children are its rooms, and
-   * asking for `ROOM` keeps the list to that level rather than to whatever else has been
-   * hung off the floor. Callers that want the whole level pass no kind, so the dependent
-   * location selector is unchanged.
-   */
-  async children(parentId: string, kind?: ObjectNodeKind): Promise<ObjectNodeDto[]> {
+  /** Direct children of a node — one whole level of the hierarchy. */
+  async children(parentId: string): Promise<ObjectNodeDto[]> {
     if (!parentId) return [];
     return unwrap(
       await apiClient.get<ApiResponse<ObjectNodeDto[]>>('/objects/nodes', {
-        params: kind ? { parentId, kind } : { parentId },
+        params: { parentId },
       }),
     );
   },
@@ -122,17 +115,6 @@ export const objectService = {
     return unwrap(
       await apiClient.patch<ApiResponse<ObjectNodeDto>>(`/objects/nodes/${nodeId}`, payload),
     );
-  },
-
-  /**
-   * Removes a node outright.
-   *
-   * Refused with a 409 carrying the blockers by name when anything still references the
-   * node. That message is the backend's own and is meant to be shown as it stands, with
-   * archiving — `updateNode(id, { isActive: false })` — offered as the way through.
-   */
-  async deleteNode(nodeId: string): Promise<void> {
-    await apiClient.delete(`/objects/nodes/${nodeId}`);
   },
 
   async breadcrumb(nodeId: string): Promise<ObjectBreadcrumbDto[]> {

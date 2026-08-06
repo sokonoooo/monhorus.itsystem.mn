@@ -467,12 +467,12 @@ export async function updateObjectNode(
 
 /**
  * Removes a hierarchy node — the one operation the generic node endpoints were missing, and
- * what completes the zone (ROOM) CRUD.
+ * the only delete that reaches the levels below a floor.
  *
  * Deletion is refused while anything depends on the node, using the SAME blocker set the
  * project module applies to a project, building or floor rather than a second rule invented
- * here. That is what stops a zone named on a service request being removed underneath it:
- * the request keeps a `room` reference, so the answer is to archive the zone
+ * here. That is what stops a node named on a service request being removed underneath it:
+ * the request keeps a reference (a ROOM's is `room`), so the answer is to archive the node
  * (`PATCH /objects/nodes/:id { isActive: false }`), which hides it from the selectors while
  * every past request still resolves its name and its breadcrumb.
  */

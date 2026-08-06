@@ -6,14 +6,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../../lib/api-client';
 import * as fileUrl from '../../lib/file-url';
 import { objectMasterService } from '../../services/object-master.service';
-import { objectService } from '../../services/object.service';
 import { projectService } from '../../services/project.service';
 import {
   makeFloor,
   makeFloorLoad,
   makeFloorPlan,
   makeObjectListItem,
-  makeObjectNode,
   makePage,
 } from '../../test/fixtures';
 import { renderWithAuth } from '../../test/render';
@@ -37,9 +35,6 @@ describe('FloorDetailPage', () => {
     vi.spyOn(fileUrl, 'authorisedFileUrl').mockResolvedValue('blob:plan');
     vi.spyOn(projectService, 'floorLoad').mockResolvedValue(makeFloorLoad());
     vi.spyOn(objectMasterService, 'list').mockResolvedValue(makePage([]));
-    // The zones section loads on its own; an empty floor is the default so the tests that
-    // are not about zones see the same page they always did.
-    vi.spyOn(objectService, 'children').mockResolvedValue([]);
   });
 
   it('shows general information and the plan before the object list', async () => {
@@ -366,183 +361,6 @@ describe('FloorDetailPage', () => {
           description: 'Сүүлийн үзлэгээр асуудалгүй',
         }),
       );
-    });
-  });
-
-  /**
-   * The zone level had no screen at all until now, which is the whole reason the Өрөө/Бүс
-   * dropdown on the request form was permanently empty.
-   */
-  describe('zones', () => {
-    const ZONE = makeObjectNode({
-      id: '507f1f77bcf86cd799439201',
-      kind: 'ROOM',
-      code: 'FL-2-R01',
-      name: '201 тоот',
-      parentId: FLOOR_ID,
-      hasChildren: false,
-    });
-
-    function renderWithZones(zones = [ZONE]) {
-      vi.spyOn(projectService, 'getFloor').mockResolvedValue(makeFloor());
-      vi.spyOn(projectService, 'getFloorPlan').mockResolvedValue(makeFloorPlan());
-      vi.spyOn(objectService, 'children').mockResolvedValue(zones);
-      return renderFloor([PERMISSIONS.OBJECT_VIEW, PERMISSIONS.OBJECT_MANAGE]);
-    }
-
-    /** The zone menu is labelled apart from the object one so a row is addressable. */
-    async function openZoneMenu(user: ReturnType<typeof userEvent.setup>): Promise<HTMLElement> {
-      await user.click(await screen.findByRole('button', { name: 'Бүсийн үйлдэл' }));
-      return screen.findByRole('menu', { name: 'Бүсийн үйлдэл' });
-    }
-
-    it('lists the zones of this floor only', async () => {
-      renderWithZones();
-
-      expect(await screen.findByText('201 тоот')).toBeInTheDocument();
-      expect(screen.getByText('FL-2-R01')).toBeInTheDocument();
-      // Narrowed to the ROOM level rather than to whatever hangs off the floor.
-      await waitFor(() => {
-        expect(objectService.children).toHaveBeenCalledWith(FLOOR_ID, 'ROOM');
-      });
-    });
-
-    it('says so when the floor has no zones yet', async () => {
-      renderWithZones([]);
-
-      expect(await screen.findByText('Бүс бүртгэгдээгүй')).toBeInTheDocument();
-    });
-
-    /**
-     * The node contract needs a code as well as a name. Typing one per zone is friction, so
-     * it is suggested from the floor's own code and the sequence already on the floor, and
-     * left editable because only the server can see the whole tenant.
-     */
-    it('creates a zone with a code suggested from the floor code', async () => {
-      const create = vi.spyOn(objectService, 'createNode').mockResolvedValue(ZONE);
-      const user = userEvent.setup();
-
-      renderWithZones();
-
-      await user.click(await screen.findByRole('button', { name: 'Бүс нэмэх' }));
-      const drawer = await screen.findByRole('dialog', { name: 'Бүс нэмэх' });
-
-      // FL-2-R01 is taken, so the next free one in the family is offered.
-      expect(within(drawer).getByLabelText(/^Код/)).toHaveValue('FL-2-R02');
-
-      await user.type(within(drawer).getByLabelText(/^Бүсийн нэр/), '202 тоот');
-      await user.click(within(drawer).getByRole('button', { name: 'Нэмэх' }));
-
-      await waitFor(() => {
-        expect(create).toHaveBeenCalledWith({
-          kind: 'ROOM',
-          parentId: FLOOR_ID,
-          customerId: '507f1f77bcf86cd799439011',
-          code: 'FL-2-R02',
-          name: '202 тоот',
-        });
-      });
-    });
-
-    it('keeps the suggested code editable', async () => {
-      const create = vi.spyOn(objectService, 'createNode').mockResolvedValue(ZONE);
-      const user = userEvent.setup();
-
-      renderWithZones();
-
-      await user.click(await screen.findByRole('button', { name: 'Бүс нэмэх' }));
-      const drawer = await screen.findByRole('dialog', { name: 'Бүс нэмэх' });
-
-      await user.clear(within(drawer).getByLabelText(/^Код/));
-      await user.type(within(drawer).getByLabelText(/^Код/), 'server-room');
-      await user.type(within(drawer).getByLabelText(/^Бүсийн нэр/), 'Сервер өрөө');
-      await user.click(within(drawer).getByRole('button', { name: 'Нэмэх' }));
-
-      await waitFor(() => {
-        expect(create).toHaveBeenCalledWith(
-          expect.objectContaining({ code: 'SERVER-ROOM', name: 'Сервер өрөө' }),
-        );
-      });
-    });
-
-    it('renames a zone', async () => {
-      const update = vi.spyOn(objectService, 'updateNode').mockResolvedValue(ZONE);
-      const user = userEvent.setup();
-
-      renderWithZones();
-
-      const menu = await openZoneMenu(user);
-      await user.click(within(menu).getByRole('menuitem', { name: 'Нэр засах' }));
-
-      const drawer = await screen.findByRole('dialog', { name: 'Бүсийн нэр засах' });
-      const input = within(drawer).getByLabelText(/^Бүсийн нэр/);
-      await user.clear(input);
-      await user.type(input, 'Хурлын өрөө');
-      await user.click(within(drawer).getByRole('button', { name: 'Хадгалах' }));
-
-      await waitFor(() => {
-        expect(update).toHaveBeenCalledWith(ZONE.id, { name: 'Хурлын өрөө' });
-      });
-    });
-
-    it('archives a zone instead of deleting it', async () => {
-      const update = vi.spyOn(objectService, 'updateNode').mockResolvedValue(ZONE);
-      const user = userEvent.setup();
-
-      renderWithZones();
-
-      const menu = await openZoneMenu(user);
-      await user.click(within(menu).getByRole('menuitem', { name: 'Архивлах' }));
-
-      const dialog = await screen.findByRole('dialog', { name: 'Бүс архивлах' });
-      await user.click(within(dialog).getByRole('button', { name: 'Архивлах' }));
-
-      await waitFor(() => {
-        expect(update).toHaveBeenCalledWith(ZONE.id, { isActive: false });
-      });
-    });
-
-    /**
-     * The refusal names what is holding the zone. That sentence is the answer to "why not",
-     * so it is shown as the server wrote it rather than replaced by "устгаж чадсангүй", and
-     * the documented way through — archiving — is offered next to it.
-     */
-    it('shows the backend refusal verbatim and offers archiving when a delete is blocked', async () => {
-      const blocker =
-        'Хамааралтай бичлэгтэй тул устгах боломжгүй. 2 үйлчилгээний хүсэлт энэ бүсийг заасан байна. Архивлана уу.';
-      vi.spyOn(objectService, 'deleteNode').mockRejectedValue(
-        new ApiError(blocker, 'DUPLICATE_KEY', 409),
-      );
-      const update = vi.spyOn(objectService, 'updateNode').mockResolvedValue(ZONE);
-      const user = userEvent.setup();
-
-      renderWithZones();
-
-      const menu = await openZoneMenu(user);
-      await user.click(within(menu).getByRole('menuitem', { name: 'Устгах' }));
-
-      const dialog = await screen.findByRole('dialog', { name: 'Бүс устгах' });
-      await user.click(within(dialog).getByRole('button', { name: 'Устгах' }));
-
-      expect(await screen.findByText(blocker)).toBeInTheDocument();
-
-      // The alternative is a control, not a sentence telling the user to go and find one.
-      await user.click(await screen.findByRole('button', { name: 'Архивлах' }));
-      await waitFor(() => {
-        expect(update).toHaveBeenCalledWith(ZONE.id, { isActive: false });
-      });
-    });
-
-    it('hides every zone action from a caller without object.manage', async () => {
-      vi.spyOn(projectService, 'getFloor').mockResolvedValue(makeFloor());
-      vi.spyOn(projectService, 'getFloorPlan').mockResolvedValue(makeFloorPlan());
-      vi.spyOn(objectService, 'children').mockResolvedValue([ZONE]);
-
-      renderFloor([PERMISSIONS.OBJECT_VIEW]);
-
-      expect(await screen.findByText('201 тоот')).toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: 'Бүс нэмэх' })).not.toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: 'Бүсийн үйлдэл' })).not.toBeInTheDocument();
     });
   });
 

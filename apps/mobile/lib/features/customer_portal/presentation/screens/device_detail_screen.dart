@@ -479,6 +479,16 @@ class _RequestAction extends ConsumerWidget {
       scope: scope,
       initialBuildingId: buildingId,
       initialFloorId: buildingId == null ? null : floorId,
+      // The equipment's own spot on the floor plan, COPIED onto the request rather than
+      // referenced. A customer standing at a device should not be asked to point at a
+      // drawing to say where it is — the register already knows — but what the request
+      // stores is where the fault was reported, so it stays true if the object is later
+      // moved or re-placed, and the customer can still move or clear the pin because
+      // they can see the fault and the register cannot.
+      //
+      // Null for the objects nobody has placed, which is most of them; the sheet then
+      // says so and asks for a pin instead of showing a bare plan.
+      initialPlanPosition: object.planPosition,
       // No id travels with the device, only its name and its identity in the text.
       //
       // `deviceId` names an `ObjectNode` of kind DEVICE and the server resolves it with
