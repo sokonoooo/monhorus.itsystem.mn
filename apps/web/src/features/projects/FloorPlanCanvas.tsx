@@ -186,11 +186,40 @@ function CanvasInner({
     planSizeForAspect(Number.NaN),
   );
 
+  /**
+   * Idempotent on purpose: the same picture must not produce a state change.
+   *
+   * `planSizeForAspect` builds a fresh object every call, and this runs from the
+   * image's ref callback — which React invokes on EVERY render, not once. A cached
+   * picture reports `complete` immediately, so an unconditional `setPlanSize` here
+   * made every render schedule the next one: "Maximum update depth exceeded", and a
+   * blank page behind an error boundary. Returning the current value when nothing
+   * moved lets React bail out of the re-render entirely.
+   *
+   * jsdom sets neither `complete` nor `naturalWidth`, which is why the whole suite
+   * passed while the page could not render at all in a browser.
+   */
   const handleImageLoad = useCallback((image: HTMLImageElement): void => {
-    if (image.naturalWidth > 0 && image.naturalHeight > 0) {
-      setPlanSize(planSizeForAspect(image.naturalWidth / image.naturalHeight));
-    }
+    if (image.naturalWidth <= 0 || image.naturalHeight <= 0) return;
+    const next = planSizeForAspect(image.naturalWidth / image.naturalHeight);
+    setPlanSize((current) =>
+      current.width === next.width && current.height === next.height ? current : next,
+    );
   }, []);
+
+  /**
+   * Stable, so the ref detaches and reattaches only when the element really changes.
+   * An inline arrow here is re-created every render, which is what made the loop
+   * above reachable in the first place.
+   */
+  const imageRef = useCallback(
+    (node: HTMLImageElement | null): void => {
+      // A picture the browser already holds may be complete before React attaches
+      // the handler, and then no load event ever comes.
+      if (node?.complete) handleImageLoad(node);
+    },
+    [handleImageLoad],
+  );
 
   const fitPlan = useCallback((): void => {
     if (containerWidth === 0 || containerHeight === 0) return;
@@ -360,11 +389,9 @@ function CanvasInner({
                 src={imageUrl}
                 alt={imageAlt}
                 draggable={false}
-                // Both, because a picture the browser already holds may be complete
-                // before React ever attaches the handler, and then no load event comes.
-                ref={(node) => {
-                  if (node?.complete) handleImageLoad(node);
-                }}
+                // Both: the ref covers a picture already in cache, `onLoad` covers
+                // one still arriving. Both paths are idempotent.
+                ref={imageRef}
                 onLoad={(event) => handleImageLoad(event.currentTarget)}
                 className="block h-full w-full"
               />
