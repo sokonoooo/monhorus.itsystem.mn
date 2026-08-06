@@ -101,10 +101,8 @@ export function ServiceRequestCreatePage(): ReactElement {
       projectId: chain.selection.PROJECT ?? null,
       buildingId: chain.selection.BUILDING ?? '',
       floorId: chain.selection.FLOOR ?? null,
-      roomId: chain.selection.ROOM ?? null,
-      panelId: chain.selection.PANEL ?? null,
-      circuitId: chain.selection.CIRCUIT ?? null,
-      deviceId: chain.selection.DEVICE ?? null,
+      // No roomId/panelId/circuitId/deviceId: the form stops at the floor, and the schema
+      // takes those as nullish, so leaving them out is the same as sending null.
       // Omitted rather than sent as null when nothing was pinned, so an untouched form
       // submits exactly the payload it always did.
       ...(planPosition ? { planPosition } : {}),

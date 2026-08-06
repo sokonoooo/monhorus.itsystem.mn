@@ -10,7 +10,6 @@ import '../../../auth/presentation/providers/auth_provider.dart';
 import '../../data/datasources/customer_portal_remote_data_source.dart';
 import '../../data/models/notification_model.dart';
 import '../../data/models/object_master_model.dart';
-import '../../data/models/object_node_model.dart';
 import '../../data/models/project_model.dart';
 import '../../data/models/service_request_model.dart';
 import '../../data/repositories/customer_portal_repository_impl.dart';
@@ -211,21 +210,6 @@ final FutureProviderFamily<FloorPlanModel?, String> floorPlanProvider =
   final CustomerPortalRepository repository =
       ref.watch(customerPortalRepositoryProvider);
   return _unwrap(await repository.getFloorPlan(floorId));
-});
-
-/// The Өрөө/Бүс nodes of one floor, as the create-request sheet's zone picker lists
-/// them.
-///
-/// Keyed by floor id, so choosing a different floor is a different provider instance
-/// and the previous floor's zones can never be shown against it. An empty list is a
-/// real answer — a floor whose zones an administrator has not registered yet — and the
-/// caller says so in words rather than offering an empty control.
-final FutureProviderFamily<List<ObjectNodeModel>, String> floorZonesProvider =
-    FutureProvider.family<List<ObjectNodeModel>, String>(
-        (Ref ref, String floorId) async {
-  final CustomerPortalRepository repository =
-      ref.watch(customerPortalRepositoryProvider);
-  return _unwrap(await repository.listFloorZones(floorId));
 });
 
 final FutureProviderFamily<List<ObjectListItemModel>, String> floorObjectsProvider =

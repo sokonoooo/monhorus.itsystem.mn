@@ -13,7 +13,6 @@ import 'package:monhorus_mobile/features/auth/domain/repositories/auth_repositor
 import 'package:monhorus_mobile/features/auth/presentation/providers/auth_provider.dart';
 import 'package:monhorus_mobile/features/customer_portal/data/models/notification_model.dart';
 import 'package:monhorus_mobile/features/customer_portal/data/models/object_master_model.dart';
-import 'package:monhorus_mobile/features/customer_portal/data/models/object_node_model.dart';
 import 'package:monhorus_mobile/features/customer_portal/data/models/project_model.dart';
 import 'package:monhorus_mobile/features/customer_portal/data/models/service_request_model.dart';
 import 'package:monhorus_mobile/features/customer_portal/domain/entities/customer_scope.dart';
@@ -193,27 +192,6 @@ FloorModel floorFixture({
     'createdAt': '2026-01-04T00:00:00.000Z',
     'updatedAt': '2026-07-20T04:12:00.000Z',
     'deleteBlockers': <String>[],
-  });
-}
-
-/// One Өрөө/Бүс node, shaped exactly as `GET /objects/nodes` returns it.
-ObjectNodeModel zoneFixture({
-  String id = '7a0000000000000000000021',
-  String name = 'Сервер өрөө А',
-  String code = 'ZONE-A',
-  String parentId = '6d0000000000000000000002',
-}) {
-  return ObjectNodeModel.fromJson(<String, dynamic>{
-    'id': id,
-    'kind': 'ROOM',
-    'code': code,
-    'name': name,
-    'parentId': parentId,
-    'customerId': testScope.customerId,
-    'riskScore': null,
-    'riskLevel': null,
-    'hasChildren': false,
-    'isActive': true,
   });
 }
 
@@ -491,16 +469,13 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
     List<NotificationModel>? notifications,
     ObjectDetailModel? objectDetail,
     ServiceRequestDetailModel? requestDetail,
-    Map<String, List<ObjectNodeModel>>? zonesByFloorId,
     Uint8List? fileBytes,
     this.floorPlan,
     this.objectHistory,
     this.failure,
     this.uploadFailure,
     this.buildingPageSize = 100,
-  })  : zonesByFloorId =
-            zonesByFloorId ?? const <String, List<ObjectNodeModel>>{},
-        fileBytes = fileBytes ?? Uint8List(0),
+  })  : fileBytes = fileBytes ?? Uint8List(0),
         buildings = buildings ?? <BuildingModel>[buildingFixture()],
         floors = floors ?? <FloorModel>[floorFixture()],
         objects = objects ?? <ObjectListItemModel>[objectFixture()],
@@ -527,14 +502,6 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
   final ObjectDetailModel objectDetail;
   final ServiceRequestDetailModel requestDetail;
   final FloorPlanModel? floorPlan;
-
-  /// Öрөө/Бүс nodes per floor id. A floor absent from the map has none registered,
-  /// which is what `GET /objects/nodes` answers for it: an empty array, not an error.
-  final Map<String, List<ObjectNodeModel>> zonesByFloorId;
-
-  /// Floor ids a screen asked zones for, so a test can prove the picker followed the
-  /// floor rather than kept the previous one's list.
-  final List<String> zonesRequestedFor = <String>[];
 
   /// What `GET /files/:fileId` returns. Empty by default, which every screen renders as
   /// "could not read the picture"; a test that needs a plan to actually decode — the
@@ -641,12 +608,6 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
   @override
   Future<ApiResult<FloorPlanModel?>> getFloorPlan(String floorId) async =>
       _result(floorPlan);
-
-  @override
-  Future<ApiResult<List<ObjectNodeModel>>> listFloorZones(String floorId) async {
-    zonesRequestedFor.add(floorId);
-    return _result(zonesByFloorId[floorId] ?? const <ObjectNodeModel>[]);
-  }
 
   @override
   Future<ApiResult<PaginatedData<ObjectListItemModel>>> listObjects(

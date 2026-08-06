@@ -9,7 +9,6 @@ import '../../../../core/network/api_result.dart';
 import '../../../auth/domain/entities/app_user.dart';
 import '../../../auth/presentation/providers/auth_provider.dart';
 import '../../data/models/object_master_model.dart';
-import '../../data/models/object_node_model.dart';
 import '../../data/models/project_model.dart';
 import '../../data/models/service_request_model.dart';
 import '../../domain/entities/customer_scope.dart';
@@ -53,10 +52,11 @@ import 'photo_source_sheet.dart';
 ///     the server parks it on the uploading account, and an unclaimed attachment
 ///     resolves to no organisation — so abandoning the sheet leaks nothing.
 ///
-/// Location is collected down to a zone and, when the floor has a drawing, to a point
-/// on it. Both are optional and both are independent of each other: `roomId` names a
-/// Өрөө/Бүс the administrator registered, `planPosition` points at the spot whether or
-/// not one exists, and `createServiceRequestSchema` accepts either alone.
+/// Location is a building, a floor, and — when that floor has a drawing — an optional
+/// point on it. No zone is collected: the Өрөө/Бүс register is the administrator's own
+/// and a customer reporting a fault does not think in it, so `planPosition` is the one
+/// thing that narrows the location below the floor, and it does so by pointing at the
+/// place rather than by naming a record.
 ///
 /// This sheet deliberately sends NO `deviceId`. That field names an `ObjectNode` of
 /// kind DEVICE, and every device screen in this app is built on the object-master
@@ -140,13 +140,8 @@ class _CreateRequestSheetState extends ConsumerState<CreateRequestSheet> {
   String? _buildingId;
   String? _floorId;
 
-  /// The chosen Өрөө/Бүс, cleared whenever the floor beneath it changes: the server
-  /// checks that a zone's parent is the floor that was named alongside it, so a value
-  /// left over from the previous floor would be refused with a hierarchy error.
-  String? _roomId;
-
-  /// The spot on the floor's drawing, normalised 0..1. Cleared with the floor for the
-  /// same reason — a point on one plan means nothing on another.
+  /// The spot on the floor's drawing, normalised 0..1. Cleared whenever the floor
+  /// beneath it changes: a point on one plan means nothing on another.
   PlanPositionModel? _planPosition;
 
   ServiceRequestType _requestType = ServiceRequestType.standardCall;
@@ -269,7 +264,7 @@ class _CreateRequestSheetState extends ConsumerState<CreateRequestSheet> {
                           onChanged: (String? value) => setState(() {
                             _buildingId = value;
                             _floorId = null;
-                            _clearFloorDependents();
+                            _clearFloorPin();
                           }),
                         ),
                         loading: () => const LinearProgressIndicator(),
@@ -311,7 +306,7 @@ class _CreateRequestSheetState extends ConsumerState<CreateRequestSheet> {
                           ],
                           onChanged: (String? value) => setState(() {
                             _floorId = value;
-                            _clearFloorDependents();
+                            _clearFloorPin();
                           }),
                         ),
                         loading: () => const LinearProgressIndicator(),
@@ -324,13 +319,10 @@ class _CreateRequestSheetState extends ConsumerState<CreateRequestSheet> {
                       ),
                       const SizedBox(height: 13),
 
-                      // Both of these are the chosen floor's, so neither is rendered
-                      // before one exists. An empty zone list and a floor with no
-                      // drawing are ordinary states, and each says so in a sentence
-                      // rather than as a control that cannot be used.
+                      // The pin is the chosen floor's, so it is not rendered before one
+                      // exists. A floor with no drawing is an ordinary state and says so
+                      // in a sentence rather than as a control that cannot be used.
                       if (_floorId != null) ...<Widget>[
-                        _buildZoneField(_floorId!),
-                        const SizedBox(height: 13),
                         _buildPinSection(_floorId!),
                         const SizedBox(height: 13),
                       ],
@@ -489,71 +481,14 @@ class _CreateRequestSheetState extends ConsumerState<CreateRequestSheet> {
     );
   }
 
-  /// Drops everything that only meant something under the previous floor.
+  /// Drops the pin, which only meant something under the previous floor.
   ///
   /// Called from both selectors, because changing the BUILDING changes the floor too.
-  /// Not folded into the setters: a zone that belongs to a floor nobody selected any
-  /// more is refused by `validateLocationChain`, and a pin is a point on a drawing that
-  /// is no longer on screen — both are stale in the same way and must go together.
-  void _clearFloorDependents() {
-    _roomId = null;
+  /// Not folded into the setters: a pin is a point on a drawing that is no longer on
+  /// screen, and carrying it across would put the fault at an arbitrary spot on the new
+  /// floor's plan.
+  void _clearFloorPin() {
     _planPosition = null;
-  }
-
-  /// The Өрөө/Бүс picker for [floorId].
-  ///
-  /// Optional throughout: the list carries a leading "Сонгохгүй" entry so a zone can be
-  /// unpicked as easily as picked, and there is no validator. A floor with no zones
-  /// registered renders one sentence instead of an empty dropdown — a control with
-  /// nothing in it states that something failed to load, which is not what happened.
-  Widget _buildZoneField(String floorId) {
-    final AsyncValue<List<ObjectNodeModel>> zones =
-        ref.watch(floorZonesProvider(floorId));
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: <Widget>[
-        const FieldLabel('Өрөө/Бүс (сонголтоор)'),
-        zones.when(
-          data: (List<ObjectNodeModel> items) {
-            if (items.isEmpty) {
-              return Text(
-                'Энэ давхарт өрөө/бүс бүртгэгдээгүй байна. Байршлыг тайлбартаа '
-                'бичих буюу планд тэмдэглэнэ үү.',
-                style: CustomerTokens.rowSub.copyWith(height: 1.45),
-              );
-            }
-            return DropdownButtonFormField<String>(
-              initialValue:
-                  items.any((ObjectNodeModel zone) => zone.id == _roomId)
-                      ? _roomId
-                      : null,
-              isExpanded: true,
-              items: <DropdownMenuItem<String>>[
-                const DropdownMenuItem<String>(
-                  child: Text('Сонгохгүй'),
-                ),
-                for (final ObjectNodeModel zone in items)
-                  DropdownMenuItem<String>(
-                    value: zone.id,
-                    child: Text(
-                      zone.pickerLabel,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-              ],
-              onChanged: (String? value) => setState(() => _roomId = value),
-            );
-          },
-          loading: () => const LinearProgressIndicator(),
-          error: (Object _, StackTrace __) => Text(
-            'Өрөө/бүсийн жагсаалт ачаалж чадсангүй.',
-            style: CustomerTokens.rowSub.copyWith(color: CustomerTokens.red),
-          ),
-        ),
-      ],
-    );
   }
 
   /// The optional pin on [floorId]'s drawing.
@@ -841,11 +776,9 @@ class _CreateRequestSheetState extends ConsumerState<CreateRequestSheet> {
       customerId: widget.scope.customerId,
       buildingId: _buildingId!,
       floorId: _floorId,
-      // Both are the floor's. Guarded on it here as well as cleared with it, so no
-      // rearrangement of the widget tree above can put a zone or a pin on the wire
-      // without the floor that gives it meaning — the server refuses a floorless pin
-      // outright, and a zone whose parent was not named is refused by the chain check.
-      roomId: _floorId == null ? null : _roomId,
+      // The pin is the floor's. Guarded on it here as well as cleared with it, so no
+      // rearrangement of the widget tree above can put a point on the wire without the
+      // floor that gives it meaning — the server refuses a floorless pin outright.
       planPosition: _floorId == null ? null : _planPosition,
       requestType: _requestType,
       isUrgent: _isUrgent,

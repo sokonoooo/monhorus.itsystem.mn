@@ -6,7 +6,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:monhorus_mobile/core/error/failure.dart';
 import 'package:monhorus_mobile/core/media/photo_capture.dart';
 import 'package:monhorus_mobile/features/customer_portal/data/models/object_master_model.dart';
-import 'package:monhorus_mobile/features/customer_portal/data/models/object_node_model.dart';
 import 'package:monhorus_mobile/features/customer_portal/data/models/project_model.dart';
 import 'package:monhorus_mobile/features/customer_portal/data/models/service_request_model.dart';
 import 'package:monhorus_mobile/features/customer_portal/domain/entities/service_request_enums.dart';
@@ -341,9 +340,9 @@ void main() {
     expect(find.text('Засварын хүсэлт илгээх'), findsNothing);
   });
 
-  // -- Зон (Өрөө/Бүс) --------------------------------------------------------
+  // -- Байршил ---------------------------------------------------------------
 
-  /// The building, floor and zone selectors, in the order the sheet renders them. The
+  /// The building and floor selectors, in the order the sheet renders them. The
   /// request-type chooser is a `DropdownButtonFormField<ServiceRequestType>` and so is
   /// deliberately not in this list.
   Finder locationDropdowns() => find.byType(DropdownButtonFormField<String>);
@@ -365,134 +364,18 @@ void main() {
     await tester.pumpAndSettle();
   }
 
-  /// Opens one of [locationDropdowns] and picks the entry with the given label.
-  Future<void> pickFromDropdown(
-    WidgetTester tester,
-    int index,
-    String label,
-  ) async {
-    final Finder dropdown = locationDropdowns().at(index);
-    await tester.ensureVisible(dropdown);
-    await tester.pumpAndSettle();
-    await tester.tap(dropdown);
-    await tester.pumpAndSettle();
-    await tester.tap(find.text(label).last);
-    await tester.pumpAndSettle();
-  }
-
-  testWidgets('the zone dropdown lists the floor\'s zones and sends roomId',
+  /// The zone (Өрөө/Бүс) picker this sheet used to carry, now deliberately absent.
+  ///
+  /// The Өрөө/Бүс register is the administrator's own hierarchy, and a customer
+  /// reporting a fault does not think in it — the location they can actually give is the
+  /// floor and, when there is a drawing, the spot on it. So the sheet must offer no zone
+  /// control at all, and the payload must name no room: a `roomId` still exists on
+  /// [CreateServiceRequestRequestModel] because the API contract has one and other
+  /// callers may set it, which is exactly why this asserts on what LEAVES the sheet
+  /// rather than on the field's existence.
+  testWidgets('the sheet offers no zone control and sends no roomId',
       (WidgetTester tester) async {
     final FloorModel floor = floorFixture();
-    final FakeCustomerPortalRepository repository = FakeCustomerPortalRepository(
-      zonesByFloorId: <String, List<ObjectNodeModel>>{
-        floor.id: <ObjectNodeModel>[
-          zoneFixture(),
-          zoneFixture(
-            id: '7a0000000000000000000022',
-            name: 'Цахилгааны өрөө',
-            code: 'ZONE-B',
-          ),
-        ],
-      },
-    );
-
-    await pumpPhone(
-      tester,
-      wrapCustomerScreen(
-        Scaffold(
-          body: CreateRequestSheet(
-            scope: testScope,
-            initialBuildingId: buildingFixture().id,
-            initialFloorId: floor.id,
-            pickPhoto: fakePick,
-          ),
-        ),
-        repository: repository,
-        user: customerWithCreateRight(),
-      ),
-    );
-
-    // Asked for the chosen floor's zones, and for no other floor's.
-    expect(repository.zonesRequestedFor, <String>[floor.id]);
-
-    // Both zones are offered, each labelled with the administrator's own code so two
-    // similarly named rooms stay distinguishable.
-    await tester.tap(locationDropdowns().at(2));
-    await tester.pumpAndSettle();
-    expect(find.text('Сервер өрөө А · ZONE-A'), findsWidgets);
-    expect(find.text('Цахилгааны өрөө · ZONE-B'), findsWidgets);
-    await tester.tap(find.text('Сервер өрөө А · ZONE-A').last);
-    await tester.pumpAndSettle();
-
-    await completeAndSubmit(tester);
-
-    expect(repository.created, hasLength(1));
-    final CreateServiceRequestRequestModel sent = repository.created.single;
-    expect(sent.floorId, floor.id);
-    expect(sent.roomId, zoneFixture().id);
-  });
-
-  testWidgets('a zone chosen under one floor is dropped when the floor changes',
-      (WidgetTester tester) async {
-    final FloorModel first = floorFixture();
-    final FloorModel second =
-        floorFixture(id: '6d0000000000000000000009', name: '9-р давхар', floorNumber: 9);
-
-    final FakeCustomerPortalRepository repository = FakeCustomerPortalRepository(
-      floors: <FloorModel>[first, second],
-      zonesByFloorId: <String, List<ObjectNodeModel>>{
-        first.id: <ObjectNodeModel>[zoneFixture()],
-        second.id: <ObjectNodeModel>[
-          zoneFixture(
-            id: '7a0000000000000000000023',
-            name: 'Агуулах',
-            code: 'ZONE-C',
-            parentId: '6d0000000000000000000009',
-          ),
-        ],
-      },
-    );
-
-    await pumpPhone(
-      tester,
-      wrapCustomerScreen(
-        Scaffold(
-          body: CreateRequestSheet(
-            scope: testScope,
-            initialBuildingId: buildingFixture().id,
-            initialFloorId: first.id,
-            pickPhoto: fakePick,
-          ),
-        ),
-        repository: repository,
-        user: customerWithCreateRight(),
-      ),
-    );
-
-    await pickFromDropdown(tester, 2, 'Сервер өрөө А · ZONE-A');
-
-    // Now move to the other floor. The zone just chosen belongs to the floor being
-    // left behind, and `validateLocationChain` would refuse it against the new one.
-    await pickFromDropdown(tester, 1, '9-р давхар · Лобби, оффис');
-
-    expect(repository.zonesRequestedFor, contains(second.id));
-    // The previous floor's zone is not offered any more, and nothing is selected.
-    expect(find.text('Сервер өрөө А · ZONE-A'), findsNothing);
-    expect(find.text('Агуулах · ZONE-C'), findsNothing);
-    expect(find.text('Сонгохгүй'), findsOneWidget);
-
-    await completeAndSubmit(tester);
-
-    final CreateServiceRequestRequestModel sent = repository.created.single;
-    expect(sent.floorId, second.id);
-    expect(sent.roomId, isNull);
-  });
-
-  testWidgets('a floor with no zones explains itself instead of offering a dead control',
-      (WidgetTester tester) async {
-    final FloorModel floor = floorFixture();
-    // No entry for this floor: `GET /objects/nodes` answers an empty array for a floor
-    // whose zones an administrator has never registered.
     final FakeCustomerPortalRepository repository = FakeCustomerPortalRepository();
 
     await pumpPhone(
@@ -511,15 +394,20 @@ void main() {
       ),
     );
 
-    expect(
-      find.textContaining('Энэ давхарт өрөө/бүс бүртгэгдээгүй байна.'),
-      findsOneWidget,
-    );
-    // Building and floor only — no third, empty dropdown.
+    // Building and floor only. A third string dropdown would be the zone picker back.
     expect(locationDropdowns(), findsNWidgets(2));
+    expect(find.textContaining('Өрөө/Бүс'), findsNothing);
+    // The "unpick" entry the zone list carried, and the sentence a zoneless floor got.
+    expect(find.text('Сонгохгүй'), findsNothing);
+    expect(find.textContaining('өрөө/бүс бүртгэгдээгүй'), findsNothing);
 
     await completeAndSubmit(tester);
-    expect(repository.created.single.roomId, isNull);
+
+    expect(repository.created, hasLength(1));
+    final CreateServiceRequestRequestModel sent = repository.created.single;
+    expect(sent.floorId, floor.id);
+    expect(sent.roomId, isNull);
+    expect(sent.toJson().containsKey('roomId'), isFalse);
   });
 
   // -- Планд тэмдэглэх -------------------------------------------------------

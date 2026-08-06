@@ -9,10 +9,8 @@ import '../../../../core/network/paginated_data.dart';
 import '../../domain/entities/customer_scope.dart';
 import '../../domain/entities/object_master_enums.dart';
 import '../../domain/entities/service_request_enums.dart';
-import '../models/json_utils.dart';
 import '../models/notification_model.dart';
 import '../models/object_master_model.dart';
-import '../models/object_node_model.dart';
 import '../models/project_model.dart';
 import '../models/service_request_model.dart';
 
@@ -136,33 +134,6 @@ class CustomerPortalRemoteDataSource {
       decoder: (Object? json) => json is Map<String, dynamic>
           ? FloorPlanModel.fromJson(json)
           : null,
-    );
-  }
-
-  /// GET /objects/nodes — the direct children of one node, of one kind.
-  ///
-  /// The progressive hierarchy loader, and the only route that lists Өрөө/Бүс nodes.
-  /// It answers a bare array rather than a page: the route caps `limit` at 200 and
-  /// returns active nodes sorted by name, so what arrives is already the whole level
-  /// in the order a picker wants it.
-  ///
-  /// No customer id is sent. The route resolves the caller's scope itself and folds it
-  /// into the query, so a customer only ever reads their own hierarchy however this is
-  /// called — and unlike `/buildings`, the schema has no `customerId` filter to send.
-  Future<List<ObjectNodeModel>> listChildNodes({
-    required String parentId,
-    ObjectNodeKind? kind,
-    int limit = 200,
-  }) {
-    return _client.request<List<ObjectNodeModel>>(
-      path: '/objects/nodes',
-      method: 'GET',
-      queryParameters: <String, dynamic>{
-        'parentId': parentId,
-        if (kind != null) 'kind': kind.wireValue,
-        'limit': limit,
-      },
-      decoder: (Object? json) => parseList(json, ObjectNodeModel.fromJson),
     );
   }
 

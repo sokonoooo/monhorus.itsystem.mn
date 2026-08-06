@@ -11,7 +11,6 @@ import '../../domain/repositories/customer_portal_repository.dart';
 import '../datasources/customer_portal_remote_data_source.dart';
 import '../models/notification_model.dart';
 import '../models/object_master_model.dart';
-import '../models/object_node_model.dart';
 import '../models/project_model.dart';
 import '../models/service_request_model.dart';
 
@@ -93,16 +92,6 @@ class CustomerPortalRepositoryImpl implements CustomerPortalRepository {
   @override
   Future<ApiResult<FloorPlanModel?>> getFloorPlan(String floorId) {
     return _guard(() => _remote.getFloorPlan(floorId));
-  }
-
-  @override
-  Future<ApiResult<List<ObjectNodeModel>>> listFloorZones(String floorId) {
-    return _guard(
-      () => _remote.listChildNodes(
-        parentId: floorId,
-        kind: ObjectNodeKind.room,
-      ),
-    );
   }
 
   @override

@@ -241,14 +241,13 @@ describe('ServiceRequestCreatePage', () => {
   });
 
   /**
-   * The zone dropdown and the plan pin.
+   * Where the location chain stops, and the plan pin.
    *
-   * The Өрөө/Бүс level was always rendered and always empty, because nothing in the app
-   * wrote it. With zones registered it populates from the same chain as every other level,
-   * and the plan pin sits beside it: the caller who cannot name a zone can still point at
-   * the spot, which is why the pin depends on the floor and not on the zone.
+   * The form locates a fault as building + floor and, optionally, a pin on the floor's
+   * drawing. The hierarchy runs deeper — Өрөө/Бүс, Самбар, Шугам, Төхөөрөмж — but those are
+   * not asked for here, so the chain ends at the floor and the request carries no zone.
    */
-  describe('zone and plan pin', () => {
+  describe('location depth and plan pin', () => {
     /** The chain one level at a time, so each level answers with its own children. */
     function mockChain(): void {
       vi.spyOn(objectService, 'children').mockImplementation(async (parentId: string) => {
@@ -282,7 +281,6 @@ describe('ServiceRequestCreatePage', () => {
 
     async function chooseLocation(
       user: ReturnType<typeof userEvent.setup>,
-      depth: 'floor' | 'zone',
     ): Promise<void> {
       await user.selectOptions(await screen.findByDisplayValue('Харилцагч сонгох'), CUSTOMER.id);
 
@@ -300,11 +298,6 @@ describe('ServiceRequestCreatePage', () => {
 
       await waitFor(() => expect(selectContainingOption('2 давхар')).toBeDefined());
       await user.selectOptions(selectContainingOption('2 давхар') as HTMLSelectElement, FLOOR.id);
-
-      if (depth === 'zone') {
-        await waitFor(() => expect(selectContainingOption('201 тоот')).toBeDefined());
-        await user.selectOptions(selectContainingOption('201 тоот') as HTMLSelectElement, ZONE.id);
-      }
     }
 
     async function fillRequiredFields(
@@ -325,7 +318,7 @@ describe('ServiceRequestCreatePage', () => {
       vi.spyOn(projectService, 'getFloorPlan').mockResolvedValue(makeFloorPlan());
     });
 
-    it('offers the zones of the chosen floor and sends the one picked as roomId', async () => {
+    it('offers no level below the floor and sends no zone', async () => {
       const create = vi
         .spyOn(serviceRequestService, 'create')
         .mockResolvedValue({ id: 'r1', requestNumber: 'SR-1' } as never);
@@ -335,15 +328,25 @@ describe('ServiceRequestCreatePage', () => {
         permissions: [PERMISSIONS.SERVICE_REQUEST_CREATE],
       });
 
-      await chooseLocation(user, 'zone');
+      await chooseLocation(user);
+
+      // The floor is the last level: no Өрөө/Бүс field, and the zones of the chosen floor
+      // are never even fetched, so nothing can offer them.
+      expect(screen.queryByText('Өрөө/Бүс')).not.toBeInTheDocument();
+      expect(objectService.children).not.toHaveBeenCalledWith(FLOOR.id);
+      expect(selectContainingOption(ZONE.name)).toBeUndefined();
+
       await fillRequiredFields(user);
       await user.click(screen.getByRole('button', { name: 'Хүсэлт үүсгэх' }));
 
-      await waitFor(() => {
-        expect(create).toHaveBeenCalledWith(
-          expect.objectContaining({ floorId: FLOOR.id, roomId: ZONE.id }),
-        );
-      });
+      await waitFor(() => expect(create).toHaveBeenCalled());
+      const payload = create.mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(payload).toMatchObject({ buildingId: BUILDING.id, floorId: FLOOR.id });
+      // The fields stay on the schema and the record; this form simply does not fill them.
+      expect('roomId' in payload).toBe(false);
+      expect('panelId' in payload).toBe(false);
+      expect('circuitId' in payload).toBe(false);
+      expect('deviceId' in payload).toBe(false);
     });
 
     it('sends the clicked spot as a normalised planPosition', async () => {
@@ -356,7 +359,7 @@ describe('ServiceRequestCreatePage', () => {
         permissions: [PERMISSIONS.SERVICE_REQUEST_CREATE],
       });
 
-      await chooseLocation(user, 'floor');
+      await chooseLocation(user);
 
       const image = await screen.findByAltText('2 давхарын төлөвлөгөө');
       layOutImage(image);
@@ -372,11 +375,10 @@ describe('ServiceRequestCreatePage', () => {
 
       await waitFor(() => {
         expect(create).toHaveBeenCalledWith(
-          // A pin with no zone is allowed: pointing at the spot does not require the zone
-          // to have been registered.
+          // The pin hangs off the floor, which is all the form asks for.
           expect.objectContaining({
+            buildingId: BUILDING.id,
             floorId: FLOOR.id,
-            roomId: null,
             planPosition: { x: 0.25, y: 0.5 },
           }),
         );
@@ -390,7 +392,7 @@ describe('ServiceRequestCreatePage', () => {
         permissions: [PERMISSIONS.SERVICE_REQUEST_CREATE],
       });
 
-      await chooseLocation(user, 'floor');
+      await chooseLocation(user);
 
       const image = await screen.findByAltText('2 давхарын төлөвлөгөө');
       layOutImage(image);
@@ -420,7 +422,7 @@ describe('ServiceRequestCreatePage', () => {
         permissions: [PERMISSIONS.SERVICE_REQUEST_CREATE],
       });
 
-      await chooseLocation(user, 'floor');
+      await chooseLocation(user);
 
       expect(
         await screen.findByText(/Энэ давхарт план зураг хавсаргаагүй тул байрлал тэмдэглэх/),
@@ -431,8 +433,8 @@ describe('ServiceRequestCreatePage', () => {
       ).not.toBeInTheDocument();
     });
 
-    /** Both are optional: an untouched form submits exactly what it always did. */
-    it('sends neither a zone nor a position when neither was touched', async () => {
+    /** The floor and the pin are both optional: a building alone is a valid request. */
+    it('sends neither a floor nor a position when neither was touched', async () => {
       const create = vi
         .spyOn(serviceRequestService, 'create')
         .mockResolvedValue({ id: 'r1', requestNumber: 'SR-1' } as never);
@@ -464,7 +466,9 @@ describe('ServiceRequestCreatePage', () => {
 
       await waitFor(() => expect(create).toHaveBeenCalled());
       const payload = create.mock.calls[0]?.[0] as Record<string, unknown>;
-      expect(payload.roomId).toBeNull();
+      expect(payload.buildingId).toBe(BUILDING.id);
+      expect(payload.floorId).toBeNull();
+      expect('roomId' in payload).toBe(false);
       expect('planPosition' in payload).toBe(false);
     });
   });

@@ -5,7 +5,6 @@ import '../../../../core/network/api_result.dart';
 import '../../../../core/network/paginated_data.dart';
 import '../../data/models/notification_model.dart';
 import '../../data/models/object_master_model.dart';
-import '../../data/models/object_node_model.dart';
 import '../../data/models/project_model.dart';
 import '../../data/models/service_request_model.dart';
 import '../entities/customer_scope.dart';
@@ -38,14 +37,6 @@ abstract interface class CustomerPortalRepository {
   Future<ApiResult<FloorModel>> getFloor(String floorId);
 
   Future<ApiResult<FloorPlanModel?>> getFloorPlan(String floorId);
-
-  /// The Өрөө/Бүс nodes registered under one floor, active only and name-sorted.
-  ///
-  /// Takes no scope for the same reason `listFloors` does not: `GET /objects/nodes`
-  /// has no `customerId` parameter and narrows by parent instead, and the caller only
-  /// ever reaches it from a floor that was itself fetched inside the scope. The server
-  /// folds the caller's own customer into the query regardless.
-  Future<ApiResult<List<ObjectNodeModel>>> listFloorZones(String floorId);
 
   Future<ApiResult<PaginatedData<ObjectListItemModel>>> listObjects(
     ResolvedCustomerScope scope, {
