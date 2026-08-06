@@ -2,11 +2,19 @@ import {
   createObjectSchema,
   floorPlanMetaSchema,
   type FloorPlanDto,
+  type ObjectIcon,
   type ObjectListItemDto,
   type ObjectTypeDto,
   type PlanPositionDto,
 } from '@monhorus/shared';
-import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type ReactElement,
+} from 'react';
 import { Link } from 'react-router-dom';
 
 import { Alert } from '../../components/ui/Alert';
@@ -15,14 +23,15 @@ import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import { Drawer } from '../../components/ui/Drawer';
 import { EmptyState } from '../../components/ui/States';
 import { useToast } from '../../components/ui/ToastProvider';
-import { FIELD_TEXTAREA, FILTER_LABEL } from '../../components/ui/control-styles';
+import { FIELD_TEXTAREA, FILTER_INPUT, FILTER_LABEL } from '../../components/ui/control-styles';
 import { ApiError } from '../../lib/api-client';
 import { authorisedFileUrl } from '../../lib/file-url';
 import { objectMasterService, objectTypeService } from '../../services/object-master.service';
 import { projectService } from '../../services/project.service';
 import { Field, SelectInput, TextInput } from '../employees/FormControls';
-import { FloorPlanCanvas, type PlanMarker } from './FloorPlanCanvas';
+import { FloorPlanCanvas, type PlanFocusRequest, type PlanMarker } from './FloorPlanCanvas';
 import { samePlanPosition } from './plan-geometry';
+import { ObjectTypeIcon } from './plan-icons';
 
 interface FloorPlanPanelProps {
   floorId: string;
@@ -50,6 +59,84 @@ function formatDateTime(iso: string): string {
 const ACCEPTED_HINT = 'PNG, JPG, WEBP, PDF - хамгийн ихдээ 10MB';
 
 /**
+ * One switchable group of markers: an object type that this floor actually uses.
+ *
+ * Built from the objects in hand, never from the registry. The registry knows every type
+ * the tenant has ever defined, which on a floor holding lights and sockets would be a
+ * filter listing a dozen things that are not there; what a user wants to switch off is what
+ * they can see.
+ */
+interface PlanLayer {
+  typeId: string;
+  name: string;
+  icon: ObjectIcon | null;
+  /** Markers of this type currently on the plan — that is, what hiding it takes away. */
+  count: number;
+}
+
+/**
+ * Which layers the user has switched off, per floor.
+ *
+ * `sessionStorage`, not `localStorage`, and this is the one place in the app that draws the
+ * distinction. A hidden column in a table announces itself by the gap it leaves; a hidden
+ * layer leaves a plan that simply looks like it has fewer things on it, and carrying that
+ * across days would eventually be reported as missing equipment. A tab is the longest a
+ * view choice like that should outlive.
+ *
+ * The HIDDEN ids are stored rather than the shown ones, so a type added to the floor
+ * afterwards is visible by default rather than silently absent.
+ */
+function layerStorageKey(floorId: string): string {
+  return `monhorus.plan-layers.${floorId}`;
+}
+
+function readHiddenLayers(floorId: string): string[] {
+  try {
+    const raw = sessionStorage.getItem(layerStorageKey(floorId));
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((entry): entry is string => typeof entry === 'string');
+  } catch {
+    // A corrupt or unavailable store shows everything rather than taking the plan down.
+    return [];
+  }
+}
+
+function writeHiddenLayers(floorId: string, hidden: readonly string[]): void {
+  try {
+    sessionStorage.setItem(layerStorageKey(floorId), JSON.stringify(hidden));
+  } catch {
+    // A blocked or full store must not stop the layer from switching off.
+  }
+}
+
+/** Why a search result cannot be travelled to, if it cannot. */
+type SearchResultState =
+  /** Drawn on the plan: selecting it centres the view on it. */
+  | 'onPlan'
+  /** A type that belongs on plans, but this one has never been placed. */
+  | 'unplaced'
+  /** A type the registry does not draw on plans at all. */
+  | 'notDrawn';
+
+interface SearchResult {
+  object: ObjectListItemDto;
+  state: SearchResultState;
+  /** The layer is off. Selecting it switches the layer back on. */
+  layerHidden: boolean;
+}
+
+/**
+ * Enough results to choose from, not enough to bury the drawing.
+ *
+ * Every object on the floor is in memory, so a two-letter query can match hundreds. The
+ * remainder is counted rather than dropped in silence, which is what tells the user to type
+ * more instead of scrolling.
+ */
+const SEARCH_RESULT_LIMIT = 8;
+
+/**
  * Floor plan image with object placement (requirements 11.1 and 11.2, rule 17.3).
  *
  * One current image, shown immediately, with the objects on the floor drawn on top of it.
@@ -65,6 +152,13 @@ const ACCEPTED_HINT = 'PNG, JPG, WEBP, PDF - хамгийн ихдээ 10MB';
  * drags. Off, the plan is a picture that can be zoomed, panned and read; on, positions are
  * drafted locally and nothing reaches the server until Save, so a mis-drag is undone by
  * Cancel instead of by another drag.
+ *
+ * Two controls sit above the drawing, and both are views over the same objects and nothing
+ * more. The layer filter switches whole types of marker off, so a crowded plan can be read
+ * one trade at a time; it changes what is drawn and never what is stored, which is why it
+ * is allowed to be on at the same time as the edit mode. The search finds an object on the
+ * floor by code or name and sends the view to it, which is the only way to reach a marker
+ * on a large plan without hunting for it.
  */
 export function FloorPlanPanel({
   floorId,
@@ -112,6 +206,27 @@ export function FloorPlanPanel({
   const [draft, setDraft] = useState<Record<string, PlanPositionDto | null>>({});
   const [savingPositions, setSavingPositions] = useState(false);
 
+  // -- View: layers and search -----------------------------------------------
+  const [hiddenTypeIds, setHiddenTypeIds] = useState<readonly string[]>(() =>
+    readHiddenLayers(floorId),
+  );
+  const [query, setQuery] = useState('');
+  const [focusRequest, setFocusRequest] = useState<PlanFocusRequest | null>(null);
+  const resultsRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * The panel outlives the floor when the route changes under it, and one floor's hidden
+   * layers mean nothing on another's types.
+   */
+  const loadedFloorRef = useRef(floorId);
+  useEffect(() => {
+    if (loadedFloorRef.current === floorId) return;
+    loadedFloorRef.current = floorId;
+    setHiddenTypeIds(readHiddenLayers(floorId));
+    setQuery('');
+    setFocusRequest(null);
+  }, [floorId]);
+
   const isPdf = plan?.mimeType === 'application/pdf';
   // PDFs are not rasterised anywhere in this app, so there is no picture to measure a
   // coordinate against. The plan still renders as a link; only placement is withheld.
@@ -153,7 +268,46 @@ export function FloorPlanPanel({
     return object.id in draft ? draft[object.id]! : object.planPosition;
   }
 
-  const markers: PlanMarker[] = planObjects.flatMap((object) => {
+  const hidden = new Set(hiddenTypeIds);
+
+  /**
+   * The floor's own layer list, in the order a reader would look for a type.
+   *
+   * Derived every render from the rows already loaded — no request, no hardcoded list, and
+   * nothing left over from a floor that had different equipment on it.
+   */
+  const layers: PlanLayer[] = (() => {
+    const byType = new Map<string, PlanLayer>();
+    for (const object of planObjects) {
+      const type = object.objectType;
+      if (!type) continue;
+      const existing = byType.get(type.id);
+      const drawn = effectivePosition(object) !== null ? 1 : 0;
+      if (existing) {
+        existing.count += drawn;
+      } else {
+        byType.set(type.id, { typeId: type.id, name: type.name, icon: type.icon, count: drawn });
+      }
+    }
+    return [...byType.values()].sort((a, b) => a.name.localeCompare(b.name, 'mn'));
+  })();
+
+  const hiddenLayerCount = layers.filter((layer) => hidden.has(layer.typeId)).length;
+
+  /**
+   * Filtering is a view, so it happens here and nowhere else.
+   *
+   * A hidden marker is simply not drawn. It keeps its draft, it keeps its place in
+   * `pendingMoves`, and Save writes it like any other: what a layer switch changes is what
+   * is on screen, never what is on the record. Hiding a type mid-drag therefore ends the
+   * gesture — the node it was dragging is gone — and leaves the position the drag had
+   * reached in the draft, where Cancel discards it and Save writes it.
+   */
+  const visiblePlanObjects = planObjects.filter(
+    (object) => !hidden.has(object.objectType?.id ?? ''),
+  );
+
+  const markers: PlanMarker[] = visiblePlanObjects.flatMap((object) => {
     const position = effectivePosition(object);
     if (!position) return [];
     return [
@@ -176,6 +330,120 @@ export function FloorPlanPanel({
     const stored = objects.find((object) => object.id === objectId)?.planPosition ?? null;
     return !samePlanPosition(position, stored);
   });
+
+  /**
+   * Unsaved moves the user cannot currently see.
+   *
+   * Said out loud rather than prevented. Hiding a layer does not drop its drafts, so the
+   * count above the plan would otherwise name changes with no marker to point at.
+   */
+  const hiddenPendingCount = pendingMoves.filter(([objectId]) => {
+    const typeId = objects.find((object) => object.id === objectId)?.objectType?.id;
+    return typeId !== undefined && hidden.has(typeId);
+  }).length;
+
+  /**
+   * The floor's objects by code or name, case-insensitively, over the rows already loaded.
+   *
+   * Every object on the floor is searched, not just the placeable ones. Someone typing a
+   * code is asking where a thing is, and "no results" is a worse answer than "it exists,
+   * and here is why it is not on the drawing" — so an object that has never been placed,
+   * and one whose type is never drawn on plans at all, are both listed and both say so.
+   */
+  const trimmedQuery = query.trim().toLowerCase();
+  const matches: SearchResult[] =
+    trimmedQuery === ''
+      ? []
+      : objects
+          .filter(
+            (object) =>
+              object.code.toLowerCase().includes(trimmedQuery) ||
+              object.name.toLowerCase().includes(trimmedQuery),
+          )
+          .map((object) => {
+            const type = object.objectType;
+            const state: SearchResultState =
+              type?.showOnPlan !== true
+                ? 'notDrawn'
+                : effectivePosition(object) === null
+                  ? 'unplaced'
+                  : 'onPlan';
+            return {
+              object,
+              state,
+              layerHidden: state === 'onPlan' && type !== null && hidden.has(type.id),
+            };
+          });
+  const shownMatches = matches.slice(0, SEARCH_RESULT_LIMIT);
+
+  function applyHiddenLayers(next: readonly string[]): void {
+    setHiddenTypeIds(next);
+    writeHiddenLayers(floorId, next);
+  }
+
+  function toggleLayer(typeId: string): void {
+    applyHiddenLayers(
+      hidden.has(typeId)
+        ? hiddenTypeIds.filter((entry) => entry !== typeId)
+        : [...hiddenTypeIds, typeId],
+    );
+  }
+
+  /**
+   * Travels to a result.
+   *
+   * A result whose layer is off switches that layer back on rather than refusing to be
+   * selected. The user has just named the object; a view toggle they set earlier is not an
+   * answer to that, and the alternative — a result that visibly does nothing when pressed —
+   * is the kind of dead end that gets reported as a broken search. The chip lights up in
+   * the same gesture, so the change to the view is visible where it was made.
+   */
+  function focusResult(result: SearchResult): void {
+    if (result.state !== 'onPlan') return;
+    const typeId = result.object.objectType?.id;
+    if (typeId !== undefined && hidden.has(typeId)) {
+      applyHiddenLayers(hiddenTypeIds.filter((entry) => entry !== typeId));
+    }
+    setSelectedObjectId(result.object.id);
+    setFocusRequest((current) => ({ objectId: result.object.id, seq: (current?.seq ?? 0) + 1 }));
+    setQuery('');
+  }
+
+  /**
+   * Arrow keys walk the results, Escape gives up on them.
+   *
+   * The results are ordinary buttons, so Tab and Enter already work; this is the shortcut a
+   * search box is expected to have. Focus is moved by walking the rendered buttons rather
+   * than by tracking an active index, because the only two things that can change the list
+   * under the user are typing and selecting, and both end the walk anyway.
+   */
+  function focusResultButton(index: number): void {
+    const buttons = resultsRef.current?.querySelectorAll<HTMLButtonElement>('[data-result]');
+    if (!buttons || buttons.length === 0) return;
+    const wrapped = (index + buttons.length) % buttons.length;
+    buttons[wrapped]?.focus();
+  }
+
+  function handleSearchKeyDown(event: KeyboardEvent<HTMLInputElement>): void {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      focusResultButton(0);
+    } else if (event.key === 'Escape') {
+      setQuery('');
+    }
+  }
+
+  function handleResultKeyDown(event: KeyboardEvent<HTMLButtonElement>, index: number): void {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      focusResultButton(index + 1);
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      focusResultButton(index - 1);
+    } else if (event.key === 'Escape') {
+      setQuery('');
+    }
+  }
 
   useEffect(() => {
     if (!metaOpen) return;
@@ -539,6 +807,138 @@ export function FloorPlanPanel({
             {plan.title && <p className="text-sm font-medium text-slate-900">{plan.title}</p>}
             {plan.description && <p className="text-xs text-slate-600">{plan.description}</p>}
 
+            {/*
+              Finding and filtering, above the drawing and off to its own line.
+
+              Both are view controls over the same population, so they sit together, and both
+              are withheld when there is nothing on the plan to find or hide. Kept to one
+              compact row on a laptop: the search box is capped rather than stretched, and the
+              layer chips wrap into a strip that scrolls rather than pushing the plan down the
+              page.
+            */}
+            {placementAvailable && layers.length > 0 && (
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div className="relative w-full sm:w-64">
+                  <label htmlFor="plan-search" className="sr-only">
+                    Тоноглол хайх
+                  </label>
+                  <input
+                    id="plan-search"
+                    type="search"
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    onKeyDown={handleSearchKeyDown}
+                    placeholder="Код эсвэл нэрээр хайх"
+                    autoComplete="off"
+                    className={FILTER_INPUT}
+                  />
+
+                  {trimmedQuery !== '' && (
+                    <div
+                      ref={resultsRef}
+                      role="group"
+                      aria-label="Хайлтын илэрц"
+                      className="absolute left-0 right-0 top-full z-20 mt-1 max-h-64 overflow-y-auto rounded-lg bg-white py-1 shadow-lg ring-1 ring-slate-200"
+                    >
+                      {matches.length === 0 ? (
+                        <p className="px-3 py-2 text-xs text-slate-500">Илэрц олдсонгүй.</p>
+                      ) : (
+                        <ul>
+                          {shownMatches.map((result, index) => (
+                            <li key={result.object.id}>
+                              {result.state === 'onPlan' ? (
+                                <button
+                                  type="button"
+                                  data-result=""
+                                  onClick={() => focusResult(result)}
+                                  onKeyDown={(event) => handleResultKeyDown(event, index)}
+                                  className="block w-full px-3 py-2 text-left hover:bg-slate-50 focus:bg-slate-50 focus:outline-none"
+                                >
+                                  <span className="block text-xs font-medium text-slate-900">
+                                    {result.object.code} · {result.object.name}
+                                  </span>
+                                  <span className="block text-xs text-slate-500">
+                                    {result.object.objectType?.name ?? '-'}
+                                    {result.layerHidden && ' · нуусан давхарга нээгдэнэ'}
+                                  </span>
+                                </button>
+                              ) : (
+                                <div className="px-3 py-2">
+                                  <span className="block text-xs font-medium text-slate-500">
+                                    {result.object.code} · {result.object.name}
+                                  </span>
+                                  <span className="block text-xs text-slate-400">
+                                    {result.state === 'unplaced'
+                                      ? 'Энэ тоноглол планд байрлуулаагүй'
+                                      : 'Энэ төрлийг план дээр харуулдаггүй'}
+                                  </span>
+                                </div>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                      {matches.length > shownMatches.length && (
+                        <p className="px-3 py-1 text-xs text-slate-400">
+                          Бусад {matches.length - shownMatches.length} илэрц. Хайлтаа
+                          нарийвчилна уу.
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <div
+                  className="flex max-h-20 flex-1 flex-wrap items-center gap-1.5 overflow-y-auto sm:justify-end"
+                  role="group"
+                  aria-label="Харагдах тоноглолын төрөл"
+                >
+                  {layers.map((layer) => {
+                    const isHidden = hidden.has(layer.typeId);
+                    return (
+                      <button
+                        key={layer.typeId}
+                        type="button"
+                        aria-pressed={!isHidden}
+                        onClick={() => toggleLayer(layer.typeId)}
+                        className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs font-medium ring-1 ring-inset transition-colors ${
+                          isHidden
+                            ? 'bg-white text-slate-400 ring-slate-200 hover:text-slate-600'
+                            : 'bg-slate-100 text-slate-700 ring-slate-300 hover:bg-slate-200'
+                        }`}
+                      >
+                        <ObjectTypeIcon icon={layer.icon} className="h-3 w-3" />
+                        <span>{layer.name}</span>
+                        <span className={isHidden ? 'text-slate-400' : 'text-slate-500'}>
+                          {layer.count}
+                        </span>
+                      </button>
+                    );
+                  })}
+                  {layers.length > 1 && (
+                    <>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => applyHiddenLayers([])}
+                        disabled={hiddenLayerCount === 0}
+                      >
+                        Бүгдийг харуулах
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => applyHiddenLayers(layers.map((layer) => layer.typeId))}
+                        disabled={hiddenLayerCount === layers.length}
+                      >
+                        Бүгдийг нуух
+                      </Button>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+
             <div className="rounded-lg bg-slate-50 p-2 ring-1 ring-inset ring-slate-200">
               {isPdf ? (
                 <div className="flex flex-col items-start gap-2 p-4">
@@ -573,6 +973,7 @@ export function FloorPlanPanel({
                   // out of the mode — and out of it while the mode is on, where a click
                   // on bare plan means "deselect" rather than "create".
                   onPlanClick={canPlace && !editing ? handlePlanClick : undefined}
+                  focus={focusRequest}
                 />
               ) : (
                 <div className="h-48 animate-pulse rounded bg-slate-200" />
@@ -596,6 +997,18 @@ export function FloorPlanPanel({
                         ? 'План дээр дарж тоноглол бүртгэнэ. Байрлал өөрчлөхийн тулд "Байрлал засах" горимд орно.'
                         : 'План дээрх тэмдэглэгээ нь тухайн тоноглолын эрсдэлийн түвшнийг харуулна.'}
                     {unplacedCount > 0 && ` Байрлуулаагүй ${unplacedCount} тоноглол байна.`}
+                    {hiddenLayerCount > 0 && ` ${hiddenLayerCount} төрөл нуугдсан байна.`}
+                  </p>
+                )}
+
+                {/*
+                  A hidden layer keeps its drafts, so the count above the plan can name
+                  changes with no marker to point at. Said rather than prevented.
+                */}
+                {editing && hiddenPendingCount > 0 && (
+                  <p className="text-xs font-medium text-amber-700">
+                    Нуусан давхаргад хадгалаагүй {hiddenPendingCount} өөрчлөлт байна. Хадгалахад
+                    эдгээр нь бас бичигдэнэ.
                   </p>
                 )}
 

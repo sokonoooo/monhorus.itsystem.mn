@@ -39,6 +39,19 @@ export interface PlanMarker {
   position: PlanPositionDto;
 }
 
+/**
+ * "Take me to this marker."
+ *
+ * A request rather than an id, because asking twice for the same marker is a real thing to
+ * ask: a user searches, looks away, pans off, and searches the same code again. `seq` is
+ * what makes the second ask a new one; the id alone would be unchanged and the canvas would
+ * sit still.
+ */
+export interface PlanFocusRequest {
+  objectId: string;
+  seq: number;
+}
+
 export interface FloorPlanCanvasProps {
   /** Object URL of the already-authenticated plan image. */
   imageUrl: string;
@@ -52,11 +65,26 @@ export interface FloorPlanCanvasProps {
   onMarkerMove: (objectId: string, position: PlanPositionDto) => void;
   /** A click on bare plan, in plan coordinates. Not fired outside the drawing. */
   onPlanClick?: (position: PlanPositionDto) => void;
+  /** Centre the view on one marker. Ignored for a marker that is not drawn. */
+  focus?: PlanFocusRequest | null;
   height?: number;
 }
 
 const MIN_ZOOM = 0.2;
 const MAX_ZOOM = 8;
+
+/**
+ * How close the view comes when it is sent to a marker.
+ *
+ * Above `LABEL_MIN_ZOOM`, so the marker the user asked for arrives with its code showing
+ * rather than as one more anonymous dot. Treated as a floor rather than a setting: a view
+ * already closer than this is left where it is, because being sent to a marker should never
+ * pull the plan back out from under someone who had zoomed in on purpose.
+ */
+export const PLAN_FOCUS_ZOOM = 1.5;
+
+/** Long enough to read as travel between two places, short enough not to be waited on. */
+export const PLAN_FOCUS_DURATION_MS = 300;
 
 /**
  * Below this the codes come off.
@@ -140,9 +168,10 @@ function CanvasInner({
   onSelect,
   onMarkerMove,
   onPlanClick,
+  focus = null,
   height = 520,
 }: FloorPlanCanvasProps): ReactElement {
-  const { fitBounds, screenToFlowPosition, zoomIn, zoomOut } = useReactFlow();
+  const { fitBounds, getZoom, screenToFlowPosition, setCenter, zoomIn, zoomOut } = useReactFlow();
   const containerWidth = useStore((state) => state.width);
   const containerHeight = useStore((state) => state.height);
 
@@ -187,6 +216,28 @@ function CanvasInner({
     fittedKeyRef.current = key;
     fitPlan();
   }, [containerWidth, containerHeight, imageUrl, planSize, fitPlan]);
+
+  /**
+   * Sends the view to one marker.
+   *
+   * Keyed on the request's sequence rather than on the marker, so it fires once per ask and
+   * not again when the drawing re-renders around it — a marker being dragged, or a layer
+   * being switched on, must not yank the view back. A request naming a marker that is not
+   * drawn does nothing at all: there is no coordinate to travel to, and the caller is the
+   * one that knows why it is missing.
+   */
+  const servedFocusRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!focus || servedFocusRef.current === focus.seq) return;
+    const marker = markers.find((entry) => entry.id === focus.objectId);
+    if (!marker) return;
+    servedFocusRef.current = focus.seq;
+    const point = toCanvasPoint(marker.position, planSize);
+    void setCenter(point.x, point.y, {
+      zoom: Math.max(getZoom(), PLAN_FOCUS_ZOOM),
+      duration: PLAN_FOCUS_DURATION_MS,
+    });
+  }, [focus, markers, planSize, setCenter, getZoom]);
 
   const nodes = useMemo<MarkerFlowNode[]>(
     () =>

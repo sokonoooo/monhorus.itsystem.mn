@@ -38,6 +38,8 @@ class MemoryStorage implements Storage {
 }
 
 const memoryStorage = new MemoryStorage();
+/** Separate instance, because the two stores are separate in a browser. */
+const memorySessionStorage = new MemoryStorage();
 
 Object.defineProperty(globalThis, 'localStorage', {
   configurable: true,
@@ -45,9 +47,16 @@ Object.defineProperty(globalThis, 'localStorage', {
   value: memoryStorage,
 });
 
+Object.defineProperty(globalThis, 'sessionStorage', {
+  configurable: true,
+  writable: true,
+  value: memorySessionStorage,
+});
+
 afterEach(() => {
   cleanup();
   memoryStorage.clear();
+  memorySessionStorage.clear();
   vi.restoreAllMocks();
 });
 

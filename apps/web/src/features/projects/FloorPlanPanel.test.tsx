@@ -12,12 +12,15 @@ import {
   makePage,
 } from '../../test/fixtures';
 import { renderWithAuth } from '../../test/render';
+import { PLAN_FOCUS_ZOOM } from './FloorPlanCanvas';
 import { FloorPlanPanel } from './FloorPlanPanel';
 import { PLAN_FLOW_WIDTH, DEFAULT_PLAN_ASPECT } from './plan-geometry';
 
 const FLOOR_ID = '507f1f77bcf86cd799439121';
 const CUSTOMER_ID = '507f1f77bcf86cd799439011';
 const TYPE_ID = '507f1f77bcf86cd799439151';
+const CAMERA_TYPE_ID = '507f1f77bcf86cd799439152';
+const CABLE_TYPE_ID = '507f1f77bcf86cd799439153';
 
 /** A type flagged as placeable. `showOnPlan` is what decides, so it is set explicitly. */
 const PLACEABLE = makeObjectType({ id: TYPE_ID, showOnPlan: true, category: 'EQUIPMENT' });
@@ -29,6 +32,24 @@ const PLACEABLE_INLINE = {
   name: 'Автомат таслуур',
   icon: 'BREAKER' as const,
   showOnPlan: true,
+};
+
+/** A second placeable type, so there is a layer to switch off independently. */
+const CAMERA_INLINE = {
+  id: CAMERA_TYPE_ID,
+  code: 'CAM',
+  name: 'Камер',
+  icon: 'CAMERA' as const,
+  showOnPlan: true,
+};
+
+/** A type the registry never draws on a plan. */
+const CABLE_INLINE = {
+  id: CABLE_TYPE_ID,
+  code: 'CBL',
+  name: 'Кабель',
+  icon: 'CABLE' as const,
+  showOnPlan: false,
 };
 
 /**
@@ -167,6 +188,22 @@ function markerScreenScale(objectId: string): number {
   return parseTransform(inner.getAttribute('style')).zoom * viewport().zoom;
 }
 
+/**
+ * The middle of the view, in screen coordinates.
+ *
+ * Read off the drawing rather than assumed: a fitted plan sits centred in the canvas, so
+ * the screen point of the plan box's own centre is by definition the centre of the view.
+ * That keeps the assertion independent of how large jsdom believes the canvas to be — which
+ * is not the size a browser would report, and is not what is being tested here.
+ */
+function viewCentre(): { x: number; y: number } {
+  const view = viewport();
+  return {
+    x: view.x + (PLAN_BOX.width * view.zoom) / 2,
+    y: view.y + (PLAN_BOX.height * view.zoom) / 2,
+  };
+}
+
 function pane(): HTMLElement {
   const element = document.querySelector('.react-flow__pane');
   if (!element) throw new Error('no canvas pane');
@@ -182,6 +219,66 @@ function placedObject(overrides: Parameters<typeof makeObjectListItem>[0] = {}) 
     planPosition: { x: 0.5, y: 0.25 },
     ...overrides,
   });
+}
+
+/** A placed object of the second layer. */
+function camera() {
+  return makeObjectListItem({
+    id: 'c1',
+    code: 'CAM-01',
+    name: 'Коридорын камер',
+    objectType: CAMERA_INLINE,
+    planPosition: { x: 0.8, y: 0.75 },
+  });
+}
+
+/** A placeable type that has never been put on the drawing. */
+function unplaced() {
+  return makeObjectListItem({
+    id: 'u1',
+    code: 'EQ-09',
+    name: 'Нөөц таслуур',
+    objectType: PLACEABLE_INLINE,
+    planPosition: null,
+  });
+}
+
+/** An object of a type the plan never draws. */
+function notDrawn() {
+  return makeObjectListItem({
+    id: 'n1',
+    code: 'CBL-07',
+    name: 'Тэжээлийн кабель',
+    objectType: CABLE_INLINE,
+    planPosition: null,
+  });
+}
+
+function layerGroup(): HTMLElement {
+  return screen.getByRole('group', { name: 'Харагдах тоноглолын төрөл' });
+}
+
+/** The switch for one type. Matched loosely, because the chip also carries its count. */
+function layerChip(typeName: string): HTMLElement {
+  return within(layerGroup()).getByRole('button', { name: new RegExp(typeName) });
+}
+
+function search(): HTMLElement {
+  return screen.getByLabelText('Тоноглол хайх');
+}
+
+/**
+ * The results, scoped.
+ *
+ * A result and the marker it points at carry the same name by design, so an unscoped query
+ * for one would find both.
+ */
+function searchResults(): HTMLElement {
+  return screen.getByRole('group', { name: 'Хайлтын илэрц' });
+}
+
+function searchResult(label: RegExp): HTMLElement {
+  return within(searchResults()).getByRole('button', { name: label });
 }
 
 function renderPanel(overrides: Partial<React.ComponentProps<typeof FloorPlanPanel>> = {}) {
@@ -582,6 +679,45 @@ describe('FloorPlanPanel position editing', () => {
     await waitFor(() => expect(update).toHaveBeenCalledWith('o1', { planPosition: null }));
   });
 
+  /**
+   * A layer switch is a view, so a hidden marker keeps everything it had: its draft stays,
+   * the outstanding count still names it, and Save writes it like any other.
+   */
+  it('keeps a hidden marker draft and writes it on Save', async () => {
+    const update = vi
+      .spyOn(objectMasterService, 'updatePosition')
+      .mockResolvedValue(makeObjectDetail());
+    const user = userEvent.setup();
+
+    renderPanel({ objects: [placedObject(), camera()] });
+    await readyCanvas();
+
+    await user.click(screen.getByRole('button', { name: 'Байрлал засах' }));
+    const from = markerScreenPoint('o1');
+    drag(markerNode('o1'), [from.x, from.y], [from.x + 110, from.y + 70]);
+    await waitFor(() => expect(screen.getByText('Хадгалаагүй 1 өөрчлөлт')).toBeInTheDocument());
+    const moved = markerPoint('o1');
+
+    await user.click(layerChip('Автомат таслуур'));
+
+    // Off the screen, still on the books, and said so.
+    expect(screen.queryByRole('button', { name: 'EQ-01 · Гэрэл' })).not.toBeInTheDocument();
+    expect(screen.getByText('Хадгалаагүй 1 өөрчлөлт')).toBeInTheDocument();
+    expect(
+      screen.getByText(/Нуусан давхаргад хадгалаагүй 1 өөрчлөлт байна/),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Байрлал хадгалах' }));
+
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(1));
+    expect(update).toHaveBeenCalledWith('o1', {
+      planPosition: {
+        x: expect.closeTo(moved.x / PLAN_BOX.width, 6),
+        y: expect.closeTo(moved.y / PLAN_BOX.height, 6),
+      },
+    });
+  });
+
   it('keeps the failed markers pending when a write is rejected', async () => {
     const update = vi
       .spyOn(objectMasterService, 'updatePosition')
@@ -602,5 +738,248 @@ describe('FloorPlanPanel position editing', () => {
     // Still in the mode, still one change outstanding: nothing has been quietly lost.
     expect(await screen.findByText('Хадгалаагүй 1 өөрчлөлт')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Байрлал хадгалах' })).toBeInTheDocument();
+  });
+});
+
+describe('FloorPlanPanel layer filter', () => {
+  beforeEach(() => {
+    layOutCanvas();
+    vi.spyOn(fileUrl, 'authorisedFileUrl').mockResolvedValue('blob:plan');
+    vi.spyOn(objectTypeService, 'list').mockResolvedValue(makePage([PLACEABLE]));
+  });
+
+  /**
+   * The list is the floor's own, not the registry's.
+   *
+   * Types the floor does not use are absent, a type the plan never draws is absent, and the
+   * count on each is what switching it off would take off the drawing — so an object of a
+   * placeable type that was never placed is listed nowhere and counted nowhere.
+   */
+  it('builds the layer list from the floor own types, with a count each', async () => {
+    renderPanel({
+      objects: [
+        placedObject(),
+        placedObject({ id: 'o2', code: 'EQ-02', name: 'Залгуур', planPosition: { x: 0.2, y: 0.6 } }),
+        camera(),
+        unplaced(),
+        notDrawn(),
+      ],
+    });
+    await readyCanvas();
+
+    expect(layerChip('Автомат таслуур')).toHaveTextContent('2');
+    expect(layerChip('Камер')).toHaveTextContent('1');
+    expect(within(layerGroup()).queryByRole('button', { name: /Кабель/ })).not.toBeInTheDocument();
+    // Every layer starts on.
+    expect(layerChip('Автомат таслуур')).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('hides exactly the markers of the type switched off', async () => {
+    const user = userEvent.setup();
+
+    renderPanel({ objects: [placedObject(), camera()] });
+    await readyCanvas();
+
+    await user.click(layerChip('Камер'));
+
+    expect(screen.queryByRole('button', { name: 'CAM-01 · Коридорын камер' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'EQ-01 · Гэрэл' })).toBeInTheDocument();
+    expect(layerChip('Камер')).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByText(/1 төрөл нуугдсан байна/)).toBeInTheDocument();
+
+    // And back on again.
+    await user.click(layerChip('Камер'));
+    expect(screen.getByRole('button', { name: 'CAM-01 · Коридорын камер' })).toBeInTheDocument();
+  });
+
+  it('switches every layer off and on again in one press', async () => {
+    const user = userEvent.setup();
+
+    renderPanel({ objects: [placedObject(), camera()] });
+    await readyCanvas();
+
+    await user.click(screen.getByRole('button', { name: 'Бүгдийг нуух' }));
+    expect(screen.queryByRole('button', { name: 'EQ-01 · Гэрэл' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'CAM-01 · Коридорын камер' })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Бүгдийг харуулах' }));
+    expect(screen.getByRole('button', { name: 'EQ-01 · Гэрэл' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'CAM-01 · Коридорын камер' })).toBeInTheDocument();
+  });
+
+  /** A view choice, kept for the tab and no longer: stored per floor in sessionStorage. */
+  it('remembers the switched-off layers for the session', async () => {
+    const user = userEvent.setup();
+
+    const first = renderPanel({ objects: [placedObject(), camera()] });
+    await readyCanvas();
+    await user.click(layerChip('Камер'));
+    first.unmount();
+
+    renderPanel({ objects: [placedObject(), camera()] });
+    await readyCanvas();
+
+    expect(layerChip('Камер')).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.queryByRole('button', { name: 'CAM-01 · Коридорын камер' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'EQ-01 · Гэрэл' })).toBeInTheDocument();
+  });
+
+  it('offers no filter at all on a floor with nothing placeable', async () => {
+    renderPanel({ objects: [notDrawn()] });
+    await readyCanvas();
+
+    expect(screen.queryByRole('group', { name: 'Харагдах тоноглолын төрөл' })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Тоноглол хайх')).not.toBeInTheDocument();
+  });
+});
+
+describe('FloorPlanPanel search', () => {
+  beforeEach(() => {
+    layOutCanvas();
+    vi.spyOn(fileUrl, 'authorisedFileUrl').mockResolvedValue('blob:plan');
+    vi.spyOn(objectTypeService, 'list').mockResolvedValue(makePage([PLACEABLE]));
+  });
+
+  it('matches on the code and on the name, whatever the case', async () => {
+    const user = userEvent.setup();
+
+    renderPanel({ objects: [placedObject(), camera()] });
+    await readyCanvas();
+
+    await user.type(search(), 'cam-01');
+    expect(await screen.findByText('CAM-01 · Коридорын камер')).toBeInTheDocument();
+    expect(screen.queryByText('EQ-01 · Гэрэл')).not.toBeInTheDocument();
+
+    await user.clear(search());
+    await user.type(search(), 'ГЭРЭЛ');
+    expect(await screen.findByText('EQ-01 · Гэрэл')).toBeInTheDocument();
+    expect(screen.queryByText('CAM-01 · Коридорын камер')).not.toBeInTheDocument();
+
+    await user.clear(search());
+    await user.type(search(), 'нэгэн зүйл');
+    expect(await screen.findByText('Илэрц олдсонгүй.')).toBeInTheDocument();
+  });
+
+  /**
+   * The whole point of the search: the view travels to the marker and the marker is the
+   * selected one, so the eye lands on it rather than hunting the drawing for it.
+   */
+  it('centres the view on the chosen result and selects it', async () => {
+    const user = userEvent.setup();
+
+    renderPanel({ objects: [placedObject(), camera()] });
+    await readyCanvas();
+    // Taken while the plan is fitted, which is the one moment the middle of the drawing and
+    // the middle of the view are the same point.
+    const centre = viewCentre();
+
+    await user.type(search(), 'CAM-01');
+    await screen.findByText('CAM-01 · Коридорын камер');
+    await user.click(searchResult(/CAM-01/));
+
+    await waitFor(() => expect(viewport().zoom).toBeCloseTo(PLAN_FOCUS_ZOOM, 5));
+    await waitFor(() => {
+      const point = markerScreenPoint('c1');
+      expect(point.x).toBeCloseTo(centre.x, 1);
+      expect(point.y).toBeCloseTo(centre.y, 1);
+    });
+    // The marker travelled; it was not moved.
+    expect(markerPoint('c1')).toEqual({ x: 0.8 * PLAN_BOX.width, y: 0.75 * PLAN_BOX.height });
+
+    // Selected, so the marker is outlined and its details are on screen.
+    expect(screen.getByRole('button', { name: 'CAM-01 · Коридорын камер' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(screen.getByText('80.0% · 75.0%')).toBeInTheDocument();
+    // The query is spent: the results no longer sit over the drawing.
+    expect(search()).toHaveValue('');
+  });
+
+  /**
+   * An object that exists but is not on the drawing is listed and told, rather than left
+   * out: someone searching a code is asking whether the thing exists at all.
+   */
+  it('lists an unplaced object as unplaceable and refuses to travel to it', async () => {
+    const user = userEvent.setup();
+
+    renderPanel({ objects: [placedObject(), unplaced()] });
+    await readyCanvas();
+
+    await user.type(search(), 'EQ-09');
+
+    expect(await screen.findByText('EQ-09 · Нөөц таслуур')).toBeInTheDocument();
+    expect(screen.getByText('Энэ тоноглол планд байрлуулаагүй')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /EQ-09/ })).not.toBeInTheDocument();
+  });
+
+  it('says when a match belongs to a type the plan never draws', async () => {
+    const user = userEvent.setup();
+
+    renderPanel({ objects: [placedObject(), notDrawn()] });
+    await readyCanvas();
+
+    await user.type(search(), 'CBL');
+
+    expect(await screen.findByText('CBL-07 · Тэжээлийн кабель')).toBeInTheDocument();
+    expect(screen.getByText('Энэ төрлийг план дээр харуулдаггүй')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /CBL-07/ })).not.toBeInTheDocument();
+  });
+
+  /**
+   * A layer switched off is not an answer to "take me to this object". Choosing the result
+   * switches its layer back on, which the chip shows, and then travels to it.
+   */
+  it('switches a hidden layer back on to reach the chosen result', async () => {
+    const user = userEvent.setup();
+
+    renderPanel({ objects: [placedObject(), camera()] });
+    await readyCanvas();
+    const centre = viewCentre();
+
+    await user.click(layerChip('Камер'));
+    expect(screen.queryByRole('button', { name: 'CAM-01 · Коридорын камер' })).not.toBeInTheDocument();
+
+    await user.type(search(), 'CAM');
+    await screen.findByText('CAM-01 · Коридорын камер');
+    await user.click(searchResult(/CAM-01/));
+
+    expect(layerChip('Камер')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'CAM-01 · Коридорын камер' })).toBeInTheDocument();
+    await waitFor(() => expect(viewport().zoom).toBeCloseTo(PLAN_FOCUS_ZOOM, 5));
+    await waitFor(() => expect(markerScreenPoint('c1').x).toBeCloseTo(centre.x, 1));
+  });
+
+  /** Reachable without a mouse: the arrow key walks into the results and Enter takes it. */
+  it('walks the results and takes one with the keyboard alone', async () => {
+    const user = userEvent.setup();
+
+    renderPanel({ objects: [placedObject(), camera()] });
+    await readyCanvas();
+
+    await user.click(search());
+    await user.keyboard('CAM');
+    await screen.findByText('CAM-01 · Коридорын камер');
+
+    await user.keyboard('{ArrowDown}');
+    expect(document.activeElement).toBe(searchResult(/CAM-01/));
+
+    await user.keyboard('{Enter}');
+    await waitFor(() => expect(viewport().zoom).toBeCloseTo(PLAN_FOCUS_ZOOM, 5));
+  });
+
+  /** Escape gives the drawing back without selecting anything. */
+  it('drops the results on Escape', async () => {
+    const user = userEvent.setup();
+
+    renderPanel({ objects: [placedObject(), camera()] });
+    await readyCanvas();
+
+    await user.type(search(), 'CAM');
+    await screen.findByText('CAM-01 · Коридорын камер');
+
+    await user.keyboard('{Escape}');
+    expect(screen.queryByText('CAM-01 · Коридорын камер')).not.toBeInTheDocument();
+    expect(search()).toHaveValue('');
   });
 });
