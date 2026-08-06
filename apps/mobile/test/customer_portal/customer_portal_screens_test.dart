@@ -60,7 +60,11 @@ void main() {
       // The steel hero replaced the greeting nav bar, the KPI strip and the
       // roll-up card: the wordmark, the building count, the one sentence that
       // says how bad things are, and the five bands as five columns.
-      expect(find.text('soko'), findsOneWidget);
+      // The organisation, not a brand. This asserted the literal `soko` - the
+      // wordmark from the design mock - which every customer saw regardless of
+      // who they were. It reads `UserDto.customerName` now.
+      expect(find.text(testCustomerName), findsOneWidget);
+      expect(find.text('soko'), findsNothing);
       expect(find.textContaining('1 БАРИЛГА · '), findsOneWidget);
       // The fixture's building carries three ATTENTION devices and no critical
       // ones, so the headline is the attention line and the figure is its own.
