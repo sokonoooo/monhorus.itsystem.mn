@@ -1,13 +1,18 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monhorus_mobile/core/error/failure.dart';
 import 'package:monhorus_mobile/core/media/photo_capture.dart';
+import 'package:monhorus_mobile/features/customer_portal/data/models/object_master_model.dart';
+import 'package:monhorus_mobile/features/customer_portal/data/models/object_node_model.dart';
+import 'package:monhorus_mobile/features/customer_portal/data/models/project_model.dart';
 import 'package:monhorus_mobile/features/customer_portal/data/models/service_request_model.dart';
 import 'package:monhorus_mobile/features/customer_portal/domain/entities/service_request_enums.dart';
 import 'package:monhorus_mobile/features/customer_portal/presentation/screens/device_detail_screen.dart';
 import 'package:monhorus_mobile/features/customer_portal/presentation/widgets/create_request_sheet.dart';
+import 'package:monhorus_mobile/features/customer_portal/presentation/widgets/floor_plan_markers.dart';
 
 import 'fakes.dart';
 
@@ -126,7 +131,6 @@ void main() {
           body: CreateRequestSheet(
             scope: testScope,
             initialBuildingId: buildingFixture().id,
-            deviceId: '6e0000000000000000000003',
             deviceName: 'LDB-2F-02',
             initialUrgent: true,
             pickPhoto: fakePick,
@@ -155,7 +159,8 @@ void main() {
     final CreateServiceRequestRequestModel sent = repository.created.single;
     expect(sent.customerId, testScope.customerId);
     expect(sent.buildingId, buildingFixture().id);
-    expect(sent.deviceId, '6e0000000000000000000003');
+    // Nothing this app holds can populate `deviceId`; see the device-page test below.
+    expect(sent.deviceId, isNull);
     expect(sent.isUrgent, isTrue);
     // The urgent switch preselects the urgent call type, matching the SLA the
     // backend applies to it.
@@ -334,5 +339,426 @@ void main() {
 
     expect(find.byType(CreateRequestSheet), findsNothing);
     expect(find.text('Засварын хүсэлт илгээх'), findsNothing);
+  });
+
+  // -- Зон (Өрөө/Бүс) --------------------------------------------------------
+
+  /// The building, floor and zone selectors, in the order the sheet renders them. The
+  /// request-type chooser is a `DropdownButtonFormField<ServiceRequestType>` and so is
+  /// deliberately not in this list.
+  Finder locationDropdowns() => find.byType(DropdownButtonFormField<String>);
+
+  /// Fills the parts of the form that are not what a test is about, attaches the
+  /// mandatory picture and sends it.
+  Future<void> completeAndSubmit(
+    WidgetTester tester, {
+    String description = 'Коридорын гэрэл анивчиж байна.',
+  }) async {
+    await tester.enterText(find.byType(TextFormField).last, description);
+    await tester.pumpAndSettle();
+    await addPhoto(tester);
+
+    final Finder submit = find.widgetWithText(FilledButton, 'Илгээх');
+    await tester.ensureVisible(submit);
+    await tester.pumpAndSettle();
+    await tester.tap(submit);
+    await tester.pumpAndSettle();
+  }
+
+  /// Opens one of [locationDropdowns] and picks the entry with the given label.
+  Future<void> pickFromDropdown(
+    WidgetTester tester,
+    int index,
+    String label,
+  ) async {
+    final Finder dropdown = locationDropdowns().at(index);
+    await tester.ensureVisible(dropdown);
+    await tester.pumpAndSettle();
+    await tester.tap(dropdown);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text(label).last);
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('the zone dropdown lists the floor\'s zones and sends roomId',
+      (WidgetTester tester) async {
+    final FloorModel floor = floorFixture();
+    final FakeCustomerPortalRepository repository = FakeCustomerPortalRepository(
+      zonesByFloorId: <String, List<ObjectNodeModel>>{
+        floor.id: <ObjectNodeModel>[
+          zoneFixture(),
+          zoneFixture(
+            id: '7a0000000000000000000022',
+            name: 'Цахилгааны өрөө',
+            code: 'ZONE-B',
+          ),
+        ],
+      },
+    );
+
+    await pumpPhone(
+      tester,
+      wrapCustomerScreen(
+        Scaffold(
+          body: CreateRequestSheet(
+            scope: testScope,
+            initialBuildingId: buildingFixture().id,
+            initialFloorId: floor.id,
+            pickPhoto: fakePick,
+          ),
+        ),
+        repository: repository,
+        user: customerWithCreateRight(),
+      ),
+    );
+
+    // Asked for the chosen floor's zones, and for no other floor's.
+    expect(repository.zonesRequestedFor, <String>[floor.id]);
+
+    // Both zones are offered, each labelled with the administrator's own code so two
+    // similarly named rooms stay distinguishable.
+    await tester.tap(locationDropdowns().at(2));
+    await tester.pumpAndSettle();
+    expect(find.text('Сервер өрөө А · ZONE-A'), findsWidgets);
+    expect(find.text('Цахилгааны өрөө · ZONE-B'), findsWidgets);
+    await tester.tap(find.text('Сервер өрөө А · ZONE-A').last);
+    await tester.pumpAndSettle();
+
+    await completeAndSubmit(tester);
+
+    expect(repository.created, hasLength(1));
+    final CreateServiceRequestRequestModel sent = repository.created.single;
+    expect(sent.floorId, floor.id);
+    expect(sent.roomId, zoneFixture().id);
+  });
+
+  testWidgets('a zone chosen under one floor is dropped when the floor changes',
+      (WidgetTester tester) async {
+    final FloorModel first = floorFixture();
+    final FloorModel second =
+        floorFixture(id: '6d0000000000000000000009', name: '9-р давхар', floorNumber: 9);
+
+    final FakeCustomerPortalRepository repository = FakeCustomerPortalRepository(
+      floors: <FloorModel>[first, second],
+      zonesByFloorId: <String, List<ObjectNodeModel>>{
+        first.id: <ObjectNodeModel>[zoneFixture()],
+        second.id: <ObjectNodeModel>[
+          zoneFixture(
+            id: '7a0000000000000000000023',
+            name: 'Агуулах',
+            code: 'ZONE-C',
+            parentId: '6d0000000000000000000009',
+          ),
+        ],
+      },
+    );
+
+    await pumpPhone(
+      tester,
+      wrapCustomerScreen(
+        Scaffold(
+          body: CreateRequestSheet(
+            scope: testScope,
+            initialBuildingId: buildingFixture().id,
+            initialFloorId: first.id,
+            pickPhoto: fakePick,
+          ),
+        ),
+        repository: repository,
+        user: customerWithCreateRight(),
+      ),
+    );
+
+    await pickFromDropdown(tester, 2, 'Сервер өрөө А · ZONE-A');
+
+    // Now move to the other floor. The zone just chosen belongs to the floor being
+    // left behind, and `validateLocationChain` would refuse it against the new one.
+    await pickFromDropdown(tester, 1, '9-р давхар · Лобби, оффис');
+
+    expect(repository.zonesRequestedFor, contains(second.id));
+    // The previous floor's zone is not offered any more, and nothing is selected.
+    expect(find.text('Сервер өрөө А · ZONE-A'), findsNothing);
+    expect(find.text('Агуулах · ZONE-C'), findsNothing);
+    expect(find.text('Сонгохгүй'), findsOneWidget);
+
+    await completeAndSubmit(tester);
+
+    final CreateServiceRequestRequestModel sent = repository.created.single;
+    expect(sent.floorId, second.id);
+    expect(sent.roomId, isNull);
+  });
+
+  testWidgets('a floor with no zones explains itself instead of offering a dead control',
+      (WidgetTester tester) async {
+    final FloorModel floor = floorFixture();
+    // No entry for this floor: `GET /objects/nodes` answers an empty array for a floor
+    // whose zones an administrator has never registered.
+    final FakeCustomerPortalRepository repository = FakeCustomerPortalRepository();
+
+    await pumpPhone(
+      tester,
+      wrapCustomerScreen(
+        Scaffold(
+          body: CreateRequestSheet(
+            scope: testScope,
+            initialBuildingId: buildingFixture().id,
+            initialFloorId: floor.id,
+            pickPhoto: fakePick,
+          ),
+        ),
+        repository: repository,
+        user: customerWithCreateRight(),
+      ),
+    );
+
+    expect(
+      find.textContaining('Энэ давхарт өрөө/бүс бүртгэгдээгүй байна.'),
+      findsOneWidget,
+    );
+    // Building and floor only — no third, empty dropdown.
+    expect(locationDropdowns(), findsNWidgets(2));
+
+    await completeAndSubmit(tester);
+    expect(repository.created.single.roomId, isNull);
+  });
+
+  // -- Планд тэмдэглэх -------------------------------------------------------
+
+  FakeCustomerPortalRepository repositoryWithPlan() =>
+      FakeCustomerPortalRepository(
+        floorPlan: floorPlanFixture(),
+        fileBytes: planPngBytes,
+      );
+
+  /// Pumps a sheet whose floor has a drawing, with that drawing already decoded.
+  ///
+  /// Two facts make this necessary. The PNG is decoded by the real image codec, which
+  /// only runs inside [WidgetTester.runAsync]; and until it has, the sheet shows a
+  /// spinner, an animation `pumpAndSettle` waits on until it times out. But `runAsync`
+  /// cannot be used with the tree already built, because `google_fonts` would then get
+  /// a live event loop too and throw on its network fetch.
+  ///
+  /// So the decode happens BEFORE the first frame and lands in the global image cache.
+  /// `MemoryImage` keys on the identity of its byte list, and the fake hands out the
+  /// one [planPngBytes] instance, so the widget's own `resolve` is then a cache hit
+  /// that reports the size synchronously — the path `_IntrinsicallySizedImage` already
+  /// handles — and no spinner is ever built.
+  Future<void> pumpPhoneWithPlan(WidgetTester tester, Widget widget) async {
+    await tester.runAsync(() async {
+      final Completer<void> decoded = Completer<void>();
+      MemoryImage(planPngBytes).resolve(ImageConfiguration.empty).addListener(
+            ImageStreamListener(
+              (ImageInfo _, bool __) {
+                if (!decoded.isCompleted) decoded.complete();
+              },
+              onError: (Object error, StackTrace? _) {
+                if (!decoded.isCompleted) decoded.completeError(error);
+              },
+            ),
+          );
+      await decoded.future;
+    });
+
+    await pumpPhone(tester, widget);
+  }
+
+  /// Taps the plan at the given fraction of its painted rectangle.
+  ///
+  /// The rectangle is read off [FloorPlanPinLayer] itself, which is exactly the drawing
+  /// because `AuthenticatedImage.sizedToImage` sized the box from the image — so the
+  /// fraction tapped here is the fraction the sheet must send.
+  Future<void> tapPlanAt(WidgetTester tester, double fx, double fy) async {
+    final Finder layer = find.byType(FloorPlanPinLayer);
+    await tester.ensureVisible(layer);
+    await tester.pumpAndSettle();
+
+    final Rect rect = tester.getRect(layer);
+    await tester.tapAt(
+      Offset(rect.left + rect.width * fx, rect.top + rect.height * fy),
+    );
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('tapping the plan sends the normalised planPosition',
+      (WidgetTester tester) async {
+    final FakeCustomerPortalRepository repository = repositoryWithPlan();
+
+    await pumpPhoneWithPlan(
+      tester,
+      wrapCustomerScreen(
+        Scaffold(
+          body: CreateRequestSheet(
+            scope: testScope,
+            initialBuildingId: buildingFixture().id,
+            initialFloorId: floorFixture().id,
+            pickPhoto: fakePick,
+          ),
+        ),
+        repository: repository,
+        user: customerWithCreateRight(),
+      ),
+    );
+
+    expect(find.byType(FaultPin), findsNothing);
+    await tapPlanAt(tester, 0.25, 0.5);
+    expect(find.byType(FaultPin), findsOneWidget);
+
+    await completeAndSubmit(tester);
+
+    final PlanPositionModel? sent = repository.created.single.planPosition;
+    expect(sent, isNotNull);
+    // A hair of tolerance for the device-pixel rounding between the tap and the box.
+    expect(sent!.x, closeTo(0.25, 0.02));
+    expect(sent.y, closeTo(0.5, 0.02));
+  });
+
+  testWidgets('a plan the customer never touched sends no planPosition',
+      (WidgetTester tester) async {
+    final FakeCustomerPortalRepository repository = repositoryWithPlan();
+
+    await pumpPhoneWithPlan(
+      tester,
+      wrapCustomerScreen(
+        Scaffold(
+          body: CreateRequestSheet(
+            scope: testScope,
+            initialBuildingId: buildingFixture().id,
+            initialFloorId: floorFixture().id,
+            pickPhoto: fakePick,
+          ),
+        ),
+        repository: repository,
+        user: customerWithCreateRight(),
+      ),
+    );
+
+    // The control is there and unused, which must submit exactly as it did before the
+    // pin existed.
+    expect(find.byType(FloorPlanPinLayer), findsOneWidget);
+    expect(find.byType(FaultPin), findsNothing);
+
+    await completeAndSubmit(tester);
+
+    expect(repository.created.single.planPosition, isNull);
+    expect(find.text('Хүсэлт илгээгдлээ'), findsOneWidget);
+  });
+
+  testWidgets('clearing the mark removes the planPosition again',
+      (WidgetTester tester) async {
+    final FakeCustomerPortalRepository repository = repositoryWithPlan();
+
+    await pumpPhoneWithPlan(
+      tester,
+      wrapCustomerScreen(
+        Scaffold(
+          body: CreateRequestSheet(
+            scope: testScope,
+            initialBuildingId: buildingFixture().id,
+            initialFloorId: floorFixture().id,
+            pickPhoto: fakePick,
+          ),
+        ),
+        repository: repository,
+        user: customerWithCreateRight(),
+      ),
+    );
+
+    await tapPlanAt(tester, 0.6, 0.3);
+    expect(find.byType(FaultPin), findsOneWidget);
+
+    final Finder clear = find.widgetWithText(TextButton, 'Тэмдэглэгээг арилгах');
+    await tester.ensureVisible(clear);
+    await tester.pumpAndSettle();
+    await tester.tap(clear);
+    await tester.pumpAndSettle();
+
+    expect(find.byType(FaultPin), findsNothing);
+
+    await completeAndSubmit(tester);
+    expect(repository.created.single.planPosition, isNull);
+  });
+
+  testWidgets('a floor with no plan image offers no pin control',
+      (WidgetTester tester) async {
+    // `GET /floors/:floorId/plan` answers `data: null` for a floor with no drawing.
+    final FakeCustomerPortalRepository repository = FakeCustomerPortalRepository();
+
+    await pumpPhone(
+      tester,
+      wrapCustomerScreen(
+        Scaffold(
+          body: CreateRequestSheet(
+            scope: testScope,
+            initialBuildingId: buildingFixture().id,
+            initialFloorId: floorFixture().id,
+            pickPhoto: fakePick,
+          ),
+        ),
+        repository: repository,
+        user: customerWithCreateRight(),
+      ),
+    );
+
+    expect(find.byType(FloorPlanPinLayer), findsNothing);
+    expect(
+      find.textContaining('Энэ давхарт план зураг ачаалагдаагүй'),
+      findsOneWidget,
+    );
+
+    await completeAndSubmit(tester);
+    expect(repository.created.single.planPosition, isNull);
+  });
+
+  // -- The device-page defect ------------------------------------------------
+
+  /// The test the 400 got past.
+  ///
+  /// `object.id` is an object-MASTER id and `deviceId` names an `ObjectNode`, so every
+  /// request raised from a device page was refused with
+  /// `{"field":"deviceId","message":"Төхөөрөмж олдсонгүй."}` and a 400 — which is why
+  /// all fifteen requests in the development database carry no device. Nothing in the
+  /// suite noticed, because the fake repository accepts any id at all. Asserting on
+  /// what LEAVES the app is what closes that gap: the payload must carry no device id,
+  /// and the device must still be identifiable from the record.
+  testWidgets('a request raised from a device page sends no unresolvable deviceId',
+      (WidgetTester tester) async {
+    final FakeCustomerPortalRepository repository = FakeCustomerPortalRepository();
+
+    await pumpPhone(
+      tester,
+      wrapCustomerScreen(
+        DeviceDetailScreen(
+          objectId: objectFixture().id,
+          pickPhoto: fakePick,
+        ),
+        repository: repository,
+        user: customerWithCreateRight(),
+      ),
+    );
+
+    await tester.tap(find.text('Засварын хүсэлт илгээх'));
+    await tester.pumpAndSettle();
+    expect(find.byType(CreateRequestSheet), findsOneWidget);
+
+    // The description arrives pre-filled with the device's identity, so nothing is
+    // typed here: what the sheet opened with is what must reach the server.
+    await addPhoto(tester);
+    final Finder submit = find.widgetWithText(FilledButton, 'Илгээх');
+    await tester.ensureVisible(submit);
+    await tester.pumpAndSettle();
+    await tester.tap(submit);
+    await tester.pumpAndSettle();
+
+    expect(repository.created, hasLength(1));
+    final CreateServiceRequestRequestModel sent = repository.created.single;
+    expect(sent.deviceId, isNull);
+    // Still says which device, in the one field the dispatcher reads.
+    expect(sent.description, contains(objectFixture().name));
+    expect(sent.description, contains(objectFixture().code));
+    // And the assessor's own recommendation is carried through rather than dropped.
+    expect(
+      sent.description,
+      contains('Холбогч хэсгийг яаралтай шалгаж, ачааллыг салгана.'),
+    );
   });
 }

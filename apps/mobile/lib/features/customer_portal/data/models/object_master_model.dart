@@ -139,6 +139,11 @@ class PlanPositionModel {
   static bool _inRange(double value) =>
       value.isFinite && value >= 0 && value <= 1;
 
+  /// The shape `planPositionSchema` accepts, which is the same one it emits — an
+  /// object's placement and a service request's fault pin travel as the identical
+  /// `{ x, y }` pair, so one serialiser serves both.
+  Map<String, dynamic> toJson() => <String, dynamic>{'x': x, 'y': y};
+
   @override
   bool operator ==(Object other) =>
       other is PlanPositionModel && other.x == x && other.y == y;

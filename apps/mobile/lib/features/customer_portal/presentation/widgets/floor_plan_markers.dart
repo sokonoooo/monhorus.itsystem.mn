@@ -84,6 +84,119 @@ class FloorPlanMarkerLayer extends StatelessWidget {
   }
 }
 
+/// The fault pin's diameter. Larger than [kPlanMarkerDiameter] because this one is a
+/// touch target as well as a mark, and because there is only ever one of it — the
+/// crowding argument that keeps an object marker small does not apply.
+const double kPlanPinDiameter = 30;
+
+/// The one pin a customer drops on the plan to say where the problem is.
+///
+/// The geometry is [FloorPlanMarkerLayer]'s, in both directions, and for the same
+/// reason: `AuthenticatedImage.sizedToImage` has already made this layer's box the
+/// painted drawing's own rectangle, so
+///
+///   * a tap's `localPosition` divided by the box IS the normalised coordinate the API
+///     stores, and
+///   * a stored coordinate multiplied by the box IS the point to draw at, offset by
+///     half the pin so the dot is centred on the spot rather than hung off its corner.
+///
+/// There is no letterbox arithmetic here because there is no letterbox: the widget box
+/// and the picture are one rectangle. Nesting this inside the default
+/// [AuthenticatedImage] instead would silently shift every pin by the height of the
+/// bars, which is precisely the bug `sizedToImage` was written to remove.
+///
+/// Tapping anywhere moves the pin, including onto the pin itself — the dot is drawn
+/// behind an [IgnorePointer] so it cannot swallow the second tap. Clearing is not done
+/// here; it belongs to a labelled control the reader can find without guessing.
+class FloorPlanPinLayer extends StatelessWidget {
+  const FloorPlanPinLayer({
+    super.key,
+    required this.pin,
+    required this.onTapAt,
+  });
+
+  /// The pin already placed, or null while the plan carries none.
+  final PlanPositionModel? pin;
+
+  /// Called with the normalised coordinate of every tap on the drawing.
+  final void Function(PlanPositionModel position) onTapAt;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (BuildContext context, BoxConstraints constraints) {
+        final double width = constraints.maxWidth;
+        final double height = constraints.maxHeight;
+        // A degenerate box would divide by zero and pin the mark to a corner as though
+        // that were the recorded spot. Drawing nothing is the truthful answer.
+        if (!width.isFinite || !height.isFinite || width <= 0 || height <= 0) {
+          return const SizedBox.shrink();
+        }
+
+        final PlanPositionModel? placed = pin;
+
+        return Semantics(
+          button: true,
+          label: 'Планд гэмтлийн байршил тэмдэглэх',
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTapUp: (TapUpDetails details) {
+              final Offset local = details.localPosition;
+              // Clamped rather than rejected: a tap on the very edge is a legitimate
+              // placement, and `planPositionSchema` refuses anything outside 0..1.
+              onTapAt(
+                PlanPositionModel(
+                  x: (local.dx / width).clamp(0.0, 1.0),
+                  y: (local.dy / height).clamp(0.0, 1.0),
+                ),
+              );
+            },
+            child: Stack(
+              children: <Widget>[
+                if (placed != null)
+                  Positioned(
+                    left: placed.x * width - kPlanPinDiameter / 2,
+                    top: placed.y * height - kPlanPinDiameter / 2,
+                    width: kPlanPinDiameter,
+                    height: kPlanPinDiameter,
+                    child: const IgnorePointer(child: FaultPin()),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// The mark itself: the attention triad, ringed, with a crosshair inside.
+///
+/// Deliberately not one of the risk-band tones a [PlanMarker] wears — this is a claim
+/// the customer is making, not an assessment the platform has recorded, and the two
+/// must not be read as the same kind of statement.
+@visibleForTesting
+class FaultPin extends StatelessWidget {
+  const FaultPin({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: CustomerTokens.redBg,
+        border: Border.all(color: CustomerTokens.red, width: 2),
+      ),
+      child: const Icon(
+        Icons.close,
+        size: 16,
+        color: CustomerTokens.red,
+      ),
+    );
+  }
+}
+
 /// One object on the plan.
 @visibleForTesting
 class PlanMarker extends StatelessWidget {

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -12,6 +13,7 @@ import 'package:monhorus_mobile/features/auth/domain/repositories/auth_repositor
 import 'package:monhorus_mobile/features/auth/presentation/providers/auth_provider.dart';
 import 'package:monhorus_mobile/features/customer_portal/data/models/notification_model.dart';
 import 'package:monhorus_mobile/features/customer_portal/data/models/object_master_model.dart';
+import 'package:monhorus_mobile/features/customer_portal/data/models/object_node_model.dart';
 import 'package:monhorus_mobile/features/customer_portal/data/models/project_model.dart';
 import 'package:monhorus_mobile/features/customer_portal/data/models/service_request_model.dart';
 import 'package:monhorus_mobile/features/customer_portal/domain/entities/customer_scope.dart';
@@ -193,6 +195,57 @@ FloorModel floorFixture({
     'deleteBlockers': <String>[],
   });
 }
+
+/// One Өрөө/Бүс node, shaped exactly as `GET /objects/nodes` returns it.
+ObjectNodeModel zoneFixture({
+  String id = '7a0000000000000000000021',
+  String name = 'Сервер өрөө А',
+  String code = 'ZONE-A',
+  String parentId = '6d0000000000000000000002',
+}) {
+  return ObjectNodeModel.fromJson(<String, dynamic>{
+    'id': id,
+    'kind': 'ROOM',
+    'code': code,
+    'name': name,
+    'parentId': parentId,
+    'customerId': testScope.customerId,
+    'riskScore': null,
+    'riskLevel': null,
+    'hasChildren': false,
+    'isActive': true,
+  });
+}
+
+/// A floor plan, as `GET /floors/:floorId/plan` returns it.
+FloorPlanModel floorPlanFixture({
+  String fileId = '7b0000000000000000000031',
+  String mimeType = 'image/png',
+}) {
+  return FloorPlanModel.fromJson(<String, dynamic>{
+    'id': '7b0000000000000000000030',
+    'floorId': '6d0000000000000000000002',
+    'fileId': fileId,
+    'fileName': 'plan-2f.png',
+    'downloadUrl': '/api/v1/files/$fileId',
+    'mimeType': mimeType,
+    'sizeBytes': 4096,
+    'title': '2-р давхрын план',
+    'description': null,
+    'uploadedById': '5f1b0c2a11b34f68bfc40003',
+    'uploadedByName': 'Б. Энхтөр',
+    'uploadedAt': '2026-07-01T00:00:00.000Z',
+    'updatedAt': '2026-07-01T00:00:00.000Z',
+  });
+}
+
+/// A real 40x20 PNG, so `AuthenticatedImage.sizedToImage` decodes it, learns its
+/// aspect ratio and gives the overlay the drawing's own rectangle. An invented byte
+/// array would fail to decode and the layer under test would never be laid out.
+final Uint8List planPngBytes = base64Decode(
+  'iVBORw0KGgoAAAANSUhEUgAAACgAAAAUCAIAAABwJOjsAAAAJElEQVR42mM4cfbSgCCGUY'
+  'tHLR61eNTiUYtHLR61eNTikWMxANtHgkoTkECiAAAAAElFTkSuQmCC',
+);
 
 ObjectDetailModel objectFixture({
   String id = '6e0000000000000000000003',
@@ -438,12 +491,17 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
     List<NotificationModel>? notifications,
     ObjectDetailModel? objectDetail,
     ServiceRequestDetailModel? requestDetail,
+    Map<String, List<ObjectNodeModel>>? zonesByFloorId,
+    Uint8List? fileBytes,
     this.floorPlan,
     this.objectHistory,
     this.failure,
     this.uploadFailure,
     this.buildingPageSize = 100,
-  })  : buildings = buildings ?? <BuildingModel>[buildingFixture()],
+  })  : zonesByFloorId =
+            zonesByFloorId ?? const <String, List<ObjectNodeModel>>{},
+        fileBytes = fileBytes ?? Uint8List(0),
+        buildings = buildings ?? <BuildingModel>[buildingFixture()],
         floors = floors ?? <FloorModel>[floorFixture()],
         objects = objects ?? <ObjectListItemModel>[objectFixture()],
         requests =
@@ -469,6 +527,19 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
   final ObjectDetailModel objectDetail;
   final ServiceRequestDetailModel requestDetail;
   final FloorPlanModel? floorPlan;
+
+  /// Öрөө/Бүс nodes per floor id. A floor absent from the map has none registered,
+  /// which is what `GET /objects/nodes` answers for it: an empty array, not an error.
+  final Map<String, List<ObjectNodeModel>> zonesByFloorId;
+
+  /// Floor ids a screen asked zones for, so a test can prove the picker followed the
+  /// floor rather than kept the previous one's list.
+  final List<String> zonesRequestedFor = <String>[];
+
+  /// What `GET /files/:fileId` returns. Empty by default, which every screen renders as
+  /// "could not read the picture"; a test that needs a plan to actually decode — the
+  /// pin tests — passes real PNG bytes.
+  final Uint8List fileBytes;
 
   /// The object timeline, for the accounts that are entitled to one.
   ///
@@ -572,6 +643,12 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
       _result(floorPlan);
 
   @override
+  Future<ApiResult<List<ObjectNodeModel>>> listFloorZones(String floorId) async {
+    zonesRequestedFor.add(floorId);
+    return _result(zonesByFloorId[floorId] ?? const <ObjectNodeModel>[]);
+  }
+
+  @override
   Future<ApiResult<PaginatedData<ObjectListItemModel>>> listObjects(
     ResolvedCustomerScope scope, {
     String? floorId,
@@ -656,7 +733,7 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
 
   @override
   Future<ApiResult<Uint8List>> downloadFile(String fileId) async =>
-      _result(Uint8List(0));
+      _result(fileBytes);
 }
 
 /// Keeps [AuthController] off the secure-storage plugin, which has no

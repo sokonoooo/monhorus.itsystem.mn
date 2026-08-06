@@ -231,6 +231,196 @@ describe('service request creation', () => {
   });
 });
 
+/**
+ * The zone and the pin: the two ways a caller says WHERE the fault is.
+ *
+ * They are independent on purpose. The zone is a registered name under the floor; the pin is
+ * a point on that floor's drawing. Either, both or neither is a valid request — a caller can
+ * point at the spot before anybody has named a zone there, and can name a zone without
+ * pointing at anything.
+ */
+describe('service request zone and floor-plan pin', () => {
+  let zoneId: string;
+  let otherFloorZoneId: string;
+  let foreignZoneId: string;
+  let zoneName: string;
+
+  beforeEach(async () => {
+    const floor = await ObjectNode.findById(floorId);
+    const building = await ObjectNode.findById(buildingId);
+    if (!floor || !building) throw new Error('fixture missing');
+
+    zoneName = 'Сервер өрөө';
+    const zone = await ObjectNode.create({
+      kind: 'ROOM',
+      code: 'R1',
+      name: zoneName,
+      parent: floor._id,
+      customer: floor.customer,
+      ancestors: [...floor.ancestors, floor._id],
+    });
+
+    // A second floor in the SAME building, with its own zone: the chain rule has to refuse
+    // that zone when the request names the first floor.
+    const otherFloor = await ObjectNode.create({
+      kind: 'FLOOR',
+      code: 'F2',
+      name: '2 давхар',
+      parent: building._id,
+      customer: building.customer,
+      ancestors: [building._id],
+    });
+    const otherZone = await ObjectNode.create({
+      kind: 'ROOM',
+      code: 'R2',
+      name: 'Хоёрдугаар давхрын бүс',
+      parent: otherFloor._id,
+      customer: building.customer,
+      ancestors: [building._id, otherFloor._id],
+    });
+
+    const foreignFloor = await ObjectNode.findById(foreignFloorId);
+    if (!foreignFloor) throw new Error('fixture missing');
+    const foreignZone = await ObjectNode.create({
+      kind: 'ROOM',
+      code: 'R9',
+      name: 'Өөр харилцагчийн бүс',
+      parent: foreignFloor._id,
+      customer: foreignFloor.customer,
+      ancestors: [...foreignFloor.ancestors, foreignFloor._id],
+    });
+
+    zoneId = String(zone._id);
+    otherFloorZoneId = String(otherZone._id);
+    foreignZoneId = String(foreignZone._id);
+  });
+
+  it('saves a request with a zone and no pin', async () => {
+    const response = await request(app)
+      .post(`${API}/service-requests`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(validRequest({ floorId, roomId: zoneId }));
+
+    expect(response.status).toBe(201);
+    expect(response.body.data.room.id).toBe(zoneId);
+    expect(response.body.data.planPosition).toBeNull();
+  });
+
+  it('saves a request with a pin and no zone', async () => {
+    const response = await request(app)
+      .post(`${API}/service-requests`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(validRequest({ floorId, planPosition: { x: 0.25, y: 0.75 } }));
+
+    expect(response.status).toBe(201);
+    expect(response.body.data.room).toBeNull();
+    expect(response.body.data.planPosition).toEqual({ x: 0.25, y: 0.75 });
+  });
+
+  it('saves a request with both a zone and a pin', async () => {
+    const response = await request(app)
+      .post(`${API}/service-requests`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(validRequest({ floorId, roomId: zoneId, planPosition: { x: 0, y: 1 } }));
+
+    expect(response.status).toBe(201);
+    expect(response.body.data.room.id).toBe(zoneId);
+    expect(response.body.data.planPosition).toEqual({ x: 0, y: 1 });
+  });
+
+  it('saves a request with neither a zone nor a pin', async () => {
+    const response = await request(app)
+      .post(`${API}/service-requests`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(validRequest());
+
+    expect(response.status).toBe(201);
+    expect(response.body.data.room).toBeNull();
+    expect(response.body.data.planPosition).toBeNull();
+  });
+
+  it('rejects a pin with no floor to place it on', async () => {
+    const response = await request(app)
+      .post(`${API}/service-requests`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(validRequest({ planPosition: { x: 0.5, y: 0.5 } }));
+
+    expect(response.status).toBe(400);
+    expect(response.body.code).toBe('VALIDATION_ERROR');
+    expect(response.body.issues.map((issue: { field: string }) => issue.field)).toContain(
+      'planPosition',
+    );
+  });
+
+  it('rejects a pin outside the 0 to 1 range', async () => {
+    const response = await request(app)
+      .post(`${API}/service-requests`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(validRequest({ floorId, planPosition: { x: 1.4, y: -0.2 } }));
+
+    expect(response.status).toBe(400);
+    expect(response.body.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('rejects a zone that sits under a different floor', async () => {
+    const response = await request(app)
+      .post(`${API}/service-requests`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(validRequest({ floorId, roomId: otherFloorZoneId }));
+
+    expect(response.status).toBe(400);
+    expect(response.body.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('rejects a zone belonging to another customer', async () => {
+    const response = await request(app)
+      .post(`${API}/service-requests`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(validRequest({ floorId, roomId: foreignZoneId }));
+
+    expect(response.status).toBe(400);
+    expect(response.body.code).toBe('VALIDATION_ERROR');
+  });
+
+  /**
+   * The breadcrumb needed no change: `resolveLocationPath` takes the DEEPEST supplied ref
+   * and expands its materialised ancestors, so naming a zone is what makes the zone appear.
+   */
+  it('includes the zone in the location breadcrumb', async () => {
+    const response = await request(app)
+      .post(`${API}/service-requests`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(validRequest({ floorId, roomId: zoneId }));
+
+    const path = response.body.data.locationPath as Array<{ kind: string; name: string }>;
+    expect(path.map((entry) => entry.kind)).toEqual(['BUILDING', 'FLOOR', 'ROOM']);
+    expect(path[path.length - 1]?.name).toBe(zoneName);
+  });
+
+  it('leaves the breadcrumb at the floor when only a pin was dropped', async () => {
+    const response = await request(app)
+      .post(`${API}/service-requests`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(validRequest({ floorId, planPosition: { x: 0.5, y: 0.5 } }));
+
+    const path = response.body.data.locationPath as Array<{ kind: string }>;
+    expect(path.map((entry) => entry.kind)).toEqual(['BUILDING', 'FLOOR']);
+  });
+
+  it('carries the pin through the list endpoint', async () => {
+    await request(app)
+      .post(`${API}/service-requests`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(validRequest({ floorId, planPosition: { x: 0.1, y: 0.2 } }));
+
+    const response = await request(app)
+      .get(`${API}/service-requests`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(response.body.data.items[0].planPosition).toEqual({ x: 0.1, y: 0.2 });
+  });
+});
+
 describe('service request workflow transitions', () => {
   let requestId: string;
 

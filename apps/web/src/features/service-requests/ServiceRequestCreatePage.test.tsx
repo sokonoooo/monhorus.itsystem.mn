@@ -6,7 +6,7 @@ import {
   type SettingKey,
   type SettingsDto,
 } from '@monhorus/shared';
-import { screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -14,9 +14,10 @@ import { invalidateSlaHours } from '../../hooks/use-sla-hours';
 import { ApiError } from '../../lib/api-client';
 import * as fileUrl from '../../lib/file-url';
 import { objectService } from '../../services/object.service';
+import { projectService } from '../../services/project.service';
 import { serviceRequestService } from '../../services/service-request.service';
 import { settingsService } from '../../services/settings.service';
-import { makeCustomer, makeObjectNode } from '../../test/fixtures';
+import { makeCustomer, makeFloorPlan, makeObjectNode } from '../../test/fixtures';
 import { renderWithAuth } from '../../test/render';
 import { ServiceRequestCreatePage } from './ServiceRequestCreatePage';
 
@@ -28,6 +29,8 @@ function node(id: string, kind: ObjectNodeDto['kind'], name: string): ObjectNode
 
 const PROJECT = node('507f1f77bcf86cd799439021', 'PROJECT', 'Preventive Service');
 const BUILDING = node('507f1f77bcf86cd799439022', 'BUILDING', 'Main Tower');
+const FLOOR = node('507f1f77bcf86cd799439023', 'FLOOR', '2 давхар');
+const ZONE = node('507f1f77bcf86cd799439024', 'ROOM', '201 тоот');
 
 /** Finds the select that contains an option with the given label. */
 function selectContainingOption(label: string): HTMLSelectElement | undefined {
@@ -235,6 +238,235 @@ describe('ServiceRequestCreatePage', () => {
     // No fallback to the shipped 6/24: a number presented as the rule that may not be
     // the rule is worse than no number, because the form is a promise to the customer.
     await waitFor(() => expect(screen.queryByText(/SLA/)).not.toBeInTheDocument());
+  });
+
+  /**
+   * The zone dropdown and the plan pin.
+   *
+   * The Өрөө/Бүс level was always rendered and always empty, because nothing in the app
+   * wrote it. With zones registered it populates from the same chain as every other level,
+   * and the plan pin sits beside it: the caller who cannot name a zone can still point at
+   * the spot, which is why the pin depends on the floor and not on the zone.
+   */
+  describe('zone and plan pin', () => {
+    /** The chain one level at a time, so each level answers with its own children. */
+    function mockChain(): void {
+      vi.spyOn(objectService, 'children').mockImplementation(async (parentId: string) => {
+        if (parentId === PROJECT.id) return [BUILDING];
+        if (parentId === BUILDING.id) return [FLOOR];
+        if (parentId === FLOOR.id) return [ZONE];
+        return [];
+      });
+    }
+
+    /**
+     * The plan image laid out at a known size.
+     *
+     * The coordinate model is "a fraction of the rendered box" and jsdom lays nothing out,
+     * so the box is stated here and the assertion is about the fraction that comes back —
+     * the same arrangement the object placement suite uses, because it is the same geometry.
+     */
+    function layOutImage(image: HTMLElement, width = 400, height = 200): void {
+      vi.spyOn(image, 'getBoundingClientRect').mockReturnValue({
+        left: 0,
+        top: 0,
+        right: width,
+        bottom: height,
+        width,
+        height,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      } as DOMRect);
+    }
+
+    async function chooseLocation(
+      user: ReturnType<typeof userEvent.setup>,
+      depth: 'floor' | 'zone',
+    ): Promise<void> {
+      await user.selectOptions(await screen.findByDisplayValue('Харилцагч сонгох'), CUSTOMER.id);
+
+      await waitFor(() => expect(selectContainingOption('Preventive Service')).toBeDefined());
+      await user.selectOptions(
+        selectContainingOption('Preventive Service') as HTMLSelectElement,
+        PROJECT.id,
+      );
+
+      await waitFor(() => expect(selectContainingOption('Main Tower')).toBeDefined());
+      await user.selectOptions(
+        selectContainingOption('Main Tower') as HTMLSelectElement,
+        BUILDING.id,
+      );
+
+      await waitFor(() => expect(selectContainingOption('2 давхар')).toBeDefined());
+      await user.selectOptions(selectContainingOption('2 давхар') as HTMLSelectElement, FLOOR.id);
+
+      if (depth === 'zone') {
+        await waitFor(() => expect(selectContainingOption('201 тоот')).toBeDefined());
+        await user.selectOptions(selectContainingOption('201 тоот') as HTMLSelectElement, ZONE.id);
+      }
+    }
+
+    async function fillRequiredFields(
+      user: ReturnType<typeof userEvent.setup>,
+    ): Promise<void> {
+      await user.selectOptions(
+        selectContainingOption('Яаралтай дуудлага') as HTMLSelectElement,
+        'URGENT_CALL',
+      );
+      await user.type(screen.getByLabelText(/^Холбоо барих хүн/), 'Д. Болор');
+      await user.type(screen.getByLabelText(/^Холбоо барих утас/), '9911-2233');
+      await user.type(screen.getByLabelText(/^Тайлбар/), 'Самбар оч гаргаж байна.');
+    }
+
+    beforeEach(() => {
+      mockChain();
+      vi.spyOn(fileUrl, 'authorisedFileUrl').mockResolvedValue('blob:plan');
+      vi.spyOn(projectService, 'getFloorPlan').mockResolvedValue(makeFloorPlan());
+    });
+
+    it('offers the zones of the chosen floor and sends the one picked as roomId', async () => {
+      const create = vi
+        .spyOn(serviceRequestService, 'create')
+        .mockResolvedValue({ id: 'r1', requestNumber: 'SR-1' } as never);
+      const user = userEvent.setup();
+
+      renderWithAuth(<ServiceRequestCreatePage />, {
+        permissions: [PERMISSIONS.SERVICE_REQUEST_CREATE],
+      });
+
+      await chooseLocation(user, 'zone');
+      await fillRequiredFields(user);
+      await user.click(screen.getByRole('button', { name: 'Хүсэлт үүсгэх' }));
+
+      await waitFor(() => {
+        expect(create).toHaveBeenCalledWith(
+          expect.objectContaining({ floorId: FLOOR.id, roomId: ZONE.id }),
+        );
+      });
+    });
+
+    it('sends the clicked spot as a normalised planPosition', async () => {
+      const create = vi
+        .spyOn(serviceRequestService, 'create')
+        .mockResolvedValue({ id: 'r1', requestNumber: 'SR-1' } as never);
+      const user = userEvent.setup();
+
+      renderWithAuth(<ServiceRequestCreatePage />, {
+        permissions: [PERMISSIONS.SERVICE_REQUEST_CREATE],
+      });
+
+      await chooseLocation(user, 'floor');
+
+      const image = await screen.findByAltText('2 давхарын төлөвлөгөө');
+      layOutImage(image);
+      // A quarter across and halfway down the drawing.
+      fireEvent.pointerUp(image, { clientX: 100, clientY: 100 });
+
+      expect(await screen.findByRole('img', { name: 'План дээр тэмдэглэсэн байрлал' })).toHaveStyle(
+        { left: '25%', top: '50%' },
+      );
+
+      await fillRequiredFields(user);
+      await user.click(screen.getByRole('button', { name: 'Хүсэлт үүсгэх' }));
+
+      await waitFor(() => {
+        expect(create).toHaveBeenCalledWith(
+          // A pin with no zone is allowed: pointing at the spot does not require the zone
+          // to have been registered.
+          expect.objectContaining({
+            floorId: FLOOR.id,
+            roomId: null,
+            planPosition: { x: 0.25, y: 0.5 },
+          }),
+        );
+      });
+    });
+
+    it('moves the pin on a second click and can clear it again', async () => {
+      const user = userEvent.setup();
+
+      renderWithAuth(<ServiceRequestCreatePage />, {
+        permissions: [PERMISSIONS.SERVICE_REQUEST_CREATE],
+      });
+
+      await chooseLocation(user, 'floor');
+
+      const image = await screen.findByAltText('2 давхарын төлөвлөгөө');
+      layOutImage(image);
+      fireEvent.pointerUp(image, { clientX: 100, clientY: 100 });
+      await screen.findByRole('img', { name: 'План дээр тэмдэглэсэн байрлал' });
+
+      fireEvent.pointerUp(image, { clientX: 300, clientY: 50 });
+      await waitFor(() => {
+        expect(screen.getByRole('img', { name: 'План дээр тэмдэглэсэн байрлал' })).toHaveStyle({
+          left: '75%',
+          top: '25%',
+        });
+      });
+
+      await user.click(screen.getByRole('button', { name: 'Тэмдэглэгээ арилгах' }));
+      expect(
+        screen.queryByRole('img', { name: 'План дээр тэмдэглэсэн байрлал' }),
+      ).not.toBeInTheDocument();
+    });
+
+    /** No drawing means nothing to point at; a sentence rather than a dead area. */
+    it('offers no pin control on a floor with no plan image', async () => {
+      vi.spyOn(projectService, 'getFloorPlan').mockResolvedValue(null);
+      const user = userEvent.setup();
+
+      renderWithAuth(<ServiceRequestCreatePage />, {
+        permissions: [PERMISSIONS.SERVICE_REQUEST_CREATE],
+      });
+
+      await chooseLocation(user, 'floor');
+
+      expect(
+        await screen.findByText(/Энэ давхарт план зураг хавсаргаагүй тул байрлал тэмдэглэх/),
+      ).toBeInTheDocument();
+      expect(screen.queryByAltText('2 давхарын төлөвлөгөө')).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole('img', { name: 'План дээр тэмдэглэсэн байрлал' }),
+      ).not.toBeInTheDocument();
+    });
+
+    /** Both are optional: an untouched form submits exactly what it always did. */
+    it('sends neither a zone nor a position when neither was touched', async () => {
+      const create = vi
+        .spyOn(serviceRequestService, 'create')
+        .mockResolvedValue({ id: 'r1', requestNumber: 'SR-1' } as never);
+      const user = userEvent.setup();
+
+      renderWithAuth(<ServiceRequestCreatePage />, {
+        permissions: [PERMISSIONS.SERVICE_REQUEST_CREATE],
+      });
+
+      await user.selectOptions(await screen.findByDisplayValue('Харилцагч сонгох'), CUSTOMER.id);
+      await waitFor(() => expect(selectContainingOption('Preventive Service')).toBeDefined());
+      await user.selectOptions(
+        selectContainingOption('Preventive Service') as HTMLSelectElement,
+        PROJECT.id,
+      );
+      await waitFor(() => expect(selectContainingOption('Main Tower')).toBeDefined());
+      await user.selectOptions(
+        selectContainingOption('Main Tower') as HTMLSelectElement,
+        BUILDING.id,
+      );
+
+      // No floor chosen, so there is nothing to pin against and it says so.
+      expect(
+        screen.getByText('Давхар сонгосны дараа план зураг дээр байрлал тэмдэглэх боломжтой.'),
+      ).toBeInTheDocument();
+
+      await fillRequiredFields(user);
+      await user.click(screen.getByRole('button', { name: 'Хүсэлт үүсгэх' }));
+
+      await waitFor(() => expect(create).toHaveBeenCalled());
+      const payload = create.mock.calls[0]?.[0] as Record<string, unknown>;
+      expect(payload.roomId).toBeNull();
+      expect('planPosition' in payload).toBe(false);
+    });
   });
 
   it('does not ask for settings a request-creating role may not read', async () => {

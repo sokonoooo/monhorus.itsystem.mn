@@ -13,6 +13,7 @@ import '../theme/customer_tokens.dart';
 import '../widgets/create_request_sheet.dart';
 import '../widgets/customer_async_view.dart';
 import '../widgets/customer_ui.dart';
+import '../widgets/photo_source_sheet.dart';
 import '../widgets/risk_widgets.dart';
 import 'customer_shell_screen.dart';
 import 'service_request_detail_screen.dart';
@@ -24,9 +25,19 @@ import 'service_request_detail_screen.dart';
 /// score, and nothing electrical beyond that - so the grid renders the load values
 /// the contract does define rather than four invented readings.
 class DeviceDetailScreen extends ConsumerWidget {
-  const DeviceDetailScreen({super.key, required this.objectId});
+  const DeviceDetailScreen({
+    super.key,
+    required this.objectId,
+    this.pickPhoto = pickServiceRequestPhoto,
+  });
 
   final String objectId;
+
+  /// Forwarded to the request sheet this screen opens. Overridden in tests only, for
+  /// the reason [CreateRequestSheet.pickPhoto] states: `image_picker` has no test
+  /// binding, so without an injected picker the submit path behind this screen's
+  /// sticky action is unreachable and what it puts on the wire cannot be asserted.
+  final PortalPhotoPicker pickPhoto;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -57,7 +68,9 @@ class DeviceDetailScreen extends ConsumerWidget {
               _Body(object: data),
         ),
       ),
-      bottomAction: loaded == null ? null : _RequestAction(object: loaded),
+      bottomAction: loaded == null
+          ? null
+          : _RequestAction(object: loaded, pickPhoto: pickPhoto),
     );
   }
 }
@@ -414,9 +427,10 @@ class _HistorySection extends ConsumerWidget {
 /// permission: the endpoint would answer 403 and a permanently dead button is worse
 /// than none.
 class _RequestAction extends ConsumerWidget {
-  const _RequestAction({required this.object});
+  const _RequestAction({required this.object, required this.pickPhoto});
 
   final ObjectDetailModel object;
+  final PortalPhotoPicker pickPhoto;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -465,11 +479,22 @@ class _RequestAction extends ConsumerWidget {
       scope: scope,
       initialBuildingId: buildingId,
       initialFloorId: buildingId == null ? null : floorId,
-      deviceId: object.id,
+      // No id travels with the device, only its name and its identity in the text.
+      //
+      // `deviceId` names an `ObjectNode` of kind DEVICE and the server resolves it with
+      // `ObjectNode.findById`. `object` is an `ObjectDetailModel` — a row of the object
+      // MASTER register, a different collection — so its id resolved to nothing and
+      // every request raised from this screen came back 400 `Төхөөрөмж олдсонгүй.`
+      // There is no node id available here to send instead: this app has no screen
+      // built on the node hierarchy below a floor. So the link is carried where it is
+      // actually read — the subtitle names the device, and the description opens with
+      // its code and name so the dispatcher who receives the request knows what it is
+      // about even after the customer edits the rest.
       deviceName: object.name,
       initialUrgent: object.latestAssessment?.riskLevel == RiskLevel.critical ||
           object.latestAssessment?.riskLevel == RiskLevel.outOfService,
-      initialDescription: object.latestAssessment?.recommendation,
+      initialDescription: _describe(object),
+      pickPhoto: pickPhoto,
     );
 
     if (createdId == null || !context.mounted) return;
@@ -478,6 +503,29 @@ class _RequestAction extends ConsumerWidget {
         builder: (_) => ServiceRequestDetailScreen(requestId: createdId),
       ),
     );
+  }
+
+  /// The description the sheet opens with.
+  ///
+  /// The first line names the device, because with no resolvable `deviceId` to send
+  /// this text is the only place the record says which piece of equipment the customer
+  /// was standing in front of. The assessor's own recommendation follows it when there
+  /// is one, so the dispatcher reads what the platform already concluded rather than
+  /// only what the customer typed.
+  ///
+  /// The code is dropped when the register holds none, so an unnamed identifier never
+  /// renders as a dangling separator.
+  static String _describe(ObjectDetailModel object) {
+    final String identity = object.code.isEmpty
+        ? object.name
+        : '${object.name} (${object.code})';
+    final String? recommendation = object.latestAssessment?.recommendation;
+
+    return <String>[
+      '$identity төхөөрөмж дээр асуудал гарлаа.',
+      if (recommendation != null && recommendation.trim().isNotEmpty)
+        recommendation.trim(),
+    ].join('\n');
   }
 }
 

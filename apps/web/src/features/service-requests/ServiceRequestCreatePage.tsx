@@ -4,10 +4,11 @@ import {
   SERVICE_REQUEST_TYPE_LABELS,
   createServiceRequestSchema,
   type CreateServiceRequestInput,
+  type PlanPositionDto,
   type ServiceRequestAttachmentDto,
   type ServiceRequestType,
 } from '@monhorus/shared';
-import { useRef, useState, type FormEvent, type ReactElement } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type ReactElement } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { Alert } from '../../components/ui/Alert';
@@ -19,6 +20,7 @@ import { useSlaHours } from '../../hooks/use-sla-hours';
 import { ApiError } from '../../lib/api-client';
 import { serviceRequestService } from '../../services/service-request.service';
 import { Field, Section, SelectInput, TextInput } from '../employees/FormControls';
+import { FloorPlanPin } from '../projects/FloorPlanPin';
 import { RequestAttachments } from './RequestAttachments';
 import { LOCATION_LEVELS, useLocationChain } from './useLocationChain';
 
@@ -49,6 +51,21 @@ export function ServiceRequestCreatePage(): ReactElement {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [attachments, setAttachments] = useState<readonly ServiceRequestAttachmentDto[]>([]);
   const [uploading, setUploading] = useState(false);
+
+  /**
+   * Optional pin on the chosen floor's plan.
+   *
+   * Tied to the floor rather than to the zone: the API rejects a position without a floor
+   * and takes one without a zone, which matches how the plan is read — somebody points at
+   * the spot whether or not the zone it falls in has been drawn up yet.
+   */
+  const floorId = chain.selection.FLOOR ?? '';
+  const [planPosition, setPlanPosition] = useState<PlanPositionDto | null>(null);
+
+  // A coordinate is meaningless against a different drawing, so changing the floor drops it.
+  useEffect(() => {
+    setPlanPosition(null);
+  }, [floorId]);
 
   /**
    * Uploads immediately and holds the stored file until the form is submitted.
@@ -88,6 +105,9 @@ export function ServiceRequestCreatePage(): ReactElement {
       panelId: chain.selection.PANEL ?? null,
       circuitId: chain.selection.CIRCUIT ?? null,
       deviceId: chain.selection.DEVICE ?? null,
+      // Omitted rather than sent as null when nothing was pinned, so an untouched form
+      // submits exactly the payload it always did.
+      ...(planPosition ? { planPosition } : {}),
       requestType: requestType as ServiceRequestType,
       isUrgent,
       description: description.trim(),
@@ -193,6 +213,31 @@ export function ServiceRequestCreatePage(): ReactElement {
                 );
               })}
             </Section>
+
+            {/*
+              The pin sits outside the location grid on purpose: it is a picture, and the
+              three-column field grid would squeeze it. Optional throughout — a request with
+              no floor, or a floor with no drawing, says so in a line instead of leaving a
+              dead area where a control would be.
+            */}
+            <div>
+              <span className={FILTER_LABEL}>План дээрх байрлал</span>
+              {floorId ? (
+                <FloorPlanPin
+                  floorId={floorId}
+                  value={planPosition}
+                  onChange={setPlanPosition}
+                  disabled={submitting}
+                />
+              ) : (
+                <p className="text-xs text-slate-500">
+                  Давхар сонгосны дараа план зураг дээр байрлал тэмдэглэх боломжтой.
+                </p>
+              )}
+              {fieldErrors.planPosition && (
+                <p className="mt-1 text-xs text-red-600">{fieldErrors.planPosition}</p>
+              )}
+            </div>
 
             <Section title="Хүсэлтийн мэдээлэл">
               <Field label="Хүсэлтийн төрөл" required error={fieldErrors.requestType}>

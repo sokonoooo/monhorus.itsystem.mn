@@ -103,6 +103,11 @@ export function toListItemDto(
     floor: ref(request.floor as unknown as NamedRef),
     room: ref(request.room as unknown as NamedRef),
     device: ref(request.device as unknown as NamedRef),
+    // Sent on every request, null when nobody dropped a pin. Travels on the list DTO and not
+    // only the detail one so a floor-plan view can mark several requests in one read.
+    planPosition: request.planPosition
+      ? { x: request.planPosition.x, y: request.planPosition.y }
+      : null,
     requestType: request.requestType,
     isUrgent: request.isUrgent,
     status: request.status,
@@ -364,6 +369,11 @@ export async function createServiceRequest(
     panel: input.panelId ? new Types.ObjectId(input.panelId) : null,
     circuit: input.circuitId ? new Types.ObjectId(input.circuitId) : null,
     device: input.deviceId ? new Types.ObjectId(input.deviceId) : null,
+    // The schema has already refused a pin without a floor, so what arrives here either
+    // names a drawing or is absent.
+    planPosition: input.planPosition
+      ? { x: input.planPosition.x, y: input.planPosition.y }
+      : null,
     requestType: input.requestType,
     isUrgent: input.isUrgent,
     description: input.description,

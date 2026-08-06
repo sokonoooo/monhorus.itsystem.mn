@@ -8,14 +8,18 @@ import '../../../../core/media/photo_capture.dart';
 import '../../../../core/network/api_result.dart';
 import '../../../auth/domain/entities/app_user.dart';
 import '../../../auth/presentation/providers/auth_provider.dart';
+import '../../data/models/object_master_model.dart';
+import '../../data/models/object_node_model.dart';
 import '../../data/models/project_model.dart';
 import '../../data/models/service_request_model.dart';
 import '../../domain/entities/customer_scope.dart';
 import '../../domain/entities/service_request_enums.dart';
 import '../providers/customer_portal_providers.dart';
 import '../theme/customer_tokens.dart';
+import 'authenticated_image.dart';
 import 'blueprint_ui.dart';
 import 'customer_ui.dart';
+import 'floor_plan_markers.dart';
 import 'photo_source_sheet.dart';
 
 /// The prototype's "Дуудлага илгээх" bottom sheet.
@@ -48,13 +52,25 @@ import 'photo_source_sheet.dart';
 ///   * An upload that is never followed by a submit leaves a file nobody can read —
 ///     the server parks it on the uploading account, and an unclaimed attachment
 ///     resolves to no organisation — so abandoning the sheet leaks nothing.
+///
+/// Location is collected down to a zone and, when the floor has a drawing, to a point
+/// on it. Both are optional and both are independent of each other: `roomId` names a
+/// Өрөө/Бүс the administrator registered, `planPosition` points at the spot whether or
+/// not one exists, and `createServiceRequestSchema` accepts either alone.
+///
+/// This sheet deliberately sends NO `deviceId`. That field names an `ObjectNode` of
+/// kind DEVICE, and every device screen in this app is built on the object-master
+/// register, which is a different collection — the id it holds resolves to nothing and
+/// `validateLocationChain` answers 400 `Төхөөрөмж олдсонгүй.` for it. There is
+/// therefore no value this app could correctly put on the field, so the parameter does
+/// not exist; a caller that came from a device names it through [deviceName] and
+/// [initialDescription], which the reader of the request actually sees.
 class CreateRequestSheet extends ConsumerStatefulWidget {
   const CreateRequestSheet({
     super.key,
     required this.scope,
     this.initialBuildingId,
     this.initialFloorId,
-    this.deviceId,
     this.deviceName,
     this.initialDescription,
     this.initialUrgent = false,
@@ -64,7 +80,9 @@ class CreateRequestSheet extends ConsumerStatefulWidget {
   final ResolvedCustomerScope scope;
   final String? initialBuildingId;
   final String? initialFloorId;
-  final String? deviceId;
+
+  /// The device the request is about, for the subtitle. Display only — see the class
+  /// note on why no id travels with it.
   final String? deviceName;
   final String? initialDescription;
   final bool initialUrgent;
@@ -80,7 +98,6 @@ class CreateRequestSheet extends ConsumerStatefulWidget {
     required ResolvedCustomerScope scope,
     String? initialBuildingId,
     String? initialFloorId,
-    String? deviceId,
     String? deviceName,
     String? initialDescription,
     bool initialUrgent = false,
@@ -101,7 +118,6 @@ class CreateRequestSheet extends ConsumerStatefulWidget {
           scope: scope,
           initialBuildingId: initialBuildingId,
           initialFloorId: initialFloorId,
-          deviceId: deviceId,
           deviceName: deviceName,
           initialDescription: initialDescription,
           initialUrgent: initialUrgent,
@@ -123,6 +139,16 @@ class _CreateRequestSheetState extends ConsumerState<CreateRequestSheet> {
 
   String? _buildingId;
   String? _floorId;
+
+  /// The chosen Өрөө/Бүс, cleared whenever the floor beneath it changes: the server
+  /// checks that a zone's parent is the floor that was named alongside it, so a value
+  /// left over from the previous floor would be refused with a hierarchy error.
+  String? _roomId;
+
+  /// The spot on the floor's drawing, normalised 0..1. Cleared with the floor for the
+  /// same reason — a point on one plan means nothing on another.
+  PlanPositionModel? _planPosition;
+
   ServiceRequestType _requestType = ServiceRequestType.standardCall;
   late bool _isUrgent;
 
@@ -243,6 +269,7 @@ class _CreateRequestSheetState extends ConsumerState<CreateRequestSheet> {
                           onChanged: (String? value) => setState(() {
                             _buildingId = value;
                             _floorId = null;
+                            _clearFloorDependents();
                           }),
                         ),
                         loading: () => const LinearProgressIndicator(),
@@ -282,8 +309,10 @@ class _CreateRequestSheetState extends ConsumerState<CreateRequestSheet> {
                                 ),
                               ),
                           ],
-                          onChanged: (String? value) =>
-                              setState(() => _floorId = value),
+                          onChanged: (String? value) => setState(() {
+                            _floorId = value;
+                            _clearFloorDependents();
+                          }),
                         ),
                         loading: () => const LinearProgressIndicator(),
                         error: (Object _, StackTrace __) => Text(
@@ -294,6 +323,17 @@ class _CreateRequestSheetState extends ConsumerState<CreateRequestSheet> {
                         ),
                       ),
                       const SizedBox(height: 13),
+
+                      // Both of these are the chosen floor's, so neither is rendered
+                      // before one exists. An empty zone list and a floor with no
+                      // drawing are ordinary states, and each says so in a sentence
+                      // rather than as a control that cannot be used.
+                      if (_floorId != null) ...<Widget>[
+                        _buildZoneField(_floorId!),
+                        const SizedBox(height: 13),
+                        _buildPinSection(_floorId!),
+                        const SizedBox(height: 13),
+                      ],
 
                       const FieldLabel('Хүсэлтийн төрөл'),
                       DropdownButtonFormField<ServiceRequestType>(
@@ -446,6 +486,145 @@ class _CreateRequestSheetState extends ConsumerState<CreateRequestSheet> {
           ],
         ),
       ),
+    );
+  }
+
+  /// Drops everything that only meant something under the previous floor.
+  ///
+  /// Called from both selectors, because changing the BUILDING changes the floor too.
+  /// Not folded into the setters: a zone that belongs to a floor nobody selected any
+  /// more is refused by `validateLocationChain`, and a pin is a point on a drawing that
+  /// is no longer on screen — both are stale in the same way and must go together.
+  void _clearFloorDependents() {
+    _roomId = null;
+    _planPosition = null;
+  }
+
+  /// The Өрөө/Бүс picker for [floorId].
+  ///
+  /// Optional throughout: the list carries a leading "Сонгохгүй" entry so a zone can be
+  /// unpicked as easily as picked, and there is no validator. A floor with no zones
+  /// registered renders one sentence instead of an empty dropdown — a control with
+  /// nothing in it states that something failed to load, which is not what happened.
+  Widget _buildZoneField(String floorId) {
+    final AsyncValue<List<ObjectNodeModel>> zones =
+        ref.watch(floorZonesProvider(floorId));
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: <Widget>[
+        const FieldLabel('Өрөө/Бүс (сонголтоор)'),
+        zones.when(
+          data: (List<ObjectNodeModel> items) {
+            if (items.isEmpty) {
+              return Text(
+                'Энэ давхарт өрөө/бүс бүртгэгдээгүй байна. Байршлыг тайлбартаа '
+                'бичих буюу планд тэмдэглэнэ үү.',
+                style: CustomerTokens.rowSub.copyWith(height: 1.45),
+              );
+            }
+            return DropdownButtonFormField<String>(
+              initialValue:
+                  items.any((ObjectNodeModel zone) => zone.id == _roomId)
+                      ? _roomId
+                      : null,
+              isExpanded: true,
+              items: <DropdownMenuItem<String>>[
+                const DropdownMenuItem<String>(
+                  child: Text('Сонгохгүй'),
+                ),
+                for (final ObjectNodeModel zone in items)
+                  DropdownMenuItem<String>(
+                    value: zone.id,
+                    child: Text(
+                      zone.pickerLabel,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+              ],
+              onChanged: (String? value) => setState(() => _roomId = value),
+            );
+          },
+          loading: () => const LinearProgressIndicator(),
+          error: (Object _, StackTrace __) => Text(
+            'Өрөө/бүсийн жагсаалт ачаалж чадсангүй.',
+            style: CustomerTokens.rowSub.copyWith(color: CustomerTokens.red),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// The optional pin on [floorId]'s drawing.
+  ///
+  /// Rendered through `AuthenticatedImage.sizedToImage` and [FloorPlanPinLayer], the
+  /// same pair the floor's read-only plan uses, so the coordinate this sheet sends and
+  /// the coordinate that screen draws are read off the same rectangle by the same
+  /// arithmetic. A floor with no drawing, or one whose plan is not an image, gets a
+  /// sentence and no control: there is nothing to point at.
+  Widget _buildPinSection(String floorId) {
+    final AsyncValue<FloorPlanModel?> plan = ref.watch(floorPlanProvider(floorId));
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: <Widget>[
+        const FieldLabel('Планд тэмдэглэх (сонголтоор)'),
+        plan.when(
+          data: (FloorPlanModel? data) {
+            if (data == null || !data.isImage) {
+              return Text(
+                'Энэ давхарт план зураг ачаалагдаагүй тул байршил тэмдэглэх '
+                'боломжгүй байна.',
+                style: CustomerTokens.rowSub.copyWith(height: 1.45),
+              );
+            }
+
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                Text(
+                  _planPosition == null
+                      ? 'Асуудал гарсан газар дээр дарж тэмдэглэнэ үү.'
+                      : 'Өөр газар дарвал тэмдэглэгээ шилжинэ.',
+                  style: CustomerTokens.rowSub.copyWith(height: 1.45),
+                ),
+                const SizedBox(height: 8),
+                DecoratedBox(
+                  decoration: const BoxDecoration(
+                    border: Border.fromBorderSide(CustomerTokens.hairlineSide),
+                  ),
+                  child: AuthenticatedImage.sizedToImage(
+                    fileId: data.fileId,
+                    overlay: FloorPlanPinLayer(
+                      pin: _planPosition,
+                      onTapAt: (PlanPositionModel position) =>
+                          setState(() => _planPosition = position),
+                    ),
+                  ),
+                ),
+                if (_planPosition != null)
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      onPressed: () =>
+                          setState(() => _planPosition = null),
+                      icon: const Icon(Icons.close, size: 16),
+                      label: const Text('Тэмдэглэгээг арилгах'),
+                    ),
+                  ),
+              ],
+            );
+          },
+          loading: () => const LinearProgressIndicator(),
+          error: (Object _, StackTrace __) => Text(
+            'План зураг ачаалж чадсангүй.',
+            style: CustomerTokens.rowSub.copyWith(color: CustomerTokens.red),
+          ),
+        ),
+      ],
     );
   }
 
@@ -662,7 +841,12 @@ class _CreateRequestSheetState extends ConsumerState<CreateRequestSheet> {
       customerId: widget.scope.customerId,
       buildingId: _buildingId!,
       floorId: _floorId,
-      deviceId: widget.deviceId,
+      // Both are the floor's. Guarded on it here as well as cleared with it, so no
+      // rearrangement of the widget tree above can put a zone or a pin on the wire
+      // without the floor that gives it meaning — the server refuses a floorless pin
+      // outright, and a zone whose parent was not named is refused by the chain check.
+      roomId: _floorId == null ? null : _roomId,
+      planPosition: _floorId == null ? null : _planPosition,
       requestType: _requestType,
       isUrgent: _isUrgent,
       description: _description.text.trim(),

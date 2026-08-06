@@ -155,8 +155,11 @@ const baseObjectFields = {
  *
  * Without the floor there is no plan to place the object on, so a position arriving without
  * one is rejected rather than stored as a coordinate pointing at nothing.
+ *
+ * Exported because the service request carries the same optional pin: one rule, one message,
+ * so a floorless coordinate is refused identically wherever it is offered.
  */
-function rejectFloorlessPosition(
+export function rejectFloorlessPosition(
   value: { floorId?: string | null; planPosition?: { x: number; y: number } | null },
   ctx: z.RefinementCtx,
 ): void {

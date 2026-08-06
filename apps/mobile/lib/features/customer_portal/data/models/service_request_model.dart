@@ -1,5 +1,6 @@
 import '../../domain/entities/service_request_enums.dart';
 import 'json_utils.dart';
+import 'object_master_model.dart';
 
 /// Every model in this file is a hand-written mirror of a TypeScript type in
 /// packages/shared. Dart cannot import that package, so the pairing is recorded in a
@@ -372,6 +373,7 @@ class CreateServiceRequestRequestModel {
     this.panelId,
     this.circuitId,
     this.deviceId,
+    this.planPosition,
     this.isUrgent = false,
     this.attachmentIds = const <String>[],
   });
@@ -384,7 +386,24 @@ class CreateServiceRequestRequestModel {
   final String? roomId;
   final String? panelId;
   final String? circuitId;
+
+  /// An `ObjectNode` of kind DEVICE, NOT an entry in the object-master register.
+  ///
+  /// The two are different collections and `validateLocationChain` resolves this one
+  /// with `ObjectNode.findById`, so a master-register id here is refused outright with
+  /// `Төхөөрөмж олдсонгүй.` and a 400. Nothing in the customer app has a node id of
+  /// that kind to give — every device screen here is built on the master register —
+  /// so no flow in this app populates the field; see [CreateRequestSheet].
   final String? deviceId;
+
+  /// Where on the floor's plan the customer says the fault is, as a fraction of the
+  /// drawing's width and height.
+  ///
+  /// `createServiceRequestSchema` refuses a pin that names no floor, so this is only
+  /// ever sent alongside [floorId]. Independent of [roomId]: pointing at the spot and
+  /// naming a zone are two different statements and either may be made alone.
+  final PlanPositionModel? planPosition;
+
   final ServiceRequestType requestType;
   final bool isUrgent;
   final String description;
@@ -410,6 +429,7 @@ class CreateServiceRequestRequestModel {
         if (panelId != null) 'panelId': panelId,
         if (circuitId != null) 'circuitId': circuitId,
         if (deviceId != null) 'deviceId': deviceId,
+        if (planPosition != null) 'planPosition': planPosition!.toJson(),
         'requestType': requestType.wireValue,
         'isUrgent': isUrgent,
         'description': description,

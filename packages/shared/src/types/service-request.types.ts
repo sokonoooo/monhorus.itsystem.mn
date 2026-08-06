@@ -5,6 +5,7 @@ import type {
   SlaState,
 } from '../constants/service-request';
 import type { EmployeeRefDto } from './employee.types';
+import type { PlanPositionDto } from './object-master.types';
 import type { ObjectBreadcrumbDto } from './object.types';
 
 export interface ServiceRequestListItemDto {
@@ -14,8 +15,17 @@ export interface ServiceRequestListItemDto {
   project: { id: string; name: string } | null;
   building: { id: string; name: string } | null;
   floor: { id: string; name: string } | null;
+  /** The zone (ROOM node) named on the request, when one was chosen. */
   room: { id: string; name: string } | null;
   device: { id: string; name: string } | null;
+  /**
+   * Optional pin on the floor plan, normalised 0..1 exactly as an object's placement is.
+   *
+   * Null when the caller named a location but never pointed at a spot, which is the common
+   * case. Optional on the type rather than required so a consumer written before pins
+   * existed still compiles; the server always sends the field.
+   */
+  planPosition?: PlanPositionDto | null;
   requestType: ServiceRequestType;
   isUrgent: boolean;
   status: ServiceRequestStatus;
@@ -97,6 +107,8 @@ export interface CreateServiceRequestRequest {
   panelId?: string | null;
   circuitId?: string | null;
   deviceId?: string | null;
+  /** Optional pin on the floor plan. Rejected without `floorId`; independent of `roomId`. */
+  planPosition?: PlanPositionDto | null;
   requestType: ServiceRequestType;
   isUrgent: boolean;
   description: string;

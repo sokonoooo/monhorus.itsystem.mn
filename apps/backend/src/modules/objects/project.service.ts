@@ -270,19 +270,48 @@ async function riskSummaryFor(
   return summaries.get(String(nodeId)) ?? EMPTY_RISK_SUMMARY;
 }
 
+/** What a node's direct children are called, for the "N x бүртгэлтэй" blocker. */
+const CHILD_LABEL: Record<IObjectNode['kind'], string> = {
+  CUSTOMER: 'төсөл',
+  PROJECT: 'барилга',
+  BUILDING: 'давхар',
+  FLOOR: 'өрөө/бүс',
+  ROOM: 'самбар',
+  PANEL: 'хэлхээ',
+  CIRCUIT: 'төхөөрөмж',
+  DEVICE: 'дэд бүртгэл',
+};
+
+/**
+ * Which location field on a service request points at a node of this kind.
+ *
+ * One map rather than a chain of conditionals: the chain read `PROJECT ? project : BUILDING
+ * ? building : floor`, so a zone was checked against the `floor` field and its requests were
+ * never found — deleting a referenced zone would have orphaned every one of them.
+ */
+const REQUEST_LOCATION_FIELD: Record<IObjectNode['kind'], string | null> = {
+  CUSTOMER: null,
+  PROJECT: 'project',
+  BUILDING: 'building',
+  FLOOR: 'floor',
+  ROOM: 'room',
+  PANEL: 'panel',
+  CIRCUIT: 'circuit',
+  DEVICE: 'device',
+};
+
 /**
  * Reasons a node may not be deleted.
  *
  * Empty means deletion is allowed. Anything with children, linked objects, planned work or
  * service requests is archived instead, so history is never orphaned.
  */
-async function deleteBlockersFor(node: Doc<IObjectNode>): Promise<string[]> {
+export async function deleteBlockersFor(node: Doc<IObjectNode>): Promise<string[]> {
   const blockers: string[] = [];
 
   const children = await ObjectNode.countDocuments({ parent: node._id });
   if (children > 0) {
-    const label = node.kind === 'PROJECT' ? 'барилга' : 'давхар';
-    blockers.push(`${children} ${label} бүртгэлтэй.`);
+    blockers.push(`${children} ${CHILD_LABEL[node.kind]} бүртгэлтэй.`);
   }
 
   if (node.kind === 'FLOOR') {
@@ -296,6 +325,8 @@ async function deleteBlockersFor(node: Doc<IObjectNode>): Promise<string[]> {
     if (counts.objects > 0) blockers.push(`${counts.objects} объект холбогдсон.`);
   }
 
+  const requestField = REQUEST_LOCATION_FIELD[node.kind];
+
   const [plannedWork, requests] = await Promise.all([
     PlannedWork.countDocuments(
       node.kind === 'PROJECT'
@@ -304,13 +335,9 @@ async function deleteBlockersFor(node: Doc<IObjectNode>): Promise<string[]> {
           ? { building: node._id }
           : { _id: null },
     ),
-    ServiceRequest.countDocuments(
-      node.kind === 'PROJECT'
-        ? { project: node._id }
-        : node.kind === 'BUILDING'
-          ? { building: node._id }
-          : { floor: node._id },
-    ),
+    requestField === null
+      ? 0
+      : ServiceRequest.countDocuments({ [requestField]: node._id }),
   ]);
 
   if (plannedWork > 0) blockers.push(`${plannedWork} төлөвлөгөөт ажилд ашиглагдсан.`);

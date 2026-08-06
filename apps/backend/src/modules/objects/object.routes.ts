@@ -21,7 +21,7 @@ import {
   resolveCustomerScope,
   type ResolvedCustomerScope,
 } from '../../common/security/customer-scope';
-import { created, ok } from '../../common/utils/api-response.util';
+import { created, noContent, ok } from '../../common/utils/api-response.util';
 import { pathParam } from '../../common/utils/path-param.util';
 import { buildRequestMeta as meta } from '../../common/utils/request-meta.util';
 import {
@@ -29,7 +29,7 @@ import {
   enforcePasswordChange,
   requireAuth,
 } from '../../middlewares/authenticate.middleware';
-import { requirePermission } from '../../middlewares/authorize.middleware';
+import { requireAnyPermission, requirePermission } from '../../middlewares/authorize.middleware';
 import { validate } from '../../middlewares/validate.middleware';
 import { getRiskBands } from '../settings/settings.service';
 import { Customer, ObjectNode, type IObjectNode } from './object.models';
@@ -129,10 +129,21 @@ objectRouter.get(
  *
  * Returns only the direct children of the requested parent, never the whole tree.
  * The dependent selector on the request form calls this once per level.
+ *
+ * Open to `portal.floor.view` as well as the staff key, because the customer app's
+ * create-request sheet lists a floor's Өрөө/Бүс nodes through here and this is the only
+ * route that returns them — a customer holds portal keys alone, so under the staff key
+ * by itself the zone picker was refused 403 on every floor.
+ *
+ * Safe to widen because the scope is not the guard: `scopeOf` discards a customer
+ * caller's requested `customerId` in favour of their own, and `customerScopeFilter`
+ * then pins the query to it, so a customer reads their own hierarchy and no other's
+ * however this is called. The pairing matches `/floors` and `/floors/:id`, which are
+ * already `OBJECT_VIEW` or `PORTAL_FLOOR_VIEW`.
  */
 objectRouter.get(
   '/nodes',
-  requirePermission(PERMISSIONS.OBJECT_VIEW),
+  requireAnyPermission(PERMISSIONS.OBJECT_VIEW, PERMISSIONS.PORTAL_FLOOR_VIEW),
   validate({ query: childrenQuerySchema }),
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
@@ -243,6 +254,31 @@ objectRouter.patch(
         meta(req),
       );
       ok(res, result, 'Объект шинэчлэгдлээ.');
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+/**
+ * Removes a node, or refuses with the reasons it cannot go.
+ *
+ * The zone level's "remove". Archiving through `PATCH { isActive: false }` stays the
+ * always-available alternative and is what a zone already named on a request gets.
+ */
+objectRouter.delete(
+  '/nodes/:nodeId',
+  requirePermission(PERMISSIONS.OBJECT_MANAGE),
+  validate({ params: z.object({ nodeId: objectId }) }),
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      await objectService.deleteObjectNode(
+        pathParam(req, 'nodeId'),
+        scopeOf(req),
+        requireAuth(req),
+        meta(req),
+      );
+      noContent(res, 'Объект устгагдлаа.');
     } catch (error) {
       next(error);
     }

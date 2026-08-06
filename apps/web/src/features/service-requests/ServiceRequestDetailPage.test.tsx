@@ -8,7 +8,9 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as fileUrl from '../../lib/file-url';
+import { projectService } from '../../services/project.service';
 import { serviceRequestService, workReportService } from '../../services/service-request.service';
+import { makeFloorPlan } from '../../test/fixtures';
 import { renderWithAuth } from '../../test/render';
 import { ServiceRequestDetailPage } from './ServiceRequestDetailPage';
 
@@ -158,5 +160,62 @@ describe('ServiceRequestDetailPage attachments', () => {
     const card = await attachmentCard(0);
     expect(within(card).getByText('Хавсралт байхгүй байна.')).toBeInTheDocument();
     expect(fileUrl.authorisedFileUrl).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Where on the floor. The pin is what a technician reads the request for when the zone
+ * cannot be named, so it is drawn on the plan rather than reported as a pair of numbers.
+ */
+describe('ServiceRequestDetailPage plan position', () => {
+  const FLOOR = { id: '507f1f77bcf86cd799439121', name: '2 давхар' };
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(workReportService, 'get').mockRejectedValue(new Error('no report'));
+    vi.spyOn(fileUrl, 'authorisedFileUrl').mockResolvedValue('blob:plan');
+  });
+
+  it('draws the marker on the floor plan for a request that carries one', async () => {
+    vi.spyOn(projectService, 'getFloorPlan').mockResolvedValue(makeFloorPlan());
+    vi.spyOn(serviceRequestService, 'getById').mockResolvedValue(
+      makeRequest({ floor: FLOOR, planPosition: { x: 0.25, y: 0.5 } }),
+    );
+
+    render();
+
+    expect(await screen.findByText('План дээрх байрлал')).toBeInTheDocument();
+    expect(await screen.findByAltText('2 давхарын төлөвлөгөө')).toHaveAttribute('src', 'blob:plan');
+    expect(screen.getByRole('img', { name: 'План дээр тэмдэглэсэн байрлал' })).toHaveStyle({
+      left: '25%',
+      top: '50%',
+    });
+  });
+
+  /** Read-only: the request records what was reported and the detail page does not edit it. */
+  it('offers no way to move or clear the marker', async () => {
+    vi.spyOn(projectService, 'getFloorPlan').mockResolvedValue(makeFloorPlan());
+    vi.spyOn(serviceRequestService, 'getById').mockResolvedValue(
+      makeRequest({ floor: FLOOR, planPosition: { x: 0.25, y: 0.5 } }),
+    );
+
+    render();
+
+    await screen.findByRole('img', { name: 'План дээр тэмдэглэсэн байрлал' });
+    expect(
+      screen.queryByRole('button', { name: 'Тэмдэглэгээ арилгах' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('shows no plan section for a request without a pin', async () => {
+    const getPlan = vi.spyOn(projectService, 'getFloorPlan').mockResolvedValue(makeFloorPlan());
+    vi.spyOn(serviceRequestService, 'getById').mockResolvedValue(makeRequest({ floor: FLOOR }));
+
+    render();
+
+    await screen.findByText('Байршил');
+    expect(screen.queryByText('План дээрх байрлал')).not.toBeInTheDocument();
+    // Nothing to draw, so the plan is not fetched either.
+    expect(getPlan).not.toHaveBeenCalled();
   });
 });

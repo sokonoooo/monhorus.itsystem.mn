@@ -22,6 +22,7 @@ import { authorisedFileUrl } from '../../lib/file-url';
 import { objectMasterService, objectTypeService } from '../../services/object-master.service';
 import { projectService } from '../../services/project.service';
 import { Field, SelectInput, TextInput } from '../employees/FormControls';
+import { DRAG_THRESHOLD_PX, markerStyle, positionWithin } from './plan-geometry';
 
 interface FloorPlanPanelProps {
   floorId: string;
@@ -38,39 +39,6 @@ interface FloorPlanPanelProps {
 
 function formatDateTime(iso: string): string {
   return new Date(iso).toLocaleString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
-}
-
-function clamp01(value: number): number {
-  return Math.min(1, Math.max(0, value));
-}
-
-/**
- * How far a press has to travel before it counts as a drag rather than a click.
- *
- * In device pixels, because that is what a hand shaking on a mouse button produces; a
- * fraction of the plan would mean something different on every screen.
- */
-const DRAG_THRESHOLD_PX = 4;
-
-/**
- * Turns a pointer position into a plan coordinate.
- *
- * Measured against the rendered image's own box, so the result is the same fraction of the
- * drawing whatever size the image happens to be laid out at — which is the whole reason the
- * stored coordinates are fractions rather than pixels. A zero-sized box means the image has
- * not been laid out yet and there is nothing meaningful to compute.
- */
-function positionWithin(
-  element: HTMLElement,
-  clientX: number,
-  clientY: number,
-): PlanPositionDto | null {
-  const rect = element.getBoundingClientRect();
-  if (rect.width === 0 || rect.height === 0) return null;
-  return {
-    x: clamp01((clientX - rect.left) / rect.width),
-    y: clamp01((clientY - rect.top) / rect.height),
-  };
 }
 
 /**
@@ -555,10 +523,7 @@ export function FloorPlanPanel({
                           } ${selectedObjectId === object.id ? 'outline outline-2 outline-offset-2 outline-blue-500' : ''} ${
                             canPlace ? 'cursor-move' : 'cursor-pointer'
                           }`}
-                          style={{
-                            left: `${(object.planPosition?.x ?? 0) * 100}%`,
-                            top: `${(object.planPosition?.y ?? 0) * 100}%`,
-                          }}
+                          style={markerStyle(object.planPosition)}
                         >
                           {object.code}
                         </button>

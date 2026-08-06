@@ -13,33 +13,46 @@ import {
   phoneSchema,
   sortDirSchema,
 } from './common.schema';
+import { planPositionSchema, rejectFloorlessPosition } from './object-master.schema';
 
 /**
  * Requirements section 8.2 marks customer, branch, building, attachments,
  * description, urgency and contact as mandatory; floor, room and device are
  * conditional refinements of the location.
  */
-export const createServiceRequestSchema = z.object({
-  customerId: objectIdSchema,
-  branch: z.string().trim().max(200).nullish(),
-  projectId: objectIdSchema.nullish(),
-  buildingId: objectIdSchema,
-  floorId: objectIdSchema.nullish(),
-  roomId: objectIdSchema.nullish(),
-  panelId: objectIdSchema.nullish(),
-  circuitId: objectIdSchema.nullish(),
-  deviceId: objectIdSchema.nullish(),
-  requestType: z.enum(SERVICE_REQUEST_TYPES, { required_error: 'Хүсэлтийн төрөл заавал.' }),
-  isUrgent: z.boolean().default(false),
-  description: z
-    .string()
-    .trim()
-    .min(5, 'Тайлбар дор хаяж 5 тэмдэгттэй байна.')
-    .max(4000, 'Тайлбар 4000 тэмдэгтээс урт байж болохгүй.'),
-  contactName: z.string().trim().min(1, 'Холбоо барих хүн заавал.').max(200),
-  contactPhone: phoneSchema,
-  attachmentIds: z.array(objectIdSchema).max(20).default([]),
-});
+export const createServiceRequestSchema = z
+  .object({
+    customerId: objectIdSchema,
+    branch: z.string().trim().max(200).nullish(),
+    projectId: objectIdSchema.nullish(),
+    buildingId: objectIdSchema,
+    floorId: objectIdSchema.nullish(),
+    roomId: objectIdSchema.nullish(),
+    panelId: objectIdSchema.nullish(),
+    circuitId: objectIdSchema.nullish(),
+    deviceId: objectIdSchema.nullish(),
+    /**
+     * Where on the floor plan the fault is, as a fraction of the drawing's width and
+     * height. The SAME shape and the same 0..1 convention an object's placement uses, so a
+     * client renders both pins with one piece of code.
+     *
+     * Independent of `roomId`: a caller who can point at the spot but cannot name a zone —
+     * because none has been registered yet — is the ordinary case, not an error. The pin
+     * needs a drawing, not a name, so only the floor is required alongside it.
+     */
+    planPosition: planPositionSchema.nullish(),
+    requestType: z.enum(SERVICE_REQUEST_TYPES, { required_error: 'Хүсэлтийн төрөл заавал.' }),
+    isUrgent: z.boolean().default(false),
+    description: z
+      .string()
+      .trim()
+      .min(5, 'Тайлбар дор хаяж 5 тэмдэгттэй байна.')
+      .max(4000, 'Тайлбар 4000 тэмдэгтээс урт байж болохгүй.'),
+    contactName: z.string().trim().min(1, 'Холбоо барих хүн заавал.').max(200),
+    contactPhone: phoneSchema,
+    attachmentIds: z.array(objectIdSchema).max(20).default([]),
+  })
+  .superRefine(rejectFloorlessPosition);
 
 export const assignServiceRequestSchema = z
   .object({
