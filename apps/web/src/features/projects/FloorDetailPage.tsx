@@ -185,6 +185,40 @@ function FloorEditDrawer({
   );
 }
 
+/** The largest page `objectListQuerySchema` will accept. Asking for more is a 400. */
+const OBJECT_PAGE_LIMIT = 100;
+
+/**
+ * A ceiling on the paging loop, not on the floor.
+ *
+ * A floor with more than this many objects is not a floor anyone is reading a plan of, and
+ * an unbounded loop against a miscounting server would spin forever. What is fetched is
+ * still stated honestly: the table and the plan show what came back.
+ */
+const MAX_OBJECT_PAGES = 20;
+
+/**
+ * Every object on the floor, not the first hundred.
+ *
+ * The list endpoint pages and its limit is capped at 100, so a single request silently lost
+ * every marker past the first page — a floor with 120 devices drew 100 pins and gave no
+ * hint that twenty were missing. Pages are walked in order because the first response is
+ * what says how many there are.
+ */
+async function fetchAllFloorObjects(floorId: string): Promise<ObjectListItemDto[]> {
+  const items: ObjectListItemDto[] = [];
+  let page = 1;
+
+  for (;;) {
+    const result = await objectMasterService.list({ floorId, limit: OBJECT_PAGE_LIMIT, page });
+    items.push(...result.items);
+    if (result.items.length === 0 || page >= result.totalPages || page >= MAX_OBJECT_PAGES) {
+      return items;
+    }
+    page += 1;
+  }
+}
+
 /**
  * Floor detail.
  *
@@ -238,11 +272,11 @@ export function FloorDetailPage(): ReactElement {
       // Objects and the load roll-up need their own permission; a caller without it still
       // sees the general information and the plan.
       if (canViewObjects) {
-        const [objectPage, summary] = await Promise.all([
-          objectMasterService.list({ floorId, limit: 100 }),
+        const [allObjects, summary] = await Promise.all([
+          fetchAllFloorObjects(floorId),
           projectService.floorLoad(floorId),
         ]);
-        setObjects(objectPage.items);
+        setObjects(allObjects);
         setLoad(summary);
       }
     } catch (caught) {

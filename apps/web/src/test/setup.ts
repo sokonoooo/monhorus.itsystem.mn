@@ -51,6 +51,54 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+/**
+ * ResizeObserver and DOMMatrixReadOnly.
+ *
+ * jsdom implements neither, and every `@xyflow/react` surface needs both: the canvas
+ * measures its container with an observer and reads the viewport's zoom back out of the
+ * computed transform with a matrix. Without them the floor plan and the single-line
+ * diagram throw on mount, so they are stubbed here rather than in each test file.
+ *
+ * The observer reports whatever the element's own box says, which is nothing at all in
+ * jsdom unless a test states it — the same as a browser element that has not been laid out.
+ */
+class TestResizeObserver implements ResizeObserver {
+  constructor(private readonly callback: ResizeObserverCallback) {}
+
+  observe(target: Element): void {
+    this.callback(
+      [{ target, contentRect: target.getBoundingClientRect() } as ResizeObserverEntry],
+      this,
+    );
+  }
+
+  unobserve(): void {}
+
+  disconnect(): void {}
+}
+
+Object.defineProperty(globalThis, 'ResizeObserver', {
+  configurable: true,
+  writable: true,
+  value: TestResizeObserver,
+});
+
+/** Only `m22` is ever read, and only ever to recover the zoom from a `scale()`. */
+class TestDOMMatrixReadOnly {
+  readonly m22: number;
+
+  constructor(transform?: string) {
+    const scale = /scale\(\s*([\d.]+)/.exec(transform ?? '');
+    this.m22 = scale ? Number(scale[1]) : 1;
+  }
+}
+
+Object.defineProperty(globalThis, 'DOMMatrixReadOnly', {
+  configurable: true,
+  writable: true,
+  value: TestDOMMatrixReadOnly,
+});
+
 // jsdom does not implement matchMedia, which the responsive shell touches.
 Object.defineProperty(window, 'matchMedia', {
   writable: true,

@@ -219,6 +219,44 @@ describe('FloorDetailPage', () => {
     expect(screen.getByText('Чангалах')).toBeInTheDocument();
   });
 
+  /**
+   * The list endpoint caps a page at 100, so one request quietly lost everything past the
+   * first page — a floor with 120 devices showed 100 and said nothing about the rest.
+   */
+  it('walks every page of objects rather than stopping at the first hundred', async () => {
+    vi.spyOn(projectService, 'getFloor').mockResolvedValue(makeFloor());
+    vi.spyOn(projectService, 'getFloorPlan').mockResolvedValue(makeFloorPlan());
+
+    const page = (index: number, items: number) => ({
+      items: Array.from({ length: items }, (_, offset) =>
+        makeObjectListItem({
+          id: `o-${index}-${offset}`,
+          code: `EQ-${index}-${offset}`,
+          name: `Тоноглол ${index}-${offset}`,
+        }),
+      ),
+      page: index,
+      limit: 100,
+      total: 150,
+      totalPages: 2,
+    });
+
+    const list = vi
+      .spyOn(objectMasterService, 'list')
+      .mockImplementation(async (query) =>
+        (query?.page ?? 1) === 1 ? page(1, 100) : page(2, 50),
+      );
+
+    renderFloor([PERMISSIONS.OBJECT_VIEW, PERMISSIONS.OBJECT_MASTER_VIEW]);
+
+    // The row that only exists on the second page.
+    expect(await screen.findByText('Тоноглол 2-49')).toBeInTheDocument();
+    expect(list).toHaveBeenCalledWith({ floorId: FLOOR_ID, limit: 100, page: 1 });
+    expect(list).toHaveBeenCalledWith({ floorId: FLOOR_ID, limit: 100, page: 2 });
+    // And it stops when the pages run out rather than asking forever.
+    expect(list).toHaveBeenCalledTimes(2);
+  });
+
   it('reports Бүрэн бус instead of a zero when a load figure is incomplete', async () => {
     vi.spyOn(projectService, 'getFloor').mockResolvedValue(makeFloor());
     vi.spyOn(projectService, 'getFloorPlan').mockResolvedValue(makeFloorPlan());

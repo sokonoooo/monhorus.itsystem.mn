@@ -6,14 +6,13 @@ import {
   type ObjectTypeDto,
   type PlanPositionDto,
 } from '@monhorus/shared';
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactElement } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
 import { Link } from 'react-router-dom';
 
 import { Alert } from '../../components/ui/Alert';
 import { Button } from '../../components/ui/Button';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import { Drawer } from '../../components/ui/Drawer';
-import { RISK_SURFACE_STYLES } from '../../components/ui/DomainBadges';
 import { EmptyState } from '../../components/ui/States';
 import { useToast } from '../../components/ui/ToastProvider';
 import { FIELD_TEXTAREA, FILTER_LABEL } from '../../components/ui/control-styles';
@@ -22,7 +21,8 @@ import { authorisedFileUrl } from '../../lib/file-url';
 import { objectMasterService, objectTypeService } from '../../services/object-master.service';
 import { projectService } from '../../services/project.service';
 import { Field, SelectInput, TextInput } from '../employees/FormControls';
-import { DRAG_THRESHOLD_PX, markerStyle, positionWithin } from './plan-geometry';
+import { FloorPlanCanvas, type PlanMarker } from './FloorPlanCanvas';
+import { samePlanPosition } from './plan-geometry';
 
 interface FloorPlanPanelProps {
   floorId: string;
@@ -57,9 +57,14 @@ const ACCEPTED_HINT = 'PNG, JPG, WEBP, PDF - хамгийн ихдээ 10MB';
  * format unapproved, so the image is stored and displayed and every change is audited.
  *
  * The coordinate model is the smallest one that survives the plan being replaced: a
- * fraction of the image's width and height, resolved from the rendered box, never a pixel
- * pair. Which types may be placed is not decided here either — it is read from the type
- * registry's `showOnPlan` flag, which is what that flag has always meant.
+ * fraction of the image's width and height, never a pixel pair. Which types may be placed
+ * is not decided here either — it is read from `showOnPlan`, which is what that flag has
+ * always meant.
+ *
+ * Moving a marker is an explicit mode rather than something that happens to anyone who
+ * drags. Off, the plan is a picture that can be zoomed, panned and read; on, positions are
+ * drafted locally and nothing reaches the server until Save, so a mis-drag is undone by
+ * Cancel instead of by another drag.
  */
 export function FloorPlanPanel({
   floorId,
@@ -72,9 +77,6 @@ export function FloorPlanPanel({
 }: FloorPlanPanelProps): ReactElement {
   const { notify } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const imageRef = useRef<HTMLImageElement>(null);
-  /** Where a marker press started, so a click can be told apart from a drag on release. */
-  const dragOriginRef = useRef<{ objectId: string; clientX: number; clientY: number } | null>(null);
 
   const [uploading, setUploading] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -96,7 +98,19 @@ export function FloorPlanPanel({
   const [quickError, setQuickError] = useState<string | null>(null);
   const [quickFieldErrors, setQuickFieldErrors] = useState<Record<string, string>>({});
   const [selectedObjectId, setSelectedObjectId] = useState<string | null>(null);
-  const [draggingObjectId, setDraggingObjectId] = useState<string | null>(null);
+  const [typesError, setTypesError] = useState<string | null>(null);
+
+  // -- Position editing ------------------------------------------------------
+  const [editing, setEditing] = useState(false);
+  /**
+   * Positions moved since edit mode was entered, by object id.
+   *
+   * A `null` entry is a position being taken away. Nothing here has been written: the
+   * markers are drawn from this over the top of `objects`, which is what makes Cancel a
+   * matter of forgetting rather than of restoring.
+   */
+  const [draft, setDraft] = useState<Record<string, PlanPositionDto | null>>({});
+  const [savingPositions, setSavingPositions] = useState(false);
 
   const isPdf = plan?.mimeType === 'application/pdf';
   // PDFs are not rasterised anywhere in this app, so there is no picture to measure a
@@ -104,40 +118,64 @@ export function FloorPlanPanel({
   const placementAvailable = Boolean(plan) && !isPdf;
 
   /**
-   * Which types may appear on a plan.
+   * The catalogue behind the quick-create picker.
    *
-   * `ObjectType.showOnPlan` is the registry's own answer to "план дээр объект болгон
-   * байрлуулах боломж", so it is read rather than reinvented: a type without it is not
-   * offered in the quick-create picker and its objects are not drawn as markers.
+   * Only that. Whether an object may be *drawn* is answered by `objectType.showOnPlan` on
+   * the row itself, which the list endpoint inlines precisely so a client that already
+   * holds the objects need not fetch the registry to draw them. It used to be fetched for
+   * both, and a failed request — swallowed — blanked every marker on the plan while
+   * reporting nothing. Now a failure costs the picker and says so, and the plan still
+   * draws. It is also not fetched at all for a caller who cannot place anything.
    */
   useEffect(() => {
-    if (!placementAvailable) return undefined;
+    if (!placementAvailable || !canPlace) return undefined;
     let cancelled = false;
     objectTypeService
       .list({ isActive: true, limit: 100 })
       .then((page) => {
-        if (!cancelled) setPlaceableTypes(page.items.filter((type) => type.showOnPlan));
+        if (cancelled) return;
+        setPlaceableTypes(page.items.filter((type) => type.showOnPlan));
+        setTypesError(null);
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (!cancelled) setTypesError('Тоноглолын төрлийн жагсаалт ачаалж чадсангүй.');
+      });
     return () => {
       cancelled = true;
     };
-  }, [placementAvailable]);
+  }, [placementAvailable, canPlace]);
 
-  const placeableTypeIds = new Set(placeableTypes.map((type) => type.id));
-  const markers = objects.filter(
-    (object) =>
-      object.planPosition !== null &&
-      object.objectType !== null &&
-      placeableTypeIds.has(object.objectType.id),
-  );
-  const unplacedCount = objects.filter(
-    (object) =>
-      object.planPosition === null &&
-      object.objectType !== null &&
-      placeableTypeIds.has(object.objectType.id),
-  ).length;
-  const selectedObject = markers.find((object) => object.id === selectedObjectId) ?? null;
+  /** Objects the registry allows on a plan, placed or not. */
+  const planObjects = objects.filter((object) => object.objectType?.showOnPlan === true);
+
+  /** The position a marker is drawn at: the drafted one where there is one. */
+  function effectivePosition(object: ObjectListItemDto): PlanPositionDto | null {
+    return object.id in draft ? draft[object.id]! : object.planPosition;
+  }
+
+  const markers: PlanMarker[] = planObjects.flatMap((object) => {
+    const position = effectivePosition(object);
+    if (!position) return [];
+    return [
+      {
+        id: object.id,
+        code: object.code,
+        name: object.name,
+        icon: object.objectType?.icon ?? null,
+        typeName: object.objectType?.name ?? null,
+        riskLevel: object.latestAssessment?.riskLevel ?? 'UNASSESSED',
+        position,
+      },
+    ];
+  });
+  const unplacedCount = planObjects.filter((object) => effectivePosition(object) === null).length;
+  const selectedObject = planObjects.find((object) => object.id === selectedObjectId) ?? null;
+
+  /** Drafted positions that actually differ from what is stored. */
+  const pendingMoves = Object.entries(draft).filter(([objectId, position]) => {
+    const stored = objects.find((object) => object.id === objectId)?.planPosition ?? null;
+    return !samePlanPosition(position, stored);
+  });
 
   useEffect(() => {
     if (!metaOpen) return;
@@ -226,11 +264,8 @@ export function FloorPlanPanel({
   }
 
   /** A click on bare plan is a request to register something there. */
-  function handlePlanClick(event: ReactPointerEvent<HTMLElement>): void {
-    if (!canPlace || !placementAvailable || draggingObjectId) return;
-    if (!imageRef.current) return;
-    const position = positionWithin(imageRef.current, event.clientX, event.clientY);
-    if (!position) return;
+  function handlePlanClick(position: PlanPositionDto): void {
+    if (!canPlace || !placementAvailable) return;
 
     setSelectedObjectId(null);
     setQuickError(null);
@@ -308,64 +343,68 @@ export function FloorPlanPanel({
     }
   }
 
-  async function movePin(objectId: string, position: PlanPositionDto | null): Promise<void> {
-    try {
-      await objectMasterService.updatePosition(objectId, { planPosition: position });
-      notify(position ? 'Байрлал шинэчлэгдлээ.' : 'Байрлал арилгагдлаа.', 'success');
-      onChanged();
-    } catch (caught) {
-      notify(caught instanceof ApiError ? caught.message : 'Байрлал хадгалж чадсангүй.', 'error');
-    }
+  /** A drag in progress. Drafted, never sent. */
+  const handleMarkerMove = useCallback((objectId: string, position: PlanPositionDto): void => {
+    setDraft((current) => ({ ...current, [objectId]: position }));
+  }, []);
+
+  const handleMarkerSelect = useCallback((objectId: string | null): void => {
+    setSelectedObjectId((current) => (objectId !== null && current === objectId ? null : objectId));
+  }, []);
+
+  function enterEditing(): void {
+    setEditing(true);
+    setSelectedObjectId(null);
+  }
+
+  /** Cancel is a discard: the drafted positions are simply forgotten. */
+  function cancelEditing(): void {
+    setEditing(false);
+    setDraft({});
+    setSelectedObjectId(null);
   }
 
   /**
-   * Drag to reposition.
+   * Writes every moved marker, and only those.
    *
-   * Pointer capture keeps the events coming to the marker even when the pointer leaves it,
-   * so a drag that overshoots the image still lands — clamped back onto the plan by
-   * `positionWithin`. A press that did not travel is a selection rather than a move, which
-   * is why the press coordinates are kept: without them a click and a drag are the same
-   * pair of events.
+   * Sequenced rather than fired off together: there is one endpoint and it takes one
+   * object, each call is an audited write, and a floor being retouched produces a handful
+   * of moves — not a number worth opening a dozen parallel connections for. A failure does
+   * not abandon the rest; the ones that did not land stay in the draft so the mode does not
+   * close on a half-saved plan and the retry is one more press of Save.
    */
-  function handleMarkerPointerDown(event: ReactPointerEvent<HTMLElement>, objectId: string): void {
-    event.stopPropagation();
-    if (!canPlace) return;
-    event.currentTarget.setPointerCapture?.(event.pointerId);
-    setDraggingObjectId(objectId);
-    dragOriginRef.current = { objectId, clientX: event.clientX, clientY: event.clientY };
-  }
-
-  function handleMarkerPointerUp(event: ReactPointerEvent<HTMLElement>, objectId: string): void {
-    event.stopPropagation();
-    const origin = dragOriginRef.current;
-    dragOriginRef.current = null;
-    setDraggingObjectId(null);
-    event.currentTarget.releasePointerCapture?.(event.pointerId);
-
-    const toggleSelection = (): void =>
-      setSelectedObjectId((current) => (current === objectId ? null : objectId));
-
-    if (!origin || origin.objectId !== objectId) {
-      toggleSelection();
+  async function savePositions(): Promise<void> {
+    if (pendingMoves.length === 0) {
+      cancelEditing();
       return;
     }
 
-    const travelled =
-      Math.abs(event.clientX - origin.clientX) + Math.abs(event.clientY - origin.clientY);
-    if (travelled < DRAG_THRESHOLD_PX) {
-      toggleSelection();
-      return;
+    setSavingPositions(true);
+    const failed: Record<string, PlanPositionDto | null> = {};
+    let lastError: string | null = null;
+
+    for (const [objectId, position] of pendingMoves) {
+      try {
+        await objectMasterService.updatePosition(objectId, { planPosition: position });
+      } catch (caught) {
+        failed[objectId] = position;
+        lastError = caught instanceof ApiError ? caught.message : 'Байрлал хадгалж чадсангүй.';
+      }
     }
 
-    const next = imageRef.current
-      ? positionWithin(imageRef.current, event.clientX, event.clientY)
-      : null;
-    if (!next) {
-      toggleSelection();
-      return;
+    setSavingPositions(false);
+    setDraft(failed);
+
+    const failedCount = Object.keys(failed).length;
+    if (failedCount === 0) {
+      setEditing(false);
+      setSelectedObjectId(null);
+      notify(`${pendingMoves.length} байрлал хадгалагдлаа.`, 'success');
+    } else {
+      notify(lastError ?? `${failedCount} байрлал хадгалагдсангүй.`, 'error');
     }
 
-    void movePin(objectId, next);
+    onChanged();
   }
 
   const hiddenInput = (
@@ -386,22 +425,56 @@ export function FloorPlanPanel({
     <div className="overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-slate-200">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-5 py-3">
         <h2 className="text-sm font-semibold text-slate-900">План зураг</h2>
-        {canManage && plan && (
-          <div className="flex flex-wrap gap-2">
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => fileInputRef.current?.click()}
-              loading={uploading}
-            >
-              Зураг солих
-            </Button>
-            <Button variant="secondary" size="sm" onClick={() => setMetaOpen(true)}>
-              Мэдээлэл засах
-            </Button>
-            <Button variant="ghost" size="sm" onClick={() => setRemoveOpen(true)}>
-              Устгах
-            </Button>
+        {plan && (
+          <div className="flex flex-wrap items-center gap-2">
+            {/*
+              The move-positions mode. Gated on object_master.manage, which is what the
+              position endpoint requires, and omitted rather than disabled: a reader is
+              never shown a control that would refuse them.
+            */}
+            {canPlace && placementAvailable && !editing && (
+              <Button variant="secondary" size="sm" onClick={enterEditing}>
+                Байрлал засах
+              </Button>
+            )}
+            {canPlace && placementAvailable && editing && (
+              <>
+                {pendingMoves.length > 0 && (
+                  <span className="text-xs font-medium text-amber-700">
+                    Хадгалаагүй {pendingMoves.length} өөрчлөлт
+                  </span>
+                )}
+                <Button size="sm" onClick={() => void savePositions()} loading={savingPositions}>
+                  Байрлал хадгалах
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={cancelEditing}
+                  disabled={savingPositions}
+                >
+                  Болих
+                </Button>
+              </>
+            )}
+            {canManage && !editing && (
+              <>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => fileInputRef.current?.click()}
+                  loading={uploading}
+                >
+                  Зураг солих
+                </Button>
+                <Button variant="secondary" size="sm" onClick={() => setMetaOpen(true)}>
+                  Мэдээлэл засах
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => setRemoveOpen(true)}>
+                  Устгах
+                </Button>
+              </>
+            )}
           </div>
         )}
       </div>
@@ -466,7 +539,7 @@ export function FloorPlanPanel({
             {plan.title && <p className="text-sm font-medium text-slate-900">{plan.title}</p>}
             {plan.description && <p className="text-xs text-slate-600">{plan.description}</p>}
 
-            <div className="overflow-auto rounded-lg bg-slate-50 p-2 ring-1 ring-inset ring-slate-200">
+            <div className="rounded-lg bg-slate-50 p-2 ring-1 ring-inset ring-slate-200">
               {isPdf ? (
                 <div className="flex flex-col items-start gap-2 p-4">
                   <p className="text-sm text-slate-700">{plan.fileName}</p>
@@ -488,49 +561,19 @@ export function FloorPlanPanel({
                   </p>
                 </div>
               ) : previewUrl ? (
-                /*
-                  The positioned container: the image, and a marker layer laid over exactly
-                  its box. The layer is sized by the image rather than by the card, so a
-                  marker at 0.5, 0.5 sits at the middle of the drawing and not of the panel.
-                */
-                <div className="relative mx-auto w-fit">
-                  <img
-                    ref={imageRef}
-                    src={previewUrl}
-                    alt={plan.title ?? 'Давхарын план зураг'}
-                    className="mx-auto block max-h-[520px] w-auto max-w-full"
-                    onPointerUp={handlePlanClick}
-                    style={canPlace ? { cursor: 'crosshair' } : undefined}
-                  />
-
-                  <div
-                    role="group"
-                    aria-label="План дээрх тоноглол"
-                    className="pointer-events-none absolute inset-0"
-                  >
-                    {markers.map((object) => {
-                      const level = object.latestAssessment?.riskLevel ?? 'UNASSESSED';
-                      return (
-                        <button
-                          key={object.id}
-                          type="button"
-                          aria-label={`${object.code} · ${object.name}`}
-                          title={`${object.code} · ${object.name}`}
-                          onPointerDown={(event) => handleMarkerPointerDown(event, object.id)}
-                          onPointerUp={(event) => handleMarkerPointerUp(event, object.id)}
-                          className={`pointer-events-auto absolute -translate-x-1/2 -translate-y-1/2 rounded-full px-2 py-0.5 text-[10px] font-semibold ring-2 ring-inset shadow-sm ${
-                            RISK_SURFACE_STYLES[level]
-                          } ${selectedObjectId === object.id ? 'outline outline-2 outline-offset-2 outline-blue-500' : ''} ${
-                            canPlace ? 'cursor-move' : 'cursor-pointer'
-                          }`}
-                          style={markerStyle(object.planPosition)}
-                        >
-                          {object.code}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
+                <FloorPlanCanvas
+                  imageUrl={previewUrl}
+                  imageAlt={plan.title ?? 'Давхарын план зураг'}
+                  markers={markers}
+                  editing={editing}
+                  selectedId={selectedObjectId}
+                  onSelect={handleMarkerSelect}
+                  onMarkerMove={handleMarkerMove}
+                  // Registering something at a spot is not a position edit, so it stays
+                  // out of the mode — and out of it while the mode is on, where a click
+                  // on bare plan means "deselect" rather than "create".
+                  onPlanClick={canPlace && !editing ? handlePlanClick : undefined}
+                />
               ) : (
                 <div className="h-48 animate-pulse rounded bg-slate-200" />
               )}
@@ -538,16 +581,20 @@ export function FloorPlanPanel({
 
             {placementAvailable && (
               <div className="space-y-2">
-                {placeableTypes.length === 0 ? (
+                {typesError && <Alert variant="warning">{typesError}</Alert>}
+
+                {canPlace && !typesError && placeableTypes.length === 0 ? (
                   <Alert variant="info">
                     План дээр байрлуулах тоноглолын төрөл тохируулагдаагүй байна. Тоноглолын
                     төрөл дээр "План дээр харуулах" сонголтыг идэвхжүүлнэ үү.
                   </Alert>
                 ) : (
                   <p className="text-xs text-slate-500">
-                    {canPlace
-                      ? 'План дээр дарж тоноглол бүртгэнэ. Тэмдэглэгээг чирж байрлалыг өөрчилнө.'
-                      : 'План дээрх тэмдэглэгээ нь тухайн тоноглолын эрсдэлийн түвшнийг харуулна.'}
+                    {editing
+                      ? 'Тэмдэглэгээг чирж байрлалыг өөрчилнө. Хадгалах хүртэл өөрчлөлт хадгалагдахгүй.'
+                      : canPlace
+                        ? 'План дээр дарж тоноглол бүртгэнэ. Байрлал өөрчлөхийн тулд "Байрлал засах" горимд орно.'
+                        : 'План дээрх тэмдэглэгээ нь тухайн тоноглолын эрсдэлийн түвшнийг харуулна.'}
                     {unplacedCount > 0 && ` Байрлуулаагүй ${unplacedCount} тоноглол байна.`}
                   </p>
                 )}
@@ -557,19 +604,33 @@ export function FloorPlanPanel({
                     <span className="text-xs font-medium text-slate-900">
                       {selectedObject.code} · {selectedObject.name}
                     </span>
+                    {(() => {
+                      const position = effectivePosition(selectedObject);
+                      return position ? (
+                        <span className="text-xs text-slate-500">
+                          {(position.x * 100).toFixed(1)}% · {(position.y * 100).toFixed(1)}%
+                        </span>
+                      ) : (
+                        <span className="text-xs text-slate-500">Байрлалгүй</span>
+                      );
+                    })()}
                     <Link
                       to={`/floors/${floorId}/objects/${selectedObject.id}`}
                       className="text-xs font-medium text-blue-600 hover:underline"
                     >
                       Дэлгэрэнгүй
                     </Link>
-                    {canPlace && (
+                    {/*
+                      Taking a position away is a position edit like any other, so it is
+                      drafted with the rest and only leaves the plan for good on Save.
+                    */}
+                    {editing && effectivePosition(selectedObject) !== null && (
                       <Button
                         variant="ghost"
                         size="sm"
                         onClick={() => {
+                          setDraft((current) => ({ ...current, [selectedObject.id]: null }));
                           setSelectedObjectId(null);
-                          void movePin(selectedObject.id, null);
                         }}
                       >
                         Байрлал арилгах
