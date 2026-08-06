@@ -75,6 +75,24 @@ export interface ServiceRequestDetailDto extends ServiceRequestListItemDto {
   revisitDueAt: string | null;
   parentRequestId: string | null;
   createdByName: string | null;
+  /**
+   * Whether this request's conclusion has been approved and is therefore readable.
+   *
+   * Exists so a client can decide whether to OFFER the conclusion at all. A customer cannot
+   * ask for a conclusion's status — `GET /:id/report/customer` answers 404 for anything not
+   * approved, precisely so the state of an unapproved one cannot be inferred — so without
+   * this flag the portal's only way to find out would be to call that endpoint and show or
+   * hide a tab on the strength of an error, which means every request detail screen would
+   * fire a request it expects to fail.
+   *
+   * NOT a proxy for the request's own status: `COMPLETED` is set by a human and live data
+   * has a COMPLETED request whose conclusion is still an empty draft. The flag is read from
+   * the conclusion itself.
+   *
+   * Optional on the type for the reason `planPosition` is: a consumer written before this
+   * existed still compiles. The server always sends it.
+   */
+  hasApprovedReport?: boolean;
   updatedAt: string;
 }
 

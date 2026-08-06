@@ -5,6 +5,7 @@ import 'package:monhorus_mobile/features/auth/domain/entities/app_user.dart';
 import 'package:monhorus_mobile/features/customer_portal/data/models/project_model.dart';
 import 'package:monhorus_mobile/features/customer_portal/data/models/service_request_model.dart';
 import 'package:monhorus_mobile/features/customer_portal/domain/entities/customer_scope.dart';
+import 'package:monhorus_mobile/features/customer_portal/domain/entities/risk_level.dart';
 import 'package:monhorus_mobile/features/customer_portal/presentation/screens/building_detail_screen.dart';
 import 'package:monhorus_mobile/features/customer_portal/presentation/screens/building_list_screen.dart';
 import 'package:monhorus_mobile/features/customer_portal/presentation/screens/customer_home_screen.dart';
@@ -14,6 +15,7 @@ import 'package:monhorus_mobile/features/customer_portal/presentation/screens/de
 import 'package:monhorus_mobile/features/customer_portal/presentation/screens/floor_detail_screen.dart';
 import 'package:monhorus_mobile/features/customer_portal/presentation/screens/service_request_detail_screen.dart';
 import 'package:monhorus_mobile/features/customer_portal/presentation/screens/service_request_list_screen.dart';
+import 'package:monhorus_mobile/features/customer_portal/presentation/widgets/authenticated_image.dart';
 import 'package:monhorus_mobile/features/customer_portal/presentation/widgets/risk_glyph.dart';
 import 'package:monhorus_mobile/features/customer_portal/presentation/widgets/risk_widgets.dart';
 
@@ -596,6 +598,150 @@ void main() {
       await scrollTo(tester, find.text('ҮЙЛ ЯВЦ'));
       expect(find.text('Шинэ → Хуваарилагдсан'), findsOneWidget);
       expect(find.text('Шинэ төлөвт бүртгэгдсэн'), findsOneWidget);
+    });
+
+    testWidgets('carries a report tab that switches the content',
+        (WidgetTester tester) async {
+      await pumpPhone(
+        tester,
+        wrapCustomerScreen(
+          const ServiceRequestDetailScreen(requestId: '710000000000000000000006'),
+          repository: FakeCustomerPortalRepository(
+            requestDetail: serviceRequestFixture(hasApprovedReport: true),
+            workReport: customerWorkReportFixture(),
+          ),
+        ),
+      );
+
+      expect(find.text('ХҮСЭЛТИЙН ЯВЦ'), findsOneWidget);
+      expect(find.text('ТАЙЛАН'), findsOneWidget);
+      // The progress tab is what opens.
+      expect(
+        find.text('Хэт ачаалал илэрсэн, таслуур солих шаардлагатай.'),
+        findsOneWidget,
+      );
+
+      await tester.tap(find.text('ТАЙЛАН'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('ДҮГНЭЛТ БА ЗӨВЛӨМЖ'), findsOneWidget);
+      // The request's own description belongs to the other tab and is gone with it.
+      expect(
+        find.text('Хэт ачаалал илэрсэн, таслуур солих шаардлагатай.'),
+        findsNothing,
+      );
+
+      // And back, so the switch is not one-way.
+      await tester.tap(find.text('ХҮСЭЛТИЙН ЯВЦ'));
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Хэт ачаалал илэрсэн, таслуур солих шаардлагатай.'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets(
+        'the report tab shows the conclusion, the band, both photo sets and who '
+        'approved it', (WidgetTester tester) async {
+      await pumpPhone(
+        tester,
+        wrapCustomerScreen(
+          const ServiceRequestDetailScreen(requestId: '710000000000000000000006'),
+          repository: FakeCustomerPortalRepository(
+            requestDetail: serviceRequestFixture(hasApprovedReport: true),
+            workReport: customerWorkReportFixture(),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('ТАЙЛАН'));
+      await tester.pumpAndSettle();
+
+      // The score with the band the server derived for it - not a band this app
+      // computed from the figure.
+      expect(find.byType(ScoreRing), findsOneWidget);
+      expect(find.text('38'), findsOneWidget);
+      expect(find.text(RiskLevel.critical.label), findsOneWidget);
+
+      expect(
+        find.text(
+          'Таслуурын холбогч халалттай байсныг сольж, ачааллыг тэнцүүлэв.',
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.text('Гурван сарын дараа дахин хэмжилт хийлгэнэ үү.'),
+        findsOneWidget,
+      );
+      await scrollTo(tester, find.text('ЗАСВАР ШААРДЛАГАТАЙ'));
+      expect(find.text('ЗАСВАР ШААРДЛАГАТАЙ'), findsOneWidget);
+      expect(find.text('ДАХИН ҮЗЛЭГ'), findsOneWidget);
+      expect(find.text('ДАХИН ОЧИХ 2026.08.20'), findsOneWidget);
+
+      await scrollTo(tester, find.text('Ц. Ганбаатар'));
+      expect(find.text('Баталсан хүн'), findsOneWidget);
+      expect(find.text('Ц. Ганбаатар'), findsOneWidget);
+      expect(find.text('Батлагдсан'), findsOneWidget);
+
+      // Two labelled sets, so the fault and the repair cannot be confused, and both
+      // go through the authenticated fetch because `GET /files/:id` needs the header.
+      await scrollTo(tester, find.text('АЖЛЫН ӨМНӨХ ЗУРАГ'));
+      expect(find.text('omnoh-0.png'), findsOneWidget);
+      await scrollTo(tester, find.text('АЖЛЫН ДАРААХ ЗУРАГ'));
+      expect(find.text('daraah-0.png'), findsOneWidget);
+      expect(find.byType(AuthenticatedImage), findsWidgets);
+    });
+
+    testWidgets(
+        'with no approved report the tab says so and asks the server for nothing',
+        (WidgetTester tester) async {
+      final FakeCustomerPortalRepository repository =
+          FakeCustomerPortalRepository(
+        requestDetail: serviceRequestFixture(),
+      );
+
+      await pumpPhone(
+        tester,
+        wrapCustomerScreen(
+          const ServiceRequestDetailScreen(requestId: '710000000000000000000006'),
+          repository: repository,
+        ),
+      );
+
+      await tester.tap(find.text('ТАЙЛАН'));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('хараахан бэлэн болоогүй'), findsOneWidget);
+      expect(find.text('ДҮГНЭЛТ БА ЗӨВЛӨМЖ'), findsNothing);
+      // The whole point of `hasApprovedReport`: no doomed request went out.
+      expect(repository.workReportRequestedFor, isEmpty);
+    });
+
+    testWidgets('a 404 from the report endpoint reads as not-ready, not an error',
+        (WidgetTester tester) async {
+      // The detail said there was an approved report and the endpoint disagreed - a
+      // report un-approved between the two reads, or the two racing.
+      final FakeCustomerPortalRepository repository =
+          FakeCustomerPortalRepository(
+        requestDetail: serviceRequestFixture(hasApprovedReport: true),
+      );
+
+      await pumpPhone(
+        tester,
+        wrapCustomerScreen(
+          const ServiceRequestDetailScreen(requestId: '710000000000000000000006'),
+          repository: repository,
+        ),
+      );
+
+      await tester.tap(find.text('ТАЙЛАН'));
+      await tester.pumpAndSettle();
+
+      expect(repository.workReportRequestedFor,
+          <String>['710000000000000000000006']);
+      expect(find.textContaining('хараахан бэлэн болоогүй'), findsOneWidget);
+      // Not the failure card, and no retry button: nothing has gone wrong.
+      expect(find.text('Дахин оролдох'), findsNothing);
     });
   });
 

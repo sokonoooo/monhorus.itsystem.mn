@@ -25,6 +25,7 @@ import { Employee } from '../employee/employee.model';
 import { ObjectRecord } from '../object-master/object-master.models';
 import { ObjectNode } from '../objects/object.models';
 import { ServiceRequest } from '../service-request/service-request.model';
+import { WorkReport } from '../service-request/work-report.model';
 import { StoredFile, type IStoredFile, type StoredFileOwnerType } from './stored-file.model';
 import { deleteStoredFile, resolveStoredFilePath, upload } from './storage.service';
 
@@ -73,9 +74,45 @@ const DOWNLOAD_PERMISSIONS_BY_OWNER: Record<StoredFileOwnerType, readonly Permis
  * Reported as not-found, matching every other customer-scoped read: a forbidden reply for
  * an id that exists in another tenant confirms the file is real.
  */
+/**
+ * The customer who owns a conclusion's before/after photo, or null.
+ *
+ * A SERVICE_REQUEST-owned file is normally resolved through `ServiceRequest.findById(ownerId)`,
+ * because `createServiceRequest` re-owns an attachment onto the request that claims it. A
+ * CONCLUSION PHOTO IS NEVER RE-OWNED: `POST /files/work-report-photos` parks it on the
+ * uploading technician's user id and `saveWorkReport` only stores the id in `beforePhotos` /
+ * `afterPhotos`, so `ownerId` stays a user forever. That id matches no request, so the
+ * lookup above returns nothing and the customer read was refused — the conclusion's own
+ * endpoint would hand a customer photo urls that every one of them 404'd.
+ *
+ * Re-owning the files on save would have fixed the shape and left every photo already in the
+ * database still broken, so the resolution is widened instead: a file no request claims is
+ * looked up through the conclusion that references it.
+ *
+ * ONLY AN APPROVED CONCLUSION COUNTS, matching `getCustomerWorkReport` exactly. The two must
+ * not drift: a customer who could fetch the evidence attached to a draft would be reading a
+ * conclusion nobody has signed off, one file at a time, while the endpoint that serves it
+ * still answered 404. Staff never reach this — `assertFileInCustomerScope` returns early for
+ * a STAFF scope — so a technician's access to their own draft's photos is untouched.
+ *
+ * `objectAssessments[].photos` is deliberately NOT matched. Per-equipment evidence is not on
+ * `CustomerWorkReportDto`, so no customer is ever handed one of those ids, and widening to
+ * cover them would grant access nothing asks for.
+ */
+async function customerOfWorkReportPhoto(fileId: Types.ObjectId): Promise<Types.ObjectId | null> {
+  const report = await WorkReport.findOne({
+    status: 'APPROVED',
+    $or: [{ beforePhotos: fileId }, { afterPhotos: fileId }],
+  }).select('serviceRequest');
+  if (!report) return null;
+
+  const serviceRequest = await ServiceRequest.findById(report.serviceRequest).select('customer');
+  return serviceRequest?.customer ?? null;
+}
+
 async function assertFileInCustomerScope(
   auth: AuthContext,
-  file: Pick<IStoredFile, 'ownerType' | 'ownerId'>,
+  file: Pick<IStoredFile, 'ownerType' | 'ownerId'> & { _id: Types.ObjectId },
 ): Promise<void> {
   const scope = resolveCustomerScope(auth);
   if (scope.mode === 'STAFF') return;
@@ -100,7 +137,15 @@ async function assertFileInCustomerScope(
     case 'SERVICE_REQUEST': {
       // Same shape: an attachment is parked on the uploader until the request claims it.
       const serviceRequest = await ServiceRequest.findById(file.ownerId).select('customer');
-      assertInCustomerScope(scope, serviceRequest?.customer, notFound);
+      if (serviceRequest) {
+        assertInCustomerScope(scope, serviceRequest.customer, notFound);
+        return;
+      }
+
+      // No request claimed it. Either it is a conclusion photo, which is never re-owned, or
+      // it is an attachment still parked on its uploader — and the second resolves to null
+      // here exactly as it did before, so an unclaimed upload stays unreadable.
+      assertInCustomerScope(scope, await customerOfWorkReportPhoto(file._id), notFound);
       return;
     }
     default:

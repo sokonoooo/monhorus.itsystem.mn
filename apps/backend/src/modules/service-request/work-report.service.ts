@@ -1,6 +1,7 @@
 import {
   riskLevelFor,
   workReportCompleteness,
+  type CustomerWorkReportDto,
   type ReturnWorkReportInput,
   type SaveWorkReportInput,
   type WorkReportDto,
@@ -276,6 +277,74 @@ export async function findWorkReport(
     .populate(POPULATE)
     .lean<WithId<IWorkReport> | null>();
   return report ? toDto(report) : null;
+}
+
+/**
+ * Whether a request's conclusion has been approved.
+ *
+ * Deliberately `exists` on the unique `serviceRequest` index rather than a populate: the
+ * request detail read runs this on every call, for staff and customer alike, and it needs
+ * to answer one boolean rather than assemble a conclusion nobody asked for.
+ */
+export async function hasApprovedWorkReport(requestId: Types.ObjectId): Promise<boolean> {
+  const approved = await WorkReport.exists({ serviceRequest: requestId, status: 'APPROVED' });
+  return approved !== null;
+}
+
+/**
+ * The conclusion as a customer reads it.
+ *
+ * READS, NEVER CREATES. `GET /:id/report` is `getOrCreateWorkReport`, which mints a DRAFT
+ * attributed to whoever asked first; pointing a portal key at that route would have made
+ * every customer who opened the tab the recorded author of an empty conclusion on their own
+ * request. `findWorkReport` is the read that has no such side effect, and this is what it
+ * exists for.
+ *
+ * APPROVED OR NOTHING, and the nothing is a 404. Rules 17.6/17.7 make approval the moment a
+ * conclusion stops being a working document, and the planned-work portal already draws the
+ * line in the same place (`visibleToCustomer: report.status === 'APPROVED'`). The request's
+ * own `COMPLETED` is not a substitute — it is set by hand, and live data has a COMPLETED
+ * request whose conclusion never left DRAFT.
+ *
+ * "No conclusion", "a draft", "submitted" and "returned" are ALL answered identically, with
+ * the same message a foreign request gets. A distinct reply for each would let a customer
+ * watch their own request's internal review progress — and, worse, an "exists but not
+ * approved" answer confirms a technician has written something they have not yet stood
+ * behind. Whether the office is still arguing about the wording is not a fact the portal
+ * should be able to observe.
+ *
+ * Tenancy is `requestIdInScope`'s, which puts the customer predicate in the query, so a
+ * foreign request is missing rather than forbidden. Its assignment half is skipped for a
+ * CUSTOMER scope, which is correct here for the reason stated there: a portal account has
+ * no employee card to be assigned to anything.
+ */
+export async function getCustomerWorkReport(
+  requestId: string,
+  scope: ResolvedCustomerScope,
+  actor: AuthContext,
+): Promise<CustomerWorkReportDto> {
+  const report = await findWorkReport(requestId, scope, actor);
+
+  if (!report || report.status !== 'APPROVED') {
+    throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Дүгнэлт олдсонгүй.');
+  }
+
+  // Written out field by field rather than by deleting from the staff DTO: a field added to
+  // `WorkReportDto` later must be opted IN to here, so the next internal note added to a
+  // conclusion cannot reach a customer by default.
+  return {
+    conclusion: report.conclusion,
+    recommendation: report.recommendation,
+    score: report.score,
+    riskLevel: report.riskLevel,
+    repairRequired: report.repairRequired,
+    revisitRequired: report.revisitRequired,
+    revisitDate: report.revisitDate,
+    beforePhotos: report.beforePhotos,
+    afterPhotos: report.afterPhotos,
+    approvedAt: report.approvedAt,
+    approvedByName: report.approvedByName,
+  };
 }
 
 export async function saveWorkReport(

@@ -1,3 +1,4 @@
+import '../../domain/entities/risk_level.dart';
 import '../../domain/entities/service_request_enums.dart';
 import 'json_utils.dart';
 import 'object_master_model.dart';
@@ -120,6 +121,12 @@ class ServiceRequestAttachmentModel {
 
   bool get isImage => mimeType.startsWith('image/');
 }
+
+/// `WorkReportPhotoDto` in packages/shared/src/types/work-report.types.ts is
+/// field-for-field the same shape as `ServiceRequestAttachmentDto` — id, name,
+/// downloadUrl, mimeType, sizeBytes, uploadedByName, uploadedAt — so it is parsed by
+/// the same model rather than by a second copy of it that could drift.
+typedef WorkReportPhotoModel = ServiceRequestAttachmentModel;
 
 /// Mirrors `ServiceRequestStatusHistoryDto` in
 /// packages/shared/src/types/service-request.types.ts.
@@ -286,6 +293,7 @@ class ServiceRequestDetailModel extends ServiceRequestListItemModel {
     required this.parentRequestId,
     required this.createdByName,
     required this.updatedAt,
+    required this.hasApprovedReport,
   });
 
   final ObjectRefModel? panel;
@@ -306,6 +314,19 @@ class ServiceRequestDetailModel extends ServiceRequestListItemModel {
   final String? parentRequestId;
   final String? createdByName;
   final DateTime? updatedAt;
+
+  /// Whether `GET /service-requests/:id/report/customer` would answer with a
+  /// conclusion rather than a 404.
+  ///
+  /// The server computes it, and it is true only for a report the office has
+  /// APPROVED — a draft, a submission and a returned report are all false, exactly as
+  /// the report endpoint treats them. Read before that endpoint is called so the
+  /// report tab does not fire a request it already knows will 404.
+  ///
+  /// Optional in `ServiceRequestDetailDto`, so an older server that does not send it
+  /// reads false: the tab then says the conclusion is not ready, which is the honest
+  /// answer when nothing said otherwise.
+  final bool hasApprovedReport;
 
   factory ServiceRequestDetailModel.fromJson(Map<String, dynamic> json) {
     return ServiceRequestDetailModel(
@@ -346,6 +367,70 @@ class ServiceRequestDetailModel extends ServiceRequestListItemModel {
       parentRequestId: json['parentRequestId'] as String?,
       createdByName: json['createdByName'] as String?,
       updatedAt: parseDate(json['updatedAt']),
+      hasApprovedReport: json['hasApprovedReport'] as bool? ?? false,
+    );
+  }
+}
+
+/// Mirrors `CustomerWorkReportDto` in
+/// packages/shared/src/types/work-report.types.ts — the eleven fields the backend
+/// writes out by hand for a customer, and not one field of the staff `WorkReportDto`
+/// more.
+///
+/// Only ever obtained for an APPROVED report: `getCustomerWorkReport` answers 404 for
+/// a draft, a submission, a returned report and a request belonging to somebody else,
+/// so the presence of this object is itself the statement that a technician's
+/// conclusion has been approved.
+class CustomerWorkReportModel {
+  const CustomerWorkReportModel({
+    required this.conclusion,
+    required this.recommendation,
+    required this.score,
+    required this.riskLevel,
+    required this.repairRequired,
+    required this.revisitRequired,
+    required this.revisitDate,
+    required this.beforePhotos,
+    required this.afterPhotos,
+    required this.approvedAt,
+    required this.approvedByName,
+  });
+
+  final String? conclusion;
+  final String? recommendation;
+
+  /// 0-100, or null when the technician recorded no score. Never rendered as a zero.
+  final int? score;
+
+  /// The band the server derived from [score] against the thresholds in force. Never
+  /// derived on the device; see [RiskLevel.fromScore].
+  final RiskLevel? riskLevel;
+
+  final bool repairRequired;
+  final bool revisitRequired;
+  final DateTime? revisitDate;
+
+  final List<WorkReportPhotoModel> beforePhotos;
+  final List<WorkReportPhotoModel> afterPhotos;
+
+  final DateTime? approvedAt;
+  final String? approvedByName;
+
+  factory CustomerWorkReportModel.fromJson(Map<String, dynamic> json) {
+    return CustomerWorkReportModel(
+      conclusion: json['conclusion'] as String?,
+      recommendation: json['recommendation'] as String?,
+      score: (json['score'] as num?)?.toInt(),
+      riskLevel: RiskLevel.fromWire(json['riskLevel'] as String?),
+      repairRequired: json['repairRequired'] as bool? ?? false,
+      revisitRequired: json['revisitRequired'] as bool? ?? false,
+      revisitDate: parseDate(json['revisitDate']),
+      beforePhotos:
+          parseList(json['beforePhotos'], ServiceRequestAttachmentModel.fromJson),
+      afterPhotos:
+          parseList(json['afterPhotos'], ServiceRequestAttachmentModel.fromJson),
+      approvedAt: parseDate(json['approvedAt']),
+      approvedByName: json['approvedByName'] as String?,
     );
   }
 }

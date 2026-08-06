@@ -259,6 +259,25 @@ class CustomerPortalRemoteDataSource {
     );
   }
 
+  /// GET /service-requests/:requestId/report/customer.
+  ///
+  /// The customer-facing projection of the technician's conclusion: eleven fields, no
+  /// report id, no internal notes. Answers **404** when the request carries no report,
+  /// when the report is not APPROVED, and when the request is not this customer's —
+  /// the three are deliberately indistinguishable. It creates nothing.
+  ///
+  /// The 404 is a legitimate answer rather than a fault, so the repository turns it
+  /// into a null instead of a failure; see
+  /// [CustomerPortalRepository.getCustomerWorkReport].
+  Future<CustomerWorkReportModel> getCustomerWorkReport(String requestId) {
+    return _client.request<CustomerWorkReportModel>(
+      path: '/service-requests/$requestId/report/customer',
+      method: 'GET',
+      decoder: (Object? json) =>
+          CustomerWorkReportModel.fromJson(json! as Map<String, dynamic>),
+    );
+  }
+
   /// POST /files/service-request-attachments — multipart, needs
   /// `portal.service_request.create` (or the staff `service_request.create`).
   ///

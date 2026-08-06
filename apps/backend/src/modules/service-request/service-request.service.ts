@@ -31,7 +31,7 @@ import type { RequestMeta } from '../../common/utils/request-meta.util';
 import { recordAudit } from '../audit/audit.service';
 import { notify } from '../notification/notification.service';
 import { resolveAssignedWorkFilter } from '../planned-work/planned-work.scope';
-import { assertReportAllows } from './work-report.service';
+import { assertReportAllows, hasApprovedWorkReport } from './work-report.service';
 import { assertSelfProgressAllowed } from './self-progress.policy';
 import { userIdsForEmployees } from '../notification/recipient.util';
 import { Employee, type IEmployee } from '../employee/employee.model';
@@ -207,6 +207,10 @@ export async function toDetailDto(
     revisitDueAt: request.revisitDueAt ? request.revisitDueAt.toISOString() : null,
     parentRequestId: request.parentRequest ? String(request.parentRequest) : null,
     createdByName: request.createdByName,
+    // Whether `GET /:id/report/customer` will answer. Read from the conclusion rather than
+    // inferred from `status`: a request is moved to COMPLETED by a person, and the flag has
+    // to be a fact about the conclusion itself.
+    hasApprovedReport: await hasApprovedWorkReport(request._id),
     updatedAt: request.updatedAt.toISOString(),
   };
 }

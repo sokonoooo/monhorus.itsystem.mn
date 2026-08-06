@@ -283,6 +283,23 @@ final FutureProviderFamily<ServiceRequestDetailModel, String>
   return _unwrap(await repository.getServiceRequest(requestId));
 });
 
+/// The technician's approved conclusion for one request, or null when there is none.
+///
+/// Deliberately NOT watched by the request detail screen unconditionally. The detail
+/// response carries `hasApprovedReport`, and the report tab reads that flag first:
+/// watching this provider is what issues the HTTP call, so a request with no approved
+/// conclusion never makes one. A null here therefore means the flag and the endpoint
+/// disagreed — a report un-approved between the two reads, or a race — and the screen
+/// shows the same not-ready state either way.
+final FutureProviderFamily<CustomerWorkReportModel?, String>
+    customerWorkReportProvider =
+    FutureProvider.family<CustomerWorkReportModel?, String>(
+        (Ref ref, String requestId) async {
+  final CustomerPortalRepository repository =
+      ref.watch(customerPortalRepositoryProvider);
+  return _unwrap(await repository.getCustomerWorkReport(requestId));
+});
+
 // -- Notifications -----------------------------------------------------------
 
 final FutureProvider<List<NotificationModel>> customerNotificationsProvider =

@@ -58,6 +58,18 @@ abstract interface class CustomerPortalRepository {
 
   Future<ApiResult<ServiceRequestDetailModel>> getServiceRequest(String requestId);
 
+  /// The technician's approved conclusion, or **null** when there is not one.
+  ///
+  /// Nullable rather than failing, because `GET /:requestId/report/customer` answers
+  /// 404 for every state that is not an approved report — none written, one still in
+  /// draft, one submitted, one returned — and "the conclusion is not ready" is not an
+  /// error the customer can act on. A genuine fault (no network, a 500, a session that
+  /// expired) still comes back as a [Failure], so the screen can tell the two apart.
+  ///
+  /// Takes no scope: the route resolves the customer from the session and answers 404
+  /// for a request that is not theirs, so there is nothing for the client to narrow.
+  Future<ApiResult<CustomerWorkReportModel?>> getCustomerWorkReport(String requestId);
+
   /// Uploads one picture and returns the attachment the create call must name.
   ///
   /// Takes no scope for the same reason the endpoint asks for none: nothing about the

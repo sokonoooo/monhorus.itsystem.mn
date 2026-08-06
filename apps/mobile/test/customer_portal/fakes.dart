@@ -334,6 +334,7 @@ ServiceRequestDetailModel serviceRequestFixture({
   String requestNumber = 'SR-202607-0012',
   String status = 'ASSIGNED',
   bool isUrgent = true,
+  bool hasApprovedReport = false,
 }) {
   return ServiceRequestDetailModel.fromJson(<String, dynamic>{
     'id': id,
@@ -422,6 +423,60 @@ ServiceRequestDetailModel serviceRequestFixture({
     'parentRequestId': null,
     'createdByName': 'Д. Оюунчимэг',
     'updatedAt': '2026-07-27T02:10:00.000Z',
+    'hasApprovedReport': hasApprovedReport,
+  });
+}
+
+/// The customer projection of a technician's conclusion, as
+/// `GET /service-requests/:requestId/report/customer` returns it — the eleven fields
+/// `CustomerWorkReportDto` declares and nothing else.
+CustomerWorkReportModel customerWorkReportFixture({
+  String? conclusion = 'Таслуурын холбогч халалттай байсныг сольж, ачааллыг тэнцүүлэв.',
+  String? recommendation = 'Гурван сарын дараа дахин хэмжилт хийлгэнэ үү.',
+  int? score = 38,
+  String? riskLevel = 'CRITICAL',
+  bool repairRequired = true,
+  bool revisitRequired = true,
+  // Noon UTC, so the local date the screen prints is 2026.08.20 whatever zone the
+  // suite runs in.
+  String? revisitDate = '2026-08-20T12:00:00.000Z',
+  int beforePhotoCount = 1,
+  int afterPhotoCount = 1,
+}) {
+  return CustomerWorkReportModel.fromJson(<String, dynamic>{
+    'conclusion': conclusion,
+    'recommendation': recommendation,
+    'score': score,
+    'riskLevel': riskLevel,
+    'repairRequired': repairRequired,
+    'revisitRequired': revisitRequired,
+    'revisitDate': revisitDate,
+    'beforePhotos': <Map<String, dynamic>>[
+      for (int i = 0; i < beforePhotoCount; i++)
+        <String, dynamic>{
+          'id': 'bb0000000000000000000b0$i',
+          'name': 'omnoh-$i.png',
+          'downloadUrl': '/api/v1/files/bb0000000000000000000b0$i',
+          'mimeType': 'image/png',
+          'sizeBytes': 2048,
+          'uploadedByName': 'Б. Энхтөр',
+          'uploadedAt': '2026-07-27T05:00:00.000Z',
+        },
+    ],
+    'afterPhotos': <Map<String, dynamic>>[
+      for (int i = 0; i < afterPhotoCount; i++)
+        <String, dynamic>{
+          'id': 'cc0000000000000000000c0$i',
+          'name': 'daraah-$i.png',
+          'downloadUrl': '/api/v1/files/cc0000000000000000000c0$i',
+          'mimeType': 'image/png',
+          'sizeBytes': 3072,
+          'uploadedByName': 'Б. Энхтөр',
+          'uploadedAt': '2026-07-27T07:30:00.000Z',
+        },
+    ],
+    'approvedAt': '2026-07-28T02:15:00.000Z',
+    'approvedByName': 'Ц. Ганбаатар',
   });
 }
 
@@ -479,6 +534,7 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
     Uint8List? fileBytes,
     this.floorPlan,
     this.objectHistory,
+    this.workReport,
     this.failure,
     this.uploadFailure,
     this.buildingPageSize = 100,
@@ -523,6 +579,19 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
   /// screen that rendered the timeline for every account looked healthy in the suite and
   /// 403'd on every device page in the running app.
   final ObjectHistoryModel? objectHistory;
+
+  /// The approved conclusion `GET /:requestId/report/customer` answers with.
+  ///
+  /// Null - the default - stands for the endpoint's 404, which the repository turns
+  /// into a null rather than a failure. It covers every state that is not an approved
+  /// report: none written, still a draft, submitted, returned, or somebody else's
+  /// request.
+  final CustomerWorkReportModel? workReport;
+
+  /// Request ids the report endpoint was called for. A test asserts this stays EMPTY
+  /// when `hasApprovedReport` is false — not firing that request is the entire reason
+  /// the flag is on the detail response.
+  final List<String> workReportRequestedFor = <String>[];
 
   /// When set, every read fails with it.
   final Failure? failure;
@@ -657,6 +726,14 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
   Future<ApiResult<ServiceRequestDetailModel>> getServiceRequest(
           String requestId) async =>
       _result(requestDetail);
+
+  @override
+  Future<ApiResult<CustomerWorkReportModel?>> getCustomerWorkReport(
+    String requestId,
+  ) async {
+    workReportRequestedFor.add(requestId);
+    return _result<CustomerWorkReportModel?>(workReport);
+  }
 
   @override
   Future<ApiResult<ServiceRequestAttachmentModel>> uploadServiceRequestAttachment(
