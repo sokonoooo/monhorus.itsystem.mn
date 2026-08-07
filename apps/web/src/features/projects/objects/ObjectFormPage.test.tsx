@@ -645,4 +645,163 @@ describe('ObjectFormPage', () => {
       });
     });
   });
+
+  /**
+   * The category's electrical fields are two dozen optional figures, every one of them
+   * nullish at the API. They are folded into a section rather than laid out in front of
+   * somebody registering a socket — but never over something that matters, which is what
+   * these tests are about: values already entered and errors already raised open it.
+   */
+  describe('the electrical section', () => {
+    const OBJECT_ID = '507f1f77bcf86cd799439181';
+
+    function electricalToggle(): HTMLElement {
+      return screen.getByRole('button', { name: /Цахилгааны мэдээлэл/ });
+    }
+
+    /** The form as the edit action opens it, over the object the API hands back. */
+    function renderEdit() {
+      return renderWithAuth(<ObjectFormPage />, {
+        permissions: [PERMISSIONS.OBJECT_MASTER_VIEW, PERMISSIONS.OBJECT_MASTER_MANAGE],
+        route: `/floors/${FLOOR_ID}/objects/${OBJECT_ID}/edit`,
+        path: '/floors/:floorId/objects/:objectId/edit',
+      });
+    }
+
+    it('starts folded away on a new object, with its fields out of sight', async () => {
+      renderCreate();
+
+      await waitFor(() => expect(electricalToggle()).toHaveAttribute('aria-expanded', 'false'));
+      // Present, so nothing about the form's state depends on the fold — and not shown.
+      expect(screen.getByLabelText('Нэрлэсэн чадал (kW)')).not.toBeVisible();
+      expect(screen.getByLabelText('Тоо ширхэг')).not.toBeVisible();
+      expect(screen.getByLabelText('Тэжээх хэлхээ')).not.toBeVisible();
+      // What the form does open with: the identity fields, the description and the note.
+      expect(screen.getByLabelText(/^Нэр\*/)).toBeVisible();
+      expect(screen.getByLabelText('Тэмдэглэл')).toBeVisible();
+    });
+
+    it('reveals the fields when opened and sends what was typed into them', async () => {
+      const create = vi.spyOn(objectMasterService, 'create').mockResolvedValue(makeObjectDetail());
+      const user = userEvent.setup();
+
+      renderCreate();
+
+      await user.click(await screen.findByRole('button', { name: /Цахилгааны мэдээлэл/ }));
+      expect(electricalToggle()).toHaveAttribute('aria-expanded', 'true');
+
+      const ratedPower = screen.getByLabelText('Нэрлэсэн чадал (kW)');
+      expect(ratedPower).toBeVisible();
+
+      await user.type(ratedPower, '3.5');
+      await user.type(screen.getByLabelText('Тоо ширхэг'), '2');
+      await user.selectOptions(screen.getByLabelText(/^Тоноглолын төрөл/), TYPE_ID);
+      await user.type(screen.getByLabelText(/^Код/), 'EQ-21');
+      await user.type(screen.getByLabelText(/^Нэр\*/), 'Нээгээд бөглөсөн');
+
+      await user.click(screen.getByRole('button', { name: 'Хадгалах' }));
+
+      await waitFor(() => {
+        expect(create).toHaveBeenCalledWith(
+          expect.objectContaining({
+            equipment: expect.objectContaining({ ratedPowerKw: 3.5, quantity: 2 }),
+          }),
+        );
+      });
+    });
+
+    /** A capacity already on record must not be hidden behind a fold nobody knew to open. */
+    it('opens itself on an object that already carries electrical values', async () => {
+      vi.spyOn(objectMasterService, 'getById').mockResolvedValue(
+        makeObjectDetail({
+          category: 'PANEL',
+          panel: { capacityKw: 25, location: 'Баруун жигүүр', protection: 'IP54' },
+        }),
+      );
+
+      renderEdit();
+
+      const capacity = await screen.findByLabelText('Хүчин чадал (kW)');
+      expect(capacity).toHaveValue(25);
+      expect(capacity).toBeVisible();
+      expect(electricalToggle()).toHaveAttribute('aria-expanded', 'true');
+    });
+
+    it('stays folded away on an object that carries none', async () => {
+      vi.spyOn(objectMasterService, 'getById').mockResolvedValue(
+        makeObjectDetail({
+          category: 'PANEL',
+          panel: { capacityKw: null, location: null, protection: null },
+        }),
+      );
+
+      renderEdit();
+
+      await waitFor(() => expect(electricalToggle()).toHaveAttribute('aria-expanded', 'false'));
+      expect(screen.getByLabelText('Хүчин чадал (kW)')).not.toBeVisible();
+    });
+
+    /**
+     * The case that would otherwise be a dead end: a save refused over a message folded out
+     * of sight, with nothing on screen to say why. The error opens the section itself, and
+     * it does so over the user's own decision to close it.
+     */
+    it('opens itself, over a fold the user chose, when an error lands inside it', async () => {
+      const create = vi.spyOn(objectMasterService, 'create').mockResolvedValue(makeObjectDetail());
+      const user = userEvent.setup();
+
+      renderCreate();
+
+      await user.click(await screen.findByRole('button', { name: /Цахилгааны мэдээлэл/ }));
+      // Zero fails `quantity`: the schema asks for a whole number above nothing.
+      await user.type(screen.getByLabelText('Тоо ширхэг'), '0');
+
+      await user.click(electricalToggle());
+      expect(screen.getByLabelText('Тоо ширхэг')).not.toBeVisible();
+
+      await user.selectOptions(screen.getByLabelText(/^Тоноглолын төрөл/), TYPE_ID);
+      await user.type(screen.getByLabelText(/^Код/), 'EQ-22');
+      await user.type(screen.getByLabelText(/^Нэр\*/), 'Далдалсан алдаа');
+      await user.click(screen.getByRole('button', { name: 'Хадгалах' }));
+
+      const quantity = await screen.findByLabelText('Тоо ширхэг');
+      await waitFor(() => expect(quantity).toBeVisible());
+      expect(electricalToggle()).toHaveAttribute('aria-expanded', 'true');
+      expect(screen.getByText('Тоо ширхэг 0-ээс их байна.')).toBeVisible();
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    /**
+     * The register-on-this-panel route arrives with the mount already chosen, and the code
+     * suggestion is asked for off the back of it. Both are values the form was opened
+     * carrying, so the section is open on arrival rather than hiding where the code came
+     * from.
+     */
+    it('is open on arrival when the route pre-filled the mounting panel', async () => {
+      const PANEL_ID = '507f1f77bcf86cd799439161';
+      vi.spyOn(objectMasterService, 'list').mockImplementation(async (query = {}) =>
+        makePage(
+          query.category === 'PANEL'
+            ? [makeObjectListItem({ id: PANEL_ID, code: 'DB-2A', name: 'Түгээх самбар 2A' })]
+            : [],
+        ),
+      );
+      vi.spyOn(objectMasterService, 'codeSuggestion').mockResolvedValue({
+        code: 'DB-2A-01',
+        basedOn: 'DB-2A',
+      });
+
+      renderWithAuth(<ObjectFormPage />, {
+        permissions: [PERMISSIONS.OBJECT_MASTER_VIEW, PERMISSIONS.OBJECT_MASTER_MANAGE],
+        route: `/floors/${FLOOR_ID}/objects/new?category=EQUIPMENT&panelId=${PANEL_ID}`,
+        path: '/floors/:floorId/objects/new',
+      });
+
+      const mount = await screen.findByLabelText('Байрлах самбар');
+      await waitFor(() => expect(mount).toHaveValue(PANEL_ID));
+      expect(mount).toBeVisible();
+      expect(electricalToggle()).toHaveAttribute('aria-expanded', 'true');
+      await waitFor(() => expect(screen.getByLabelText(/^Код/)).toHaveValue('DB-2A-01'));
+    });
+  });
 });

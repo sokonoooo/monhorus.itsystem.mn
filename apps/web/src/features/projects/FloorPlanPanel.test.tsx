@@ -1,7 +1,9 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import type { ObjectDetailDto } from '@monhorus/shared';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { ApiError } from '../../lib/api-client';
 import * as fileUrl from '../../lib/file-url';
 import { objectMasterService, objectTypeService } from '../../services/object-master.service';
 import {
@@ -12,7 +14,7 @@ import {
   makePage,
 } from '../../test/fixtures';
 import { renderWithAuth } from '../../test/render';
-import { PLAN_FOCUS_ZOOM } from './FloorPlanCanvas';
+import { PLAN_FOCUS_ZOOM, PLAN_MAX_ZOOM } from './FloorPlanCanvas';
 import { FloorPlanPanel } from './FloorPlanPanel';
 import { PLAN_FLOW_WIDTH, DEFAULT_PLAN_ASPECT } from './plan-geometry';
 
@@ -68,6 +70,19 @@ const PLAN_BOX = { width: PLAN_FLOW_WIDTH, height: PLAN_FLOW_WIDTH / DEFAULT_PLA
 const CANVAS_WIDTH = 800;
 const CANVAS_HEIGHT = 600;
 
+/**
+ * The box React Flow measures *itself* with, when a test cares.
+ *
+ * Not the same box as the one above. `CANVAS_WIDTH`/`CANVAS_HEIGHT` are stated on
+ * `.react-flow`, which is what pointer positions are converted against — but React Flow sizes
+ * its viewport from `.react-flow__renderer`, and falls back to 500×500 when that box reports
+ * nothing, which is what every test here has always been looking at.
+ *
+ * Left null so that fallback stays in force and no existing expectation moves. A test that
+ * needs the container to change size states one and calls `resizeCanvas`.
+ */
+let rendererBox: { width: number; height: number } | null = null;
+
 function rectOf(width: number, height: number): DOMRect {
   return {
     x: 0,
@@ -96,16 +111,25 @@ function rectOf(width: number, height: number): DOMRect {
  * shove them all back inside its own extent.
  */
 function layOutCanvas(): void {
+  rendererBox = null;
   Object.defineProperty(HTMLElement.prototype, 'offsetWidth', {
     configurable: true,
     get(this: HTMLElement) {
-      return this.classList.contains('react-flow') ? CANVAS_WIDTH : 0;
+      if (this.classList.contains('react-flow')) return CANVAS_WIDTH;
+      if (rendererBox && this.classList.contains('react-flow__renderer')) {
+        return rendererBox.width;
+      }
+      return 0;
     },
   });
   Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
     configurable: true,
     get(this: HTMLElement) {
-      return this.classList.contains('react-flow') ? CANVAS_HEIGHT : 0;
+      if (this.classList.contains('react-flow')) return CANVAS_HEIGHT;
+      if (rendererBox && this.classList.contains('react-flow__renderer')) {
+        return rendererBox.height;
+      }
+      return 0;
     },
   });
   vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
@@ -181,6 +205,54 @@ function markerScreenPoint(objectId: string): { x: number; y: number } {
 }
 
 /**
+ * The screen point for a fraction of the drawing.
+ *
+ * The general form of the `markerScreenPoint` trick, for the tests that need several
+ * distinct spots rather than one reference marker: a plan position is a fraction of the plan
+ * box, and the viewport transform is what puts that box on screen. Deriving the pixel from
+ * those two keeps a click independent of how the canvas happens to be framed, which is the
+ * one thing this file must never assume.
+ */
+function planScreenPoint(x: number, y: number): { x: number; y: number } {
+  const view = viewport();
+  return {
+    x: view.x + x * PLAN_BOX.width * view.zoom,
+    y: view.y + y * PLAN_BOX.height * view.zoom,
+  };
+}
+
+/** A click on the drawing, at a fraction of it. */
+function clickPlan(x: number, y: number): void {
+  const point = planScreenPoint(x, y);
+  fireEvent.click(pane(), { clientX: point.x, clientY: point.y });
+}
+
+/** Every pin currently on the drawing, the ones still in flight included. */
+function markerCount(): number {
+  return document.querySelectorAll('.react-flow__node').length;
+}
+
+/**
+ * A promise the test holds both ends of.
+ *
+ * The only way to state the order two answers come back in, which is the whole subject of
+ * the out-of-order test below.
+ */
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (reason: unknown) => void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+/**
  * How large the marker is drawn, relative to its unzoomed size.
  *
  * The marker sits inside the viewport, so what reaches the screen is the viewport's zoom
@@ -214,6 +286,19 @@ function pane(): HTMLElement {
   return element as HTMLElement;
 }
 
+/**
+ * The container changing size, as the browser would report it.
+ *
+ * React Flow re-measures on a window resize as well as through its observer, and the observer
+ * stub in the setup file only fires when it is attached — so the window event is the one hook
+ * a test can pull after mount. Stating the box first is what makes the re-measurement find a
+ * different answer.
+ */
+function resizeCanvas(width: number, height: number): void {
+  rendererBox = { width, height };
+  fireEvent(globalThis.window, new Event('resize'));
+}
+
 function placedObject(overrides: Parameters<typeof makeObjectListItem>[0] = {}) {
   return makeObjectListItem({
     id: 'o1',
@@ -223,6 +308,61 @@ function placedObject(overrides: Parameters<typeof makeObjectListItem>[0] = {}) 
     planPosition: { x: 0.5, y: 0.25 },
     ...overrides,
   });
+}
+
+/**
+ * What quick-place answers with.
+ *
+ * A whole object row, and one the click could not have produced on its own: the code and the
+ * name are allocated by the server, which is precisely why the payload carries neither.
+ */
+function quickPlaced(overrides: Parameters<typeof makeObjectDetail>[0] = {}): ObjectDetailDto {
+  return makeObjectDetail({
+    id: 'q1',
+    code: 'EQ-101',
+    name: 'Автомат таслуур 1',
+    objectType: PLACEABLE_INLINE,
+    planPosition: { x: 0.5, y: 0.25 },
+    ...overrides,
+  });
+}
+
+/**
+ * Quick-place answering with a differently numbered object on each call.
+ *
+ * Distinct rows rather than the same one repeated, because a plan drawn from the responses
+ * would otherwise be asked to hold several markers with one id.
+ */
+function quickPlaceSequence(count: number) {
+  const spy = vi.spyOn(objectMasterService, 'quickPlace');
+  for (let index = 1; index <= count; index += 1) {
+    spy.mockResolvedValueOnce(
+      quickPlaced({
+        id: `q${index}`,
+        code: `EQ-10${index}`,
+        name: `Автомат таслуур ${index}`,
+      }),
+    );
+  }
+  return spy;
+}
+
+/** The placement bar. Its presence is the whole of "this caller may place". */
+function placeBar(): HTMLElement {
+  return screen.getByRole('group', { name: 'Тоноглол байрлуулах' });
+}
+
+/**
+ * Picks a type in the bar, which is the whole of entering placing mode.
+ *
+ * `fireEvent`, not `userEvent`: the choice replaces the select with the placing bar in the
+ * same commit, and a helper that carries on pointing at an element the change has already
+ * unmounted is not a gesture a user can make.
+ */
+async function chooseType(typeId: string = TYPE_ID): Promise<void> {
+  const select = await screen.findByLabelText('Түргэн байрлуулах');
+  fireEvent.change(select, { target: { value: typeId } });
+  await screen.findByText(/байрлуулж байна/);
 }
 
 /** A placed object of the second layer. */
@@ -316,11 +456,13 @@ describe('FloorPlanPanel placement', () => {
   });
 
   it('registers an object at the clicked spot with normalised coordinates', async () => {
-    const create = vi.spyOn(objectMasterService, 'create').mockResolvedValue(makeObjectDetail());
-    const user = userEvent.setup();
+    const quickPlace = vi.spyOn(objectMasterService, 'quickPlace').mockResolvedValue(quickPlaced());
 
     const { props } = renderPanel({ objects: [placedObject()] });
     await readyCanvas();
+
+    // The type is asked for once, in the bar. After that a click is a whole object.
+    await chooseType();
 
     /*
       The reference marker is drawn at 0.5, 0.25 of the drawing, so wherever it has landed
@@ -330,57 +472,60 @@ describe('FloorPlanPanel placement', () => {
     const spot = markerScreenPoint('o1');
     fireEvent.click(pane(), { clientX: spot.x, clientY: spot.y });
 
-    const drawer = await screen.findByRole('dialog');
-    expect(within(drawer).getByText('План дээр тоноглол бүртгэх')).toBeInTheDocument();
+    await waitFor(() => expect(quickPlace).toHaveBeenCalledTimes(1));
+    // Nothing to fill in and nothing to confirm: the form per object is what this flow
+    // exists to remove.
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
 
-    await user.selectOptions(within(drawer).getByLabelText(/^Тоноглолын төрөл/), TYPE_ID);
-    await user.type(within(drawer).getByLabelText(/^Код/), 'EQ-77');
-    await user.type(within(drawer).getByLabelText(/^Нэр/), 'Шинэ гэрэлтүүлэг');
-    await user.click(within(drawer).getByRole('button', { name: 'Бүртгэх' }));
-
-    await waitFor(() => {
-      expect(create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          code: 'EQ-77',
-          name: 'Шинэ гэрэлтүүлэг',
-          customerId: CUSTOMER_ID,
-          objectTypeId: TYPE_ID,
-          floorId: FLOOR_ID,
-          category: 'EQUIPMENT',
-          planPosition: { x: expect.closeTo(0.5, 3), y: expect.closeTo(0.25, 3) },
-        }),
-      );
+    const payload = quickPlace.mock.calls[0]![0];
+    expect(payload).toEqual({
+      customerId: CUSTOMER_ID,
+      objectTypeId: TYPE_ID,
+      floorId: FLOOR_ID,
+      planPosition: { x: expect.closeTo(0.5, 3), y: expect.closeTo(0.25, 3) },
     });
+    /*
+      Said as keys as well as as a value. A code is unique per customer against an index the
+      browser cannot see, a name is numbered per floor per type, and a category is read off
+      the chosen type — so a click carries none of the three, and the server allocates them.
+    */
+    expect(Object.keys(payload).sort()).toEqual([
+      'customerId',
+      'floorId',
+      'objectTypeId',
+      'planPosition',
+    ]);
 
-    // The markers are redrawn from the refreshed floor, not patched in locally.
-    await waitFor(() => expect(props.onChanged).toHaveBeenCalled());
+    // The new pin is drawn from the answer rather than from a refetch, which is what lets
+    // the next click come straight after this one.
+    expect(
+      await screen.findByRole('button', { name: 'EQ-101 · Автомат таслуур 1' }),
+    ).toBeInTheDocument();
+    expect(props.onChanged).not.toHaveBeenCalled();
   });
 
   /** The same spot after the view has been moved: zooming is not editing. */
-  it('reports the same fraction after the plan has been zoomed and panned', async () => {
-    const create = vi.spyOn(objectMasterService, 'create').mockResolvedValue(makeObjectDetail());
-    const user = userEvent.setup();
+  it('reports the same fraction after the plan has been zoomed in and panned', async () => {
+    const quickPlace = vi.spyOn(objectMasterService, 'quickPlace').mockResolvedValue(quickPlaced());
 
     renderPanel({ objects: [placedObject()] });
     await readyCanvas();
+    await chooseType();
 
+    // In, never out: the fitted view is the bottom of the range now, so moving the view at
+    // all means coming closer to the drawing.
     const fitted = viewport().zoom;
     fireEvent.wheel(pane(), { deltaY: -400, clientX: 200, clientY: 200 });
     await waitFor(() => expect(viewport().zoom).toBeGreaterThan(fitted));
+    const zoomed = viewport().x;
     drag(pane(), [400, 300], [520, 380]);
-    await waitFor(() => expect(viewport().x).not.toBe(22));
+    await waitFor(() => expect(viewport().x).not.toBe(zoomed));
 
     const spot = markerScreenPoint('o1');
     fireEvent.click(pane(), { clientX: spot.x, clientY: spot.y });
 
-    const drawer = await screen.findByRole('dialog');
-    await user.selectOptions(within(drawer).getByLabelText(/^Тоноглолын төрөл/), TYPE_ID);
-    await user.type(within(drawer).getByLabelText(/^Код/), 'EQ-78');
-    await user.type(within(drawer).getByLabelText(/^Нэр/), 'Хоёр дахь');
-    await user.click(within(drawer).getByRole('button', { name: 'Бүртгэх' }));
-
     await waitFor(() => {
-      expect(create).toHaveBeenCalledWith(
+      expect(quickPlace).toHaveBeenCalledWith(
         expect.objectContaining({
           planPosition: { x: expect.closeTo(0.5, 3), y: expect.closeTo(0.25, 3) },
         }),
@@ -487,6 +632,276 @@ describe('FloorPlanPanel placement', () => {
   });
 });
 
+/**
+ * The bar, and what a click means while it is on.
+ *
+ * A type is chosen once and every click on the drawing is one object, so the things worth
+ * proving are the ones a dialog used to hide: that the count follows the clicks, that Undo
+ * reaches the click the user last made rather than the answer that arrived last, and that a
+ * refusal takes its own pin back off the plan.
+ */
+describe('FloorPlanPanel quick placement', () => {
+  beforeEach(() => {
+    layOutCanvas();
+    vi.spyOn(fileUrl, 'authorisedFileUrl').mockResolvedValue('blob:plan');
+    vi.spyOn(objectTypeService, 'list').mockResolvedValue(makePage([PLACEABLE]));
+  });
+
+  it('makes one object per click and counts them', async () => {
+    const quickPlace = quickPlaceSequence(3);
+
+    renderPanel();
+    await readyCanvas();
+    await chooseType();
+
+    clickPlan(0.2, 0.2);
+    clickPlan(0.5, 0.5);
+    clickPlan(0.8, 0.8);
+
+    await waitFor(() => expect(quickPlace).toHaveBeenCalledTimes(3));
+    // Each click carried its own spot, in the order it was made.
+    expect(quickPlace.mock.calls.map(([payload]) => payload.planPosition)).toEqual([
+      { x: expect.closeTo(0.2, 3), y: expect.closeTo(0.2, 3) },
+      { x: expect.closeTo(0.5, 3), y: expect.closeTo(0.5, 3) },
+      { x: expect.closeTo(0.8, 3), y: expect.closeTo(0.8, 3) },
+    ]);
+
+    await waitFor(() =>
+      expect(screen.getByText('План дээр дарж нэмнэ · 3 нэмэгдлээ')).toBeInTheDocument(),
+    );
+    expect(markerCount()).toBe(3);
+    expect(screen.getByRole('button', { name: 'EQ-103 · Автомат таслуур 3' })).toBeInTheDocument();
+  });
+
+  /** Undo walks back down the stack, one real delete at a time. */
+  it('takes back the last placement, then the one before it', async () => {
+    quickPlaceSequence(2);
+    const remove = vi.spyOn(objectMasterService, 'remove').mockResolvedValue(undefined);
+    const user = userEvent.setup();
+
+    renderPanel();
+    await readyCanvas();
+    await chooseType();
+
+    clickPlan(0.3, 0.3);
+    clickPlan(0.6, 0.6);
+    await waitFor(() =>
+      expect(screen.getByText('План дээр дарж нэмнэ · 2 нэмэгдлээ')).toBeInTheDocument(),
+    );
+
+    // The button names what it will delete, so it is never a guess.
+    await user.click(screen.getByRole('button', { name: /Буцаах \(EQ-102\)/ }));
+
+    await waitFor(() => expect(remove).toHaveBeenCalledWith('q2'));
+    expect(await screen.findByText('План дээр дарж нэмнэ · 1 нэмэгдлээ')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'EQ-102 · Автомат таслуур 2' }),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /Буцаах \(EQ-101\)/ }));
+
+    await waitFor(() => expect(remove).toHaveBeenCalledWith('q1'));
+    expect(await screen.findByText('План дээр дарж нэмнэ · 0 нэмэгдлээ')).toBeInTheDocument();
+    expect(markerCount()).toBe(0);
+    // Nothing left in the stack, so there is nothing to name and nothing to press.
+    expect(screen.getByRole('button', { name: 'Буцаах' })).toBeDisabled();
+  });
+
+  /**
+   * A marker on the drawing has to mean an object on the record.
+   *
+   * The pin is optimistic, so a refusal has to take it away again — and the mode survives,
+   * because losing it after one blip mid-placement is worse than the blip was.
+   */
+  it('rolls the pin back when the create is refused and stays in the mode', async () => {
+    const quickPlace = vi
+      .spyOn(objectMasterService, 'quickPlace')
+      .mockRejectedValue(new ApiError('Тухайн давхарт бүртгэх эрх байхгүй.', 'FORBIDDEN', 403));
+
+    renderPanel();
+    await readyCanvas();
+    await chooseType();
+
+    clickPlan(0.4, 0.4);
+
+    expect(
+      await screen.findByText('Тухайн давхарт бүртгэх эрх байхгүй.'),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(quickPlace).toHaveBeenCalledTimes(1));
+
+    // No phantom: the in-flight pin went with the request that failed.
+    expect(markerCount()).toBe(0);
+    expect(
+      screen.queryByRole('button', { name: '… · Автомат таслуур' }),
+    ).not.toBeInTheDocument();
+
+    // Still placing, and still counting nothing.
+    expect(within(placeBar()).getByText('Автомат таслуур байрлуулж байна')).toBeInTheDocument();
+    expect(screen.getByText('План дээр дарж нэмнэ · 0 нэмэгдлээ')).toBeInTheDocument();
+  });
+
+  /** The mat around the drawing is not a spot on it, in placing mode as much as out of it. */
+  it('deselects rather than places when the click misses the plan', async () => {
+    const quickPlace = vi.spyOn(objectMasterService, 'quickPlace').mockResolvedValue(quickPlaced());
+
+    renderPanel({ objects: [placedObject()] });
+    await readyCanvas();
+    await chooseType();
+
+    fireEvent.click(screen.getByRole('button', { name: 'EQ-01 · Гэрэл' }));
+    expect(await screen.findByText('50.0% · 25.0%')).toBeInTheDocument();
+
+    // Past the bottom-right corner of the drawing, which is grey mat and nothing else.
+    clickPlan(1.2, 1.2);
+
+    await waitFor(() => expect(screen.queryByText('50.0% · 25.0%')).not.toBeInTheDocument());
+    expect(quickPlace).not.toHaveBeenCalled();
+    expect(markerCount()).toBe(1);
+  });
+
+  it('offers no placement bar to a caller who cannot place', async () => {
+    renderPanel({ canPlace: false, objects: [placedObject()] });
+    await readyCanvas();
+
+    expect(
+      screen.queryByRole('group', { name: 'Тоноглол байрлуулах' }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Түргэн байрлуулах')).not.toBeInTheDocument();
+  });
+
+  /** Nothing rasterises a PDF here, so there is no picture to measure a coordinate against. */
+  it('offers no placement bar on a PDF plan', async () => {
+    renderPanel({ plan: makeFloorPlan({ mimeType: 'application/pdf', fileName: 'plan.pdf' }) });
+
+    expect(await screen.findByText(/PDF план дээр тоноглол байрлуулах боломжгүй/)).toBeInTheDocument();
+    expect(
+      screen.queryByRole('group', { name: 'Тоноглол байрлуулах' }),
+    ).not.toBeInTheDocument();
+  });
+
+  /**
+   * The two modes are mutually exclusive: a click on bare plan cannot mean "register
+   * something here" and "deselect" at once.
+   */
+  it('leaves placing mode when position editing is entered', async () => {
+    quickPlaceSequence(1);
+    const user = userEvent.setup();
+
+    const { props } = renderPanel({ objects: [placedObject()] });
+    await readyCanvas();
+    await chooseType();
+
+    clickPlan(0.4, 0.4);
+    await waitFor(() =>
+      expect(screen.getByText('План дээр дарж нэмнэ · 1 нэмэгдлээ')).toBeInTheDocument(),
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Байрлал засах' }));
+
+    expect(
+      screen.queryByRole('group', { name: 'Тоноглол байрлуулах' }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Байрлал хадгалах' })).toBeInTheDocument();
+    // Leaving properly includes telling the caller about what was placed before the switch.
+    expect(props.onChanged).toHaveBeenCalledTimes(1);
+  });
+
+  /** A refetch between one click and the next is exactly the pause this flow removes. */
+  it('tells the caller once, when placing ends', async () => {
+    quickPlaceSequence(2);
+    const user = userEvent.setup();
+
+    const { props } = renderPanel();
+    await readyCanvas();
+    await chooseType();
+
+    clickPlan(0.3, 0.4);
+    clickPlan(0.6, 0.4);
+    await waitFor(() =>
+      expect(screen.getByText('План дээр дарж нэмнэ · 2 нэмэгдлээ')).toBeInTheDocument(),
+    );
+    expect(props.onChanged).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Болих' }));
+
+    expect(props.onChanged).toHaveBeenCalledTimes(1);
+    expect(screen.getByLabelText('Түргэн байрлуулах')).toBeInTheDocument();
+  });
+
+  /**
+   * Rapid clicking puts several creates in the air at once, and the network answers them in
+   * whatever order it likes.
+   *
+   * The stack is ordered by click and each entry is matched by its own key, so a second
+   * answer that overtakes the first still lands on its own row — and Undo keeps pointing at
+   * the pin the user last put down rather than at whichever create happened to finish last.
+   */
+  it('keeps undo on the last click when the answers come back out of order', async () => {
+    const first = deferred<ObjectDetailDto>();
+    const second = deferred<ObjectDetailDto>();
+    const quickPlace = vi
+      .spyOn(objectMasterService, 'quickPlace')
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+    const remove = vi.spyOn(objectMasterService, 'remove').mockResolvedValue(undefined);
+    const user = userEvent.setup();
+
+    renderPanel();
+    await readyCanvas();
+    await chooseType();
+
+    clickPlan(0.3, 0.3);
+    clickPlan(0.7, 0.7);
+    await waitFor(() => expect(quickPlace).toHaveBeenCalledTimes(2));
+
+    // Two pins on the drawing, nothing placed and nothing to undo: an unanswered click is
+    // drawn and counts for nothing.
+    expect(markerCount()).toBe(2);
+    // No code, because there is none yet. That is the honest part of the optimistic pin.
+    expect(screen.getAllByRole('button', { name: '… · Автомат таслуур' })).toHaveLength(2);
+    expect(screen.getByText('План дээр дарж нэмнэ · 0 нэмэгдлээ')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Буцаах' })).toBeDisabled();
+
+    // The second click answers first.
+    await act(async () => {
+      second.resolve(
+        quickPlaced({
+          id: 'q2',
+          code: 'EQ-102',
+          name: 'Автомат таслуур 2',
+          planPosition: { x: 0.7, y: 0.7 },
+        }),
+      );
+    });
+
+    expect(await screen.findByRole('button', { name: /Буцаах \(EQ-102\)/ })).toBeEnabled();
+
+    // And now the first, late.
+    await act(async () => {
+      first.resolve(
+        quickPlaced({
+          id: 'q1',
+          code: 'EQ-101',
+          name: 'Автомат таслуур 1',
+          planPosition: { x: 0.3, y: 0.3 },
+        }),
+      );
+    });
+
+    await waitFor(() =>
+      expect(screen.getByText('План дээр дарж нэмнэ · 2 нэмэгдлээ')).toBeInTheDocument(),
+    );
+    // The late answer took its own row, not the tail: Undo still names the second click.
+    expect(screen.getByRole('button', { name: /Буцаах \(EQ-102\)/ })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /Буцаах \(EQ-102\)/ }));
+
+    await waitFor(() => expect(remove).toHaveBeenCalledWith('q2'));
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(await screen.findByRole('button', { name: /Буцаах \(EQ-101\)/ })).toBeInTheDocument();
+  });
+});
+
 describe('FloorPlanPanel zoom and pan', () => {
   beforeEach(() => {
     layOutCanvas();
@@ -523,10 +938,14 @@ describe('FloorPlanPanel zoom and pan', () => {
    * Markers are placed in the drawing's coordinate space, so without the counter-scale they
    * would grow with the plan and a floor zoomed in would be covered by enormous pills.
    */
-  it('keeps a marker the same size on screen as the plan is zoomed', async () => {
+  it('keeps a marker the same size on screen across the whole zoom range', async () => {
     renderPanel({ objects: [placedObject()] });
     await readyCanvas();
 
+    /*
+      The fitted view is now the bottom of the range, so the range this walks is the one that
+      exists: the floor, a step in from it, the ceiling, and back down to the floor again.
+    */
     const fitted = viewport().zoom;
     expect(markerScreenScale('o1')).toBeCloseTo(1, 6);
 
@@ -534,9 +953,124 @@ describe('FloorPlanPanel zoom and pan', () => {
     await waitFor(() => expect(viewport().zoom).toBeGreaterThan(fitted));
     expect(markerScreenScale('o1')).toBeCloseTo(1, 6);
 
-    fireEvent.wheel(pane(), { deltaY: 900, clientX: 400, clientY: 300 });
-    await waitFor(() => expect(viewport().zoom).toBeLessThan(fitted));
+    fireEvent.wheel(pane(), { deltaY: -20_000, clientX: 400, clientY: 300 });
+    await waitFor(() => expect(viewport().zoom).toBe(PLAN_MAX_ZOOM));
     expect(markerScreenScale('o1')).toBeCloseTo(1, 6);
+
+    fireEvent.wheel(pane(), { deltaY: 20_000, clientX: 400, clientY: 300 });
+    await waitFor(() => expect(viewport().zoom).toBe(fitted));
+    expect(markerScreenScale('o1')).toBeCloseTo(1, 6);
+  });
+
+  /**
+   * The plan may be come closer to, never backed away from.
+   *
+   * Zooming out past the fit buys nothing — the whole drawing is already on screen — and
+   * costs the user a plan shrunk to a stamp in a field of grey they then have to find their
+   * way back from. The fitted view is the bottom of the range, full stop.
+   */
+  it('will not zoom out below the fitted view', async () => {
+    renderPanel({ objects: [placedObject()] });
+    await readyCanvas();
+
+    const fitted = viewport();
+
+    // In first, so that coming back out is a gesture visibly being delivered and acted on
+    // rather than one that might be going nowhere.
+    fireEvent.wheel(pane(), { deltaY: -600, clientX: 250, clientY: 250 });
+    await waitFor(() => expect(viewport().zoom).toBeGreaterThan(fitted.zoom));
+
+    // Then out by far more than it took to get here. It stops dead on the fit.
+    fireEvent.wheel(pane(), { deltaY: 2000, clientX: 250, clientY: 250 });
+    await waitFor(() => expect(viewport()).toEqual(fitted));
+
+    fireEvent.wheel(pane(), { deltaY: 2000, clientX: 250, clientY: 250 });
+    expect(viewport()).toEqual(fitted);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Жижигрүүлэх' }));
+    expect(viewport()).toEqual(fitted);
+  });
+
+  /** The stop is a floor, not a lock: everything above it is still reachable. */
+  it('still zooms in to the maximum', async () => {
+    renderPanel({ objects: [placedObject()] });
+    await readyCanvas();
+
+    fireEvent.wheel(pane(), { deltaY: -20_000, clientX: 400, clientY: 300 });
+    await waitFor(() => expect(viewport().zoom).toBe(PLAN_MAX_ZOOM));
+  });
+
+  /**
+   * The fit button and the floor are one number.
+   *
+   * If they were merely close, pressing "fit" would leave a wheel click of slack underneath —
+   * the plan would lurch once more and then jam, which reads as a broken control rather than
+   * as a limit.
+   */
+  it('lands the fit button exactly on the minimum', async () => {
+    renderPanel({ objects: [placedObject()] });
+    await readyCanvas();
+
+    const fitted = viewport();
+
+    fireEvent.wheel(pane(), { deltaY: -600, clientX: 400, clientY: 300 });
+    await waitFor(() => expect(viewport().zoom).toBeGreaterThan(fitted.zoom));
+    drag(pane(), [400, 300], [470, 340]);
+    await waitFor(() => expect(viewport().x).not.toBe(fitted.x));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Дэлгэцэд багтаах' }));
+    await waitFor(() => expect(viewport()).toEqual(fitted));
+
+    // Already on the stop, so the wheel has nowhere left to go.
+    fireEvent.wheel(pane(), { deltaY: 2000, clientX: 400, clientY: 300 });
+    expect(viewport()).toEqual(fitted);
+  });
+
+  /**
+   * A floor that rises has to take the view with it.
+   *
+   * d3's scale extent only governs the next gesture; it does not go back and rescale a
+   * transform already below the new minimum. Without this the user would be left looking at a
+   * plan smaller than fits, with the zoom-out already dead and no way back but the button.
+   */
+  it('lifts a view that a resize has left below the new minimum', async () => {
+    renderPanel({ objects: [placedObject()] });
+    await readyCanvas();
+
+    const fitted = viewport().zoom;
+
+    // A roomier container fits the plan at a larger scale, so the floor comes up.
+    resizeCanvas(1000, 1000);
+    await waitFor(() => expect(viewport().zoom).toBeGreaterThan(fitted));
+
+    const lifted = viewport();
+    // And it is the floor it was lifted to, not merely somewhere above the old one.
+    fireEvent.wheel(pane(), { deltaY: 2000, clientX: 400, clientY: 300 });
+    expect(viewport()).toEqual(lifted);
+  });
+
+  /**
+   * A floor that drops changes nothing the user can see.
+   *
+   * Lifting is not refitting. A resize must never throw away a zoom someone just chose, so
+   * when the container leaves more slack underneath, the view stays exactly where it was.
+   */
+  it('leaves the view alone when a resize lowers the minimum', async () => {
+    renderPanel({ objects: [placedObject()] });
+    await readyCanvas();
+
+    fireEvent.wheel(pane(), { deltaY: -600, clientX: 400, clientY: 300 });
+    await waitFor(() => expect(viewport().zoom).toBeGreaterThan(0.5));
+    const chosen = viewport();
+
+    // A tighter container fits the plan at a smaller scale, so the floor drops away.
+    resizeCanvas(400, 400);
+    await waitFor(() => expect(viewport()).toEqual(chosen));
+
+    // The view is untouched, and the new, lower floor is what is now reachable.
+    fireEvent.wheel(pane(), { deltaY: 2000, clientX: 400, clientY: 300 });
+    await waitFor(() => expect(viewport().zoom).toBeLessThan(chosen.zoom));
+    expect(viewport().zoom).toBeLessThan(0.4);
   });
 
   /** Looking at a plan is not editing it: the stored coordinate must come through intact. */

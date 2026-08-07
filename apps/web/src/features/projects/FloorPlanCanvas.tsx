@@ -3,6 +3,7 @@ import {
   ReactFlow,
   ReactFlowProvider,
   ViewportPortal,
+  getViewportForBounds,
   useReactFlow,
   useStore,
   type NodeChange,
@@ -77,8 +78,34 @@ export interface FloorPlanCanvasProps {
   height?: number;
 }
 
-const MIN_ZOOM = 0.2;
-const MAX_ZOOM = 8;
+/**
+ * How far in the plan may be magnified.
+ *
+ * Exported because the floor is now computed rather than fixed, and a test that proves the
+ * ceiling is still reachable has to name it.
+ */
+export const PLAN_MAX_ZOOM = 8;
+
+/**
+ * Air around a fitted drawing, as a fraction of the container.
+ *
+ * One constant rather than a literal at the call site, because the fit and the minimum zoom
+ * are the same computation and must be given the same padding — a plan that fits with 6% of
+ * margin and a floor computed with any other number would disagree, and pressing "fit" would
+ * leave the user one wheel click above or below the stop.
+ */
+const FIT_PADDING = 0.06;
+
+/**
+ * The floor that stands in until there is something real to measure.
+ *
+ * React Flow measures its own container in an effect, so `width`/`height` are 0 for the first
+ * render, and the drawing's aspect is an assumption until the picture decodes. Deriving a
+ * floor from either would lock the view at a scale that means nothing. This value is
+ * deliberately far below anything a fitted plan produces: for the one frame it is in force it
+ * constrains nothing, and it is replaced the moment the canvas has a box.
+ */
+const UNMEASURED_MIN_ZOOM = 0.2;
 
 /**
  * How close the view comes when it is sent to a marker.
@@ -183,7 +210,15 @@ function CanvasInner({
   focus = null,
   height = 520,
 }: FloorPlanCanvasProps): ReactElement {
-  const { fitBounds, getZoom, screenToFlowPosition, setCenter, zoomIn, zoomOut } = useReactFlow();
+  const {
+    getZoom,
+    screenToFlowPosition,
+    setCenter,
+    setViewport,
+    zoomIn,
+    zoomOut,
+    zoomTo,
+  } = useReactFlow();
   const containerWidth = useStore((state) => state.width);
   const containerHeight = useStore((state) => state.height);
 
@@ -233,13 +268,54 @@ function CanvasInner({
     [handleImageLoad],
   );
 
+  /**
+   * The view that puts the whole drawing on screen.
+   *
+   * Computed here rather than asked for, because it is two things at once: where the fit
+   * button lands, and the scale below which the user may not shrink the plan. Those two have
+   * to be the same number to the last bit — a floor even slightly under the fit would let one
+   * wheel click drop the plan a hair below what fits and then jam, and a floor slightly over
+   * it would make "fit" itself illegal.
+   *
+   * `getViewportForBounds` is the very function `fitBounds` runs internally, so using it with
+   * the same bounds and the same padding is what makes the two agree by construction rather
+   * than by arithmetic that happens to match. It is handed `UNMEASURED_MIN_ZOOM` as its own
+   * floor rather than the one being derived from it: it clamps its answer to whatever minimum
+   * it is given, and feeding it this frame's floor would fold the result back on itself.
+   */
+  const fitViewport = useMemo(
+    () =>
+      getViewportForBounds(
+        { x: 0, y: 0, width: planSize.width, height: planSize.height },
+        containerWidth,
+        containerHeight,
+        UNMEASURED_MIN_ZOOM,
+        PLAN_MAX_ZOOM,
+        FIT_PADDING,
+      ),
+    [containerWidth, containerHeight, planSize.width, planSize.height],
+  );
+
+  /**
+   * You may come closer; you may not back off past the whole drawing.
+   *
+   * A plain number, and deliberately so: React Flow tracks `minZoom` as a prop and pushes
+   * every change through to d3's scale extent, so a value rebuilt into a fresh object each
+   * render would reset the zoom behaviour on every frame. Before the canvas has been measured
+   * there is nothing to fit to, and the permissive stand-in is used instead.
+   */
+  const minZoom =
+    containerWidth === 0 || containerHeight === 0
+      ? UNMEASURED_MIN_ZOOM
+      : fitViewport.zoom;
+
   const fitPlan = useCallback((): void => {
     if (containerWidth === 0 || containerHeight === 0) return;
-    void fitBounds(
-      { x: 0, y: 0, width: planSize.width, height: planSize.height },
-      { padding: 0.06, duration: 0 },
-    );
-  }, [fitBounds, containerWidth, containerHeight, planSize]);
+    // The precomputed view, not a fresh `fitBounds`: that one clamps to whatever minimum the
+    // store is holding at the time, and the whole point is that the fit and the floor are one
+    // value. Applying it directly makes "fit" land exactly on the stop, every time.
+    void setViewport(fitViewport, { duration: 0 });
+  }, [setViewport, fitViewport, containerWidth, containerHeight]);
 
   /**
    * Fit once per drawing, not on every resize.
@@ -257,6 +333,25 @@ function CanvasInner({
     fittedKeyRef.current = key;
     fitPlan();
   }, [containerWidth, containerHeight, imageUrl, planSize, fitPlan]);
+
+  /**
+   * Lifts a view that the floor has risen underneath.
+   *
+   * A scale extent only governs the gestures that come after it: d3 does not go back and
+   * rescale a transform already smaller than the new minimum. So a narrowed window or a
+   * taller drawing can leave the plan shrunk into empty space with the zoom-out already dead
+   * — visibly wrong, and with no way out but the fit button.
+   *
+   * Lifting is all this does, and it is not a refit. The fit above is deliberately once per
+   * drawing so that a resize never throws away a zoom the user chose; this keeps that promise
+   * by touching nothing when the view is already at or above the floor, and by rising to
+   * exactly the floor — about the middle of the screen, so what the user was looking at is
+   * still what they are looking at — rather than jumping back to the whole plan.
+   */
+  useEffect(() => {
+    if (getZoom() >= minZoom) return;
+    void zoomTo(minZoom, { duration: 0 });
+  }, [minZoom, getZoom, zoomTo]);
 
   /**
    * Sends the view to one marker.
@@ -381,8 +476,8 @@ function CanvasInner({
             [0, 0],
             [planSize.width, planSize.height],
           ]}
-          minZoom={MIN_ZOOM}
-          maxZoom={MAX_ZOOM}
+          minZoom={minZoom}
+          maxZoom={PLAN_MAX_ZOOM}
           proOptions={{ hideAttribution: false }}
         >
           {/*

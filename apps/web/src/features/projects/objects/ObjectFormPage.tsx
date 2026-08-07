@@ -13,7 +13,7 @@ import {
   type ObjectListItemDto,
   type ObjectTypeDto,
 } from '@monhorus/shared';
-import { useEffect, useState, type ReactElement } from 'react';
+import { useEffect, useId, useState, type ReactElement } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
 import { Alert } from '../../../components/ui/Alert';
@@ -29,6 +29,20 @@ import { objectService } from '../../../services/object.service';
 import { objectMasterService, objectTypeService } from '../../../services/object-master.service';
 import { projectService } from '../../../services/project.service';
 import { Field, SelectInput, TextInput } from '../../employees/FormControls';
+
+/** The name each category's own attribute block goes by, shown beside the section header. */
+const ELECTRICAL_BLOCK_LABELS: Record<ObjectCategory, string> = {
+  PANEL: 'Самбарын мэдээлэл',
+  CIRCUIT: 'Хэлхээний мэдээлэл',
+  EQUIPMENT: 'Тоноглолын мэдээлэл',
+};
+
+/** The `fieldErrors` prefix the schema and the backend key each category's attributes under. */
+const ELECTRICAL_ERROR_PREFIXES: Record<ObjectCategory, string> = {
+  PANEL: 'panel.',
+  CIRCUIT: 'circuit.',
+  EQUIPMENT: 'equipment.',
+};
 
 /**
  * Object create and edit.
@@ -135,6 +149,17 @@ export function ObjectFormPage(): ReactElement {
   const [usageCoefficient, setUsageCoefficient] = useState('');
   const [installedAt, setInstalledAt] = useState('');
   const [warrantyUntil, setWarrantyUntil] = useState('');
+
+  /**
+   * The user's own choice about the electrical section, or null while they have made none.
+   *
+   * Null is the interesting value: with nothing said either way the section decides for
+   * itself from what it holds, which is what opens an edit of a panel that already has a
+   * capacity and leaves a blank registration folded. Once the header is clicked the choice
+   * is theirs and stays theirs. See `electricalExpanded` for the one thing that overrides it.
+   */
+  const [electricalToggled, setElectricalToggled] = useState<boolean | null>(null);
+  const electricalPanelId = useId();
 
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -394,6 +419,41 @@ export function ObjectFormPage(): ReactElement {
    */
   const bandsUnknown = bands === null;
   const requiresFindings = bandsUnknown ? scoreTyped : redOrBlack;
+
+  /**
+   * Whether the chosen category's attribute fields already carry anything.
+   *
+   * Only the chosen category is consulted, because only its block is rendered and only its
+   * values are ever sent: a figure left behind in a category the user tried and moved off
+   * is not detail worth opening the section for.
+   */
+  const electricalValues =
+    category === 'PANEL'
+      ? [capacityKw, location, protection]
+      : category === 'CIRCUIT'
+        ? [panelId, breakerRating, permittedCapacityKw, cableType, cableSectionMm2, cableLengthM]
+        : [
+            circuitId,
+            equipmentPanelId,
+            ratedPowerKw,
+            quantity,
+            usageCoefficient,
+            installedAt,
+            warrantyUntil,
+          ];
+  const electricalFilled = electricalValues.some((value) => value.trim() !== '');
+  const electricalHasError = Object.keys(fieldErrors).some((key) =>
+    key.startsWith(ELECTRICAL_ERROR_PREFIXES[category]),
+  );
+  /**
+   * A field error inside the section outranks everything, the user's own collapse included.
+   *
+   * Refusing a save over a message that is folded out of sight is a dead end with nothing on
+   * screen to explain it, so an error opens the section and holds it open until the next
+   * save clears it. Short of that the user's choice wins, and with no choice made the
+   * section opens exactly when it has something to show.
+   */
+  const electricalExpanded = electricalHasError || (electricalToggled ?? electricalFilled);
 
   async function handleSubmit(): Promise<void> {
     setFormError(null);
@@ -807,178 +867,227 @@ export function ObjectFormPage(): ReactElement {
           </Field>
         </div>
 
-        {/* Only the block belonging to the chosen category is rendered. */}
-        {category === 'PANEL' && (
-          <fieldset aria-label="Самбарын мэдээлэл">
-            <legend className="mb-3 w-full border-b border-slate-200 pb-1.5 text-sm font-semibold text-slate-900">
-              Самбарын мэдээлэл
-            </legend>
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-              <Field label="Хүчин чадал (kW)" error={fieldErrors['panel.capacityKw']}>
-                <TextInput type="number" value={capacityKw} onChange={setCapacityKw} disabled={submitting} />
-              </Field>
-              <Field label="Байрлал" error={fieldErrors['panel.location']}>
-                <TextInput value={location} onChange={setLocation} disabled={submitting} />
-              </Field>
-              <Field label="Хамгаалалт" error={fieldErrors['panel.protection']}>
-                <TextInput value={protection} onChange={setProtection} disabled={submitting} />
-              </Field>
-            </div>
-          </fieldset>
-        )}
+        {/*
+          The electrical detail, folded away.
 
-        {category === 'CIRCUIT' && (
-          <fieldset aria-label="Хэлхээний мэдээлэл">
-            <legend className="mb-3 w-full border-b border-slate-200 pb-1.5 text-sm font-semibold text-slate-900">
-              Хэлхээний мэдээлэл
-            </legend>
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-              <Field
-                label="Харьяалагдах самбар"
-                error={fieldErrors['circuit.panelId']}
-                hint={
-                  effectiveBuildingId ? 'Зөвхөн энэ барилгын самбарууд.' : undefined
-                }
-              >
-                <SelectInput
-                  value={panelId}
-                  onChange={setPanelId}
-                  placeholder={
-                    panels.length === 0 && effectiveBuildingId
-                      ? 'Энэ барилгад самбар алга'
-                      : 'Самбар сонгох'
-                  }
-                  options={panels.map((panel) => ({
-                    value: panel.id,
-                    label: `${panel.name} (${panel.code})`,
-                  }))}
-                  disabled={submitting || !customerId}
-                />
-              </Field>
-              <Field label="Хамгаалах автомат" error={fieldErrors['circuit.breakerRating']}>
-                <TextInput value={breakerRating} onChange={setBreakerRating} disabled={submitting} />
-              </Field>
-              <Field label="Зөвшөөрөгдөх чадал (kW)" error={fieldErrors['circuit.permittedCapacityKw']}>
-                <TextInput
-                  type="number"
-                  value={permittedCapacityKw}
-                  onChange={setPermittedCapacityKw}
-                  disabled={submitting}
-                />
-              </Field>
-              <Field label="Кабелийн төрөл" error={fieldErrors['circuit.cableType']}>
-                <TextInput value={cableType} onChange={setCableType} disabled={submitting} />
-              </Field>
-              <Field label="Огтлол (мм²)" error={fieldErrors['circuit.cableSectionMm2']}>
-                <TextInput
-                  type="number"
-                  value={cableSectionMm2}
-                  onChange={setCableSectionMm2}
-                  disabled={submitting}
-                />
-              </Field>
-              <Field label="Урт (м)" error={fieldErrors['circuit.cableLengthM']}>
-                <TextInput type="number" value={cableLengthM} onChange={setCableLengthM} disabled={submitting} />
-              </Field>
-            </div>
-          </fieldset>
-        )}
+          Registering an asset is a code, a name and a type. Everything below is optional at
+          the API — nullish in the schema, null by default in the store — and putting two
+          dozen of them on screen at once is what made a simple registration feel heavy.
+          Nothing is removed and nothing about what is sent has changed: the same fields, one
+          click away.
 
-        {category === 'EQUIPMENT' && (
-          <fieldset aria-label="Тоноглолын мэдээлэл">
-            <legend className="mb-3 w-full border-b border-slate-200 pb-1.5 text-sm font-semibold text-slate-900">
-              Тоноглолын мэдээлэл
-            </legend>
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-              <Field
-                label="Тэжээх хэлхээ"
-                error={fieldErrors['equipment.circuitId']}
-                hint={
-                  effectiveBuildingId ? 'Зөвхөн энэ барилгын хэлхээнүүд.' : undefined
-                }
+          It is never folded over anything that matters, which `electricalExpanded` above is
+          the whole of: a block that already holds a value opens itself, and so does one
+          holding a field error.
+        */}
+        <section className="rounded-lg ring-1 ring-slate-200">
+          {/* The accordion as the ARIA pattern describes it, and as the planned-work floor
+              sections already do it: a heading carrying the level, with the button that
+              opens the panel inside it. */}
+          <h3 className="text-sm font-semibold text-slate-900">
+            <button
+              type="button"
+              onClick={() => setElectricalToggled(!electricalExpanded)}
+              aria-expanded={electricalExpanded}
+              aria-controls={electricalPanelId}
+              className="flex w-full flex-wrap items-center gap-2 rounded-lg px-4 py-2.5 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
+            >
+              <svg
+                className={`h-3.5 w-3.5 shrink-0 text-slate-500 transition-transform ${
+                  electricalExpanded ? 'rotate-90' : ''
+                }`}
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                aria-hidden="true"
               >
-                <SelectInput
-                  value={circuitId}
-                  onChange={setCircuitId}
-                  placeholder={
-                    circuits.length === 0 && effectiveBuildingId
-                      ? 'Энэ барилгад хэлхээ алга'
-                      : 'Хэлхээнд холбохгүй'
-                  }
-                  options={circuits.map((circuit) => ({
-                    value: circuit.id,
-                    label: `${circuit.name} (${circuit.code})`,
-                  }))}
-                  disabled={submitting || !customerId}
-                />
-              </Field>
-              {/*
-                Where the device is mounted, offered beside what feeds it.
+                <path d="M9 6l6 6-6 6" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              <span>Цахилгааны мэдээлэл</span>
+              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-normal text-slate-600">
+                {ELECTRICAL_BLOCK_LABELS[category]}
+              </span>
+              {/* Folded away by the user's own hand over values they typed: said plainly, so
+                  nothing they entered is hidden without a word. */}
+              {!electricalExpanded && electricalFilled && (
+                <span className="text-[11px] font-normal text-slate-500">
+                  Бөглөсөн мэдээлэлтэй
+                </span>
+              )}
+            </button>
+          </h3>
 
-                Scoped to the same customer and building as the circuit picker above, and
-                for the same reason: the backend refuses a reference whose two ends stand in
-                different buildings, so anything wider would be offering a choice that can
-                only come back as a field error.
+          <div
+            id={electricalPanelId}
+            hidden={!electricalExpanded}
+            className="border-t border-slate-200 px-4 py-4"
+          >
+            {/* Only the block belonging to the chosen category is rendered. */}
+            {category === 'PANEL' && (
+              <fieldset aria-label="Самбарын мэдээлэл">
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                  <Field label="Хүчин чадал (kW)" error={fieldErrors['panel.capacityKw']}>
+                    <TextInput type="number" value={capacityKw} onChange={setCapacityKw} disabled={submitting} />
+                  </Field>
+                  <Field label="Байрлал" error={fieldErrors['panel.location']}>
+                    <TextInput value={location} onChange={setLocation} disabled={submitting} />
+                  </Field>
+                  <Field label="Хамгаалалт" error={fieldErrors['panel.protection']}>
+                    <TextInput value={protection} onChange={setProtection} disabled={submitting} />
+                  </Field>
+                </div>
+              </fieldset>
+            )}
 
-                Independent of the circuit. Both may be set — a sub-panel's main breaker is
-                mounted in one panel and fed from another — and a mount carries no load
-                whatsoever; only the circuit does.
-              */}
-              <Field
-                label="Байрлах самбар"
-                error={fieldErrors['equipment.panelId']}
-                hint={
-                  effectiveBuildingId
-                    ? 'Самбарын дотор суурилуулсан бол сонгоно. Ачаалалд нөлөөлөхгүй.'
-                    : 'Самбарын дотор суурилуулсан бол сонгоно.'
-                }
-              >
-                <SelectInput
-                  value={equipmentPanelId}
-                  onChange={setEquipmentPanelId}
-                  placeholder={
-                    panels.length === 0 && effectiveBuildingId
-                      ? 'Энэ барилгад самбар алга'
-                      : 'Самбарт байрлуулахгүй'
-                  }
-                  options={panels.map((panel) => ({
-                    value: panel.id,
-                    label: `${panel.name} (${panel.code})`,
-                  }))}
-                  disabled={submitting || !customerId}
-                />
-              </Field>
-              <Field
-                label="Нэрлэсэн чадал (kW)"
-                error={fieldErrors['equipment.ratedPowerKw']}
-                hint="Ачааллын тооцоонд ашиглана"
-              >
-                <TextInput type="number" value={ratedPowerKw} onChange={setRatedPowerKw} disabled={submitting} />
-              </Field>
-              <Field label="Тоо ширхэг" error={fieldErrors['equipment.quantity']}>
-                <TextInput type="number" value={quantity} onChange={setQuantity} disabled={submitting} />
-              </Field>
-              <Field
-                label="Ашиглалтын коэффициент"
-                error={fieldErrors['equipment.usageCoefficient']}
-                hint="Хоосон бол 1.0 гэж тооцно"
-              >
-                <TextInput
-                  type="number"
-                  value={usageCoefficient}
-                  onChange={setUsageCoefficient}
-                  disabled={submitting}
-                />
-              </Field>
-              <Field label="Суурилуулсан огноо" error={fieldErrors['equipment.installedAt']}>
-                <TextInput type="date" value={installedAt} onChange={setInstalledAt} disabled={submitting} />
-              </Field>
-              <Field label="Баталгаат хугацаа" error={fieldErrors['equipment.warrantyUntil']}>
-                <TextInput type="date" value={warrantyUntil} onChange={setWarrantyUntil} disabled={submitting} />
-              </Field>
-            </div>
-          </fieldset>
-        )}
+            {category === 'CIRCUIT' && (
+              <fieldset aria-label="Хэлхээний мэдээлэл">
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                  <Field
+                    label="Харьяалагдах самбар"
+                    error={fieldErrors['circuit.panelId']}
+                    hint={
+                      effectiveBuildingId ? 'Зөвхөн энэ барилгын самбарууд.' : undefined
+                    }
+                  >
+                    <SelectInput
+                      value={panelId}
+                      onChange={setPanelId}
+                      placeholder={
+                        panels.length === 0 && effectiveBuildingId
+                          ? 'Энэ барилгад самбар алга'
+                          : 'Самбар сонгох'
+                      }
+                      options={panels.map((panel) => ({
+                        value: panel.id,
+                        label: `${panel.name} (${panel.code})`,
+                      }))}
+                      disabled={submitting || !customerId}
+                    />
+                  </Field>
+                  <Field label="Хамгаалах автомат" error={fieldErrors['circuit.breakerRating']}>
+                    <TextInput value={breakerRating} onChange={setBreakerRating} disabled={submitting} />
+                  </Field>
+                  <Field label="Зөвшөөрөгдөх чадал (kW)" error={fieldErrors['circuit.permittedCapacityKw']}>
+                    <TextInput
+                      type="number"
+                      value={permittedCapacityKw}
+                      onChange={setPermittedCapacityKw}
+                      disabled={submitting}
+                    />
+                  </Field>
+                  <Field label="Кабелийн төрөл" error={fieldErrors['circuit.cableType']}>
+                    <TextInput value={cableType} onChange={setCableType} disabled={submitting} />
+                  </Field>
+                  <Field label="Огтлол (мм²)" error={fieldErrors['circuit.cableSectionMm2']}>
+                    <TextInput
+                      type="number"
+                      value={cableSectionMm2}
+                      onChange={setCableSectionMm2}
+                      disabled={submitting}
+                    />
+                  </Field>
+                  <Field label="Урт (м)" error={fieldErrors['circuit.cableLengthM']}>
+                    <TextInput type="number" value={cableLengthM} onChange={setCableLengthM} disabled={submitting} />
+                  </Field>
+                </div>
+              </fieldset>
+            )}
+
+            {category === 'EQUIPMENT' && (
+              <fieldset aria-label="Тоноглолын мэдээлэл">
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                  <Field
+                    label="Тэжээх хэлхээ"
+                    error={fieldErrors['equipment.circuitId']}
+                    hint={
+                      effectiveBuildingId ? 'Зөвхөн энэ барилгын хэлхээнүүд.' : undefined
+                    }
+                  >
+                    <SelectInput
+                      value={circuitId}
+                      onChange={setCircuitId}
+                      placeholder={
+                        circuits.length === 0 && effectiveBuildingId
+                          ? 'Энэ барилгад хэлхээ алга'
+                          : 'Хэлхээнд холбохгүй'
+                      }
+                      options={circuits.map((circuit) => ({
+                        value: circuit.id,
+                        label: `${circuit.name} (${circuit.code})`,
+                      }))}
+                      disabled={submitting || !customerId}
+                    />
+                  </Field>
+                  {/*
+                    Where the device is mounted, offered beside what feeds it.
+
+                    Scoped to the same customer and building as the circuit picker above, and
+                    for the same reason: the backend refuses a reference whose two ends stand in
+                    different buildings, so anything wider would be offering a choice that can
+                    only come back as a field error.
+
+                    Independent of the circuit. Both may be set — a sub-panel's main breaker is
+                    mounted in one panel and fed from another — and a mount carries no load
+                    whatsoever; only the circuit does.
+                  */}
+                  <Field
+                    label="Байрлах самбар"
+                    error={fieldErrors['equipment.panelId']}
+                    hint={
+                      effectiveBuildingId
+                        ? 'Самбарын дотор суурилуулсан бол сонгоно. Ачаалалд нөлөөлөхгүй.'
+                        : 'Самбарын дотор суурилуулсан бол сонгоно.'
+                    }
+                  >
+                    <SelectInput
+                      value={equipmentPanelId}
+                      onChange={setEquipmentPanelId}
+                      placeholder={
+                        panels.length === 0 && effectiveBuildingId
+                          ? 'Энэ барилгад самбар алга'
+                          : 'Самбарт байрлуулахгүй'
+                      }
+                      options={panels.map((panel) => ({
+                        value: panel.id,
+                        label: `${panel.name} (${panel.code})`,
+                      }))}
+                      disabled={submitting || !customerId}
+                    />
+                  </Field>
+                  <Field
+                    label="Нэрлэсэн чадал (kW)"
+                    error={fieldErrors['equipment.ratedPowerKw']}
+                    hint="Ачааллын тооцоонд ашиглана"
+                  >
+                    <TextInput type="number" value={ratedPowerKw} onChange={setRatedPowerKw} disabled={submitting} />
+                  </Field>
+                  <Field label="Тоо ширхэг" error={fieldErrors['equipment.quantity']}>
+                    <TextInput type="number" value={quantity} onChange={setQuantity} disabled={submitting} />
+                  </Field>
+                  <Field
+                    label="Ашиглалтын коэффициент"
+                    error={fieldErrors['equipment.usageCoefficient']}
+                    hint="Хоосон бол 1.0 гэж тооцно"
+                  >
+                    <TextInput
+                      type="number"
+                      value={usageCoefficient}
+                      onChange={setUsageCoefficient}
+                      disabled={submitting}
+                    />
+                  </Field>
+                  <Field label="Суурилуулсан огноо" error={fieldErrors['equipment.installedAt']}>
+                    <TextInput type="date" value={installedAt} onChange={setInstalledAt} disabled={submitting} />
+                  </Field>
+                  <Field label="Баталгаат хугацаа" error={fieldErrors['equipment.warrantyUntil']}>
+                    <TextInput type="date" value={warrantyUntil} onChange={setWarrantyUntil} disabled={submitting} />
+                  </Field>
+                </div>
+              </fieldset>
+            )}
+          </div>
+        </section>
 
         {showInitialScore && (
           <fieldset aria-label="Анхны үнэлгээ">

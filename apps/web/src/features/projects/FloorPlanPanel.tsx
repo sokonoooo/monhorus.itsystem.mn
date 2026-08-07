@@ -1,5 +1,4 @@
 import {
-  createObjectSchema,
   floorPlanMetaSchema,
   type FloorPlanDto,
   type ObjectIcon,
@@ -23,13 +22,18 @@ import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import { Drawer } from '../../components/ui/Drawer';
 import { EmptyState } from '../../components/ui/States';
 import { useToast } from '../../components/ui/ToastProvider';
-import { FIELD_TEXTAREA, FILTER_INPUT, FILTER_LABEL } from '../../components/ui/control-styles';
+import {
+  COMPACT_SELECT,
+  FIELD_TEXTAREA,
+  FILTER_INPUT,
+  FILTER_LABEL,
+} from '../../components/ui/control-styles';
 import { ApiError } from '../../lib/api-client';
 import { authorisedFileUrl } from '../../lib/file-url';
 import { useAuthorisedFileUrls } from '../../lib/use-authorised-file-urls';
 import { objectMasterService, objectTypeService } from '../../services/object-master.service';
 import { projectService } from '../../services/project.service';
-import { Field, SelectInput, TextInput } from '../employees/FormControls';
+import { Field, TextInput } from '../employees/FormControls';
 import { FloorPlanCanvas, type PlanFocusRequest, type PlanMarker } from './FloorPlanCanvas';
 import { samePlanPosition } from './plan-geometry';
 import { ObjectTypeGlyph } from './plan-icons';
@@ -114,6 +118,26 @@ function writeHiddenLayers(floorId: string, hidden: readonly string[]): void {
   }
 }
 
+/**
+ * One click's worth of placement, kept in the order the clicks were made.
+ *
+ * The stack is what Undo walks and what the counter counts, and it is ordered by click
+ * rather than by response: rapid clicking puts several creates in the air at once and they
+ * come back in whatever order the network gives them. Each entry carries its own key so a
+ * late answer finds its own row instead of the one that happens to be last.
+ *
+ * `object` is null until the server has answered. That is the honest part of the optimistic
+ * pin: the marker is drawn from `position` the instant the click lands, but nothing counts
+ * as placed, and nothing can be undone, until there is a real object to name.
+ */
+interface PlacedEntry {
+  key: number;
+  typeId: string;
+  position: PlanPositionDto;
+  /** The created object once it exists, or null while the create is in flight. */
+  object: ObjectListItemDto | null;
+}
+
 /** Why a search result cannot be travelled to, if it cannot. */
 type SearchResultState =
   /** Drawn on the plan: selecting it centres the view on it. */
@@ -187,13 +211,23 @@ export function FloorPlanPanel({
 
   // -- Placement -------------------------------------------------------------
   const [placeableTypes, setPlaceableTypes] = useState<ObjectTypeDto[]>([]);
-  const [pendingPosition, setPendingPosition] = useState<PlanPositionDto | null>(null);
-  const [quickTypeId, setQuickTypeId] = useState('');
-  const [quickCode, setQuickCode] = useState('');
-  const [quickName, setQuickName] = useState('');
-  const [quickSaving, setQuickSaving] = useState(false);
-  const [quickError, setQuickError] = useState<string | null>(null);
-  const [quickFieldErrors, setQuickFieldErrors] = useState<Record<string, string>>({});
+  /** The type being placed. Non-null is the whole of "placing mode". */
+  const [placingTypeId, setPlacingTypeId] = useState<string | null>(null);
+  /** This session's clicks, in the order they were made. */
+  const [placed, setPlaced] = useState<readonly PlacedEntry[]>([]);
+  /** Objects created here that the parent has not reloaded yet. See below. */
+  const [created, setCreated] = useState<readonly ObjectListItemDto[]>([]);
+  const [placeError, setPlaceError] = useState<string | null>(null);
+  const [undoing, setUndoing] = useState(false);
+  /**
+   * Distinguishes one click from the next.
+   *
+   * Not the server id, because the entry exists before there is one, and not the array
+   * index, because concurrent responses land in any order and an index moves under them.
+   */
+  const placeKeyRef = useRef(0);
+  /** Whether anything was actually written, so the exit knows if a reload is owed. */
+  const placedAnythingRef = useRef(false);
   const [selectedObjectId, setSelectedObjectId] = useState<string | null>(null);
   const [typesError, setTypesError] = useState<string | null>(null);
 
@@ -228,6 +262,19 @@ export function FloorPlanPanel({
     setHiddenTypeIds(readHiddenLayers(floorId));
     setQuery('');
     setFocusRequest(null);
+    /*
+      Placing belongs to the floor it was started on. Leaving takes the mode with it, along
+      with the session's stack — an Undo that survived the move would delete an object from
+      a plan the user is no longer looking at.
+
+      No `onChanged` here: the floor changing is already a reload on the caller's side.
+    */
+    setPlacingTypeId(null);
+    setPlaced([]);
+    setCreated([]);
+    setPlaceError(null);
+    setSelectedObjectId(null);
+    placedAnythingRef.current = false;
   }, [floorId]);
 
   const isPdf = plan?.mimeType === 'application/pdf';
@@ -263,8 +310,24 @@ export function FloorPlanPanel({
     };
   }, [placementAvailable, canPlace]);
 
+  /**
+   * The floor's objects, plus the ones just placed that the caller has not reloaded yet.
+   *
+   * Quick-place answers with the whole object row, so a new pin is drawn from the response
+   * rather than from a refetch — which is what lets the plan be clicked ten times in a row
+   * without a spinner between clicks. The caller is told once, when placing ends; until its
+   * `objects` come back carrying the new rows, they are held here.
+   *
+   * Self-pruning rather than cleared: an entry drops out the moment the same id turns up in
+   * the prop, so the reload never blinks the markers off and never draws them twice.
+   */
+  const allObjects: readonly ObjectListItemDto[] = [
+    ...objects,
+    ...created.filter((entry) => !objects.some((object) => object.id === entry.id)),
+  ];
+
   /** Objects the registry allows on a plan, placed or not. */
-  const planObjects = objects.filter((object) => object.objectType?.showOnPlan === true);
+  const planObjects = allObjects.filter((object) => object.objectType?.showOnPlan === true);
 
   /**
    * The custom type icons this floor uses, fetched once each.
@@ -343,7 +406,7 @@ export function FloorPlanPanel({
     (object) => !hidden.has(object.objectType?.id ?? ''),
   );
 
-  const markers: PlanMarker[] = visiblePlanObjects.flatMap((object) => {
+  const placedMarkers: PlanMarker[] = visiblePlanObjects.flatMap((object) => {
     const position = effectivePosition(object);
     if (!position) return [];
     return [
@@ -359,12 +422,41 @@ export function FloorPlanPanel({
       },
     ];
   });
+
+  /**
+   * The pin for a click whose create is still in the air.
+   *
+   * This is the optimistic half, and it is deliberately the only half: the pin appears at
+   * the clicked spot immediately, with the type's own icon, so placing feels like drawing
+   * rather than like filing a form — but it carries no code, because it has none yet, and
+   * it is not counted and cannot be undone. A create that fails takes its pin away with it,
+   * so nothing is ever left on the plan that is not on the record.
+   */
+  const inFlightMarkers: PlanMarker[] = placed.flatMap((entry) => {
+    if (entry.object !== null) return [];
+    const type = placeableTypes.find((candidate) => candidate.id === entry.typeId) ?? null;
+    if (hidden.has(entry.typeId)) return [];
+    return [
+      {
+        id: `placing-${entry.key}`,
+        code: '…',
+        name: type?.name ?? 'Тоноглол',
+        icon: type?.icon ?? null,
+        iconUrl: resolvedIconUrl(type?.iconUrl),
+        typeName: type?.name ?? null,
+        riskLevel: 'UNASSESSED' as const,
+        position: entry.position,
+      },
+    ];
+  });
+
+  const markers: PlanMarker[] = [...placedMarkers, ...inFlightMarkers];
   const unplacedCount = planObjects.filter((object) => effectivePosition(object) === null).length;
   const selectedObject = planObjects.find((object) => object.id === selectedObjectId) ?? null;
 
   /** Drafted positions that actually differ from what is stored. */
   const pendingMoves = Object.entries(draft).filter(([objectId, position]) => {
-    const stored = objects.find((object) => object.id === objectId)?.planPosition ?? null;
+    const stored = allObjects.find((object) => object.id === objectId)?.planPosition ?? null;
     return !samePlanPosition(position, stored);
   });
 
@@ -375,7 +467,7 @@ export function FloorPlanPanel({
    * count above the plan would otherwise name changes with no marker to point at.
    */
   const hiddenPendingCount = pendingMoves.filter(([objectId]) => {
-    const typeId = objects.find((object) => object.id === objectId)?.objectType?.id;
+    const typeId = allObjects.find((object) => object.id === objectId)?.objectType?.id;
     return typeId !== undefined && hidden.has(typeId);
   }).length;
 
@@ -391,7 +483,7 @@ export function FloorPlanPanel({
   const matches: SearchResult[] =
     trimmedQuery === ''
       ? []
-      : objects
+      : allObjects
           .filter(
             (object) =>
               object.code.toLowerCase().includes(trimmedQuery) ||
@@ -568,83 +660,122 @@ export function FloorPlanPanel({
     }
   }
 
-  /** A click on bare plan is a request to register something there. */
-  function handlePlanClick(position: PlanPositionDto): void {
-    if (!canPlace || !placementAvailable) return;
+  const placing = placingTypeId !== null;
+  const placingType = placeableTypes.find((type) => type.id === placingTypeId) ?? null;
+  /** What this session has actually written. In-flight clicks are not placed yet. */
+  const placedCount = placed.filter((entry) => entry.object !== null).length;
+  /**
+   * What Undo would take back: the last click made, and only if it has landed.
+   *
+   * Read off the tail of the click-ordered stack rather than off a "most recent response",
+   * which under rapid clicking is a different object from the one the user last pointed at.
+   * A tail still in flight has no id to delete and disables the button for the moment it
+   * takes to answer, rather than silently reaching past it to the one before — which would
+   * delete something other than what the user is looking at.
+   */
+  const undoTarget = placed.length > 0 ? placed[placed.length - 1] : undefined;
+  const undoObject = undoTarget?.object ?? null;
 
+  /**
+   * Enters placing mode.
+   *
+   * The type is asked for once, here, and then every click on the plan is a whole object.
+   * A type whose layer is switched off is switched back on in the same gesture: placing
+   * pins the user cannot see is not a mode worth being in, and the alternative is a plan
+   * that visibly does nothing while the count climbs.
+   */
+  function startPlacing(typeId: string): void {
+    if (typeId === '' || !canPlace || !placementAvailable || editing) return;
+    if (hidden.has(typeId)) {
+      applyHiddenLayers(hiddenTypeIds.filter((entry) => entry !== typeId));
+    }
+    setPlacingTypeId(typeId);
+    setPlaced([]);
+    setPlaceError(null);
     setSelectedObjectId(null);
-    setQuickError(null);
-    setQuickFieldErrors({});
-    setQuickTypeId(placeableTypes.length === 1 ? (placeableTypes[0]?.id ?? '') : '');
-    setQuickCode('');
-    setQuickName('');
-    setPendingPosition(position);
+    placedAnythingRef.current = false;
   }
 
   /**
-   * Registers the object at the pinned spot.
+   * Leaves placing mode.
    *
-   * Deliberately three fields. Everything else on the full form is optional at the API, so
-   * asking for it here would rebuild the very screen this replaces; the object opens in the
-   * full form afterwards for whoever wants to complete it.
+   * The caller is told here and nowhere else. Refreshing the floor after every click would
+   * put a refetch between one click and the next, which is exactly the pause this flow
+   * exists to remove; the markers are drawn from the create responses in the meantime, so
+   * the plan is never out of date on screen while it waits.
    */
-  async function handleQuickCreate(): Promise<void> {
-    if (!pendingPosition) return;
-    setQuickError(null);
-    setQuickFieldErrors({});
-
-    const type = placeableTypes.find((entry) => entry.id === quickTypeId) ?? null;
-    if (!type) {
-      setQuickFieldErrors({ objectTypeId: 'Төрөл сонгоно уу.' });
-      return;
-    }
-
-    // The create payload is a discriminated union: the block belonging to the type's
-    // category has to be present even when every field in it is empty.
-    const attributes =
-      type.category === 'PANEL'
-        ? { panel: {} }
-        : type.category === 'CIRCUIT'
-          ? { circuit: {} }
-          : { equipment: {} };
-
-    const parsed = createObjectSchema.safeParse({
-      code: quickCode.trim().toUpperCase(),
-      name: quickName.trim(),
-      customerId,
-      objectTypeId: type.id,
-      floorId,
-      category: type.category,
-      planPosition: pendingPosition,
-      ...attributes,
-    });
-
-    if (!parsed.success) {
-      const errors: Record<string, string> = {};
-      for (const issue of parsed.error.issues) {
-        const key = issue.path.join('.') || '_';
-        if (!errors[key]) errors[key] = issue.message;
-      }
-      setQuickFieldErrors(errors);
-      setQuickError('Оруулсан мэдээлэл шаардлага хангахгүй байна.');
-      return;
-    }
-
-    setQuickSaving(true);
-    try {
-      await objectMasterService.create(parsed.data);
-      notify('Тоноглол план дээр бүртгэгдлээ.', 'success');
-      setPendingPosition(null);
+  function exitPlacing(): void {
+    setPlacingTypeId(null);
+    setPlaced([]);
+    setPlaceError(null);
+    if (placedAnythingRef.current) {
+      placedAnythingRef.current = false;
       onChanged();
+    }
+  }
+
+  /**
+   * A click on the plan while placing: one object, immediately, with nothing to confirm.
+   *
+   * The pin is drawn before the request leaves, and the request carries only the four
+   * things a click can express — the server allocates the code and the name, which is what
+   * makes clicking ten times in a row produce ten correctly numbered objects rather than
+   * ten collisions.
+   *
+   * Failure rolls the pin back rather than leaving it: a marker on the drawing has to mean
+   * an object on the record. The mode survives the failure, because losing it after one
+   * blip mid-placement is worse than the failure was.
+   */
+  function handlePlanClick(position: PlanPositionDto): void {
+    const objectTypeId = placingTypeId;
+    if (objectTypeId === null || !canPlace || !placementAvailable) return;
+
+    const key = placeKeyRef.current++;
+    setSelectedObjectId(null);
+    setPlaceError(null);
+    setPlaced((current) => [...current, { key, typeId: objectTypeId, position, object: null }]);
+
+    void objectMasterService
+      .quickPlace({ customerId, objectTypeId, floorId, planPosition: position })
+      .then((object) => {
+        placedAnythingRef.current = true;
+        // Matched by key, so an answer that overtakes an earlier one still finds its own
+        // click and the stack keeps the order the user made it in.
+        setPlaced((current) =>
+          current.map((entry) => (entry.key === key ? { ...entry, object } : entry)),
+        );
+        setCreated((current) => [...current, object]);
+      })
+      .catch((caught: unknown) => {
+        setPlaced((current) => current.filter((entry) => entry.key !== key));
+        setPlaceError(caught instanceof ApiError ? caught.message : 'Тоноглол бүртгэж чадсангүй.');
+      });
+  }
+
+  /**
+   * Takes back the last thing this session placed, and only that.
+   *
+   * A real delete, because a quick-placed object is a real object. It reaches nothing but
+   * the stack above — an object that was already on the floor when the mode was entered is
+   * not in it and cannot be reached from here — and the button names the code it will
+   * remove, so it is never a guess.
+   */
+  async function undoLastPlacement(): Promise<void> {
+    const entry = undoTarget;
+    const object = entry?.object ?? null;
+    if (!entry || !object) return;
+
+    setUndoing(true);
+    setPlaceError(null);
+    try {
+      await objectMasterService.remove(object.id);
+      setPlaced((current) => current.filter((candidate) => candidate.key !== entry.key));
+      setCreated((current) => current.filter((candidate) => candidate.id !== object.id));
+      notify(`${object.code} устгагдлаа.`, 'success');
     } catch (caught) {
-      if (caught instanceof ApiError) {
-        setQuickError(caught.message);
-        setQuickFieldErrors(caught.fieldErrors);
-      } else {
-        setQuickError('Бүртгэж чадсангүй.');
-      }
+      setPlaceError(caught instanceof ApiError ? caught.message : 'Буцааж чадсангүй.');
     } finally {
-      setQuickSaving(false);
+      setUndoing(false);
     }
   }
 
@@ -657,7 +788,15 @@ export function FloorPlanPanel({
     setSelectedObjectId((current) => (objectId !== null && current === objectId ? null : objectId));
   }, []);
 
+  /**
+   * Moving markers and adding them stay two different modes.
+   *
+   * A click on bare plan cannot mean "register something here" and "deselect" at once, so
+   * entering the edit mode ends placing — and ends it properly, which includes telling the
+   * caller about whatever was placed before the switch.
+   */
   function enterEditing(): void {
+    exitPlacing();
     setEditing(true);
     setSelectedObjectId(null);
   }
@@ -980,7 +1119,103 @@ export function FloorPlanPanel({
               </div>
             )}
 
-            <div className="rounded-lg bg-slate-50 p-2 ring-1 ring-inset ring-slate-200">
+            {/*
+              The placement bar.
+
+              A bar rather than a dialog, and that is the whole design: a dialog per object
+              turned "put forty lights on this floor" into forty forms. The type is chosen
+              once and stays chosen, the plan is clicked as many times as there are lights,
+              and the only things that change while placing are the count and what Undo
+              points at.
+
+              Withheld exactly where placement is: no permission, no plan, a PDF plan, an
+              inactive floor, or a registry with nothing marked as shown on plans. It is also
+              gone in the position-edit mode, because the two are mutually exclusive.
+            */}
+            {canPlace && placementAvailable && !editing && placeableTypes.length > 0 && (
+              <div
+                role="group"
+                aria-label="Тоноглол байрлуулах"
+                className={`flex flex-wrap items-center gap-2 rounded-lg px-3 py-2 ring-1 ring-inset ${
+                  placing ? 'bg-blue-50 ring-blue-300' : 'bg-slate-50 ring-slate-200'
+                }`}
+              >
+                {!placing ? (
+                  <>
+                    <label
+                      htmlFor="plan-place-type"
+                      className="text-xs font-medium text-slate-600"
+                    >
+                      Түргэн байрлуулах
+                    </label>
+                    <select
+                      id="plan-place-type"
+                      className={COMPACT_SELECT}
+                      value=""
+                      onChange={(event) => startPlacing(event.target.value)}
+                    >
+                      <option value="">Төрөл сонгох</option>
+                      {placeableTypes.map((type) => (
+                        <option key={type.id} value={type.id}>
+                          {type.name} ({type.code})
+                        </option>
+                      ))}
+                    </select>
+                    <span className="text-xs text-slate-500">
+                      Төрөл сонгосны дараа план дээр дарах бүрд нэг тоноглол бүртгэгдэнэ.
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span className="inline-flex items-center gap-1 text-xs font-semibold text-blue-900">
+                      <ObjectTypeGlyph
+                        icon={placingType?.icon ?? null}
+                        iconUrl={resolvedIconUrl(placingType?.iconUrl)}
+                        className="h-3.5 w-3.5"
+                      />
+                      {placingType?.name ?? 'Тоноглол'} байрлуулж байна
+                    </span>
+                    <span className="text-xs text-blue-800">
+                      План дээр дарж нэмнэ · {placedCount} нэмэгдлээ
+                    </span>
+                    <div className="ml-auto flex items-center gap-2">
+                      {/*
+                        Named, not implied. The button says what it will delete, so nobody
+                        has to work out what "the last one" meant while the pins are still
+                        appearing — and it is inert until the last click has an answer,
+                        because until then there is nothing to delete.
+                      */}
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => void undoLastPlacement()}
+                        disabled={undoObject === null || undoing}
+                        loading={undoing}
+                      >
+                        {undoObject ? `Буцаах (${undoObject.code})` : 'Буцаах'}
+                      </Button>
+                      <Button variant="ghost" size="sm" onClick={exitPlacing} disabled={undoing}>
+                        Болих
+                      </Button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            {/*
+              A failed create says why and stays in the mode. The pin it drew is already
+              gone, so the plan and the record still agree.
+            */}
+            {placeError && <Alert variant="error">{placeError}</Alert>}
+
+            <div
+              className={`rounded-lg bg-slate-50 p-2 ring-1 ring-inset ring-slate-200 ${
+                // The pointer says what a click will do. React Flow paints its own grab
+                // cursor on the pane, so the override has to reach it.
+                placing ? '[&_.react-flow__pane]:cursor-crosshair' : ''
+              }`}
+            >
               {isPdf ? (
                 <div className="flex flex-col items-start gap-2 p-4">
                   <p className="text-sm text-slate-700">{plan.fileName}</p>
@@ -1138,72 +1373,6 @@ export function FloorPlanPanel({
               className={FIELD_TEXTAREA}
             />
           </div>
-        </div>
-      </Drawer>
-
-      {/*
-        Quick registration at the pinned spot.
-
-        A drawer rather than a route to the full object form: the point of clicking the plan
-        is that the placement is the context, and pushing a route would throw that away and
-        ask for the floor and the customer again. Only the fields the API actually requires
-        are here; the rest is optional and can be filled in on the object afterwards.
-      */}
-      <Drawer
-        open={pendingPosition !== null}
-        title="План дээр тоноглол бүртгэх"
-        onClose={() => setPendingPosition(null)}
-        footer={
-          <>
-            <Button
-              variant="secondary"
-              onClick={() => setPendingPosition(null)}
-              disabled={quickSaving}
-            >
-              Цуцлах
-            </Button>
-            <Button onClick={() => void handleQuickCreate()} loading={quickSaving}>
-              Бүртгэх
-            </Button>
-          </>
-        }
-      >
-        <div className="space-y-4">
-          {quickError && <Alert variant="error">{quickError}</Alert>}
-
-          <Field label="Тоноглолын төрөл" required error={quickFieldErrors.objectTypeId}>
-            <SelectInput
-              value={quickTypeId}
-              onChange={setQuickTypeId}
-              placeholder={
-                placeableTypes.length === 0 ? 'План дээр харуулах төрөл алга' : 'Төрөл сонгох'
-              }
-              options={placeableTypes.map((type) => ({
-                value: type.id,
-                label: `${type.name} (${type.code})`,
-              }))}
-              disabled={quickSaving || placeableTypes.length === 0}
-            />
-          </Field>
-
-          <Field label="Код" required error={quickFieldErrors.code}>
-            <TextInput
-              value={quickCode}
-              onChange={(value) => setQuickCode(value.toUpperCase())}
-              disabled={quickSaving}
-            />
-          </Field>
-
-          <Field label="Нэр" required error={quickFieldErrors.name}>
-            <TextInput value={quickName} onChange={setQuickName} disabled={quickSaving} />
-          </Field>
-
-          {pendingPosition && (
-            <p className="text-xs text-slate-500">
-              План дээрх байрлал: {(pendingPosition.x * 100).toFixed(1)}% ·{' '}
-              {(pendingPosition.y * 100).toFixed(1)}%
-            </p>
-          )}
         </div>
       </Drawer>
 

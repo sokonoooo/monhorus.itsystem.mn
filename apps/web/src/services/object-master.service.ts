@@ -13,6 +13,7 @@ import type {
   ObjectTypeDto,
   ObjectTypeListQuery,
   PaginatedData,
+  QuickPlaceObjectInput,
   UpdateObjectInput,
   UpdateObjectPositionInput,
   UpdateObjectTypeInput,
@@ -117,6 +118,25 @@ export const objectMasterService = {
 
   async create(payload: CreateObjectInput): Promise<ObjectDetailDto> {
     return unwrap(await apiClient.post<ApiResponse<ObjectDetailDto>>('/objects-master', payload));
+  },
+
+  /**
+   * One tap on a floor plan, one object.
+   *
+   * Deliberately a different endpoint from `create` rather than a lenient call to it. The
+   * payload is `.strict()` on the server and carries no `code` and no `name`: both are
+   * allocated there, because a code is unique per customer against an index the browser
+   * cannot see and a name is numbered per floor per type — neither is something a client
+   * clicking ten times a second could compute without collisions. `category` is absent for
+   * the same reason: it is read from the chosen type.
+   *
+   * What comes back is a full detail row, so the marker for the new object can be drawn
+   * from the response and the floor need not be refetched between clicks.
+   */
+  async quickPlace(payload: QuickPlaceObjectInput): Promise<ObjectDetailDto> {
+    return unwrap(
+      await apiClient.post<ApiResponse<ObjectDetailDto>>('/objects-master/quick-place', payload),
+    );
   },
 
   /**
