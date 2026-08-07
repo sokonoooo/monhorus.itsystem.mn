@@ -78,6 +78,23 @@ export const OBJECT_ICONS = [
 ] as const;
 export type ObjectIcon = (typeof OBJECT_ICONS)[number];
 
+/**
+ * Hard ceiling on a custom object-type icon, in bytes.
+ *
+ * 64 KB, deliberately two orders of magnitude below the 10 MB global upload cap. An icon is
+ * a handful of paths — a few kilobytes — and every real one this has been tried against
+ * fits several times over. The limit is small on purpose: an SVG is parsed rather than
+ * copied, so the cheapest defence against a pathological document is never to accept a
+ * large one. Enforced by the upload middleware, before a byte reaches the parser.
+ *
+ * Shared so a client can refuse an over-large file before spending the round trip; the
+ * server never trusts that it did.
+ */
+export const MAX_OBJECT_TYPE_ICON_BYTES = 64 * 1024;
+
+/** The only content type accepted for a custom object-type icon. */
+export const OBJECT_TYPE_ICON_MIME = 'image/svg+xml';
+
 export const OBJECT_ICON_LABELS: Record<ObjectIcon, string> = {
   PANEL: 'Самбар',
   BREAKER: 'Автомат таслуур',

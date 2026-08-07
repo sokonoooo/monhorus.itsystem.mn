@@ -403,6 +403,10 @@ export function makeObjectType(overrides: Partial<ObjectTypeDto> = {}): ObjectTy
     insidePanel: true,
     generatesConclusion: true,
     icon: 'BREAKER',
+    // No custom icon by default: the built-in glyph is what a type registered before
+    // uploads existed still draws with, and that is the case worth being the default.
+    iconFileId: null,
+    iconUrl: null,
     isActive: true,
     objectCount: 0,
     createdAt: '2026-01-01T00:00:00.000Z',
@@ -424,6 +428,7 @@ export function makeObjectListItem(
       code: 'DB',
       name: 'Түгээх самбар',
       icon: 'PANEL',
+      iconUrl: null,
       showOnPlan: false,
     },
     customerId: '507f1f77bcf86cd799439011',

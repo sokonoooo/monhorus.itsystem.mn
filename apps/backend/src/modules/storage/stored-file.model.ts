@@ -18,6 +18,16 @@ export const STORED_FILE_OWNER_TYPES = [
   'PLANNED_WORK_TASK',
   'FLOOR_PLAN',
   'OBJECT',
+  /**
+   * A custom SVG icon on an equipment type.
+   *
+   * THE ONLY GLOBAL KIND. Every other owner above resolves back to one organisation; an
+   * `ObjectType` has no `customer` field at all — the registry is one catalogue shared by
+   * every tenant — so this asset belongs to nobody in particular and carries no tenant
+   * data. `assertFileInCustomerScope` says so explicitly rather than letting it fall
+   * through to the refusal at the bottom of that switch.
+   */
+  'OBJECT_TYPE',
 ] as const;
 export type StoredFileOwnerType = (typeof STORED_FILE_OWNER_TYPES)[number];
 

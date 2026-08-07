@@ -48,6 +48,7 @@ import { getRiskBands } from '../settings/settings.service';
 import { StoredFile, type IStoredFile } from '../storage/stored-file.model';
 import { appendAssessmentHistory } from './assessment-history.service';
 import { loadFiguresOf } from './load.service';
+import { objectTypeIconUrl } from './object-type.service';
 import {
   ObjectAssessment,
   ObjectRecord,
@@ -67,6 +68,7 @@ function populatedType(
   code: string;
   name: string;
   icon: ObjectIcon;
+  iconFile?: Types.ObjectId | null;
   generatesConclusion?: boolean;
   showOnPlan?: boolean;
 } | null {
@@ -76,6 +78,7 @@ function populatedType(
     code: string;
     name: string;
     icon: ObjectIcon;
+    iconFile?: Types.ObjectId | null;
     generatesConclusion?: boolean;
     showOnPlan?: boolean;
   };
@@ -111,7 +114,10 @@ function named(value: unknown): string | null {
 }
 
 const LIST_POPULATE = [
-  { path: 'objectType', select: 'code name icon generatesConclusion showOnPlan' },
+  // `iconFile` is projected, not populated: the DTO needs the id to build a download path
+  // and nothing else about the file, so populating it would buy a lookup per row for data
+  // no client reads.
+  { path: 'objectType', select: 'code name icon iconFile generatesConclusion showOnPlan' },
   { path: 'customer', select: 'name' },
   { path: 'floor', select: 'name parent' },
 ] as const;
@@ -151,6 +157,9 @@ export async function toObjectListItemDto(
           code: type.code,
           name: type.name,
           icon: type.icon,
+          // The custom SVG when the registry has one, null to fall back to `icon` above.
+          // A projection that forgot the field reads as null, i.e. as the old behaviour.
+          iconUrl: objectTypeIconUrl(type.iconFile ?? null),
           // The registry's own answer to "may this appear on a plan". Defaulted rather
           // than asserted: a projection that forgot the field must read as "not on the
           // plan", never as a marker drawn on the strength of an undefined.

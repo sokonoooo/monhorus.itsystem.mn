@@ -26,7 +26,7 @@ import {
   toPlanPosition,
   type PlanSize,
 } from './plan-geometry';
-import { ObjectTypeIcon, objectIconLabel } from './plan-icons';
+import { ObjectTypeGlyph, objectIconLabel } from './plan-icons';
 
 /** One drawn object. `position` is the drafted one while an edit is in flight. */
 export interface PlanMarker {
@@ -34,6 +34,13 @@ export interface PlanMarker {
   code: string;
   name: string;
   icon: ObjectIcon | null;
+  /**
+   * The type's custom SVG as an already-fetched object url, or null for the built-in glyph.
+   *
+   * Resolved by the panel rather than here: the download route is authenticated, and one
+   * icon shared by forty markers must cost one request, not forty.
+   */
+  iconUrl: string | null;
   typeName: string | null;
   riskLevel: RiskLevel | 'UNASSESSED';
   position: PlanPositionDto;
@@ -150,7 +157,12 @@ function MarkerNode({ data }: NodeProps<MarkerFlowNode>): ReactElement {
           selected ? 'outline outline-2 outline-offset-2 outline-blue-500' : ''
         } ${editing ? 'cursor-move' : 'cursor-pointer'}`}
       >
-        <ObjectTypeIcon icon={marker.icon} />
+        {/*
+          Custom or built-in, the icon is drawn at one fixed size inside a marker the
+          transform above has already taken the zoom back out of, so an uploaded icon is
+          the same size on screen as a glyph at every magnification.
+        */}
+        <ObjectTypeGlyph icon={marker.icon} iconUrl={marker.iconUrl} />
         {showCode && <span>{marker.code}</span>}
       </button>
     </div>

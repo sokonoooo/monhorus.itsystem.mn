@@ -27,7 +27,14 @@ import { ObjectNode } from '../objects/object.models';
 import { ServiceRequest } from '../service-request/service-request.model';
 import { WorkReport } from '../service-request/work-report.model';
 import { StoredFile, type IStoredFile, type StoredFileOwnerType } from './stored-file.model';
-import { deleteStoredFile, resolveStoredFilePath, upload } from './storage.service';
+import {
+  acceptSvgIcon,
+  deleteStoredFile,
+  resolveStoredFilePath,
+  upload,
+  writeStoredFileBytes,
+} from './storage.service';
+import { sanitiseSvgIcon } from './svg-sanitiser';
 
 const objectId = z.string().regex(/^[a-f\d]{24}$/i, 'ID буруу форматтай байна.');
 
@@ -53,7 +60,52 @@ const DOWNLOAD_PERMISSIONS_BY_OWNER: Record<StoredFileOwnerType, readonly Permis
   PLANNED_WORK_TASK: [PERMISSIONS.PLANNED_WORK_VIEW],
   FLOOR_PLAN: [PERMISSIONS.OBJECT_VIEW, PERMISSIONS.PORTAL_FLOOR_VIEW],
   OBJECT: [PERMISSIONS.OBJECT_MASTER_VIEW, PERMISSIONS.PORTAL_OBJECT_VIEW],
+  /**
+   * The same pair as `OBJECT`, and for the same reason: whoever may see a piece of
+   * equipment may see the glyph drawn on top of it.
+   *
+   * The portal key is not generosity. `GET /objects` accepts `portal.object.view` and
+   * every row it returns inlines `objectType.iconUrl`, so a customer is HANDED these urls
+   * by the endpoint they are entitled to call. Refusing them here would not withhold
+   * anything — the icon is global and describes a catalogue entry, not a tenant — it would
+   * only render a broken image on the one screen the field exists for. That is exactly the
+   * shape of the floor-plan bug the portal keys above were added to fix.
+   */
+  OBJECT_TYPE: [PERMISSIONS.OBJECT_MASTER_VIEW, PERMISSIONS.PORTAL_OBJECT_VIEW],
 };
+
+/**
+ * Response headers for a served SVG, and the reason they are written here by hand.
+ *
+ * An SVG is a document, not a picture: opened at its own url it is a browsing context that
+ * can carry script. Everything served by this route is sanitised before storage, so this is
+ * the SECOND layer — the one that has to hold when the first is wrong.
+ *
+ * It is spelled out rather than inherited because what protects the application today is
+ * `helmet()`'s default `script-src 'self'`, which nobody chose for this and no test pins.
+ * A future decision to relax the app-wide policy — a CDN, an analytics snippet, an inline
+ * bootstrap — would silently widen what an SVG served from this origin may do. These
+ * headers are attached to the SVG response itself and are pinned by a test, so that can no
+ * longer happen quietly.
+ *
+ *   default-src 'none'  — no script, no fetch, no font, no frame, no image, nothing. An
+ *                         icon needs to fetch precisely nothing, so the budget is zero.
+ *   style-src 'unsafe-inline'
+ *                       — the single exception. A sanitised icon legitimately carries its
+ *                         colours in `style="…"` and in a `<style>` block (that is how
+ *                         every Illustrator export stores them), and both count as inline
+ *                         styles. It grants no script: CSS cannot execute, and the
+ *                         constructs that historically blurred that line — `expression()`,
+ *                         `-moz-binding`, `@import`, `url()` — are removed by the
+ *                         sanitiser before the bytes are ever written.
+ *   sandbox             — with no tokens, i.e. maximally restrictive. Drops the document
+ *                         into a unique opaque origin with scripting, forms, popups,
+ *                         top-level navigation and same-origin access all denied. Costs
+ *                         nothing when the file is drawn through `<img>` (already
+ *                         script-free) and is what matters when somebody opens the url
+ *                         directly.
+ */
+const SVG_CONTENT_SECURITY_POLICY = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
 
 /**
  * Resolves a file back to the organisation that owns it and refuses a caller outside it.
@@ -148,6 +200,22 @@ async function assertFileInCustomerScope(
       assertInCustomerScope(scope, await customerOfWorkReportPhoto(file._id), notFound);
       return;
     }
+    case 'OBJECT_TYPE': {
+      // DELIBERATE, NOT AN OVERSIGHT. There is no tenant to check. The equipment-type
+      // registry is a single global catalogue — `IObjectType` has no `customer` field, and
+      // an object type is not created within an organisation — so a custom icon on one
+      // resolves to no customer and never could. Falling through to the refusal below
+      // would not be "safe by default": it would 403 the icon of the type a customer's own
+      // equipment already declares, on the strength of tenancy the asset does not have.
+      //
+      // What keeps this narrow is that the file describes a catalogue entry and nothing
+      // else: no customer name, no site, no count, no equipment. The permission check above
+      // has already established the caller may look at equipment types at all, and this
+      // route is reached only with a file id that some object list handed out.
+      //
+      // The moment an icon becomes per-customer, this case must become a real check.
+      return;
+    }
     default:
       throw AppError.forbidden();
   }
@@ -220,6 +288,17 @@ fileRouter.get(
 
       res.setHeader('Content-Type', file.mimeType);
       res.setHeader('Content-Length', String(file.sizeBytes));
+      // Never let a browser second-guess the declared type. A stored file's `mimeType` is
+      // what the server decided it is; sniffing could promote something to a type this
+      // route never intended to serve.
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+
+      // An SVG is the one image that is also a document. Locked down explicitly rather than
+      // left to the app-wide helmet default — see SVG_CONTENT_SECURITY_POLICY.
+      if (file.mimeType === 'image/svg+xml') {
+        res.setHeader('Content-Security-Policy', SVG_CONTENT_SECURITY_POLICY);
+      }
+
       // Inline for images so the photo renders; attachment otherwise.
       const disposition = file.mimeType.startsWith('image/') ? 'inline' : 'attachment';
       res.setHeader(
@@ -436,6 +515,80 @@ fileRouter.post(
           uploadedAt: storedFile.createdAt.toISOString(),
         },
         'Зураг хуулагдлаа.',
+      );
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+/**
+ * Uploads a custom SVG icon for an equipment type, before the type exists.
+ *
+ * Same parked-then-claimed shape as every other pre-entity upload here: the create form
+ * needs a file id to put in `iconFileId`, so the file is owned to the uploader and
+ * `createObjectType` / `updateObjectType` re-own it onto the type that claims it.
+ *
+ * Gated on `object_type.manage`, matching POST and PATCH /object-types exactly — whoever
+ * may create or edit a type may give it a picture, and nobody else. `object_master.view`
+ * is not enough: that is the permission to LOOK at the registry.
+ *
+ * THREE THINGS HAPPEN BEFORE A BYTE IS STORED, in this order:
+ *
+ *   1. `acceptSvgIcon` caps the request at 64 KB and rejects a content type that is not
+ *      `image/svg+xml`, buffering into memory so nothing unclean ever reaches the disk.
+ *   2. `sanitiseSvgIcon` PARSES the bytes. This is what actually establishes the file is an
+ *      SVG — the declared content type is a claim, not evidence — so a PNG renamed
+ *      `icon.svg` and posted as `image/svg+xml` is refused here, not accepted here.
+ *   3. Only the parser's own output is written, under a server-generated key.
+ *
+ * The stored `sizeBytes` is therefore the size of the CLEAN file, not of what was sent.
+ */
+fileRouter.post(
+  '/object-type-icons',
+  requirePermission(PERMISSIONS.OBJECT_TYPE_MANAGE),
+  acceptSvgIcon,
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const auth = requireAuth(req);
+      const uploaded = req.file;
+      if (!uploaded) {
+        throw AppError.badRequest(ERROR_CODES.VALIDATION_ERROR, 'Файл заавал.', [
+          { field: 'file', message: 'SVG файл сонгоно уу.' },
+        ]);
+      }
+
+      // Throws a 400 when the content is not really an SVG. Hostile content inside a
+      // genuine one is not an error — it is simply not in the result.
+      const sanitised = sanitiseSvgIcon(uploaded.buffer);
+      const bytes = Buffer.byteLength(sanitised, 'utf8');
+
+      const storedFile = await StoredFile.create({
+        storageKey: writeStoredFileBytes(sanitised),
+        // Display metadata only; it never touches the filesystem, and the extension is
+        // pinned because what was stored is an SVG regardless of what it arrived called.
+        originalName: `${uploaded.originalname.replace(/\.[^.]*$/, '').slice(0, 80) || 'icon'}.svg`,
+        mimeType: 'image/svg+xml',
+        sizeBytes: bytes,
+        ownerType: 'OBJECT_TYPE',
+        // Parked on the uploader until an object type claims it.
+        ownerId: new Types.ObjectId(auth.userId),
+        uploadedBy: new Types.ObjectId(auth.userId),
+        uploadedByName: auth.fullName,
+      });
+
+      created(
+        res,
+        {
+          id: String(storedFile._id),
+          name: storedFile.originalName,
+          downloadUrl: `/api/v1/files/${String(storedFile._id)}`,
+          mimeType: storedFile.mimeType,
+          sizeBytes: storedFile.sizeBytes,
+          uploadedByName: storedFile.uploadedByName,
+          uploadedAt: storedFile.createdAt.toISOString(),
+        },
+        'Айкон хуулагдлаа.',
       );
     } catch (error) {
       next(error);

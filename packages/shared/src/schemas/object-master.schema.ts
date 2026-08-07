@@ -35,6 +35,14 @@ export const createObjectTypeSchema = z.object({
   insidePanel: z.boolean().default(false),
   generatesConclusion: z.boolean().default(true),
   icon: z.enum(OBJECT_ICONS).default('OTHER'),
+  /**
+   * A previously uploaded SVG from `POST /files/object-type-icons`, or nothing.
+   *
+   * The upload happens first because the type does not exist yet at that point, exactly as
+   * a service-request attachment is uploaded before the request. `icon` stays required
+   * regardless: it is the fallback whenever this is absent.
+   */
+  iconFileId: objectIdSchema.nullish(),
 });
 
 export const updateObjectTypeSchema = z
@@ -45,6 +53,11 @@ export const updateObjectTypeSchema = z
     insidePanel: z.boolean().optional(),
     generatesConclusion: z.boolean().optional(),
     icon: z.enum(OBJECT_ICONS).optional(),
+    /**
+     * Set, replace, or clear the custom icon. Three-valued on purpose:
+     * absent leaves it alone, an id replaces it, `null` clears it back to the `icon` enum.
+     */
+    iconFileId: objectIdSchema.nullish(),
     isActive: z.boolean().optional(),
   })
   // Category and code are omitted on purpose: changing either would silently invalidate

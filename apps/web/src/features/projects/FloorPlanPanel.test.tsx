@@ -31,6 +31,8 @@ const PLACEABLE_INLINE = {
   code: 'MCB',
   name: 'Автомат таслуур',
   icon: 'BREAKER' as const,
+  /** No uploaded icon: the built-in glyph is what this type draws with. */
+  iconUrl: null,
   showOnPlan: true,
 };
 
@@ -40,6 +42,7 @@ const CAMERA_INLINE = {
   code: 'CAM',
   name: 'Камер',
   icon: 'CAMERA' as const,
+  iconUrl: null,
   showOnPlan: true,
 };
 
@@ -49,6 +52,7 @@ const CABLE_INLINE = {
   code: 'CBL',
   name: 'Кабель',
   icon: 'CABLE' as const,
+  iconUrl: null,
   showOnPlan: false,
 };
 
@@ -981,5 +985,121 @@ describe('FloorPlanPanel search', () => {
     await user.keyboard('{Escape}');
     expect(screen.queryByText('CAM-01 · Коридорын камер')).not.toBeInTheDocument();
     expect(search()).toHaveValue('');
+  });
+});
+
+/**
+ * A type may carry an uploaded SVG, and then that is what its markers are drawn with.
+ *
+ * The row already inlines `objectType.iconUrl`, so the plan never fetches the registry to
+ * answer "what do I draw" — the only request is for the picture itself, which is
+ * authenticated like every other stored file and therefore cannot be a bare `img src`.
+ */
+describe('FloorPlanPanel custom type icons', () => {
+  const ICON_PATH = '/api/v1/files/507f1f77bcf86cd799439199';
+  const WITH_ICON = { ...PLACEABLE_INLINE, iconUrl: ICON_PATH };
+
+  beforeEach(() => {
+    layOutCanvas();
+    vi.spyOn(fileUrl, 'authorisedFileUrl').mockImplementation(async (path: string) =>
+      path === ICON_PATH ? 'blob:icon' : 'blob:plan',
+    );
+    vi.spyOn(objectTypeService, 'list').mockResolvedValue(makePage([PLACEABLE]));
+  });
+
+  /** The marker's icon, whichever kind it turned out to be. */
+  function markerImage(objectId: string): HTMLImageElement | null {
+    return markerNode(objectId).querySelector('img');
+  }
+
+  function markerGlyph(objectId: string): SVGElement | null {
+    return markerNode(objectId).querySelector('svg');
+  }
+
+  it('draws the uploaded icon in place of the built-in glyph', async () => {
+    renderPanel({ objects: [placedObject({ objectType: WITH_ICON })] });
+    await readyCanvas();
+
+    await waitFor(() => expect(markerImage('o1')).not.toBeNull());
+    expect(markerImage('o1')).toHaveAttribute('src', 'blob:icon');
+    // The glyph is replaced, not drawn underneath it.
+    expect(markerGlyph('o1')).toBeNull();
+  });
+
+  it('leaves a type with no uploaded icon on its built-in glyph', async () => {
+    renderPanel({ objects: [placedObject()] });
+    await readyCanvas();
+
+    expect(markerGlyph('o1')).not.toBeNull();
+    expect(markerImage('o1')).toBeNull();
+    // Nothing but the plan image is fetched for a floor whose types carry no icon.
+    expect(fileUrl.authorisedFileUrl).not.toHaveBeenCalledWith(ICON_PATH);
+  });
+
+  /**
+   * A 404, a revoked blob, a file removed from disk: the marker falls back to the glyph
+   * rather than leaving the browser's broken-image box in the middle of a plan.
+   */
+  it('falls back to the glyph when the icon fails to load', async () => {
+    renderPanel({ objects: [placedObject({ objectType: WITH_ICON })] });
+    await readyCanvas();
+
+    await waitFor(() => expect(markerImage('o1')).not.toBeNull());
+    fireEvent.error(markerImage('o1')!);
+
+    await waitFor(() => expect(markerGlyph('o1')).not.toBeNull());
+    expect(markerImage('o1')).toBeNull();
+  });
+
+  /** One file behind forty markers is one request, which is why the panel resolves them. */
+  it('fetches one shared icon once for every marker using it', async () => {
+    renderPanel({
+      objects: [
+        placedObject({ objectType: WITH_ICON }),
+        placedObject({
+          id: 'o2',
+          code: 'EQ-02',
+          objectType: WITH_ICON,
+          planPosition: { x: 0.2, y: 0.6 },
+        }),
+      ],
+    });
+    await readyCanvas();
+
+    await waitFor(() => expect(markerImage('o2')).not.toBeNull());
+    const iconFetches = vi
+      .mocked(fileUrl.authorisedFileUrl)
+      .mock.calls.filter(([path]) => path === ICON_PATH);
+    expect(iconFetches).toHaveLength(1);
+  });
+
+  it('shows the uploaded icon on the layer chip too', async () => {
+    renderPanel({ objects: [placedObject({ objectType: WITH_ICON })] });
+    await readyCanvas();
+
+    await waitFor(() =>
+      expect(layerChip('Автомат таслуур').querySelector('img')).not.toBeNull(),
+    );
+    expect(layerChip('Автомат таслуур').querySelector('img')).toHaveAttribute(
+      'src',
+      'blob:icon',
+    );
+  });
+
+  /**
+   * The counter-scale has to apply to a custom icon exactly as it does to a glyph, or a
+   * plan zoomed in would be covered by enormous pictures.
+   */
+  it('keeps a custom icon the same size on screen as the plan is zoomed', async () => {
+    renderPanel({ objects: [placedObject({ objectType: WITH_ICON })] });
+    await readyCanvas();
+
+    await waitFor(() => expect(markerImage('o1')).not.toBeNull());
+    const fitted = viewport().zoom;
+    expect(markerScreenScale('o1')).toBeCloseTo(1, 6);
+
+    fireEvent.wheel(pane(), { deltaY: -500, clientX: 400, clientY: 300 });
+    await waitFor(() => expect(viewport().zoom).toBeGreaterThan(fitted));
+    expect(markerScreenScale('o1')).toBeCloseTo(1, 6);
   });
 });

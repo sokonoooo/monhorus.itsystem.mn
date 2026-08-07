@@ -1,5 +1,5 @@
 import { OBJECT_ICON_LABELS, type ObjectIcon } from '@monhorus/shared';
-import type { ReactElement, ReactNode } from 'react';
+import { useState, type ReactElement, type ReactNode } from 'react';
 
 /**
  * The glyphs behind the section 4.1 icon keys.
@@ -150,6 +150,64 @@ export function ObjectTypeIcon({ icon, className = 'h-3.5 w-3.5' }: ObjectTypeIc
     >
       {GLYPHS[icon ?? 'OTHER']}
     </svg>
+  );
+}
+
+interface ObjectTypeGlyphProps {
+  /** The built-in key, and the fallback whenever there is no custom icon to draw. */
+  icon: ObjectIcon | null;
+  /**
+   * A ready-to-render url for the type's uploaded SVG, or null.
+   *
+   * Already resolved by the caller: `GET /files/:id` wants the bearer token, so what
+   * arrives here is the object url of an icon that has been fetched, never the raw
+   * `/api/v1/files/...` path from the DTO.
+   */
+  iconUrl: string | null;
+  className?: string;
+}
+
+/**
+ * A type's icon: the uploaded one where there is one, the built-in glyph otherwise.
+ *
+ * The custom icon is drawn with `<img>`, and that is a security decision rather than a
+ * convenience. An SVG is a document — inlined into this page, whether through React's
+ * raw-HTML escape hatch or as an `<svg>` rebuilt from fetched markup, its script and its
+ * event handlers would run with the application's own origin and its session, and the
+ * absence of that escape hatch in this file is pinned by a test. Inside an `<img>` it
+ * cannot run at all: the browser treats it as a picture, scripts never execute, and
+ * external references are not followed.
+ *
+ * The server sanitises what it stores and serves it under a locked-down CSP;
+ * this is the second layer, and it is what has to hold if the first one is ever wrong.
+ *
+ * A broken url falls back to the glyph rather than leaving the browser's broken-image box
+ * in the middle of a plan marker. The failure is remembered per url, so a different icon
+ * arriving later is given its own chance, and setting the same url twice is a no-op React
+ * bails out of — a marker on the canvas re-renders on every pan.
+ */
+export function ObjectTypeGlyph({
+  icon,
+  iconUrl,
+  className = 'h-3.5 w-3.5',
+}: ObjectTypeGlyphProps): ReactElement {
+  const [brokenUrl, setBrokenUrl] = useState<string | null>(null);
+
+  if (!iconUrl || brokenUrl === iconUrl) {
+    return <ObjectTypeIcon icon={icon} className={className} />;
+  }
+
+  return (
+    <img
+      src={iconUrl}
+      alt=""
+      aria-hidden="true"
+      draggable={false}
+      // `object-contain` because an uploaded icon is whatever shape it was drawn at, and
+      // a marker is a fixed square: the icon fits inside it rather than stretching to it.
+      className={`${className} object-contain`}
+      onError={() => setBrokenUrl(iconUrl)}
+    />
   );
 }
 

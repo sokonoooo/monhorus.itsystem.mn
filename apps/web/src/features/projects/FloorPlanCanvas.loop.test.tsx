@@ -34,6 +34,7 @@ const MARKER: PlanMarker = {
   code: 'CT-LDB-1',
   name: 'Гэрэлтүүлгийн самбар',
   icon: 'PANEL',
+  iconUrl: null,
   typeName: 'Түгээх самбар',
   riskLevel: 'NORMAL',
   position: { x: 0.5, y: 0.5 },

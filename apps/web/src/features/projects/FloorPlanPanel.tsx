@@ -26,12 +26,13 @@ import { useToast } from '../../components/ui/ToastProvider';
 import { FIELD_TEXTAREA, FILTER_INPUT, FILTER_LABEL } from '../../components/ui/control-styles';
 import { ApiError } from '../../lib/api-client';
 import { authorisedFileUrl } from '../../lib/file-url';
+import { useAuthorisedFileUrls } from '../../lib/use-authorised-file-urls';
 import { objectMasterService, objectTypeService } from '../../services/object-master.service';
 import { projectService } from '../../services/project.service';
 import { Field, SelectInput, TextInput } from '../employees/FormControls';
 import { FloorPlanCanvas, type PlanFocusRequest, type PlanMarker } from './FloorPlanCanvas';
 import { samePlanPosition } from './plan-geometry';
-import { ObjectTypeIcon } from './plan-icons';
+import { ObjectTypeGlyph } from './plan-icons';
 
 interface FloorPlanPanelProps {
   floorId: string;
@@ -70,6 +71,8 @@ interface PlanLayer {
   typeId: string;
   name: string;
   icon: ObjectIcon | null;
+  /** The type's custom icon as an object url, or null for the built-in glyph. */
+  iconUrl: string | null;
   /** Markers of this type currently on the plan — that is, what hiding it takes away. */
   count: number;
 }
@@ -263,6 +266,33 @@ export function FloorPlanPanel({
   /** Objects the registry allows on a plan, placed or not. */
   const planObjects = objects.filter((object) => object.objectType?.showOnPlan === true);
 
+  /**
+   * The custom type icons this floor uses, fetched once each.
+   *
+   * `GET /files/:id` wants the bearer token, so an icon cannot be a bare `img src` any more
+   * than the plan image can. They are resolved here, at the one place that already holds
+   * every object on the floor, rather than inside the marker: forty breakers share one
+   * icon file, and that has to be one request and one blob, not forty of each. Keyed by the
+   * icon's own path for the same reason — two types pointing at the same file cost one
+   * fetch, and a type with no custom icon costs nothing at all.
+   *
+   * An icon that fails to load simply never appears in the map, and the marker falls back
+   * to its built-in glyph. A missing picture must not take a plan down.
+   */
+  const iconFiles = [
+    ...new Set(
+      planObjects
+        .map((object) => object.objectType?.iconUrl ?? null)
+        .filter((url): url is string => url !== null),
+    ),
+  ].map((url) => ({ id: url, downloadUrl: url }));
+  const iconUrls = useAuthorisedFileUrls(iconFiles);
+
+  /** The drawable url for a type's icon path, or null while it is still on its way. */
+  function resolvedIconUrl(iconUrl: string | null | undefined): string | null {
+    return iconUrl ? (iconUrls[iconUrl] ?? null) : null;
+  }
+
   /** The position a marker is drawn at: the drafted one where there is one. */
   function effectivePosition(object: ObjectListItemDto): PlanPositionDto | null {
     return object.id in draft ? draft[object.id]! : object.planPosition;
@@ -286,7 +316,13 @@ export function FloorPlanPanel({
       if (existing) {
         existing.count += drawn;
       } else {
-        byType.set(type.id, { typeId: type.id, name: type.name, icon: type.icon, count: drawn });
+        byType.set(type.id, {
+          typeId: type.id,
+          name: type.name,
+          icon: type.icon,
+          iconUrl: resolvedIconUrl(type.iconUrl),
+          count: drawn,
+        });
       }
     }
     return [...byType.values()].sort((a, b) => a.name.localeCompare(b.name, 'mn'));
@@ -316,6 +352,7 @@ export function FloorPlanPanel({
         code: object.code,
         name: object.name,
         icon: object.objectType?.icon ?? null,
+        iconUrl: resolvedIconUrl(object.objectType?.iconUrl),
         typeName: object.objectType?.name ?? null,
         riskLevel: object.latestAssessment?.riskLevel ?? 'UNASSESSED',
         position,
@@ -907,7 +944,11 @@ export function FloorPlanPanel({
                             : 'bg-slate-100 text-slate-700 ring-slate-300 hover:bg-slate-200'
                         }`}
                       >
-                        <ObjectTypeIcon icon={layer.icon} className="h-3 w-3" />
+                        <ObjectTypeGlyph
+                          icon={layer.icon}
+                          iconUrl={layer.iconUrl}
+                          className="h-3 w-3"
+                        />
                         <span>{layer.name}</span>
                         <span className={isHidden ? 'text-slate-400' : 'text-slate-500'}>
                           {layer.count}
