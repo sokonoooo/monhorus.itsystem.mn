@@ -707,16 +707,16 @@ void main() {
     handle.dispose();
   });
 
-  /// Who gets a one-finger drag on a magnified plan, and it is not the same answer on
-  /// both axes. This is the seam between the zoom and the page it lives on, so it is
-  /// asserted rather than left to be rediscovered.
+  /// A magnified plan pans on both axes, and the vertical half of that is the whole
+  /// reason [kPlanZoomedTouchSlop] exists.
   ///
-  /// Nothing arbitrates this in our code: it falls out of the gesture arena. A vertical
-  /// drag is claimed by the enclosing list, whose drag recogniser resolves at an 18px
-  /// slop, before the viewer's scale recogniser resolves at its wider 36px pan slop.
-  /// Horizontally the list is not competing at all, so the viewer takes it uncontested.
-  testWidgets('a magnified plan pans sideways; the page keeps the vertical drag',
-      (WidgetTester tester) async {
+  /// Nothing in the app arbitrates this: it falls out of the gesture arena, and by
+  /// default the enclosing list wins a vertical drag because its recogniser resolves at
+  /// an 18px slop while the viewer's needs 36. Halving the slop inside the plan's
+  /// subtree while it is magnified reverses that. Asserted on both axes because the two
+  /// are decided by entirely different things — sideways the list never competes at
+  /// all, so it would keep working even if the slop override were deleted.
+  testWidgets('a magnified plan pans in both directions', (WidgetTester tester) async {
     final Uint8List bytes = (await tester.runAsync(_planBytes))!;
     await pumpPlan(
       tester,
@@ -766,24 +766,30 @@ void main() {
       reason: 'a sideways drag on a magnified plan must pan it',
     );
 
-    // Vertically: the page scrolls and the plan is carried with it, rather than the
-    // drawing sliding inside a stationary frame. This is the deliberate half of the
-    // trade — the plan sits mid-page, and a viewer that ate every vertical drag would
-    // strand a reader who simply wanted to get to the device list below it.
-    final double heldAt = pan().$2;
+    // Vertically: the drawing slides inside a frame that stays where it is. Both halves
+    // are asserted, because "the plan panned" and "the page did not scroll" are
+    // different claims and the failure that matters — the page scrolling and carrying
+    // the plan along with it — reads as movement on any test that only checks one.
+    final double upBefore = pan().$2;
     final double pageBefore = tester.getTopLeft(find.byType(AuthenticatedImage)).dy;
-    await tester.drag(find.byType(AuthenticatedImage), const Offset(0, -60));
+    final Offset downFrom = paintedPlan(tester).center + const Offset(40, 0);
+    final TestGesture up = await tester.startGesture(downFrom);
+    for (int step = 1; step <= 6; step++) {
+      await up.moveTo(downFrom + Offset(0, -10.0 * step));
+      await tester.pump();
+    }
+    await up.up();
     await tester.pump();
 
     expect(
-      tester.getTopLeft(find.byType(AuthenticatedImage)).dy,
-      lessThan(pageBefore - 30),
-      reason: 'the page must still scroll',
+      pan().$2,
+      lessThan(upBefore - 10),
+      reason: 'an upward drag on a magnified plan must pan it upward',
     );
     expect(
-      pan().$2,
-      closeTo(heldAt, 0.01),
-      reason: 'the vertical drag went to the page, so the plan did not pan',
+      tester.getTopLeft(find.byType(AuthenticatedImage)).dy,
+      closeTo(pageBefore, 0.01),
+      reason: 'the plan took the drag, so the page did not scroll',
     );
   });
 

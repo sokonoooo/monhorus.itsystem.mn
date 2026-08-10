@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import 'package:flutter/gestures.dart' show DeviceGestureSettings;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -28,6 +29,28 @@ const double kPlanMinScale = 1;
 /// interpolation. It is comfortably enough to separate two markers that overlap when
 /// the whole floor is in view, which is the crowding the zoom exists to solve.
 const double kPlanMaxScale = 5;
+
+/// The touch slop the plan runs with WHILE MAGNIFIED, and the whole mechanism by which
+/// a zoomed plan pans up and down.
+///
+/// Nothing in this file arbitrates between panning the drawing and scrolling the page
+/// it sits on; the gesture arena does, and it settles on whichever recogniser claims
+/// the drag first. A [Scrollable]'s vertical drag resolves once the finger passes its
+/// touch slop — 18 by default. [InteractiveViewer]'s scale recogniser resolves at its
+/// PAN slop, which is twice the touch slop, so at the default it needs 36 and the page
+/// has already won by then. That is why a magnified plan would otherwise scroll the
+/// page instead of panning.
+///
+/// Halving the slop inside the plan's own subtree flips it: 8 here means a pan slop of
+/// 16, which trips before the list's 18. It applies to this subtree ONLY — the list
+/// reads its own slop from the [MediaQuery] above, which is untouched — and only while
+/// the plan is actually magnified, so a plan at rest still hands every vertical drag
+/// straight to the page, exactly as it did before any of this existed.
+///
+/// Not smaller than this on purpose. The same number is what a tap is allowed to wander
+/// before it stops counting as a tap, so driving it towards zero would start losing
+/// marker taps to ordinary finger wobble.
+const double kPlanZoomedTouchSlop = 8;
 
 /// Renders a stored file that lives behind `GET /files/:fileId`.
 ///
@@ -163,6 +186,14 @@ class _IntrinsicallySizedImageState extends State<_IntrinsicallySizedImage> {
   /// throw away a magnification the reader chose.
   final TransformationController _transform = TransformationController();
 
+  /// Whether the plan is currently magnified at all.
+  ///
+  /// Kept as its own notifier rather than read off [_transform] at build time so the
+  /// subtree rebuilds when the ANSWER changes rather than on every frame of a pinch —
+  /// the marker layer is rebuilt with it, and a floor's worth of markers is not worth
+  /// re-laying-out sixty times a second to re-decide a boolean.
+  final ValueNotifier<bool> _magnified = ValueNotifier<bool>(false);
+
   /// True while [_listen] is running. The decoded image is often already in the cache,
   /// in which case the listener fires synchronously — inside `initState`, where
   /// `setState` would be a `markNeedsBuild` during a build. The value is simply
@@ -172,7 +203,16 @@ class _IntrinsicallySizedImageState extends State<_IntrinsicallySizedImage> {
   @override
   void initState() {
     super.initState();
+    _transform.addListener(_readMagnification);
     _listen();
+  }
+
+  /// A hair over 1, not `> 1`: the transform is floating-point, and a pinch that lands
+  /// back on the fitted scale can leave a rounding crumb behind. Treating that as
+  /// "magnified" would keep the tighter slop — and so keep the plan eating the page's
+  /// vertical drags — on a plan the reader has already zoomed back out.
+  void _readMagnification() {
+    _magnified.value = _transform.value.getMaxScaleOnAxis() > kPlanMinScale + 0.001;
   }
 
   @override
@@ -192,7 +232,9 @@ class _IntrinsicallySizedImageState extends State<_IntrinsicallySizedImage> {
   @override
   void dispose() {
     _detach();
+    _transform.removeListener(_readMagnification);
     _transform.dispose();
+    _magnified.dispose();
     super.dispose();
   }
 
@@ -232,6 +274,48 @@ class _IntrinsicallySizedImageState extends State<_IntrinsicallySizedImage> {
     _stream = stream;
     _listener = listener;
     _listening = false;
+  }
+
+  /// [plan] under a pinch, a drag, and the slop rule that decides who gets the drag.
+  ///
+  /// The [MediaQuery] is the load-bearing part and has to sit ABOVE the viewer: the
+  /// gesture recogniser inside reads its slop from the nearest one, so overriding it
+  /// here is what re-orders the arena between this plan and the page around it. See
+  /// [kPlanZoomedTouchSlop] for why the override is conditional rather than permanent.
+  Widget _zoomable(Widget plan) {
+    final Widget viewer = InteractiveViewer(
+      transformationController: _transform,
+      minScale: kPlanMinScale,
+      maxScale: kPlanMaxScale,
+      // Zero, so the drawing can never be dragged off its own frame and parked against
+      // a corner: at rest it exactly fills the box, and at any magnification the clamp
+      // keeps some of it under every edge.
+      boundaryMargin: EdgeInsets.zero,
+      // Without this a magnified plan paints over the caption below it and over the
+      // card's own rounded edge.
+      clipBehavior: Clip.hardEdge,
+      child: plan,
+    );
+
+    return ValueListenableBuilder<bool>(
+      valueListenable: _magnified,
+      // Handed through rather than rebuilt: the viewer does not change when the slop
+      // does. The recogniser inside it still picks the new value up, because a
+      // MediaQuery is inherited and whatever depends on it is rebuilt by that alone.
+      child: viewer,
+      builder: (BuildContext context, bool magnified, Widget? child) {
+        final MediaQueryData media = MediaQuery.of(context);
+        return MediaQuery(
+          data: magnified
+              ? media.copyWith(
+                  gestureSettings:
+                      const DeviceGestureSettings(touchSlop: kPlanZoomedTouchSlop),
+                )
+              : media,
+          child: child!,
+        );
+      },
+    );
   }
 
   @override
@@ -291,21 +375,7 @@ class _IntrinsicallySizedImageState extends State<_IntrinsicallySizedImage> {
         constraints: const BoxConstraints(maxHeight: _planMaxHeight),
         child: AspectRatio(
           aspectRatio: size.width / size.height,
-          child: widget.zoomable
-              ? InteractiveViewer(
-                  transformationController: _transform,
-                  minScale: kPlanMinScale,
-                  maxScale: kPlanMaxScale,
-                  // Zero, so the drawing can never be dragged off its own frame and
-                  // parked against a corner: at rest it exactly fills the box, and at
-                  // any magnification the clamp keeps some of it under every edge.
-                  boundaryMargin: EdgeInsets.zero,
-                  // Without this a magnified plan paints over the caption below it and
-                  // over the card's own rounded edge.
-                  clipBehavior: Clip.hardEdge,
-                  child: plan,
-                )
-              : plan,
+          child: widget.zoomable ? _zoomable(plan) : plan,
         ),
       ),
     );

@@ -612,6 +612,93 @@ void main() {
     handle.dispose();
   });
 
+  /// A magnified plan pans on both axes, and the vertical half of that is the whole
+  /// reason [kPlanZoomedTouchSlop] exists.
+  ///
+  /// Nothing in the app arbitrates this: it falls out of the gesture arena, and by
+  /// default the enclosing list wins a vertical drag because its recogniser resolves at
+  /// an 18px slop while the viewer's needs 36. Halving the slop inside the plan's
+  /// subtree while it is magnified reverses that. Asserted on both axes because the two
+  /// are decided by entirely different things — sideways the list never competes at
+  /// all, so it would keep working even if the slop override were deleted.
+  testWidgets('a magnified plan pans in both directions', (WidgetTester tester) async {
+    final Uint8List bytes = (await tester.runAsync(_planBytes))!;
+    await pumpPlan(
+      tester,
+      () => screen(bytes: bytes, objects: <Map<String, dynamic>>[
+        _objectJson(
+          id: 'o1',
+          code: 'LDB-1',
+          planPosition: <String, dynamic>{'x': 0.5, 'y': 0.5},
+        ),
+      ]),
+    );
+
+    final List<TestGesture> fingers = await pinch(tester, factor: 3);
+    await release(tester, fingers);
+
+    /// The viewer's current pan, as (x, y). Read off the matrix rather than inferred
+    /// from the painted rectangle, so a page scroll that moves the whole card cannot be
+    /// mistaken for the plan panning inside it — which is the exact confusion this test
+    /// exists to resolve.
+    (double, double) pan() {
+      final Matrix4 matrix = tester
+          .widget<InteractiveViewer>(find.byType(InteractiveViewer))
+          .transformationController!
+          .value;
+      return (matrix.getTranslation().x, matrix.getTranslation().y);
+    }
+
+    final Rect magnified = paintedPlan(tester);
+    expect(
+      magnified.width,
+      greaterThan(tester.getSize(find.byType(AuthenticatedImage)).width),
+    );
+
+    // Sideways. Started off the marker sitting at 0.5/0.5 — a drag beginning on a
+    // marker is a different gesture negotiation, and this test is about the plan.
+    final double sidewaysBefore = pan().$1;
+    final Offset from = magnified.center + const Offset(0, -20);
+    final TestGesture drag = await tester.startGesture(from);
+    for (int step = 1; step <= 6; step++) {
+      await drag.moveTo(from + Offset(-15.0 * step, 0));
+      await tester.pump();
+    }
+    await drag.up();
+    await tester.pump();
+    expect(
+      pan().$1,
+      lessThan(sidewaysBefore - 20),
+      reason: 'a sideways drag on a magnified plan must pan it',
+    );
+
+    // Vertically: the drawing slides inside a frame that stays where it is. Both halves
+    // are asserted, because "the plan panned" and "the page did not scroll" are
+    // different claims and the failure that matters — the page scrolling and carrying
+    // the plan along with it — reads as movement on any test that only checks one.
+    final double upBefore = pan().$2;
+    final double pageBefore = tester.getTopLeft(find.byType(AuthenticatedImage)).dy;
+    final Offset downFrom = paintedPlan(tester).center + const Offset(40, 0);
+    final TestGesture up = await tester.startGesture(downFrom);
+    for (int step = 1; step <= 6; step++) {
+      await up.moveTo(downFrom + Offset(0, -10.0 * step));
+      await tester.pump();
+    }
+    await up.up();
+    await tester.pump();
+
+    expect(
+      pan().$2,
+      lessThan(upBefore - 10),
+      reason: 'an upward drag on a magnified plan must pan it upward',
+    );
+    expect(
+      tester.getTopLeft(find.byType(AuthenticatedImage)).dy,
+      closeTo(pageBefore, 0.01),
+      reason: 'the plan took the drag, so the page did not scroll',
+    );
+  });
+
   testWidgets('the plan the request sheet pins on is deliberately not zoomable',
       (WidgetTester tester) async {
     final Uint8List bytes = (await tester.runAsync(_planBytes))!;
