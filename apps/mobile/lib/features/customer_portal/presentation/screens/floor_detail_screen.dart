@@ -188,6 +188,10 @@ class _PlanTab extends ConsumerWidget {
                 children: <Widget>[
                   AuthenticatedImage.sizedToImage(
                     fileId: data.fileId,
+                    // A floor's worth of markers on a phone-width drawing overlap until
+                    // the reader can magnify it. Read-only in both senses: nothing here
+                    // can be moved, and the zoom is not persisted.
+                    zoomable: true,
                     overlay: FloorPlanMarkerLayer(
                       objects: onPlan,
                       onTap: (ObjectListItemModel object) =>
@@ -210,6 +214,16 @@ class _PlanTab extends ConsumerWidget {
                             if (data.uploadedByName != null) data.uploadedByName!,
                             formatDate(data.uploadedAt),
                           ].join(' · '),
+                          style: CustomerTokens.rowSub,
+                        ),
+                        const SizedBox(height: 4),
+                        // Said out loud, because neither channel is self-evident: the
+                        // colour is a band a reader has no reason to guess at, and the
+                        // pinch is invisible until someone tries it.
+                        Text(
+                          'Тэмдэглэгээний өнгө нь эрсдэлийн түвшин, дүрс тэмдэг нь '
+                          'объектын төрлийг илэрхийлнэ. Хоёр хуруугаар томруулж '
+                          'харна.',
                           style: CustomerTokens.rowSub,
                         ),
                         if (unplaced > 0) ...<Widget>[
