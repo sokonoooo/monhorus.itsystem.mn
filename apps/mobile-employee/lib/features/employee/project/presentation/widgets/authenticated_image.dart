@@ -13,6 +13,22 @@ import '../providers/project_providers.dart';
 const double _planPlaceholderHeight = 210;
 const double _planMaxHeight = 460;
 
+/// The floor is drawn at "fits the card" and may not be shrunk below it.
+///
+/// The web canvas takes the same position for the same reason: a plan smaller than its
+/// own frame is a drawing floating in empty space, and there is nothing a reader can do
+/// with it that the fitted view does not already show. Zoom only ever goes up from here.
+const double kPlanMinScale = 1;
+
+/// The ceiling on magnification.
+///
+/// Five is roughly the point at which a phone-width plan stops gaining detail: the
+/// source drawings are a few hundred pixels tall and the image is already being
+/// upscaled well before this, so a higher cap would only let a reader zoom into
+/// interpolation. It is comfortably enough to separate two markers that overlap when
+/// the whole floor is in view, which is the crowding the zoom exists to solve.
+const double kPlanMaxScale = 5;
+
 /// Renders a stored file that lives behind `GET /files/:fileId`.
 ///
 /// That endpoint returns raw bytes and still requires the Bearer header, so the
@@ -32,7 +48,8 @@ class AuthenticatedImage extends ConsumerWidget {
     this.height,
     this.fit = BoxFit.contain,
   })  : sizeToImage = false,
-        overlay = null;
+        overlay = null,
+        zoomable = false;
 
   /// A box that takes the image's own aspect ratio, with [overlay] laid over exactly
   /// the painted picture.
@@ -47,6 +64,7 @@ class AuthenticatedImage extends ConsumerWidget {
     super.key,
     required this.fileId,
     this.overlay,
+    this.zoomable = false,
   })  : sizeToImage = true,
         height = null,
         fit = BoxFit.contain;
@@ -61,13 +79,27 @@ class AuthenticatedImage extends ConsumerWidget {
   /// Stacked over the painted image, given exactly its rectangle. Null draws nothing.
   final Widget? overlay;
 
+  /// Whether the picture and its [overlay] can be pinched and dragged.
+  ///
+  /// Opt-in, and off by default, because a zoom is not free on a surface that also
+  /// takes taps: a pinch and a drag are gestures the surrounding page and any tap
+  /// handler on the overlay have to share. It is turned on for the floor plan, which is
+  /// a drawing to be read, and left off for anything whose overlay places something by
+  /// being tapped — a drag that ends in a tap would drop a mark where the reader was
+  /// panning, not where they meant.
+  final bool zoomable;
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final AsyncValue<Uint8List> bytes = ref.watch(projectFileBytesProvider(fileId));
 
     return bytes.when(
       data: (Uint8List data) => sizeToImage
-          ? _IntrinsicallySizedImage(bytes: data, overlay: overlay)
+          ? _IntrinsicallySizedImage(
+              bytes: data,
+              overlay: overlay,
+              zoomable: zoomable,
+            )
           : SizedBox(
               height: height,
               width: double.infinity,
@@ -106,10 +138,15 @@ class AuthenticatedImage extends ConsumerWidget {
 /// server again, and through the same [MemoryImage] the picture is then painted from,
 /// so the plan is decoded once and not twice.
 class _IntrinsicallySizedImage extends StatefulWidget {
-  const _IntrinsicallySizedImage({required this.bytes, this.overlay});
+  const _IntrinsicallySizedImage({
+    required this.bytes,
+    this.overlay,
+    this.zoomable = false,
+  });
 
   final Uint8List bytes;
   final Widget? overlay;
+  final bool zoomable;
 
   @override
   State<_IntrinsicallySizedImage> createState() => _IntrinsicallySizedImageState();
@@ -121,6 +158,10 @@ class _IntrinsicallySizedImageState extends State<_IntrinsicallySizedImage> {
   ImageStreamListener? _listener;
   Size? _size;
   bool _failed = false;
+
+  /// The pan-and-zoom transform, owned here so a rebuild of the screen above does not
+  /// throw away a magnification the reader chose.
+  final TransformationController _transform = TransformationController();
 
   /// True while [_listen] is running. The decoded image is often already in the cache,
   /// in which case the listener fires synchronously — inside `initState`, where
@@ -141,6 +182,9 @@ class _IntrinsicallySizedImageState extends State<_IntrinsicallySizedImage> {
       _detach();
       _size = null;
       _failed = false;
+      // A different drawing at a different shape: a transform chosen against the old
+      // one names a place on a picture that is no longer there.
+      _transform.value = Matrix4.identity();
       _listen();
     }
   }
@@ -148,6 +192,7 @@ class _IntrinsicallySizedImageState extends State<_IntrinsicallySizedImage> {
   @override
   void dispose() {
     _detach();
+    _transform.dispose();
     super.dispose();
   }
 
@@ -215,6 +260,30 @@ class _IntrinsicallySizedImageState extends State<_IntrinsicallySizedImage> {
       );
     }
 
+    // The picture and anything laid over it, as one unit. Everything below zooms this
+    // whole stack rather than the image alone, which is what makes the magnified
+    // markers land on the magnified drawing without a line of arithmetic: the overlay
+    // is still measured against a box that is exactly the picture, and the transform
+    // that grows the picture grows the overlay through the same matrix.
+    final Widget plan = Stack(
+      fit: StackFit.expand,
+      children: <Widget>[
+        Image(
+          image: _provider,
+          // Fill, not contain: the box is already the image's own ratio, and
+          // `contain` would re-letterbox it by whatever the rounding left over.
+          fit: BoxFit.fill,
+          // Magnified pixels rather than a blur. A floor plan is line work, and the
+          // reader zooms in to follow a line to a marker; smoothing it away is worse
+          // than showing the pixels it is actually made of.
+          filterQuality: FilterQuality.medium,
+          errorBuilder: (BuildContext _, Object __, StackTrace? ___) =>
+              const _ImageNotice(text: 'Зургийг уншиж чадсангүй.'),
+        ),
+        if (widget.overlay != null) widget.overlay!,
+      ],
+    );
+
     // Centred, and through a loosened constraint: a portrait plan would otherwise be
     // stretched to the full width of a list that hands its children a tight one.
     return Center(
@@ -222,20 +291,21 @@ class _IntrinsicallySizedImageState extends State<_IntrinsicallySizedImage> {
         constraints: const BoxConstraints(maxHeight: _planMaxHeight),
         child: AspectRatio(
           aspectRatio: size.width / size.height,
-          child: Stack(
-            fit: StackFit.expand,
-            children: <Widget>[
-              Image(
-                image: _provider,
-                // Fill, not contain: the box is already the image's own ratio, and
-                // `contain` would re-letterbox it by whatever the rounding left over.
-                fit: BoxFit.fill,
-                errorBuilder: (BuildContext _, Object __, StackTrace? ___) =>
-                    const _ImageNotice(text: 'Зургийг уншиж чадсангүй.'),
-              ),
-              if (widget.overlay != null) widget.overlay!,
-            ],
-          ),
+          child: widget.zoomable
+              ? InteractiveViewer(
+                  transformationController: _transform,
+                  minScale: kPlanMinScale,
+                  maxScale: kPlanMaxScale,
+                  // Zero, so the drawing can never be dragged off its own frame and
+                  // parked against a corner: at rest it exactly fills the box, and at
+                  // any magnification the clamp keeps some of it under every edge.
+                  boundaryMargin: EdgeInsets.zero,
+                  // Without this a magnified plan paints over the caption below it and
+                  // over the card's own rounded edge.
+                  clipBehavior: Clip.hardEdge,
+                  child: plan,
+                )
+              : plan,
         ),
       ),
     );

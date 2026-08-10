@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 
 import '../../data/models/object_master_model.dart';
+import '../../domain/entities/object_master_enums.dart';
 import '../../domain/entities/risk_level.dart';
 import '../theme/customer_tokens.dart';
-import 'risk_glyph.dart';
 
 /// The objects the plan draws: placed, and of a type the registry marks as shown on
 /// the plan.
@@ -35,9 +35,22 @@ int unplacedOnPlanCount(List<ObjectListItemModel> objects) => objects
 
 /// The marker's diameter. A dot rather than the web's code pill: a floor carries
 /// dozens of objects and a phone is 390px wide, so pills would overlap into an
-/// unreadable mat. The band is carried by the fill, the ring and the silhouette
-/// inside, and the name is one tap away.
-const double kPlanMarkerDiameter = 22;
+/// unreadable mat. The band is carried by the fill and the ring, the object type by the
+/// glyph inside, and the name is one tap away.
+///
+/// Sized up from the 22 it was while the dot carried a risk silhouette. A silhouette is
+/// one of five shapes and reads at any size; an object-type glyph is one of fourteen
+/// and has to be told apart from thirteen others, which needs the pixels. It is still
+/// deliberately under a comfortable touch target: crowding is the binding constraint on
+/// a plan, and the plan now zooms, which is the answer to a marker too small to read.
+const double kPlanMarkerDiameter = 26;
+
+/// The object-type glyph inside the dot, as large as the ring leaves room for.
+///
+/// [kPlanMarkerDiameter] less the 2px ring on each side is 22; 15 fills that without
+/// the glyph's own bounding box touching the ring, which would read as a smudge rather
+/// than a symbol at plan size.
+const double kPlanMarkerGlyphSize = 15;
 
 /// The markers, laid over exactly the painted plan.
 ///
@@ -197,7 +210,21 @@ class FaultPin extends StatelessWidget {
   }
 }
 
-/// One object on the plan.
+/// One object on the plan: its type as a glyph, its risk band as the colour around it.
+///
+/// The dot carries two independent facts and has room to draw only one shape, so the
+/// two are split across the channels available. The glyph is the OBJECT TYPE, taken
+/// from `objectType.icon` — the key an administrator picked in the type registry, which
+/// is the same key the admin web draws its marker from, so a panel is the same symbol
+/// in both places. The RISK BAND is the fill and the ring.
+///
+/// That is a deliberate change from the risk silhouette this dot used to hold, and it
+/// costs something real: the band no longer survives greyscale or a colour-blind
+/// reader, because colour is now its only channel here. The trade was made because a
+/// plan whose markers are all the same shape cannot answer "which of these is the
+/// pump"; the band is still spelled out in words on the marker's own accessible name,
+/// on every row of the lists below the plan, and on the object screen a tap away, none
+/// of which depend on colour.
 @visibleForTesting
 class PlanMarker extends StatelessWidget {
   const PlanMarker({super.key, required this.object, required this.onTap});
@@ -209,11 +236,16 @@ class PlanMarker extends StatelessWidget {
   Widget build(BuildContext context) {
     final RiskLevel? band = object.riskLevel;
     final AccentTone tone = band?.tone ?? AccentTone.neutral;
+    final ObjectIcon icon = object.icon;
 
     return Semantics(
       button: true,
+      // The type is named as well as drawn. A glyph has no accessible name of its own,
+      // so without this the one fact the marker gained would be the one fact a screen
+      // reader lost.
       label: <String>[
         object.titleLine,
+        icon.label,
         band?.label ?? unassessedLabel,
       ].join(' · '),
       excludeSemantics: true,
@@ -229,9 +261,15 @@ class PlanMarker extends StatelessWidget {
             color: tone.background,
             border: Border.all(color: tone.foreground, width: 2),
           ),
-          // The silhouette, so the band survives colour-blindness and a plan printed
-          // in greyscale - the same rule every other risk indicator here follows.
-          child: RiskGlyph(level: band, size: 10),
+          child: Icon(
+            icon.glyph,
+            size: kPlanMarkerGlyphSize,
+            // The band's foreground, not a neutral ink: at this size the glyph is a
+            // large part of the dot's visible area, and drawing it in the band colour
+            // is what keeps a critical marker reading as critical rather than as a
+            // grey symbol in a red circle.
+            color: tone.foreground,
+          ),
         ),
       ),
     );

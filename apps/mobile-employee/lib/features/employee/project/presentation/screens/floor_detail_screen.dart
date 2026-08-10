@@ -200,6 +200,10 @@ class _FloorPlanSection extends ConsumerWidget {
                     color: EmployeeTokens.white,
                     child: AuthenticatedImage.sizedToImage(
                       fileId: plan.fileId,
+                      // A floor's worth of markers on a phone-width drawing overlap
+                      // until the reader can magnify it. Read-only in both senses:
+                      // nothing here can be moved, and the zoom is not persisted.
+                      zoomable: true,
                       overlay: FloorPlanMarkerLayer(
                         objects: onPlan,
                         onTap: (ObjectListItemModel object) =>
@@ -263,8 +267,9 @@ class _FloorPlanSection extends ConsumerWidget {
               ),
               child: Text(
                 <String>[
-                  'Тэмдэглэгээний өнгө нь тухайн төхөөрөмжийн эрсдэлийн түвшин. '
-                      'Дээр нь дарж дэлгэрэнгүйг харна.',
+                  'Тэмдэглэгээний өнгө нь эрсдэлийн түвшин, дүрс тэмдэг нь '
+                      'төхөөрөмжийн төрлийг илэрхийлнэ. Дээр нь дарж дэлгэрэнгүйг '
+                      'харна. Хоёр хуруугаар томруулж, чирж гүйлгэнэ.',
                   // Said out loud, as the admin web says it: a plan with fewer dots
                   // than the floor has devices otherwise reads as a rendering fault.
                   if (unplaced > 0) 'Планд байрлуулаагүй $unplaced төхөөрөмж байна.',

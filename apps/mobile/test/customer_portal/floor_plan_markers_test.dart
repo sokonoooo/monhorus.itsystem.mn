@@ -17,6 +17,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:monhorus_mobile/features/customer_portal/data/models/object_master_model.dart';
 import 'package:monhorus_mobile/features/customer_portal/data/models/project_model.dart';
+import 'package:monhorus_mobile/features/customer_portal/domain/entities/object_master_enums.dart';
+import 'package:monhorus_mobile/features/customer_portal/domain/entities/risk_level.dart';
 import 'package:monhorus_mobile/features/customer_portal/presentation/providers/customer_portal_providers.dart';
 import 'package:monhorus_mobile/features/customer_portal/presentation/screens/device_detail_screen.dart';
 import 'package:monhorus_mobile/features/customer_portal/presentation/screens/floor_detail_screen.dart';
@@ -77,6 +79,7 @@ Map<String, dynamic> _objectJson({
   Map<String, dynamic>? planPosition,
   bool showOnPlan = true,
   String? riskLevel = 'CRITICAL',
+  String? icon = 'PANEL',
 }) =>
     <String, dynamic>{
       'id': id,
@@ -87,7 +90,7 @@ Map<String, dynamic> _objectJson({
         'id': 'ot1',
         'code': 'DB',
         'name': 'Хуваарилах самбар',
-        'icon': 'PANEL',
+        'icon': icon,
         'showOnPlan': showOnPlan,
       },
       'customerId': testCustomerId,
@@ -363,5 +366,280 @@ void main() {
     expect(find.textContaining('файл зураг биш'), findsOneWidget);
     expect(find.byType(PlanMarker), findsNothing);
     expect(find.byType(AuthenticatedImage), findsNothing);
+  });
+
+  /// The [IconData] a marker actually draws.
+  IconData? glyphOf(WidgetTester tester, String code) => tester
+      .widget<Icon>(
+        find.descendant(of: _marker(code), matching: find.byType(Icon)),
+      )
+      .icon;
+
+  /// Pinches the plan about its centre by [factor], and leaves the fingers down.
+  ///
+  /// Two pointers rather than one: a magnification is a two-finger gesture, and driving
+  /// it with a synthesised scale on the controller would test the arithmetic without
+  /// testing that a pinch reaches it at all.
+  ///
+  /// The realised scale is a little under [factor] — the recogniser eats the first few
+  /// pixels of separation as slop before it starts reporting one — so the assertions
+  /// below compare the plan and its markers against each other rather than against a
+  /// number predicted here.
+  Future<List<TestGesture>> pinch(
+    WidgetTester tester, {
+    required double factor,
+  }) async {
+    final Offset centre = paintedPlan(tester).center;
+    const double reach = 30;
+    final TestGesture left =
+        await tester.startGesture(centre - const Offset(reach, 0));
+    final TestGesture right =
+        await tester.startGesture(centre + const Offset(reach, 0));
+    for (int step = 1; step <= 4; step++) {
+      final double span = reach * (1 + (factor - 1) * step / 4);
+      await left.moveTo(centre - Offset(span, 0));
+      await right.moveTo(centre + Offset(span, 0));
+      await tester.pump();
+    }
+    return <TestGesture>[left, right];
+  }
+
+  Future<void> release(WidgetTester tester, List<TestGesture> fingers) async {
+    for (final TestGesture finger in fingers) {
+      await finger.up();
+    }
+    await tester.pump();
+  }
+
+  testWidgets('a pinch magnifies the plan and its markers together',
+      (WidgetTester tester) async {
+    final Uint8List bytes = (await tester.runAsync(_planBytes))!;
+
+    await pumpPlan(
+      tester,
+      () => screen(
+        bytes: bytes,
+        objects: <Map<String, dynamic>>[
+          _objectJson(
+            id: 'o1',
+            code: 'LDB-1',
+            planPosition: <String, dynamic>{'x': 0.5, 'y': 0.25},
+          ),
+        ],
+      ),
+    );
+
+    final Rect planBefore = paintedPlan(tester);
+    final Rect markerBefore = tester.getRect(_marker('LDB-1'));
+    expect(markerBefore.width, closeTo(kPlanMarkerDiameter, 0.01));
+
+    final List<TestGesture> fingers = await pinch(tester, factor: 2.5);
+    final Rect planAfter = paintedPlan(tester);
+    final Rect markerAfter = tester.getRect(_marker('LDB-1'));
+    await release(tester, fingers);
+
+    final double grewBy = planAfter.width / planBefore.width;
+    expect(grewBy, greaterThan(1.4));
+
+    // The marker grew by exactly as much. This is the whole claim of drawing the
+    // overlay inside the transform rather than beside it: a marker that scaled by some
+    // other factor would drift off its point the further in the reader zoomed.
+    expect(
+      markerAfter.width / markerBefore.width,
+      closeTo(grewBy, 0.01),
+      reason: 'a marker must magnify with the drawing it sits on',
+    );
+
+    // The point it names is still the point it names, measured against the magnified
+    // rectangle.
+    expect(markerAfter.center.dx, closeTo(planAfter.left + planAfter.width * 0.5, 0.6));
+    expect(markerAfter.center.dy, closeTo(planAfter.top + planAfter.height * 0.25, 0.6));
+  });
+
+  testWidgets('the plan cannot be pinched smaller than the box it fits',
+      (WidgetTester tester) async {
+    final Uint8List bytes = (await tester.runAsync(_planBytes))!;
+
+    await pumpPlan(
+      tester,
+      () => screen(
+        bytes: bytes,
+        objects: <Map<String, dynamic>>[
+          _objectJson(
+            id: 'o1',
+            code: 'LDB-1',
+            planPosition: <String, dynamic>{'x': 0.5, 'y': 0.5},
+          ),
+        ],
+      ),
+    );
+
+    final Rect before = paintedPlan(tester);
+    final List<TestGesture> fingers = await pinch(tester, factor: 0.2);
+    final Rect after = paintedPlan(tester);
+    await release(tester, fingers);
+
+    // A plan shrunk inside its own frame is a drawing floating in empty space, and
+    // `minScale` is what refuses it. Equal, not merely "not much smaller".
+    expect(after.width, closeTo(before.width, 0.01));
+    expect(after.left, closeTo(before.left, 0.01));
+  });
+
+  testWidgets('a magnified marker still opens its object',
+      (WidgetTester tester) async {
+    final Uint8List bytes = (await tester.runAsync(_planBytes))!;
+
+    await pumpPlan(
+      tester,
+      () => screen(
+        bytes: bytes,
+        objects: <Map<String, dynamic>>[
+          _objectJson(
+            id: 'o1',
+            code: 'LDB-2F-02',
+            planPosition: <String, dynamic>{'x': 0.5, 'y': 0.5},
+          ),
+        ],
+      ),
+    );
+
+    final List<TestGesture> fingers = await pinch(tester, factor: 2.5);
+    await release(tester, fingers);
+
+    // Hit testing through the viewer's matrix, not around it: a transform that moved
+    // the paint but not the touch target would leave every marker on a zoomed plan
+    // opening the wrong object, or nothing at all.
+    expect(find.byType(DeviceDetailScreen), findsNothing);
+    await tester.tap(_marker('LDB-2F-02'));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(find.byType(DeviceDetailScreen), findsOneWidget);
+  });
+
+  testWidgets('each marker draws its own object type, and the types differ',
+      (WidgetTester tester) async {
+    final Uint8List bytes = (await tester.runAsync(_planBytes))!;
+
+    await pumpPlan(
+      tester,
+      () => screen(
+        bytes: bytes,
+        objects: <Map<String, dynamic>>[
+          _objectJson(
+            id: 'o1',
+            code: 'PNL-1',
+            icon: 'PANEL',
+            planPosition: <String, dynamic>{'x': 0.2, 'y': 0.5},
+          ),
+          _objectJson(
+            id: 'o2',
+            code: 'LMP-1',
+            icon: 'LIGHT',
+            planPosition: <String, dynamic>{'x': 0.5, 'y': 0.5},
+          ),
+          _objectJson(
+            id: 'o3',
+            code: 'CAM-1',
+            icon: 'CAMERA',
+            planPosition: <String, dynamic>{'x': 0.8, 'y': 0.5},
+          ),
+          // A type key this build has never heard of. It must draw the catch-all rather
+          // than an empty circle or a crash: the registry is administrator-editable and
+          // will outgrow this enum.
+          _objectJson(
+            id: 'o4',
+            code: 'NEW-1',
+            icon: 'FLUX_CAPACITOR',
+            planPosition: <String, dynamic>{'x': 0.9, 'y': 0.9},
+          ),
+        ],
+      ),
+    );
+
+    expect(glyphOf(tester, 'PNL-1'), ObjectIcon.panel.glyph);
+    expect(glyphOf(tester, 'LMP-1'), ObjectIcon.light.glyph);
+    expect(glyphOf(tester, 'CAM-1'), ObjectIcon.camera.glyph);
+    expect(glyphOf(tester, 'NEW-1'), ObjectIcon.other.glyph);
+
+    // The point of the whole change: three types, three different symbols. Asserting
+    // each glyph individually would still pass if the enum mapped every value to the
+    // same picture, which is exactly the failure a reader would report.
+    expect(
+      <IconData?>{
+        glyphOf(tester, 'PNL-1'),
+        glyphOf(tester, 'LMP-1'),
+        glyphOf(tester, 'CAM-1'),
+      },
+      hasLength(3),
+      reason: 'objects of different types must be told apart on the plan',
+    );
+  });
+
+  testWidgets('a marker names its type and its band to a screen reader',
+      (WidgetTester tester) async {
+    final SemanticsHandle handle = tester.ensureSemantics();
+    final Uint8List bytes = (await tester.runAsync(_planBytes))!;
+
+    await pumpPlan(
+      tester,
+      () => screen(
+        bytes: bytes,
+        objects: <Map<String, dynamic>>[
+          _objectJson(
+            id: 'o1',
+            code: 'LMP-1',
+            icon: 'LIGHT',
+            planPosition: <String, dynamic>{'x': 0.5, 'y': 0.5},
+          ),
+        ],
+      ),
+    );
+
+    // Colour is now the band's only visual channel on the plan, so the words matter
+    // more than they did: the label has to carry what the picture stopped saying.
+    //
+    // Matched on the object's name rather than its code, because this app's
+    // `titleLine` is "name · type" — the customer portal names things, where the
+    // employee app leads with the code a technician reads off the equipment.
+    expect(
+      find.bySemanticsLabel(
+        RegExp('Гэрэлтүүлгийн самбар.*${ObjectIcon.light.label}'
+            '.*${RiskLevel.critical.label}'),
+      ),
+      findsOneWidget,
+    );
+    handle.dispose();
+  });
+
+  testWidgets('the plan the request sheet pins on is deliberately not zoomable',
+      (WidgetTester tester) async {
+    final Uint8List bytes = (await tester.runAsync(_planBytes))!;
+
+    await pumpPlan(
+      tester,
+      () => screen(
+        bytes: bytes,
+        objects: <Map<String, dynamic>>[
+          _objectJson(
+            id: 'o1',
+            code: 'LDB-1',
+            planPosition: <String, dynamic>{'x': 0.5, 'y': 0.5},
+          ),
+        ],
+      ),
+    );
+
+    // The floor's own plan zooms — one viewer, and exactly one, so this is a real
+    // assertion about which surface got it rather than a count of nothing.
+    expect(find.byType(InteractiveViewer), findsOneWidget);
+    // `zoomable` defaults off, which is what keeps the request sheet's tap-to-place
+    // plan out of this. Asserted at the constructor because that sheet lives in
+    // another test file, and the default is the thing that must not drift.
+    expect(
+      const AuthenticatedImage.sizedToImage(fileId: 'f1').zoomable,
+      isFalse,
+      reason: 'a plan that places a pin by being tapped must not also pan',
+    );
   });
 }
