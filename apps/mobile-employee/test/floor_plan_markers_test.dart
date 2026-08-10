@@ -453,7 +453,7 @@ void main() {
     await tester.pump();
   }
 
-  testWidgets('a pinch magnifies the plan and its markers together',
+  testWidgets('a pinch magnifies the plan but not the markers on it',
       (WidgetTester tester) async {
     final Uint8List bytes = (await tester.runAsync(_planBytes))!;
 
@@ -485,20 +485,82 @@ void main() {
     final double grewBy = planAfter.width / planBefore.width;
     expect(grewBy, greaterThan(1.4));
 
-    // And the marker grew by exactly as much. This is the whole claim of drawing the
-    // overlay inside the transform rather than beside it: a marker that scaled by some
-    // other factor would drift off its point the further in the reader zoomed.
+    // The marker did not. A marker is a label on a point rather than a thing on the
+    // floor with a size of its own, so it holds one size on screen and only the drawing
+    // under it grows — which is what actually pulls two overlapping dots apart. Without
+    // the counter-scale this would read the same multiple as the plan.
     expect(
-      markerAfter.width / markerBefore.width,
-      closeTo(grewBy, 0.01),
-      reason: 'a marker must magnify with the drawing it sits on',
+      markerAfter.width,
+      closeTo(markerBefore.width, 0.5),
+      reason: 'a marker must keep its size on screen at any magnification',
     );
+    expect(markerAfter.width, closeTo(kPlanMarkerDiameter, 0.5));
+    expect(markerAfter.height, closeTo(kPlanMarkerDiameter, 0.5));
 
-    // The point it names is still the point it names. Measured against the magnified
-    // rectangle, so this fails if the marker is left behind by the pan the pinch
-    // applied as well as if it is mis-scaled.
+    // And it is still nailed to its coordinate. Measured against the magnified
+    // rectangle, so this fails if shrinking the dot walked it off its point, and fails
+    // if the marker was left behind by the pan the pinch applied.
     expect(markerAfter.center.dx, closeTo(planAfter.left + planAfter.width * 0.5, 0.6));
     expect(markerAfter.center.dy, closeTo(planAfter.top + planAfter.height * 0.25, 0.6));
+  });
+
+  testWidgets('a marker is the same size on screen at every magnification',
+      (WidgetTester tester) async {
+    final Uint8List bytes = (await tester.runAsync(_planBytes))!;
+
+    await pumpPlan(
+      tester,
+      () => screen(
+        bytes: bytes,
+        objects: <Map<String, dynamic>>[
+          objectJson(
+            id: 'o1',
+            code: 'LDB-1',
+            planPosition: <String, dynamic>{'x': 0.5, 'y': 0.5},
+          ),
+        ],
+      ),
+    );
+
+    /// The marker's size and its offset within the plan, as fractions, at whatever
+    /// magnification the plan is currently at.
+    (double, double, double) sample() {
+      final Rect plan = paintedPlan(tester);
+      final Rect marker = tester.getRect(_marker('LDB-1'));
+      return (
+        marker.width,
+        (marker.center.dx - plan.left) / plan.width,
+        (marker.center.dy - plan.top) / plan.height,
+      );
+    }
+
+    final (double, double, double) fitted = sample();
+
+    final List<TestGesture> gentle = await pinch(tester, factor: 2);
+    final (double, double, double) near = sample();
+    await release(tester, gentle);
+
+    final List<TestGesture> hard = await pinch(tester, factor: 4);
+    final (double, double, double) far = sample();
+    await release(tester, hard);
+
+    // Three different magnifications — and the third is reached by pinching again on an
+    // already-magnified plan, so this also covers the compounding case.
+    expect(paintedPlan(tester).width, greaterThan(0));
+    for (final (double, double, double) reading in <(double, double, double)>[
+      fitted,
+      near,
+      far,
+    ]) {
+      expect(
+        reading.$1,
+        closeTo(kPlanMarkerDiameter, 0.5),
+        reason: 'the marker must be $kPlanMarkerDiameter across at every zoom',
+      );
+      // Still over 0.5/0.5 of the drawing, whatever the drawing is currently sized at.
+      expect(reading.$2, closeTo(0.5, 0.01));
+      expect(reading.$3, closeTo(0.5, 0.01));
+    }
   });
 
   testWidgets('the plan cannot be pinched smaller than the box it fits',

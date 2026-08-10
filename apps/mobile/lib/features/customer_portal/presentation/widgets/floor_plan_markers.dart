@@ -4,6 +4,7 @@ import '../../data/models/object_master_model.dart';
 import '../../domain/entities/object_master_enums.dart';
 import '../../domain/entities/risk_level.dart';
 import '../theme/customer_tokens.dart';
+import 'authenticated_image.dart';
 
 /// The objects the plan draws: placed, and of a type the registry marks as shown on
 /// the plan.
@@ -52,13 +53,25 @@ const double kPlanMarkerDiameter = 26;
 /// than a symbol at plan size.
 const double kPlanMarkerGlyphSize = 15;
 
-/// The markers, laid over exactly the painted plan.
+/// The markers, laid over exactly the painted plan, each one a constant size on screen
+/// however far the plan is zoomed.
 ///
 /// Positioned from the layer's own box, which `AuthenticatedImage.sizedToImage` has
 /// already made identical to the drawing, so `x` and `y` are read straight off the
 /// picture. Each marker is centred on its point - offset by half its size, matching
 /// the web's `-translate-x-1/2 -translate-y-1/2` - because a coordinate names a spot
 /// on the plan, not the corner of a dot.
+///
+/// The layer is laid out INSIDE the viewer's transform, so the box measured here is the
+/// drawing's unzoomed rectangle and a coordinate times that box is the right place all
+/// the way up. Everything in that subtree is then multiplied by the zoom, which would
+/// blow the dots up with it, so each marker undoes exactly that with `1/zoom` — the
+/// same trick the admin web's canvas plays with `scale(1/z)`. A marker is a label on a
+/// point, not a thing on the floor with a size of its own: magnifying it would keep the
+/// dots overlapping at every zoom, which is the crowding a reader zoomed in to escape.
+///
+/// The counter-scale is applied about each marker's CENTRE, which is the coordinate
+/// itself, so shrinking the dot cannot walk it off the spot it names.
 class FloorPlanMarkerLayer extends StatelessWidget {
   const FloorPlanMarkerLayer({
     super.key,
@@ -73,6 +86,11 @@ class FloorPlanMarkerLayer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Read here rather than inside the LayoutBuilder so this layer depends on the zoom
+    // directly, and is rebuilt by a pinch even though its constraints never change —
+    // the box it is measured against is the unzoomed drawing throughout.
+    final double zoom = PlanZoom.of(context);
+
     return LayoutBuilder(
       builder: (BuildContext context, BoxConstraints constraints) {
         final double width = constraints.maxWidth;
@@ -88,7 +106,15 @@ class FloorPlanMarkerLayer extends StatelessWidget {
                   top: object.planPosition!.y * height - kPlanMarkerDiameter / 2,
                   width: kPlanMarkerDiameter,
                   height: kPlanMarkerDiameter,
-                  child: PlanMarker(object: object, onTap: () => onTap(object)),
+                  child: Transform.scale(
+                    scale: 1 / zoom,
+                    // Centre-aligned by default, and the box above is centred on the
+                    // coordinate, so the dot shrinks onto its own point.
+                    //
+                    // Hit tests go through the same matrix, so what can be tapped is
+                    // the dot as drawn — not the box the zoom stretched underneath it.
+                    child: PlanMarker(object: object, onTap: () => onTap(object)),
+                  ),
                 ),
           ],
         );

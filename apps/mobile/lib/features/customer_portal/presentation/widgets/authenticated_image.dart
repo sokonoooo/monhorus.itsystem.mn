@@ -52,6 +52,32 @@ const double kPlanMaxScale = 5;
 /// marker taps to ordinary finger wobble.
 const double kPlanZoomedTouchSlop = 8;
 
+/// The magnification the plan around it is currently drawn at, published to whatever is
+/// laid over that plan.
+///
+/// Exists so an overlay can refuse to grow with the drawing. Everything inside the
+/// viewer is multiplied by the zoom `z`, so anything that must keep one size on screen
+/// has to undo it with `1/z` — and to do that it has to be told what `z` is. That is the
+/// whole job of this widget.
+///
+/// An [InheritedNotifier], so the marker layer re-reads the factor as a pinch happens
+/// rather than a frame behind it, and so only the things that actually asked for the
+/// zoom are rebuilt when it changes.
+class PlanZoom extends InheritedNotifier<ValueNotifier<double>> {
+  const PlanZoom({
+    super.key,
+    required ValueNotifier<double> scale,
+    required super.child,
+  }) : super(notifier: scale);
+
+  /// The current magnification, or 1 where there is no viewer above.
+  ///
+  /// One rather than null: a plan that cannot be zoomed IS drawn at its own size, so
+  /// the caller's `1/zoom` is a no-op there and no caller needs a special case.
+  static double of(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<PlanZoom>()?.notifier?.value ?? 1;
+}
+
 /// Renders a stored file that lives behind `GET /files/:fileId`.
 ///
 /// That endpoint returns raw bytes and still requires the Bearer header, so the
@@ -178,11 +204,18 @@ class _IntrinsicallySizedImageState extends State<_IntrinsicallySizedImage> {
 
   /// Whether the plan is currently magnified at all.
   ///
-  /// Kept as its own notifier rather than read off [_transform] at build time so the
-  /// subtree rebuilds when the ANSWER changes rather than on every frame of a pinch —
-  /// the marker layer is rebuilt with it, and a floor's worth of markers is not worth
-  /// re-laying-out sixty times a second to re-decide a boolean.
+  /// Deliberately a separate notifier from [_scale], and coarser. It drives the touch
+  /// slop, which has exactly two settings, so it changes twice per pinch rather than
+  /// sixty times a second — and the [MediaQuery] it rebuilds sits above the entire
+  /// plan, which is not worth rebuilding per frame to re-decide a boolean.
   final ValueNotifier<bool> _magnified = ValueNotifier<bool>(false);
+
+  /// The live magnification, published to the overlay through [PlanZoom].
+  ///
+  /// This one genuinely does change every frame of a pinch: a marker that is holding
+  /// its size against the zoom needs the zoom as it is now, not as it was when the
+  /// gesture started.
+  final ValueNotifier<double> _scale = ValueNotifier<double>(kPlanMinScale);
 
   /// True while [_listen] is running. The decoded image is often already in the cache,
   /// in which case the listener fires synchronously - inside `initState`, where
@@ -202,7 +235,9 @@ class _IntrinsicallySizedImageState extends State<_IntrinsicallySizedImage> {
   /// "magnified" would keep the tighter slop — and so keep the plan eating the page's
   /// vertical drags — on a plan the reader has already zoomed back out.
   void _readMagnification() {
-    _magnified.value = _transform.value.getMaxScaleOnAxis() > kPlanMinScale + 0.001;
+    final double scale = _transform.value.getMaxScaleOnAxis();
+    _scale.value = scale;
+    _magnified.value = scale > kPlanMinScale + 0.001;
   }
 
   @override
@@ -225,6 +260,7 @@ class _IntrinsicallySizedImageState extends State<_IntrinsicallySizedImage> {
     _transform.removeListener(_readMagnification);
     _transform.dispose();
     _magnified.dispose();
+    _scale.dispose();
     super.dispose();
   }
 
@@ -284,7 +320,9 @@ class _IntrinsicallySizedImageState extends State<_IntrinsicallySizedImage> {
       // Without this a magnified plan paints over the caption below it and over the
       // card's own rounded edge.
       clipBehavior: Clip.hardEdge,
-      child: plan,
+      // Rebuilt off the same transform the viewer is driving, so an overlay that undoes
+      // the zoom is undoing the zoom currently painted rather than the previous frame's.
+      child: PlanZoom(scale: _scale, child: plan),
     );
 
     return ValueListenableBuilder<bool>(
