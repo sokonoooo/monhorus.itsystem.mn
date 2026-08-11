@@ -11,12 +11,14 @@ import {
   coverField,
   coverTitle,
   dataTable,
+  detailBlock,
   headerBlock,
   organisationTable,
   prose,
   sectionHeading,
   signatureBlock,
   signatureLeader,
+  type BrandingImage,
 } from './pdf-template';
 import {
   formatDate,
@@ -26,7 +28,7 @@ import {
   formatYear,
   joinParts,
 } from './report-pdf.format';
-import { reportLogo } from './pdf.renderer';
+import type { ReportBranding } from './report-branding';
 
 /**
  * The title the source document carries, verbatim.
@@ -41,26 +43,29 @@ const BODY_HEADING = 'Цахилгааны үзлэгийн тайлан';
 
 export function inspectionReportDocument(
   report: InspectionReportDto,
-  contractorFallback: string,
+  branding: ReportBranding,
+  photos: ReadonlyMap<string, readonly BrandingImage[]> = new Map(),
 ): TDocumentDefinitions {
-  const logo = reportLogo();
-  const contractor = report.contractorName ?? contractorFallback;
+  // The report's own contractor still wins where it has one — it was resolved when the
+  // report was written and is a fact about that inspection — and the configured company
+  // is what stands in when it does not.
+  const contractor = report.contractorName ?? branding.companyName;
 
   return {
     pageSize: PAGE_SIZE,
     pageOrientation: PAGE_ORIENTATION,
     pageMargins: PAGE_MARGINS,
-    header: () => headerBlock(logo),
+    header: () => headerBlock(branding.logo),
     defaultStyle: { font: 'Tinos', fontSize: FONT_SIZE.table },
     info: {
       title: `${TITLE} ${report.workNumber}`,
       author: contractor,
     },
-    content: [...cover(report, contractor), ...body(report, contractor)],
+    content: [...cover(report, branding), ...body(report, contractor, photos)],
   };
 }
 
-function cover(report: InspectionReportDto, contractor: string): Content[] {
+function cover(report: InspectionReportDto, branding: ReportBranding): Content[] {
   const spacers: Content[] = Array.from({ length: 8 }, () => ({
     text: ' ',
     fontSize: FONT_SIZE.coverSpacer,
@@ -72,7 +77,9 @@ function cover(report: InspectionReportDto, contractor: string): Content[] {
     { text: ' ', fontSize: FONT_SIZE.coverSpacer },
     // The template's own three cover fields, in its order and with its labels.
     coverField('Объект:', joinParts([report.buildingName, report.locationLabel])),
-    coverField('Үзлэг хийсэн:', contractor),
+    // Who performed the inspection, which is its own setting: an operator may issue a
+    // report under one name and have the work carried out under another.
+    coverField('Үзлэг хийсэн:', branding.inspectionCompany),
     coverField('Огноо:', formatLongDate(report.inspectionEnd ?? report.createdAt)),
     { text: ' ', fontSize: FONT_SIZE.coverSpacer },
     {
@@ -89,7 +96,11 @@ function cover(report: InspectionReportDto, contractor: string): Content[] {
   ];
 }
 
-function body(report: InspectionReportDto, contractor: string): Content[] {
+function body(
+  report: InspectionReportDto,
+  contractor: string,
+  photos: ReadonlyMap<string, readonly BrandingImage[]>,
+): Content[] {
   const content: Content[] = [
     sectionHeading(BODY_HEADING, true),
     // The template's own organisation table, with its exact three labels, plus the
@@ -147,6 +158,32 @@ function body(report: InspectionReportDto, contractor: string): Content[] {
         ],
       ),
     );
+  }
+
+  // The photographic record, in the template's own detail-block shape.
+  //
+  // Its own section rather than pictures wedged into the table above, because that is
+  // how the source is built: a table of findings to read, and blocks of photographs with
+  // the note beside each one. Only tasks that actually carry a photo appear — a block
+  // with an empty picture area would be a row of borders saying nothing.
+  const documented = report.groups
+    .flatMap((group) =>
+      group.tasks.map((task) => ({ task, floorName: group.floorName })),
+    )
+    .filter((entry) => (photos.get(entry.task.taskId)?.length ?? 0) > 0);
+
+  if (documented.length > 0) {
+    content.push(sectionRule('Гүйцэтгэлийн зураг'));
+    for (const entry of documented) {
+      content.push(
+        detailBlock({
+          workName: entry.task.title,
+          location: joinParts([entry.floorName, report.buildingName]),
+          note: entry.task.note,
+          photos: photos.get(entry.task.taskId) ?? [],
+        }),
+      );
+    }
   }
 
   // "Илэрсэн зөрчил" — the findings list, which is the part of this document a reader

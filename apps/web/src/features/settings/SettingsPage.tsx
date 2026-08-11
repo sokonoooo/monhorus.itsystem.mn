@@ -1,3 +1,4 @@
+import { MAX_COMPANY_LOGO_BYTES } from '@monhorus/shared';
 import type { SettingEntryDto, SettingKey, SettingValue, SettingsDto } from '@monhorus/shared';
 import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
 
@@ -28,14 +29,12 @@ import {
 /**
  * Whether this entry is a stored file rather than a value somebody types.
  *
- * Compared as a plain string on purpose. The catalogue's own union
- * (`SettingDefinition['type']`) already names `file`, but the transport type
- * `SettingEntryDto['type']` has not been widened to match, so a direct literal comparison
- * would be a "these types do not overlap" error today and an unnecessary type assertion the
- * day the DTO catches up. Going through `String` is correct under both.
+ * The value is still a string as far as the catalogue and the API are concerned — it holds
+ * the id of an uploaded file — so this is the only thing that separates the picker from a
+ * text box, and it is asked in three places: the dirty check, the payload and the control.
  */
 function isFileEntry(entry: SettingEntryDto): boolean {
-  return String(entry.type) === 'file';
+  return entry.type === 'file';
 }
 
 /**
@@ -69,7 +68,9 @@ const LOGO_MIME_TYPES: readonly string[] = ['image/png', 'image/jpeg'];
  * trip. The server has its own cap and its own content-type check; if the two numbers ever
  * disagree the server's answer is the one that decides, and its message is shown as-is.
  */
-const MAX_LOGO_BYTES = 2 * 1024 * 1024;
+// The server's own cap, imported rather than restated: a client limit that disagrees
+// with the server either rejects uploads that would work or promises ones that will not.
+const MAX_LOGO_BYTES = MAX_COMPANY_LOGO_BYTES;
 const LOGO_LIMIT_MB = Math.round(MAX_LOGO_BYTES / (1024 * 1024));
 
 /**

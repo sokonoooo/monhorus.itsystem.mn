@@ -1,9 +1,4 @@
-import {
-  PERMISSIONS,
-  SETTING_KEYS,
-  type SettingEntryDto,
-  type SettingsDto,
-} from '@monhorus/shared';
+import { PERMISSIONS, SETTING_KEYS, type SettingsDto } from '@monhorus/shared';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -211,18 +206,6 @@ describe('SettingsPage', () => {
 describe('SettingsPage branding', () => {
   const LOGO_FILE_ID = '507f1f77bcf86cd799439011';
 
-  /**
-   * A `file`-typed catalogue entry.
-   *
-   * The cast is the transport type lagging the catalogue: `SettingDefinition['type']` already
-   * names 'file' but `SettingEntryDto['type']` has not been widened to match, so the literal
-   * cannot be written directly. It is a fixture concern only — the page compares the type as
-   * a string — and this helper is the single place to delete once the DTO catches up.
-   */
-  function fileEntry(entry: Omit<SettingEntryDto, 'type'>): SettingEntryDto {
-    return { ...entry, type: 'file' } as unknown as SettingEntryDto;
-  }
-
   function brandingSettings(
     values: { logo?: string; inspectionCompany?: string } = {},
   ): SettingsDto {
@@ -246,17 +229,19 @@ describe('SettingsPage branding', () => {
               updatedByName: null,
               updatedAt: null,
             },
-            fileEntry({
+            {
               key: SETTING_KEYS.COMPANY_LOGO,
               group: 'general',
               label: 'Байгууллагын лого',
               hint: 'Тайлангийн толгой хэсэгт хэвлэгдэнэ.',
+              // The type that makes this a picker instead of a text box.
+              type: 'file',
               value: values.logo ?? '',
               defaultValue: '',
               isOverridden: values.logo !== undefined,
               updatedByName: null,
               updatedAt: null,
-            }),
+            },
           ],
         },
       ],

@@ -1,6 +1,11 @@
 import fs from 'node:fs';
 
-import { PERMISSIONS, employeeDocumentMetaSchema, type PermissionKey } from '@monhorus/shared';
+import {
+  MAX_COMPANY_LOGO_BYTES,
+  PERMISSIONS,
+  employeeDocumentMetaSchema,
+  type PermissionKey,
+} from '@monhorus/shared';
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import { Types } from 'mongoose';
 import { z } from 'zod';
@@ -638,6 +643,18 @@ fileRouter.post(
       if (!uploaded) {
         throw AppError.badRequest(ERROR_CODES.VALIDATION_ERROR, 'Файл заавал.', [
           { field: 'file', message: 'Зураг сонгоно уу.' },
+        ]);
+      }
+
+      // The shared cap, enforced here as well as in the form. A client-side check is a
+      // courtesy that saves a round trip; this is the one that decides.
+      if (uploaded.size > MAX_COMPANY_LOGO_BYTES) {
+        deleteStoredFile(uploaded.filename);
+        throw AppError.badRequest(ERROR_CODES.VALIDATION_ERROR, 'Зураг хэт том байна.', [
+          {
+            field: 'file',
+            message: `Зураг ${Math.round(MAX_COMPANY_LOGO_BYTES / (1024 * 1024))}MB-аас бага байна.`,
+          },
         ]);
       }
 

@@ -47,12 +47,15 @@ import {
   loadReportState,
   returnReport,
   submitReport,
+  taskPhotoIdsOf,
   toReportDto,
   updateReport,
 } from './planned-work.report.service';
 import { plannedWorkReportDocument } from '../report-pdf/planned-work-report.pdf';
 import { renderPdf } from '../report-pdf/pdf.renderer';
-import { contractorName, sendPdf } from '../report-pdf/pdf.response';
+import { sendPdf } from '../report-pdf/pdf.response';
+import { loadReportBranding } from '../report-pdf/report-branding';
+import { loadTaskPhotos, MAX_PHOTOS_PER_TASK } from '../report-pdf/report-images';
 import { requirePlannedWorkAssignmentScope } from './planned-work.scope';
 import { transitionPlannedWork } from './planned-work.transition.service';
 
@@ -444,8 +447,15 @@ plannedWorkRouter.get(
         );
       }
 
+      const [branding, photos] = await Promise.all([
+        loadReportBranding(),
+        // The photographs the sub-tasks carry. The preview reports counts; the document
+        // wants the pictures, so they are fetched and re-encoded here.
+        taskPhotoIdsOf(work).then((ids) => loadTaskPhotos(ids, MAX_PHOTOS_PER_TASK)),
+      ]);
+
       const pdf = await renderPdf(
-        plannedWorkReportDocument(preview, report, await contractorName()),
+        plannedWorkReportDocument(preview, report, branding, photos),
       );
       sendPdf(res, pdf, `tailan-${preview.workNumber}`);
     } catch (error) {

@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import type { Content, ContentTable, TableLayout } from 'pdfmake/interfaces';
+import type { Content, ContentTable, TableCell, TableLayout } from 'pdfmake/interfaces';
 
 /**
  * The house report template, measured off «Үзлэгийн тайлан.docx».
@@ -139,28 +139,144 @@ export const PDF_FONTS = {
   },
 };
 
-/** The logo strip in the template's header, lifted from its `word/media/image56.jpg`. */
-export const LOGO_PATH = path.join(assetDir(), 'report-logo.jpg');
-
-/** `wp:extent cx=1524000 cy=352425` EMU — 42.3mm by 9.8mm. */
-const LOGO_WIDTH = (1524000 / 914400) * 72;
+/**
+ * How tall the letterhead is drawn, from `wp:extent cy=352425` EMU — 9.8mm.
+ *
+ * The HEIGHT is fixed and the width follows from the uploaded image's own proportions,
+ * which is the opposite of what the template does. The source hardcodes both because it
+ * contains one particular logo; an operator's logo may be square or a long wordmark, and
+ * forcing it into 42.3 x 9.8mm would squash it. Fixing the height keeps every report's
+ * masthead the same depth whatever picture is in it.
+ */
 const LOGO_HEIGHT = (352425 / 914400) * 72;
 
+/** The template's own logo width, used when the image's proportions are unknown. */
+const LOGO_FALLBACK_WIDTH = (1524000 / 914400) * 72;
+
+/** What the header and the photo grid need to know about a picture. */
+export interface BrandingImage {
+  dataUrl: string;
+  width: number;
+  height: number;
+}
+
 /**
- * The page header: the logo and nothing else, exactly as the template has it.
+ * The page header: the letterhead and nothing else, exactly as the template has it.
  *
- * Returned as a factory because pdfmake calls it per page, and because a missing logo
- * file must cost the header rather than the export — the report is still a valid report
- * without its letterhead, and a crash here would take a whole document down over an
- * image.
+ * Returned as a factory because pdfmake calls it per page. A null logo yields an empty
+ * header rather than an error — an operator who has configured no letterhead still gets
+ * their report, and a document must never fail over a picture.
  */
-export function headerBlock(logo: string | null): Content {
+export function headerBlock(logo: BrandingImage | null): Content {
   if (logo === null) return { text: '' };
+  const ratio = logo.height > 0 ? logo.width / logo.height : null;
   return {
-    image: logo,
-    width: LOGO_WIDTH,
+    image: logo.dataUrl,
     height: LOGO_HEIGHT,
+    width: ratio === null ? LOGO_FALLBACK_WIDTH : LOGO_HEIGHT * ratio,
     margin: [PAGE_MARGINS[0], HEADER_OFFSET, 0, 0],
+  };
+}
+
+/**
+ * The photo cell's drawing box, from the template's own 2x2 grid.
+ *
+ * `tblGrid` gives the photo columns 2436 twips each — 121.8pt — and the pictures inside
+ * them are declared at `cx=1473307` EMU, which is 116pt, leaving the cell padding either
+ * side. The height is the same block's `cy=1104900` EMU, 87pt.
+ */
+const PHOTO_BOX_WIDTH = 116;
+const PHOTO_BOX_HEIGHT = 87;
+
+/**
+ * One photograph, scaled to fit its box WITHOUT distorting it.
+ *
+ * The template never squashes a picture — every image in it carries `noChangeAspect="1"`,
+ * and where a photo's shape did not suit the box somebody had chosen, it was CROPPED
+ * rather than stretched. Cropping somebody's evidence photograph automatically is not a
+ * decision this code should make, so it fits inside the box instead: the longer side
+ * meets the box and the shorter side is whatever the picture's proportions make it. A
+ * portrait photo therefore prints narrow and tall, which is what it is.
+ */
+function photoCell(image: BrandingImage): TableCell {
+  const ratio = image.height > 0 ? image.width / image.height : 1;
+  const boxRatio = PHOTO_BOX_WIDTH / PHOTO_BOX_HEIGHT;
+  const width = ratio >= boxRatio ? PHOTO_BOX_WIDTH : PHOTO_BOX_HEIGHT * ratio;
+
+  return { image: image.dataUrl, width, alignment: 'center' };
+}
+
+/**
+ * A detail block: what the work was, where, its photographs, and the note beside them.
+ *
+ * This is the template's own repeating unit, reproduced. Its blocks are a two-row header
+ * — `Ажлын нэр:` and `Байршил:`, each a bold label against a value spanning the rest of
+ * the width — then a photo area on the left with a single `Тайлбар:` cell merged down the
+ * right-hand side beside it. The source never captions an individual photograph; the note
+ * describes the whole block, which is why one cell spans every photo row.
+ *
+ * Photos go two to a row, as the template's densest block does. An odd photo leaves the
+ * last cell empty rather than stretching a picture across the pair, because the column
+ * widths are what keep the note cell in the same place on every block down the page.
+ */
+export function detailBlock(options: {
+  workName: string;
+  location: string;
+  note: string | null;
+  photos: readonly BrandingImage[];
+}): ContentTable {
+  const { workName, location, note, photos } = options;
+
+  const labelWidth = CONTENT_WIDTH * 0.14;
+  const photoWidth = (CONTENT_WIDTH * 0.56) / 2;
+  const noteWidth = CONTENT_WIDTH - labelWidth - photoWidth * 2;
+
+  const headerRow = (label: string, value: string): TableCell[] => [
+    { text: label, bold: true, fontSize: FONT_SIZE.tableLabel },
+    { text: value, fontSize: FONT_SIZE.table, colSpan: 3 },
+    {},
+    {},
+  ];
+
+  const body: TableCell[][] = [
+    headerRow('Ажлын нэр:', workName),
+    headerRow('Байршил:', location),
+  ];
+
+  // Rows of two. The note cell opens on the first photo row and is continued by empty
+  // cells beneath it, which is pdfmake's spelling of the template's vertical merge.
+  const rows = Math.max(1, Math.ceil(photos.length / 2));
+  for (let row = 0; row < rows; row += 1) {
+    const left = photos[row * 2];
+    const right = photos[row * 2 + 1];
+    body.push([
+      (left === undefined ? {} : { ...(photoCell(left) as object), colSpan: 2 }) as TableCell,
+      {},
+      (right === undefined ? {} : photoCell(right)) as TableCell,
+      row === 0
+        ? {
+            text: note === null || note === '' ? '' : `Тайлбар: ${note}`,
+            fontSize: FONT_SIZE.table,
+            rowSpan: rows,
+          }
+        : {},
+    ]);
+  }
+
+  return {
+    // BOTH flags, and they do different jobs. `dontBreakRows` stops a single row being
+    // sliced through the middle; `unbreakable` stops the TABLE being split at all. Only
+    // the second keeps "Ажлын нэр" on the same page as the photographs beneath it, which
+    // is the whole point of a block — the first alone strands the two header rows at the
+    // foot of one page and puts the pictures on the next.
+    unbreakable: true,
+    table: {
+      widths: [labelWidth, photoWidth - labelWidth, photoWidth, noteWidth],
+      body,
+      dontBreakRows: true,
+    },
+    layout: TABLE_LAYOUT,
+    margin: [0, 0, 0, PARAGRAPH_GAP],
   };
 }
 

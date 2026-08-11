@@ -23,6 +23,19 @@ import {
  * this module changes nothing until an administrator edits a value.
  */
 
+/**
+ * Hard ceiling on the uploaded company logo, in bytes.
+ *
+ * Shared so the settings form can refuse an over-large file before spending the round
+ * trip, and so it refuses the SAME file the server would. A client-side cap that
+ * disagrees with the server is worse than none: it either rejects uploads that would
+ * have worked or promises ones that will not.
+ *
+ * 2 MB. A letterhead is drawn a centimetre tall on a page; anything approaching this is
+ * already far more detail than the document can show.
+ */
+export const MAX_COMPANY_LOGO_BYTES = 2 * 1024 * 1024;
+
 export const SETTING_GROUPS = ['general', 'sla', 'evaluation', 'finance'] as const;
 export type SettingGroup = (typeof SETTING_GROUPS)[number];
 

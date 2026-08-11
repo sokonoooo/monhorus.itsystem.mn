@@ -35,6 +35,15 @@ const MAX_PHOTO_WIDTH = 600;
 /** The letterhead is small and wide; it never needs more than this. */
 const MAX_LOGO_WIDTH = 400;
 
+/**
+ * How many photographs one sub-task contributes to a report.
+ *
+ * The template's densest block holds four, and beyond that a block stops being a record
+ * of the work and becomes an album. A task with more keeps its first four — the ones
+ * taken before the rest, which is the order they were attached in.
+ */
+export const MAX_PHOTOS_PER_TASK = 4;
+
 /** JPEG quality. 78 is the point where artefacts stop being visible on photographs. */
 const JPEG_QUALITY = 78;
 

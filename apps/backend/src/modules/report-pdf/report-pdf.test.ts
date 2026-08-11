@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import { inspectionReportDocument } from './inspection-report.pdf';
+import type { ReportBranding } from './report-branding';
+import type { BrandingImage } from './pdf-template';
 import { plannedWorkReportDocument } from './planned-work-report.pdf';
 import { renderPdf } from './pdf.renderer';
 import { CONTENT_WIDTH, FONT_SIZE, PAGE_MARGINS } from './pdf-template';
@@ -16,6 +18,16 @@ import { formatDate, formatLongDate, formatMinutes, formatQuantity } from './rep
  */
 
 const CONTRACTOR = '"Монхорус Электрик" ХХК';
+
+/**
+ * Branding as a fully-configured operator has it. Individual tests override one field to
+ * prove each degrades on its own.
+ */
+const BRANDING: ReportBranding = {
+  logo: null,
+  companyName: CONTRACTOR,
+  inspectionCompany: CONTRACTOR,
+};
 
 function previewFixture(
   overrides: Partial<Record<string, unknown>> = {},
@@ -114,7 +126,7 @@ function embeddedFonts(pdf: Buffer): string[] {
 describe('report PDF export', () => {
   it('renders a planned work report as a real, multi-page PDF', async () => {
     const pdf = await renderPdf(
-      plannedWorkReportDocument(previewFixture(), null, CONTRACTOR),
+      plannedWorkReportDocument(previewFixture(), null, BRANDING),
     );
 
     // A PDF, not an empty buffer or an HTML error page.
@@ -126,7 +138,7 @@ describe('report PDF export', () => {
   });
 
   it('renders the inspection report as a real PDF', async () => {
-    const pdf = await renderPdf(inspectionReportDocument(inspectionFixture(), CONTRACTOR));
+    const pdf = await renderPdf(inspectionReportDocument(inspectionFixture(), BRANDING));
 
     expect(pdf.subarray(0, 5).toString('latin1')).toBe('%PDF-');
     expect(pageCount(pdf)).toBeGreaterThanOrEqual(2);
@@ -142,7 +154,7 @@ describe('report PDF export', () => {
    */
   it('embeds the Cyrillic-capable typeface rather than a base-14 font', async () => {
     const pdf = await renderPdf(
-      plannedWorkReportDocument(previewFixture(), null, CONTRACTOR),
+      plannedWorkReportDocument(previewFixture(), null, BRANDING),
     );
     const fonts = embeddedFonts(pdf);
 
@@ -154,7 +166,7 @@ describe('report PDF export', () => {
   /** A long sub-task list must paginate rather than overflow off the page. */
   it('paginates a long sub-task table', async () => {
     const short = await renderPdf(
-      plannedWorkReportDocument(previewFixture(), null, CONTRACTOR),
+      plannedWorkReportDocument(previewFixture(), null, BRANDING),
     );
     const long = await renderPdf(
       plannedWorkReportDocument(
@@ -177,7 +189,7 @@ describe('report PDF export', () => {
           })),
         }),
         null,
-        CONTRACTOR,
+        BRANDING,
       ),
     );
 
@@ -203,7 +215,7 @@ describe('report PDF export', () => {
           materials: [],
         }),
         null,
-        '',
+        { logo: null, companyName: '', inspectionCompany: '' },
       ),
     );
 
@@ -257,7 +269,7 @@ describe('report PDF export', () => {
           replacementPanels: ['А агуулах коридорын самбар'],
           replacementConnections: ['ЕС-1 оруулгын холболт'],
         }),
-        CONTRACTOR,
+        BRANDING,
       ),
     );
 
@@ -322,5 +334,181 @@ describe('report formatting', () => {
     expect(formatMinutes(120)).toBe('2 ц');
     expect(formatMinutes(45)).toBe('45 мин');
     expect(formatMinutes(0)).toBe('');
+  });
+});
+
+
+/**
+ * The masthead and the photographs — everything that used to be compiled in.
+ *
+ * These assert the DEGRADATION as much as the happy path: a report is a document about
+ * work that was done, and a half-configured installation must still be able to issue one.
+ */
+describe('branding and photographs', () => {
+  /** A tiny real JPEG, so pdfmake genuinely decodes something. */
+  function pixel(width: number, height: number): BrandingImage {
+    // 1x1 JPEG, scaled by the declared dimensions rather than by re-encoding: this suite
+    // is about layout, and sharp is exercised by its own tests.
+    const jpeg =
+      '/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0a' +
+      'HBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAA' +
+      'AAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==';
+    return { dataUrl: `data:image/jpeg;base64,${jpeg}`, width, height };
+  }
+
+  const photoBranding: ReportBranding = { ...BRANDING, logo: pixel(480, 110) };
+
+  it('draws a configured logo and grows the document by doing so', async () => {
+    const without = await renderPdf(
+      plannedWorkReportDocument(previewFixture(), null, BRANDING),
+    );
+    const with_ = await renderPdf(
+      plannedWorkReportDocument(previewFixture(), null, photoBranding),
+    );
+
+    // A logo appears on every page, so the document carrying one is larger. Without this
+    // the header could silently render nothing and every other assertion would pass.
+    expect(with_.byteLength).toBeGreaterThan(without.byteLength);
+  });
+
+  it('renders with no logo, no company and no inspection company configured', async () => {
+    const pdf = await renderPdf(
+      plannedWorkReportDocument(previewFixture(), null, {
+        logo: null,
+        companyName: '',
+        inspectionCompany: '',
+      }),
+    );
+
+    // The whole point: an operator who has configured nothing still gets their report.
+    expect(pdf.subarray(0, 5).toString('latin1')).toBe('%PDF-');
+    expect(pageCount(pdf)).toBeGreaterThanOrEqual(2);
+  });
+
+  it('adds a photo block for a task that has photographs, and none for one that has not', async () => {
+    const preview = previewFixture({
+      tasks: [
+        {
+          id: 't1',
+          title: 'Зурагтай ажил',
+          floorName: '1-р давхар',
+          unit: 'PIECE',
+          totalQuantity: 1,
+          completedQuantity: 1,
+          progressPercent: 100,
+          status: 'DONE',
+          note: 'Тайлбар.',
+          score: 80,
+          riskLevel: 'NORMAL',
+          recommendation: null,
+          beforePhotoCount: 1,
+          afterPhotoCount: 0,
+        },
+        {
+          id: 't2',
+          title: 'Зураггүй ажил',
+          floorName: '1-р давхар',
+          unit: 'PIECE',
+          totalQuantity: 1,
+          completedQuantity: 1,
+          progressPercent: 100,
+          status: 'DONE',
+          note: null,
+          score: 80,
+          riskLevel: 'NORMAL',
+          recommendation: null,
+          beforePhotoCount: 0,
+          afterPhotoCount: 0,
+        },
+      ],
+    });
+
+    const bare = await renderPdf(plannedWorkReportDocument(preview, null, BRANDING));
+    const withPhotos = await renderPdf(
+      plannedWorkReportDocument(
+        preview,
+        null,
+        BRANDING,
+        new Map([['t1', [pixel(1600, 1200)]]]),
+      ),
+    );
+
+    expect(withPhotos.byteLength).toBeGreaterThan(bare.byteLength);
+  });
+
+  it('lays four photographs out without dropping any', async () => {
+    const four = new Map([
+      [
+        'task-1',
+        [pixel(1600, 1200), pixel(1200, 1600), pixel(1600, 1200), pixel(1600, 900)],
+      ],
+    ]);
+    const one = new Map([['task-1', [pixel(1600, 1200)]]]);
+
+    const preview = previewFixture({
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Олон зурагтай ажил',
+          floorName: '1-р давхар',
+          unit: 'PIECE',
+          totalQuantity: 1,
+          completedQuantity: 1,
+          progressPercent: 100,
+          status: 'DONE',
+          note: 'Тайлбар.',
+          score: 80,
+          riskLevel: 'NORMAL',
+          recommendation: null,
+          beforePhotoCount: 2,
+          afterPhotoCount: 2,
+        },
+      ],
+    });
+
+    const a = await renderPdf(plannedWorkReportDocument(preview, null, BRANDING, one));
+    const b = await renderPdf(plannedWorkReportDocument(preview, null, BRANDING, four));
+
+    // Four pictures occupy more of the document than one. A grid that silently drew only
+    // the first would produce identical output.
+    expect(b.byteLength).toBeGreaterThan(a.byteLength);
+  });
+
+  it('puts photographs on the inspection report too', async () => {
+    const report = inspectionFixture({
+      groups: [
+        {
+          floorId: 'f1',
+          floorName: '1-р давхар',
+          tasks: [
+            {
+              taskId: 'it1',
+              title: 'Ерөнхий оруулгын самбар',
+              floorName: '1-р давхар',
+              status: 'DONE',
+              statusLabel: 'Дууссан',
+              skipped: false,
+              score: 38,
+              riskLevel: 'CRITICAL',
+              note: 'Газардуулга холбогдоогүй.',
+              recommendation: null,
+              totalQuantity: 1,
+              completedQuantity: 1,
+              unit: 'ш',
+              attachments: [],
+              completedAt: '2026-08-02T02:00:00.000Z',
+              assignedEmployeeName: 'Д.Ганболд',
+            },
+          ],
+        },
+      ],
+    });
+
+    const bare = await renderPdf(inspectionReportDocument(report, BRANDING));
+    const withPhotos = await renderPdf(
+      inspectionReportDocument(report, BRANDING, new Map([['it1', [pixel(1600, 1200)]]])),
+    );
+
+    expect(withPhotos.byteLength).toBeGreaterThan(bare.byteLength);
   });
 });
