@@ -56,7 +56,12 @@ export function GpsErrors({
   return <p className="mt-1 text-xs text-red-600">{message}</p>;
 }
 
-/** Inline building create, so a project can be populated without leaving the page. */
+/**
+ * Inline building create, so a project can be populated without leaving the page.
+ *
+ * No code is asked for: `BLD-001` is issued by the server against a per-customer counter,
+ * and a code the browser proposed could only ever be a guess at it.
+ */
 function BuildingDrawer({
   projectId,
   open,
@@ -69,7 +74,6 @@ function BuildingDrawer({
   onSaved: () => void;
 }): ReactElement {
   const { notify } = useToast();
-  const [code, setCode] = useState('');
   const [name, setName] = useState('');
   const [address, setAddress] = useState('');
   const [position, setPosition] = useState<GpsPosition>(NO_POSITION);
@@ -80,7 +84,6 @@ function BuildingDrawer({
 
   useEffect(() => {
     if (!open) return;
-    setCode('');
     setName('');
     setAddress('');
     setPosition(NO_POSITION);
@@ -95,7 +98,6 @@ function BuildingDrawer({
 
     const parsed = createBuildingSchema.safeParse({
       projectId,
-      code: code.trim().toUpperCase(),
       name: name.trim(),
       address: address.trim() || null,
       gpsLatitude: position.latitude,
@@ -151,9 +153,6 @@ function BuildingDrawer({
         {formError && <Alert variant="error">{formError}</Alert>}
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Field label="Код" required error={fieldErrors.code}>
-            <TextInput value={code} onChange={(value) => setCode(value.toUpperCase())} disabled={submitting} />
-          </Field>
           <Field label="Барилгын нэр" required error={fieldErrors.name}>
             <TextInput value={name} onChange={setName} disabled={submitting} />
           </Field>

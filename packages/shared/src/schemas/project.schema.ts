@@ -14,22 +14,26 @@ import {
  * Parent references are absent from every update schema: re-parenting a building or a
  * floor would silently invalidate the objects linked beneath it, so a move is a separate,
  * explicit operation rather than a field on the edit form.
+ *
+ * `code` IS ABSENT FROM ALL SIX SCHEMAS, and its absence is the contract.
+ *
+ * A project, building and floor code is issued by the server — `PRJ-001`, `BLD-001`,
+ * `FLR-001`, numbered per customer per kind against an atomic counter. It is absent from
+ * the CREATE schemas because there is nothing for a caller to say: the number is drawn
+ * from state only the server holds, and a code the browser proposed could only ever be a
+ * guess at it. It is absent from the UPDATE schemas — which are `.strict()`, so a request
+ * carrying one is REFUSED rather than quietly ignored — because a code that can be edited
+ * is not an identifier. Renaming a floor must leave the label on somebody's drawing alone.
+ *
+ * The DTOs still carry `code` as a required string. Nothing about reading it changed;
+ * only who decides it.
  */
-
-const codeField = z
-  .string()
-  .trim()
-  .toUpperCase()
-  .min(2, 'Код дор хаяж 2 тэмдэгттэй байна.')
-  .max(64)
-  .regex(/^[A-Z0-9./-]+$/, 'Код зөвхөн том үсэг, тоо, зураас, цэг агуулна.');
 
 // -- Project -----------------------------------------------------------------
 
 export const createProjectSchema = z
   .object({
     customerId: objectIdSchema,
-    code: codeField,
     name: z.string().trim().min(2, 'Төслийн нэр заавал.').max(200),
     contractNumber: z.string().trim().max(64).nullish(),
     responsibleEmployeeId: objectIdSchema.nullish(),
@@ -49,7 +53,6 @@ export const createProjectSchema = z
 
 export const updateProjectSchema = z
   .object({
-    code: codeField.optional(),
     name: z.string().trim().min(2).max(200).optional(),
     contractNumber: z.string().trim().max(64).nullish(),
     responsibleEmployeeId: objectIdSchema.nullish(),
@@ -100,7 +103,6 @@ const buildingCoordinateRefinement = (
 export const createBuildingSchema = z
   .object({
     projectId: objectIdSchema,
-    code: codeField,
     name: z.string().trim().min(2, 'Барилгын нэр заавал.').max(200),
     address: z.string().trim().max(500).nullish(),
     gpsLatitude: latitude.nullish(),
@@ -111,7 +113,6 @@ export const createBuildingSchema = z
 
 export const updateBuildingSchema = z
   .object({
-    code: codeField.optional(),
     name: z.string().trim().min(2).max(200).optional(),
     address: z.string().trim().max(500).nullish(),
     gpsLatitude: latitude.nullish(),
@@ -135,7 +136,6 @@ export const buildingListQuerySchema = z.object({
 
 export const createFloorSchema = z.object({
   buildingId: objectIdSchema,
-  code: codeField,
   name: z.string().trim().min(1, 'Давхрын нэр заавал.').max(200),
   /** Signed so a basement can be -1. */
   floorNumber: z.number().int('Давхрын дугаар бүхэл тоо байна.').min(-20).max(200).nullish(),
@@ -146,7 +146,6 @@ export const createFloorSchema = z.object({
 
 export const updateFloorSchema = z
   .object({
-    code: codeField.optional(),
     name: z.string().trim().min(1).max(200).optional(),
     floorNumber: z.number().int().min(-20).max(200).nullish(),
     areaSqm: z.number().positive().nullish(),

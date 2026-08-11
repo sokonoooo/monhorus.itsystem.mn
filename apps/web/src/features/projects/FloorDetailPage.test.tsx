@@ -376,6 +376,27 @@ describe('FloorDetailPage', () => {
     expect(within(menu).queryByRole('menuitem', { name: 'Салгах' })).not.toBeInTheDocument();
   });
 
+  /**
+   * `FLR-001` is issued by the server and `updateFloorSchema` is `.strict()`, so a code
+   * sent from this drawer would be refused rather than ignored. The pattern keeps `^` and
+   * drops `$` because `Field` appends a `*` to a required label, so a plain equality query
+   * would pass even with the field still on screen.
+   */
+  it('asks for no code on the edit drawer', async () => {
+    vi.spyOn(projectService, 'getFloor').mockResolvedValue(makeFloor());
+    vi.spyOn(projectService, 'getFloorPlan').mockResolvedValue(makeFloorPlan());
+    const user = userEvent.setup();
+
+    renderFloor([PERMISSIONS.OBJECT_VIEW, PERMISSIONS.OBJECT_MANAGE]);
+
+    await user.click(await screen.findByRole('button', { name: 'Засах' }));
+    const drawer = await screen.findByRole('dialog');
+
+    expect(within(drawer).queryByLabelText(/^Код/)).toBeNull();
+    // The name is still editable, so this is the drawer and not an empty match.
+    expect(within(drawer).getByLabelText(/^Давхрын нэр/)).toHaveValue('2 давхар');
+  });
+
   /** The floor stores a free-text description; the edit drawer has to be able to set it. */
   it('sends the description along with the other general fields on edit', async () => {
     vi.spyOn(projectService, 'getFloor').mockResolvedValue(makeFloor());
