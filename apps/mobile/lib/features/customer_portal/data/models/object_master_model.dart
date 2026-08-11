@@ -72,35 +72,65 @@ class ObjectMasterRefModel {
 }
 
 /// Mirrors the inline `objectType` reference on `ObjectListItemDto`
-/// (`{ id, code, name, icon, showOnPlan } | null`).
+/// (`{ id, code, name, icon, iconUrl, showOnPlan } | null`).
 class ObjectTypeRefModel {
   const ObjectTypeRefModel({
     required this.id,
     required this.code,
     required this.name,
     required this.icon,
+    required this.iconUrl,
     required this.showOnPlan,
   });
 
   final String id;
   final String code;
   final String name;
+
+  /// The built-in key, and the FALLBACK whenever there is no custom icon or the custom
+  /// one cannot be drawn. Always present, so there is always something to draw.
   final ObjectIcon icon;
+
+  /// The download path of the type's uploaded SVG, or null for a type using the
+  /// built-in glyph.
+  ///
+  /// A path — `/api/v1/files/<id>` — and not a picture: the route wants the bearer
+  /// header like every other stored file, so nothing can hand this to a plain image
+  /// widget. [iconFileId] is what a caller actually fetches with.
+  final String? iconUrl;
 
   /// The registry's own answer to "may an object of this type be drawn on a floor
   /// plan". False when absent: a server that has not been rebuilt yet must leave the
   /// plan as it was rather than scatter markers the admin web would not draw.
   final bool showOnPlan;
 
+  /// The stored-file id inside [iconUrl], or null when there is no usable one.
+  ///
+  /// The inline type reference carries the URL and not the id — the admin web renders
+  /// the URL directly and never needed one — so the id is read back out of the path.
+  /// Deliberately strict: anything that is not a plain 24-hex id is treated as no
+  /// custom icon at all rather than sent to the server as a request that cannot
+  /// succeed. A type whose icon this build cannot address still draws its [icon].
+  String? get iconFileId {
+    final String? url = iconUrl;
+    if (url == null || url.isEmpty) return null;
+    final String last = url.split('?').first.split('/').last;
+    return RegExp(r'^[0-9a-fA-F]{24}$').hasMatch(last) ? last : null;
+  }
+
   static ObjectTypeRefModel? fromJson(Object? raw) {
     if (raw is! Map<String, dynamic>) return null;
     final Object? id = raw['id'];
     if (id is! String) return null;
+    final Object? iconUrl = raw['iconUrl'];
     return ObjectTypeRefModel(
       id: id,
       code: raw['code'] as String? ?? '',
       name: raw['name'] as String? ?? '',
       icon: ObjectIcon.fromWire(raw['icon'] as String?),
+      // Anything that is not a non-empty string means "no custom icon", including the
+      // null the server sends for most types.
+      iconUrl: iconUrl is String && iconUrl.isNotEmpty ? iconUrl : null,
       showOnPlan: raw['showOnPlan'] as bool? ?? false,
     );
   }
@@ -419,6 +449,9 @@ class ObjectListItemModel {
   RiskLevel? get riskLevel => latestAssessment?.riskLevel;
 
   ObjectIcon get icon => objectType?.icon ?? ObjectIcon.other;
+
+  /// The stored-file id of this object's type's uploaded icon, or null to draw [icon].
+  String? get iconFileId => objectType?.iconFileId;
 
   /// "LDB-2F-02 · Дэд самбар" - the row title in the prototype.
   String get titleLine {
