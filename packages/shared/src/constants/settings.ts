@@ -34,7 +34,7 @@ export const SETTING_GROUP_LABELS: Record<SettingGroup, string> = {
 };
 
 export const SETTING_GROUP_DESCRIPTIONS: Record<SettingGroup, string> = {
-  general: 'Байгууллагын нэр, валют.',
+  general: 'Байгууллагын нэр, лого, валют.',
   sla: 'Яаралтай болон энгийн дуудлагын хугацаа, анхааруулгын босго.',
   evaluation: '0-100 оноог 5 түвшинд хуваах босго.',
   finance: 'Нэхэмжлэлийн татвар, төлөх хугацаа.',
@@ -42,6 +42,17 @@ export const SETTING_GROUP_DESCRIPTIONS: Record<SettingGroup, string> = {
 
 export const SETTING_KEYS = {
   COMPANY_NAME: 'general.company_name',
+  /**
+   * Who carried the inspection out, printed as "Үзлэг хийсэн" on a report cover.
+   *
+   * Separate from COMPANY_NAME because they are not always the same organisation: the
+   * report is issued by the operator, and the inspection may be performed by a named
+   * subsidiary or crew. Blank on purpose — an operator who has not distinguished the two
+   * gets the company name, which is what the reports printed before this key existed.
+   */
+  INSPECTION_COMPANY: 'general.inspection_company',
+  /** The letterhead, as a stored-file id. Blank means the report prints without one. */
+  COMPANY_LOGO: 'general.company_logo',
   CURRENCY: 'general.currency',
 
   SLA_URGENT_HOURS: 'sla.urgent_hours',
@@ -78,7 +89,13 @@ export interface SettingDefinition {
   label: string;
   /** Why the value matters, shown under the control. */
   hint: string;
-  type: 'string' | 'integer' | 'ratio' | 'percent';
+  /**
+   * `file` holds the id of an uploaded `StoredFile` rather than a value a person types.
+   * It is still a string as far as storage and validation are concerned — the settings
+   * table has no file column and does not need one — but the UI renders a picker and the
+   * consumer resolves the id to bytes.
+   */
+  type: 'string' | 'integer' | 'ratio' | 'percent' | 'file';
   default: SettingValue;
   min?: number;
   max?: number;
@@ -94,6 +111,22 @@ export const SETTING_DEFINITIONS: Record<SettingKey, SettingDefinition> = {
     hint: 'Тайлан, хэвлэх баримт дээр гарна.',
     type: 'string',
     default: 'Монхорус ХХК',
+  },
+  [SETTING_KEYS.INSPECTION_COMPANY]: {
+    key: SETTING_KEYS.INSPECTION_COMPANY,
+    group: 'general',
+    label: 'Үзлэг хийсэн байгууллага',
+    hint: 'Тайлангийн нүүрэн дээр "Үзлэг хийсэн" мөрөнд гарна. Хоосон бол байгууллагын нэрийг хэрэглэнэ.',
+    type: 'string',
+    default: '',
+  },
+  [SETTING_KEYS.COMPANY_LOGO]: {
+    key: SETTING_KEYS.COMPANY_LOGO,
+    group: 'general',
+    label: 'Байгууллагын лого',
+    hint: 'Тайлангийн толгой хэсэгт хэвлэгдэнэ. PNG эсвэл JPEG.',
+    type: 'file',
+    default: '',
   },
   [SETTING_KEYS.CURRENCY]: {
     key: SETTING_KEYS.CURRENCY,
