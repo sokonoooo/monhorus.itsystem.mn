@@ -1,8 +1,13 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 
 import '../../data/models/object_master_model.dart';
 import '../../domain/entities/object_master_enums.dart';
 import '../../domain/entities/risk_level.dart';
+import '../providers/customer_portal_providers.dart';
 import '../theme/customer_tokens.dart';
 import 'authenticated_image.dart';
 
@@ -53,6 +58,20 @@ const double kPlanMarkerDiameter = 26;
 /// than a symbol at plan size.
 const double kPlanMarkerGlyphSize = 15;
 
+/// The magnification past which a marker also spells out its code.
+///
+/// The admin web does the same thing for the same reason: a whole floor in view is a
+/// field of dots, and forty codes drawn over it is an unreadable mat, but a reader who
+/// has zoomed in has told you they are looking at a handful of markers rather than at
+/// the shape of the floor. Two, rather than the web's 0.9, because this plan starts at
+/// "fits the card" and cannot go below it — 0.9 here would mean "always".
+///
+/// Hiding it costs nothing a reader cannot get another way: the marker's accessible
+/// name identifies the object at every zoom, and the screen a tap opens names it in
+/// full. The label is a convenience for a reader looking at a magnified drawing, never
+/// the only route to which dot is which.
+const double kPlanCodeMinZoom = 2;
+
 /// The markers, laid over exactly the painted plan, each one a constant size on screen
 /// however far the plan is zoomed.
 ///
@@ -98,6 +117,11 @@ class FloorPlanMarkerLayer extends StatelessWidget {
         if (!width.isFinite || !height.isFinite) return const SizedBox.shrink();
 
         return Stack(
+          // The code label hangs off the side of a marker's own box, so this must not
+          // clip. The dots themselves are unaffected: each one still occupies exactly
+          // the square below, and a marker on the very edge of the plan overhangs it by
+          // the same half-dot it always did.
+          clipBehavior: Clip.none,
           children: <Widget>[
             for (final ObjectListItemModel object in objects)
               if (object.planPosition != null)
@@ -113,7 +137,11 @@ class FloorPlanMarkerLayer extends StatelessWidget {
                     //
                     // Hit tests go through the same matrix, so what can be tapped is
                     // the dot as drawn — not the box the zoom stretched underneath it.
-                    child: PlanMarker(object: object, onTap: () => onTap(object)),
+                    child: PlanMarker(
+                      object: object,
+                      showCode: zoom >= kPlanCodeMinZoom,
+                      onTap: () => onTap(object),
+                    ),
                   ),
                 ),
           ],
@@ -253,10 +281,18 @@ class FaultPin extends StatelessWidget {
 /// of which depend on colour.
 @visibleForTesting
 class PlanMarker extends StatelessWidget {
-  const PlanMarker({super.key, required this.object, required this.onTap});
+  const PlanMarker({
+    super.key,
+    required this.object,
+    required this.onTap,
+    this.showCode = false,
+  });
 
   final ObjectListItemModel object;
   final VoidCallback onTap;
+
+  /// Whether the plan is magnified enough to spell the code out beside the dot.
+  final bool showCode;
 
   @override
   Widget build(BuildContext context) {
@@ -264,11 +300,37 @@ class PlanMarker extends StatelessWidget {
     final AccentTone tone = band?.tone ?? AccentTone.neutral;
     final ObjectIcon icon = object.icon;
 
+    final Widget dot = Container(
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        // The chip triad the rest of the app uses, drawn round: a tint the plan
+        // shows through less than a solid dot would, ringed in the band colour.
+        color: tone.background,
+        border: Border.all(color: tone.foreground, width: 2),
+      ),
+      child: ObjectTypeGlyph(
+        icon: icon,
+        iconFileId: object.iconFileId,
+        size: kPlanMarkerGlyphSize,
+        // The band's foreground, not a neutral ink: at this size the glyph is a
+        // large part of the dot's visible area, and drawing it in the band colour
+        // is what keeps a critical marker reading as critical rather than as a
+        // grey symbol in a red circle.
+        color: tone.foreground,
+      ),
+    );
+
     return Semantics(
       button: true,
       // The type is named as well as drawn. A glyph has no accessible name of its own,
       // so without this the one fact the marker gained would be the one fact a screen
       // reader lost.
+      //
+      // The registry's own name for the type is already in here: this app's `titleLine`
+      // is "name · type", so a type added after this build shipped is named rather than
+      // read out as whichever built-in key it fell back to. [ObjectIcon.label] follows
+      // it as the name of the SYMBOL, which is the other thing on the dot.
       label: <String>[
         object.titleLine,
         icon.label,
@@ -278,26 +340,147 @@ class PlanMarker extends StatelessWidget {
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
         onTap: onTap,
-        child: Container(
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            // The chip triad the rest of the app uses, drawn round: a tint the plan
-            // shows through less than a solid dot would, ringed in the band colour.
-            color: tone.background,
-            border: Border.all(color: tone.foreground, width: 2),
-          ),
-          child: Icon(
-            icon.glyph,
-            size: kPlanMarkerGlyphSize,
-            // The band's foreground, not a neutral ink: at this size the glyph is a
-            // large part of the dot's visible area, and drawing it in the band colour
-            // is what keeps a critical marker reading as critical rather than as a
-            // grey symbol in a red circle.
+        child: Stack(
+          // Nothing here may move the dot: the box this sits in is centred on the
+          // object's coordinate, so the dot fills it and the label is hung outside it
+          // rather than sharing the width with it. A row would push the dot off its
+          // own point by half the width of the code.
+          clipBehavior: Clip.none,
+          children: <Widget>[
+            Positioned.fill(child: dot),
+            if (showCode && object.code.isNotEmpty)
+              Positioned(
+                left: kPlanMarkerDiameter + 3,
+                top: 0,
+                bottom: 0,
+                // Unconstrained across, because the label is wider than the dot's box
+                // and a Stack would otherwise hand it the dot's width and wrap the
+                // code one character per line.
+                child: UnconstrainedBox(
+                  constrainedAxis: Axis.vertical,
+                  alignment: Alignment.centerLeft,
+                  child: _PlanCodeLabel(code: object.code, tone: tone),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// The object's code, drawn beside a marker once the plan is magnified.
+///
+/// Carries its own background because it is drawn over a technical drawing rather than
+/// over a page: dark text on the grey of a plan is legible until it crosses a wall.
+class _PlanCodeLabel extends StatelessWidget {
+  const _PlanCodeLabel({required this.code, required this.tone});
+
+  final String code;
+  final AccentTone tone;
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+        decoration: BoxDecoration(
+          color: tone.background,
+          borderRadius: BorderRadius.circular(4),
+          border: Border.all(color: tone.foreground, width: 1),
+        ),
+        child: Text(
+          code,
+          maxLines: 1,
+          softWrap: false,
+          overflow: TextOverflow.clip,
+          // `monoLabel` is this system's small identifier face — condensed, so a long
+          // code stays narrow enough not to cover the drawing it is annotating. Its
+          // muted ink is overridden with the band colour, because the pill is filled
+          // with the band's own tint and a muted grey on it reads as disabled.
+          style: CustomerTokens.monoLabel.copyWith(
             color: tone.foreground,
+            fontWeight: FontWeight.w700,
+            height: 1.1,
           ),
         ),
       ),
     );
+  }
+}
+
+/// An object type's icon: the registry's uploaded SVG where there is one, the built-in
+/// glyph otherwise.
+///
+/// THE POINT IS THAT A TYPE ADDED NEXT MONTH DRAWS CORRECTLY WITHOUT AN APP RELEASE.
+/// [ObjectIcon] is a fixed catalogue of fourteen keys compiled into this build, and an
+/// administrator can create types faster than the stores can ship; every such type used
+/// to land on the same generic silhouette as every other one, which is exactly the
+/// "markers are hard to tell apart" complaint. The uploaded file is the type's own
+/// artwork and needs nothing from this build but the ability to draw it.
+///
+/// The SVG is TINTED rather than painted: [ColorFilter] in `srcIn` keeps the artwork's
+/// shape and replaces every colour in it with [color], which is the same band colour the
+/// built-in glyph is drawn in. Uploaded icons therefore obey the risk band exactly as
+/// the built-ins do, instead of arriving in whatever palette they were drawn in and
+/// disappearing against a red or near-black dot. It is the same decision the admin web
+/// makes by drawing the file as a CSS mask, and it costs the same thing: a multi-coloured
+/// upload is flattened to one colour, which is nothing at all for the monochrome line
+/// art this catalogue is drawn in.
+///
+/// EVERY FAILURE FALLS BACK TO THE BUILT-IN GLYPH: no id in the url, bytes still in
+/// flight, the request refused, or a file that is not SVG this renderer can parse. A
+/// marker always draws something, because a plan with holes in it is worse than a plan
+/// with a generic dot on it.
+@visibleForTesting
+class ObjectTypeGlyph extends ConsumerWidget {
+  const ObjectTypeGlyph({
+    super.key,
+    required this.icon,
+    required this.iconFileId,
+    required this.size,
+    required this.color,
+  });
+
+  /// The built-in key, drawn whenever the custom icon is absent or unusable.
+  final ObjectIcon icon;
+
+  /// The stored file holding the type's uploaded SVG, or null for a built-in type.
+  final String? iconFileId;
+
+  final double size;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final Widget builtIn = Icon(icon.glyph, size: size, color: color);
+
+    final String? fileId = iconFileId;
+    if (fileId == null) return builtIn;
+
+    // The same provider the plan image and every attachment are fetched through, which
+    // is what makes this cached rather than merely fetched: it is keyed by file id and
+    // is not auto-disposed, so a floor with forty markers of one type costs ONE request,
+    // and revisiting the floor costs none. Sharing it also means icons inherit the
+    // bearer header and the error handling that provider already has.
+    return ref.watch(fileBytesProvider(fileId)).when(
+          data: (Uint8List bytes) => SvgPicture.memory(
+            bytes,
+            width: size,
+            height: size,
+            fit: BoxFit.contain,
+            colorFilter: ColorFilter.mode(color, BlendMode.srcIn),
+            // A file that is not parseable SVG must cost this marker its artwork and
+            // nothing else. Without this the exception would take down the whole plan.
+            errorBuilder: (BuildContext _, Object __, StackTrace? ___) => builtIn,
+            // Shown while the picture is being parsed. The built-in glyph rather than a
+            // blank: a marker that flickers empty reads as a plan still loading.
+            placeholderBuilder: (BuildContext _) => builtIn,
+          ),
+          // In flight, or refused. Either way the dot is drawn and the plan is readable;
+          // an icon is a refinement of a marker, never the marker itself.
+          loading: () => builtIn,
+          error: (Object _, StackTrace __) => builtIn,
+        );
   }
 }

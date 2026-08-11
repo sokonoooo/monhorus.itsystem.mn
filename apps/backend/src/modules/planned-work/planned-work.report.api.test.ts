@@ -1205,3 +1205,72 @@ describe('archived work', () => {
     expect(detail.body.data.availableActions).toEqual([]);
   });
 });
+
+/**
+ * The PDF export, exercised through the real route rather than through the renderer.
+ *
+ * The unit tests around `report-pdf` prove a document definition turns into bytes; this
+ * proves the whole path — permission gate, the same `buildReportPreview` the screen uses,
+ * the renderer, and the download headers — answers with a file a browser will save.
+ */
+describe('report PDF export', () => {
+  it('serves the consolidated report as a downloadable PDF', async () => {
+    const workId = await completedWork();
+    await fillReport(workId);
+
+    const response = await request(app)
+      .get(`${API}/planned-work/${workId}/report/pdf`)
+      .set('Authorization', `Bearer ${authorToken}`)
+      .buffer(true)
+      .parse((res, callback) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        res.on('end', () => callback(null, Buffer.concat(chunks)));
+      });
+
+    expect(response.status).toBe(200);
+    expect(response.headers['content-type']).toBe('application/pdf');
+    // An attachment, so the browser saves rather than renders it in a tab.
+    expect(response.headers['content-disposition']).toMatch(/^attachment; filename=".*\.pdf"$/);
+    // Actual PDF bytes, not a JSON envelope with a 200 on it.
+    const body = response.body as Buffer;
+    expect(body.subarray(0, 5).toString('latin1')).toBe('%PDF-');
+    expect(body.byteLength).toBeGreaterThan(5_000);
+  });
+
+  it('serves the inspection report as a downloadable PDF', async () => {
+    const workId = await completedWork();
+
+    const generated = await request(app)
+      .post(`${API}/planned-work/${workId}/inspection-report`)
+      .set('Authorization', `Bearer ${authorToken}`);
+    expect([200, 201]).toContain(generated.status);
+
+    const response = await request(app)
+      .get(`${API}/planned-work/${workId}/inspection-report/pdf`)
+      .set('Authorization', `Bearer ${authorToken}`)
+      .buffer(true)
+      .parse((res, callback) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        res.on('end', () => callback(null, Buffer.concat(chunks)));
+      });
+
+    expect(response.status).toBe(200);
+    expect(response.headers['content-type']).toBe('application/pdf');
+    expect((response.body as Buffer).subarray(0, 5).toString('latin1')).toBe('%PDF-');
+  });
+
+  /** A read key, because the file is a copy of a page the caller may already read. */
+  it('refuses a caller without planned_work.view', async () => {
+    const workId = await completedWork();
+    const outsider = await createUserWithPermissions('pdf-outsider@test.mn', []);
+    const token = await login(outsider.email, outsider.password);
+
+    const response = await request(app)
+      .get(`${API}/planned-work/${workId}/report/pdf`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(response.status).toBe(403);
+  });
+});

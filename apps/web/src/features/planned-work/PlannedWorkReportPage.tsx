@@ -58,6 +58,31 @@ export function PlannedWorkReportPage(): ReactElement {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
+
+  /**
+   * Renders the PDF and hands it to the browser.
+   *
+   * Its own busy flag rather than `busy`: that one gates the write buttons, and a
+   * download in flight is no reason a report cannot also be saved. Failures land in the
+   * page's existing error banner, because a download that silently does nothing is the
+   * worst outcome here — the user is left staring at a button that appears to work.
+   */
+  async function exportPdf(): Promise<void> {
+    if (preview === null) return;
+    setExporting(true);
+    setActionError(null);
+    try {
+      await plannedWorkService.downloadReportPdf(plannedWorkId!, preview.workNumber);
+    } catch (caught) {
+      setActionError(
+        caught instanceof ApiError ? caught.message : 'PDF үүсгэхэд алдаа гарлаа.',
+      );
+    } finally {
+      setExporting(false);
+    }
+  }
+
   const [returnOpen, setReturnOpen] = useState(false);
   const [approveOpen, setApproveOpen] = useState(false);
 
@@ -248,6 +273,19 @@ export function PlannedWorkReportPage(): ReactElement {
         ]}
         actions={
           <>
+            {/*
+              Always offered, and deliberately not gated on the review state: a PDF is a
+              copy of what is already on the screen, so anyone who may read the report may
+              take it away. Gating it on APPROVED would stop a performer printing the draft
+              they are about to walk into a meeting with.
+            */}
+            <Button
+              variant="secondary"
+              onClick={() => void exportPdf()}
+              disabled={exporting}
+            >
+              {exporting ? 'PDF бэлдэж байна…' : 'PDF татах'}
+            </Button>
             {editable && (
               <Button
                 variant="secondary"
