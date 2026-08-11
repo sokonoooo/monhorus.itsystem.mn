@@ -38,6 +38,13 @@ import { FloorObjectPicker } from './FloorObjectPicker';
 import { FloorPlanPanel } from './FloorPlanPanel';
 import { ActiveBadge } from './ProjectListPage';
 
+/**
+ * Inline edit for the floor's general fields.
+ *
+ * The code is absent by design: `FLR-001` is issued by the server, and `updateFloorSchema`
+ * is `.strict()`, so sending one from here would be refused rather than ignored. The code
+ * stays on the page header and the breadcrumb, where it is read rather than typed.
+ */
 function FloorEditDrawer({
   floor,
   open,
@@ -50,7 +57,6 @@ function FloorEditDrawer({
   onSaved: () => void;
 }): ReactElement {
   const { notify } = useToast();
-  const [code, setCode] = useState(floor.code);
   const [name, setName] = useState(floor.name);
   const [floorNumber, setFloorNumber] = useState(floor.floorNumber?.toString() ?? '');
   const [areaSqm, setAreaSqm] = useState(floor.areaSqm?.toString() ?? '');
@@ -63,7 +69,6 @@ function FloorEditDrawer({
 
   useEffect(() => {
     if (!open) return;
-    setCode(floor.code);
     setName(floor.name);
     setFloorNumber(floor.floorNumber?.toString() ?? '');
     setAreaSqm(floor.areaSqm?.toString() ?? '');
@@ -79,7 +84,6 @@ function FloorEditDrawer({
     setFieldErrors({});
 
     const parsed = updateFloorSchema.safeParse({
-      code: code.trim().toUpperCase(),
       name: name.trim(),
       floorNumber: floorNumber.trim() === '' ? null : Number(floorNumber),
       areaSqm: areaSqm.trim() === '' ? null : Number(areaSqm),
@@ -135,9 +139,6 @@ function FloorEditDrawer({
       <div className="space-y-4">
         {formError && <Alert variant="error">{formError}</Alert>}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Field label="Код" required error={fieldErrors.code}>
-            <TextInput value={code} onChange={(value) => setCode(value.toUpperCase())} disabled={submitting} />
-          </Field>
           <Field label="Давхрын нэр" required error={fieldErrors.name}>
             <TextInput value={name} onChange={setName} disabled={submitting} />
           </Field>

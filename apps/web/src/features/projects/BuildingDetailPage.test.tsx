@@ -61,6 +61,21 @@ describe('BuildingDetailPage', () => {
   });
 
   describe('building edit', () => {
+    /**
+     * A code that can be edited is not an identifier, and `updateBuildingSchema` is
+     * `.strict()`, so one sent from here would be refused rather than ignored. The pattern
+     * keeps `^` and drops `$` because `Field` appends a `*` to a required label.
+     */
+    it('asks for no code', async () => {
+      const user = userEvent.setup();
+
+      renderBuilding();
+      await user.click(await screen.findByRole('button', { name: 'Засах' }));
+      const drawer = await screen.findByRole('dialog');
+
+      expect(within(drawer).queryByLabelText(/^Код/)).toBeNull();
+    });
+
     it('opens with the stored position on the map and saves a new one', async () => {
       const update = vi.spyOn(projectService, 'updateBuilding').mockResolvedValue(makeBuilding());
       const user = userEvent.setup();
@@ -113,6 +128,37 @@ describe('BuildingDetailPage', () => {
   });
 
   describe('floor create', () => {
+    /** `FLR-001` is numbered by the server; there is nothing here to type. */
+    it('asks for no code', async () => {
+      const user = userEvent.setup();
+
+      renderBuilding();
+      await user.click(await screen.findByRole('button', { name: 'Давхар нэмэх' }));
+      const drawer = await screen.findByRole('dialog');
+
+      expect(within(drawer).queryByLabelText(/^Код/)).toBeNull();
+    });
+
+    /** Absent, not empty: the create schema strips what it does not declare. */
+    it('sends a create payload with no code key at all', async () => {
+      const create = vi.spyOn(projectService, 'createFloor').mockResolvedValue(makeFloor());
+      const user = userEvent.setup();
+
+      renderBuilding();
+      await user.click(await screen.findByRole('button', { name: 'Давхар нэмэх' }));
+      const drawer = await screen.findByRole('dialog');
+
+      await user.type(within(drawer).getByLabelText(/^Давхрын нэр/), 'Кодгүй давхар');
+      await user.click(within(drawer).getByRole('button', { name: 'Хадгалах' }));
+
+      await waitFor(() => {
+        expect(create).toHaveBeenCalledWith(
+          expect.not.objectContaining({ code: expect.anything() }),
+        );
+      });
+      expect('code' in create.mock.calls[0]![0]).toBe(false);
+    });
+
     it('sends every general field the floor create form asks for', async () => {
       const create = vi.spyOn(projectService, 'createFloor').mockResolvedValue(makeFloor());
       const user = userEvent.setup();
@@ -121,7 +167,6 @@ describe('BuildingDetailPage', () => {
       await user.click(await screen.findByRole('button', { name: 'Давхар нэмэх' }));
       const drawer = await screen.findByRole('dialog');
 
-      await user.type(within(drawer).getByLabelText(/^Код/), 'FL-3');
       await user.type(within(drawer).getByLabelText(/^Давхрын нэр/), '3 давхар');
       await user.type(within(drawer).getByLabelText(/^Ашиглалтын талбай/), '980');
       await user.type(within(drawer).getByLabelText('Зориулалт'), 'Оффис');
@@ -132,7 +177,6 @@ describe('BuildingDetailPage', () => {
       await waitFor(() => {
         expect(create).toHaveBeenCalledWith({
           buildingId: BUILDING_ID,
-          code: 'FL-3',
           name: '3 давхар',
           areaSqm: 980,
           purpose: 'Оффис',
@@ -156,7 +200,6 @@ describe('BuildingDetailPage', () => {
 
       expect(within(drawer).queryByLabelText(/^Давхрын дугаар/)).not.toBeInTheDocument();
 
-      await user.type(within(drawer).getByLabelText(/^Код/), 'FL-4');
       await user.type(within(drawer).getByLabelText(/^Давхрын нэр/), '4 давхар');
       await user.click(within(drawer).getByRole('button', { name: 'Хадгалах' }));
 

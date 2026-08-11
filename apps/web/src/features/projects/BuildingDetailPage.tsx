@@ -28,7 +28,14 @@ import { Field, TextInput } from '../employees/FormControls';
 import { GpsErrors, type GpsPosition } from './ProjectDetailPage';
 import { ActiveBadge } from './ProjectListPage';
 
-/** Inline edit for the building itself, and inline create for its floors. */
+/**
+ * Inline edit for the building itself, and inline create for its floors.
+ *
+ * Neither drawer carries a code field. `BLD-001` and `FLR-001` are issued by the server,
+ * and `updateBuildingSchema` is `.strict()`, so a code sent from here would be refused
+ * rather than ignored — a code that can be edited is not an identifier, and renaming a
+ * building must leave the label on somebody's drawing alone.
+ */
 function BuildingEditDrawer({
   building,
   open,
@@ -41,7 +48,6 @@ function BuildingEditDrawer({
   onSaved: () => void;
 }): ReactElement {
   const { notify } = useToast();
-  const [code, setCode] = useState(building.code);
   const [name, setName] = useState(building.name);
   const [address, setAddress] = useState(building.address ?? '');
   const [position, setPosition] = useState<GpsPosition>({
@@ -56,7 +62,6 @@ function BuildingEditDrawer({
 
   useEffect(() => {
     if (!open) return;
-    setCode(building.code);
     setName(building.name);
     setAddress(building.address ?? '');
     setPosition({ latitude: building.gpsLatitude, longitude: building.gpsLongitude });
@@ -71,7 +76,6 @@ function BuildingEditDrawer({
     setFieldErrors({});
 
     const parsed = updateBuildingSchema.safeParse({
-      code: code.trim().toUpperCase(),
       name: name.trim(),
       address: address.trim() || null,
       gpsLatitude: position.latitude,
@@ -127,9 +131,6 @@ function BuildingEditDrawer({
       <div className="space-y-4">
         {formError && <Alert variant="error">{formError}</Alert>}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Field label="Код" required error={fieldErrors.code}>
-            <TextInput value={code} onChange={(value) => setCode(value.toUpperCase())} disabled={submitting} />
-          </Field>
           <Field label="Нэр" required error={fieldErrors.name}>
             <TextInput value={name} onChange={setName} disabled={submitting} />
           </Field>
@@ -192,7 +193,6 @@ function FloorDrawer({
   onSaved: () => void;
 }): ReactElement {
   const { notify } = useToast();
-  const [code, setCode] = useState('');
   const [name, setName] = useState('');
   const [areaSqm, setAreaSqm] = useState('');
   const [purpose, setPurpose] = useState('');
@@ -203,7 +203,6 @@ function FloorDrawer({
 
   useEffect(() => {
     if (!open) return;
-    setCode('');
     setName('');
     setAreaSqm('');
     setPurpose('');
@@ -221,7 +220,6 @@ function FloorDrawer({
     // stays editable from the floor's own edit drawer.
     const parsed = createFloorSchema.safeParse({
       buildingId,
-      code: code.trim().toUpperCase(),
       name: name.trim(),
       areaSqm: areaSqm.trim() === '' ? null : Number(areaSqm),
       purpose: purpose.trim() || null,
@@ -278,9 +276,6 @@ function FloorDrawer({
           План зургийг давхар үүсгэсний дараа дэлгэрэнгүй хуудсаас нь хавсаргана.
         </Alert>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Field label="Код" required error={fieldErrors.code}>
-            <TextInput value={code} onChange={(value) => setCode(value.toUpperCase())} disabled={submitting} />
-          </Field>
           <Field label="Давхрын нэр" required error={fieldErrors.name}>
             <TextInput value={name} onChange={setName} disabled={submitting} />
           </Field>
