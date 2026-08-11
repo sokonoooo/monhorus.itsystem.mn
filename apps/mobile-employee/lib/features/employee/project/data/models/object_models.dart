@@ -449,6 +449,7 @@ class ObjectDetailModel extends ObjectListItemModel {
     required this.equipment,
     required this.childCircuits,
     required this.childEquipment,
+    required this.mountedEquipment,
     required this.loadPercent,
     required this.reserveKw,
     required this.canAssess,
@@ -471,6 +472,15 @@ class ObjectDetailModel extends ObjectListItemModel {
 
   /// Populated only for a CIRCUIT.
   final List<ObjectListItemModel> childEquipment;
+
+  /// Devices bolted inside this panel, populated only for a PANEL.
+  ///
+  /// A DIFFERENT RELATIONSHIP FROM [childCircuits], and both are real: a circuit is fed
+  /// by the panel, a device is housed in it. A device that names both appears in each
+  /// list, correctly — the server does not deduplicate them and neither does the screen,
+  /// because "what does this panel feed" and "what is inside this panel" are two
+  /// questions a technician opening an enclosure asks separately.
+  final List<ObjectListItemModel> mountedEquipment;
 
   /// Load as a ratio of capacity. Over 100 percent is reported, never clamped.
   final LoadValueModel loadPercent;
@@ -508,6 +518,8 @@ class ObjectDetailModel extends ObjectListItemModel {
       equipment: EquipmentAttributesModel.fromJson(json['equipment']),
       childCircuits: parseList(json['childCircuits'], ObjectListItemModel.fromJson),
       childEquipment: parseList(json['childEquipment'], ObjectListItemModel.fromJson),
+      mountedEquipment:
+          parseList(json['mountedEquipment'], ObjectListItemModel.fromJson),
       loadPercent: LoadValueModel.fromJson(json['loadPercent']),
       reserveKw: LoadValueModel.fromJson(json['reserveKw']),
       canAssess: json['canAssess'] as bool? ?? false,

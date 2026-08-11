@@ -129,11 +129,6 @@ class WorkRepositoryImpl implements WorkRepository {
   }
 
   @override
-  Future<ApiResult<WorkReportModel>> approveWorkReport(String requestId) {
-    return _guard(() => _remote.approveWorkReport(requestId));
-  }
-
-  @override
   Future<ApiResult<WorkReportPhotoModel>> uploadWorkReportPhoto(CapturedPhoto photo) {
     return _guard(() => _remote.uploadWorkReportPhoto(photo));
   }
