@@ -170,21 +170,43 @@ interface ObjectTypeGlyphProps {
 /**
  * A type's icon: the uploaded one where there is one, the built-in glyph otherwise.
  *
- * The custom icon is drawn with `<img>`, and that is a security decision rather than a
- * convenience. An SVG is a document — inlined into this page, whether through React's
- * raw-HTML escape hatch or as an `<svg>` rebuilt from fetched markup, its script and its
- * event handlers would run with the application's own origin and its session, and the
- * absence of that escape hatch in this file is pinned by a test. Inside an `<img>` it
- * cannot run at all: the browser treats it as a picture, scripts never execute, and
- * external references are not followed.
+ * The custom icon is never inlined into this document, and that is a security decision
+ * rather than a convenience. An SVG is a document — inlined into this page, whether
+ * through React's raw-HTML escape hatch or as an `<svg>` rebuilt from fetched markup, its
+ * script and its event handlers would run with the application's own origin and its
+ * session, and the absence of that escape hatch in this file is pinned by a test. Held at
+ * arm's length as a picture it cannot run at all: the browser never treats it as a
+ * document, scripts never execute, and external references are not followed.
  *
  * The server sanitises what it stores and serves it under a locked-down CSP;
  * this is the second layer, and it is what has to hold if the first one is ever wrong.
  *
- * A broken url falls back to the glyph rather than leaving the browser's broken-image box
- * in the middle of a plan marker. The failure is remembered per url, so a different icon
- * arriving later is given its own chance, and setting the same url twice is a no-op React
- * bails out of — a marker on the canvas re-renders on every pan.
+ * IT IS DRAWN AS A MASK RATHER THAN AS A PICTURE, and that is the whole reason this
+ * function is more than an `<img>`. A built-in glyph is an inline `<svg>` stroked in
+ * `currentColor`, so it inherits the marker's own colour and a critical device gets a red
+ * icon in a red pill (see the note at the top of this file). An `<img>` cannot do that:
+ * the SVG inside it renders in its own isolated context, out of reach of this page's
+ * cascade, so a `currentColor` in an uploaded file resolves to plain black. An
+ * administrator drawing an icon in the same style as the built-ins therefore got a black
+ * silhouette on every band — unreadable on the red of CRITICAL and invisible on the near
+ * black of OUT_OF_SERVICE — while the same file previewed perfectly on the neutral card
+ * of the type registry, which is why the file always looked like the innocent party.
+ *
+ * As a mask the uploaded artwork supplies only its SHAPE, and the colour underneath it is
+ * ours: `currentColor` again, the same inherited value the built-in glyph is stroked with.
+ * A custom icon and a built-in one are then the same kind of thing on a marker, and the
+ * risk band survives whatever palette the file happened to be drawn in. The trade is that
+ * a multi-coloured upload is flattened to one colour — acceptable, and close to free, for
+ * the monochrome line art this catalogue is drawn in.
+ *
+ * A broken url falls back to the glyph rather than leaving a hole in the middle of a plan
+ * marker. A mask has no failure event of its own — a mask that does not load simply hides
+ * everything, which would read as a marker with no icon rather than as an error — so the
+ * same url is handed to a hidden `<img>` whose `onError` is the probe. It costs nothing:
+ * what arrives here is already an object url for bytes held in memory, so the second
+ * reference is not a second download. The failure is remembered per url, so a different
+ * icon arriving later is given its own chance, and setting the same url twice is a no-op
+ * React bails out of — a marker on the canvas re-renders on every pan.
  */
 export function ObjectTypeGlyph({
   icon,
@@ -197,17 +219,31 @@ export function ObjectTypeGlyph({
     return <ObjectTypeIcon icon={icon} className={className} />;
   }
 
+  const mask = `url("${iconUrl}")`;
+
   return (
-    <img
-      src={iconUrl}
-      alt=""
+    <span
       aria-hidden="true"
-      draggable={false}
-      // `object-contain` because an uploaded icon is whatever shape it was drawn at, and
-      // a marker is a fixed square: the icon fits inside it rather than stretching to it.
-      className={`${className} object-contain`}
-      onError={() => setBrokenUrl(iconUrl)}
-    />
+      className={`${className} inline-block shrink-0`}
+      style={{
+        // The colour the shape is filled with, and the point of the whole approach.
+        backgroundColor: 'currentColor',
+        // `contain`, because an uploaded icon is whatever shape it was drawn at and a
+        // marker is a fixed square: the artwork fits inside it rather than stretching.
+        maskImage: mask,
+        maskSize: 'contain',
+        maskRepeat: 'no-repeat',
+        maskPosition: 'center',
+        // Safari still wants the prefixed properties, and an icon that vanished on
+        // iPhones would be a worse bug than the one this replaces.
+        WebkitMaskImage: mask,
+        WebkitMaskSize: 'contain',
+        WebkitMaskRepeat: 'no-repeat',
+        WebkitMaskPosition: 'center',
+      }}
+    >
+      <img src={iconUrl} alt="" hidden draggable={false} onError={() => setBrokenUrl(iconUrl)} />
+    </span>
   );
 }
 
