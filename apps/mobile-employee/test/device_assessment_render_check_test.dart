@@ -12,6 +12,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:monhorus_employee/features/auth/domain/entities/app_user.dart';
 import 'package:monhorus_employee/features/auth/presentation/providers/auth_provider.dart';
 import 'package:monhorus_employee/features/employee/project/data/models/object_models.dart';
+import 'package:monhorus_employee/features/employee/project/data/models/report_record_models.dart';
 import 'package:monhorus_employee/features/employee/project/presentation/providers/project_providers.dart';
 import 'package:monhorus_employee/features/employee/project/presentation/screens/device_detail_screen.dart';
 import 'package:monhorus_employee/features/employee/project/presentation/widgets/report_sheet.dart';
@@ -93,8 +94,12 @@ Widget _screen(AppUser user, {bool canAssess = true}) {
       objectDetailProvider('o1').overrideWith(
         (Ref ref) async => ObjectDetailModel.fromJson(_device(canAssess: canAssess)),
       ),
-      objectHistoryProvider('o1')
-          .overrideWith((Ref ref) async => ObjectHistoryModel.empty),
+      // The reports list, not the event timeline it replaced. Empty here: this file is
+      // about the assess button and the sheet behind it. The fixture device carries no
+      // `planPosition`, so the location section stops at its own notice and never
+      // reaches for a plan — which is why this scope needs no plan overrides.
+      objectReportsProvider('o1')
+          .overrideWith((Ref ref) async => const <ReportRecordModel>[]),
     ],
     child: const MaterialApp(
       home: DeviceDetailScreen(

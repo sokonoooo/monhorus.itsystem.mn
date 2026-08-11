@@ -10,6 +10,7 @@ import '../../domain/repositories/project_repository.dart';
 import '../datasources/project_remote_data_source.dart';
 import '../models/inspection_models.dart';
 import '../models/object_models.dart';
+import '../models/report_record_models.dart';
 import '../models/project_models.dart';
 
 class ProjectRepositoryImpl implements ProjectRepository {
@@ -98,6 +99,16 @@ class ProjectRepositoryImpl implements ProjectRepository {
   @override
   Future<ApiResult<ObjectHistoryModel>> getObjectHistory(String objectId) {
     return _guard(() => _remote.getObjectHistory(objectId));
+  }
+
+  @override
+  Future<ApiResult<List<ReportRecordModel>>> listObjectReports(String objectId) {
+    return _guard(() => _remote.listObjectReports(objectId));
+  }
+
+  @override
+  Future<ApiResult<ReportRecordDetailModel>> getReport(String reportId) {
+    return _guard(() => _remote.getReport(reportId));
   }
 
   @override

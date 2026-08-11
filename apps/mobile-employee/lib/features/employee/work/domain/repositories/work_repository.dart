@@ -88,13 +88,13 @@ abstract class WorkRepository {
     SaveWorkReportRequest request,
   );
 
-  Future<ApiResult<WorkReportModel>> submitWorkReport(String requestId);
-
-  /// Approves a submitted conclusion, on `service_request.approve_report`.
+  /// Hands the conclusion in for review. THE LAST STEP THIS APP TAKES ON ONE.
   ///
-  /// There is no `returnWorkReport`, deliberately: returning stays office-only on
-  /// `service_request.change_status`.
-  Future<ApiResult<WorkReportModel>> approveWorkReport(String requestId);
+  /// There is no `approveWorkReport` beside it and no `returnWorkReport` either. Both are
+  /// the office's acts, performed on the web admin: approving is somebody other than the
+  /// author accepting the work, and returning is a judgement passed on it. A field client
+  /// for either would be this app settling its own conclusion.
+  Future<ApiResult<WorkReportModel>> submitWorkReport(String requestId);
 
   Future<ApiResult<WorkReportPhotoModel>> uploadWorkReportPhoto(CapturedPhoto photo);
 
