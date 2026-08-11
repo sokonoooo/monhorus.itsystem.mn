@@ -28,6 +28,14 @@ export const STORED_FILE_OWNER_TYPES = [
    * through to the refusal at the bottom of that switch.
    */
   'OBJECT_TYPE',
+  /**
+   * The organisation's letterhead, chosen in Тохиргоо and printed on every report.
+   *
+   * Global for the same reason `OBJECT_TYPE` is: it belongs to the operator running this
+   * installation rather than to any one customer, so there is no tenant to scope it to.
+   * The setting holds this file's id as its value; nothing else references it.
+   */
+  'SETTING',
 ] as const;
 export type StoredFileOwnerType = (typeof STORED_FILE_OWNER_TYPES)[number];
 

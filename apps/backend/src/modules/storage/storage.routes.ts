@@ -1,6 +1,11 @@
 import fs from 'node:fs';
 
-import { PERMISSIONS, employeeDocumentMetaSchema, type PermissionKey } from '@monhorus/shared';
+import {
+  MAX_COMPANY_LOGO_BYTES,
+  PERMISSIONS,
+  employeeDocumentMetaSchema,
+  type PermissionKey,
+} from '@monhorus/shared';
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import { Types } from 'mongoose';
 import { z } from 'zod';
@@ -27,6 +32,7 @@ import { ObjectNode } from '../objects/object.models';
 import { ServiceRequest } from '../service-request/service-request.model';
 import { WorkReport } from '../service-request/work-report.model';
 import { StoredFile, type IStoredFile, type StoredFileOwnerType } from './stored-file.model';
+import { readLogoDimensions } from '../report-pdf/report-images';
 import {
   acceptSvgIcon,
   deleteStoredFile,
@@ -72,6 +78,12 @@ const DOWNLOAD_PERMISSIONS_BY_OWNER: Record<StoredFileOwnerType, readonly Permis
    * shape of the floor-plan bug the portal keys above were added to fix.
    */
   OBJECT_TYPE: [PERMISSIONS.OBJECT_MASTER_VIEW, PERMISSIONS.PORTAL_OBJECT_VIEW],
+  /**
+   * The letterhead. Read-keyed on the settings screen that chooses it, because that is
+   * the only place a client ever fetches it: the reports embed the bytes server-side and
+   * never hand this url to a browser.
+   */
+  SETTING: [PERMISSIONS.SETTINGS_VIEW],
 };
 
 /**
@@ -214,6 +226,13 @@ async function assertFileInCustomerScope(
       // route is reached only with a file id that some object list handed out.
       //
       // The moment an icon becomes per-customer, this case must become a real check.
+      return;
+    }
+    case 'SETTING': {
+      // Also deliberate. The letterhead belongs to the operator running this installation,
+      // not to a customer, so there is no tenant to resolve it back to. The permission
+      // check above has already established the caller may read Тохиргоо at all, which is
+      // the only screen that asks for this file.
       return;
     }
     default:
@@ -589,6 +608,87 @@ fileRouter.post(
           uploadedAt: storedFile.createdAt.toISOString(),
         },
         'Айкон хуулагдлаа.',
+      );
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+/**
+ * The organisation's letterhead, uploaded from Тохиргоо.
+ *
+ * Gated on `settings.manage`, matching the PATCH that stores the returned id: whoever may
+ * change a setting may choose the picture one points at, and nobody else. `settings.view`
+ * is not enough — that is the permission to READ the configuration.
+ *
+ * RASTER ONLY, and that is a rendering constraint rather than a preference. The reports
+ * embed this into a PDF; pdfmake draws PNG and JPEG and nothing else, so an SVG accepted
+ * here would be a logo that uploads cleanly and then silently fails to appear on every
+ * document. The decoder is asked what the bytes actually are rather than trusting the
+ * declared content type, for the same reason the icon route above parses its SVG.
+ *
+ * Parked on the uploader, and never claimed. A setting is a key and a string, not an
+ * entity with an id, so there is nothing for this file to be re-owned onto; the setting's
+ * value is what makes one of these rows the live logo.
+ */
+fileRouter.post(
+  '/settings-logo',
+  requirePermission(PERMISSIONS.SETTINGS_MANAGE),
+  upload.single('file'),
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const auth = requireAuth(req);
+      const uploaded = req.file;
+      if (!uploaded) {
+        throw AppError.badRequest(ERROR_CODES.VALIDATION_ERROR, 'Файл заавал.', [
+          { field: 'file', message: 'Зураг сонгоно уу.' },
+        ]);
+      }
+
+      // The shared cap, enforced here as well as in the form. A client-side check is a
+      // courtesy that saves a round trip; this is the one that decides.
+      if (uploaded.size > MAX_COMPANY_LOGO_BYTES) {
+        deleteStoredFile(uploaded.filename);
+        throw AppError.badRequest(ERROR_CODES.VALIDATION_ERROR, 'Зураг хэт том байна.', [
+          {
+            field: 'file',
+            message: `Зураг ${Math.round(MAX_COMPANY_LOGO_BYTES / (1024 * 1024))}MB-аас бага байна.`,
+          },
+        ]);
+      }
+
+      const decoded = await readLogoDimensions(resolveStoredFilePath(uploaded.filename));
+      if (decoded === null) {
+        deleteStoredFile(uploaded.filename);
+        throw AppError.badRequest(ERROR_CODES.VALIDATION_ERROR, 'Зураг уншиж чадсангүй.', [
+          { field: 'file', message: 'PNG эсвэл JPEG зураг сонгоно уу.' },
+        ]);
+      }
+
+      const storedFile = await StoredFile.create({
+        storageKey: uploaded.filename,
+        originalName: uploaded.originalname.slice(0, 120),
+        mimeType: decoded.mimeType,
+        sizeBytes: uploaded.size,
+        ownerType: 'SETTING',
+        ownerId: new Types.ObjectId(auth.userId),
+        uploadedBy: new Types.ObjectId(auth.userId),
+        uploadedByName: auth.fullName,
+      });
+
+      created(
+        res,
+        {
+          id: String(storedFile._id),
+          name: storedFile.originalName,
+          downloadUrl: `/api/v1/files/${String(storedFile._id)}`,
+          mimeType: storedFile.mimeType,
+          sizeBytes: storedFile.sizeBytes,
+          uploadedByName: storedFile.uploadedByName,
+          uploadedAt: storedFile.createdAt.toISOString(),
+        },
+        'Лого хуулагдлаа.',
       );
     } catch (error) {
       next(error);

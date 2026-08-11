@@ -18,12 +18,14 @@ import {
   coverField,
   coverTitle,
   dataTable,
+  detailBlock,
   headerBlock,
   organisationTable,
   prose,
   sectionHeading,
   signatureBlock,
   signatureLeader,
+  type BrandingImage,
 } from './pdf-template';
 import {
   formatDate,
@@ -33,8 +35,9 @@ import {
   formatQuantity,
   formatScore,
   formatYear,
+  joinParts,
 } from './report-pdf.format';
-import { reportLogo } from './pdf.renderer';
+import type { ReportBranding } from './report-branding';
 
 /** The title the cover carries, in the template's own voice. */
 const TITLE = 'ТӨЛӨВЛӨГӨӨТ АЖЛЫН НЭГДСЭН ТАЙЛАН';
@@ -49,23 +52,23 @@ const TITLE = 'ТӨЛӨВЛӨГӨӨТ АЖЛЫН НЭГДСЭН ТАЙЛАН';
 export function plannedWorkReportDocument(
   preview: PlannedWorkReportPreviewDto,
   report: PlannedWorkReportDto | null,
-  contractorName: string,
+  branding: ReportBranding,
+  photos: ReadonlyMap<string, readonly BrandingImage[]> = new Map(),
 ): TDocumentDefinitions {
-  const logo = reportLogo();
 
   return {
     pageSize: PAGE_SIZE,
     pageOrientation: PAGE_ORIENTATION,
     pageMargins: PAGE_MARGINS,
-    header: () => headerBlock(logo),
+    header: () => headerBlock(branding.logo),
     defaultStyle: { font: 'Tinos', fontSize: FONT_SIZE.table },
     info: {
       title: `${TITLE} ${preview.workNumber}`,
-      author: contractorName,
+      author: branding.companyName,
     },
     content: [
-      ...cover(preview, contractorName),
-      ...body(preview, report, contractorName),
+      ...cover(preview, branding),
+      ...body(preview, report, branding, photos),
     ],
   };
 }
@@ -78,7 +81,7 @@ export function plannedWorkReportDocument(
  * The spacer paragraphs are the template's mechanism verbatim. Centring the block
  * vertically would be tidier and would not match.
  */
-function cover(preview: PlannedWorkReportPreviewDto, contractorName: string): Content[] {
+function cover(preview: PlannedWorkReportPreviewDto, branding: ReportBranding): Content[] {
   const spacers: Content[] = Array.from({ length: 8 }, () => ({
     text: ' ',
     fontSize: FONT_SIZE.coverSpacer,
@@ -90,7 +93,8 @@ function cover(preview: PlannedWorkReportPreviewDto, contractorName: string): Co
     { text: ' ', fontSize: FONT_SIZE.coverSpacer },
     coverField('Объект:', preview.buildingName),
     coverField('Ажлын дугаар:', preview.workNumber),
-    coverField('Гүйцэтгэсэн:', contractorName),
+    // Who carried the work out, which is its own setting and falls back to the company.
+    coverField('Гүйцэтгэсэн:', branding.inspectionCompany),
     coverField('Огноо:', formatLongDate(preview.actualEndDate ?? preview.plannedEndDate)),
     { text: ' ', fontSize: FONT_SIZE.coverSpacer },
     {
@@ -110,8 +114,10 @@ function cover(preview: PlannedWorkReportPreviewDto, contractorName: string): Co
 function body(
   preview: PlannedWorkReportPreviewDto,
   report: PlannedWorkReportDto | null,
-  contractorName: string,
+  branding: ReportBranding,
+  photos: ReadonlyMap<string, readonly BrandingImage[]>,
 ): Content[] {
+  const contractorName = branding.companyName;
   const status = PLANNED_WORK_REPORT_STATUS_LABELS[preview.status] ?? '';
 
   const content: Content[] = [
@@ -228,6 +234,26 @@ function body(
         [CONTENT_WIDTH * 0.6, CONTENT_WIDTH * 0.2, CONTENT_WIDTH * 0.2],
       ),
     );
+  }
+
+  // The photographic record, in the template's own detail-block shape. Only sub-tasks
+  // that actually carry a photo appear: a block with an empty picture area would be a
+  // row of borders saying nothing.
+  const documented = preview.tasks.filter(
+    (task) => (photos.get(task.id)?.length ?? 0) > 0,
+  );
+  if (documented.length > 0) {
+    content.push(sectionRule('Гүйцэтгэлийн зураг'));
+    for (const task of documented) {
+      content.push(
+        detailBlock({
+          workName: task.title,
+          location: joinParts([task.floorName, preview.buildingName]),
+          note: task.note,
+          photos: photos.get(task.id) ?? [],
+        }),
+      );
+    }
   }
 
   content.push(

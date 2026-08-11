@@ -1,5 +1,3 @@
-import fs from 'node:fs';
-
 import type { TDocumentDefinitions } from 'pdfmake/interfaces';
 
 /**
@@ -19,8 +17,7 @@ type Printer = new (fonts: unknown) => {
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const PdfPrinter = require('pdfmake') as Printer;
 
-import { logger } from '../../config/logger';
-import { LOGO_PATH, PDF_FONTS } from './pdf-template';
+import { PDF_FONTS } from './pdf-template';
 
 /**
  * Renders a pdfmake document definition to PDF bytes.
@@ -34,31 +31,6 @@ let printer: InstanceType<Printer> | null = null;
 function printerInstance(): InstanceType<Printer> {
   printer ??= new PdfPrinter(PDF_FONTS);
   return printer;
-}
-
-/**
- * The letterhead, read once and held.
- *
- * Resolved to `null` when the file is missing rather than throwing: a server without the
- * logo asset should still issue reports, and the header simply comes out empty. The
- * failure is logged once, because a permanently unbranded report is worth noticing even
- * though it is not worth refusing a download over.
- */
-let logo: string | null | undefined;
-
-function logoDataUrl(): string | null {
-  if (logo !== undefined) return logo;
-  try {
-    logo = `data:image/jpeg;base64,${fs.readFileSync(LOGO_PATH).toString('base64')}`;
-  } catch (error) {
-    logger.warn({ err: error }, 'report logo missing; exporting without letterhead');
-    logo = null;
-  }
-  return logo;
-}
-
-export function reportLogo(): string | null {
-  return logoDataUrl();
 }
 
 /**
