@@ -1,9 +1,14 @@
 import {
+  ACCOUNT_STATUSES,
+  ACCOUNT_STATUS_LABELS,
   canManageRole,
   PERMISSIONS,
+  USER_ROLES,
   USER_ROLE_LABELS,
+  type AccountStatus,
   type RoleDto,
   type UserDto,
+  type UserRole,
 } from '@monhorus/shared';
 import { useCallback, useEffect, useState, type ReactElement } from 'react';
 import { useSearchParams } from 'react-router-dom';
@@ -17,7 +22,9 @@ import { DataTable, Pagination, type Column } from '../../components/ui/DataTabl
 import { Drawer } from '../../components/ui/Drawer';
 import { PageHeader } from '../../components/ui/PageHeader';
 import { RowActions, type RowActionItem } from '../../components/ui/RowActions';
+import { SearchField } from '../../components/ui/SearchField';
 import { EmptyState, Skeleton } from '../../components/ui/States';
+import { FILTER_LABEL, FILTER_SELECT } from '../../components/ui/control-styles';
 import { useToast } from '../../components/ui/ToastProvider';
 import { useAuth } from '../../contexts/auth-context';
 import { useTableColumns } from '../../hooks/use-table-columns';
@@ -69,6 +76,20 @@ export function AccessPage(): ReactElement {
    */
   const [userPage, setUserPage] = useState(1);
   const [userTotal, setUserTotal] = useState({ total: 0, totalPages: 0 });
+  /**
+   * The user filters, held beside the page and for the same reason it is: they belong to
+   * one of two independent lists sharing an address, and a filter that outlived a tab
+   * switch would narrow a list the reader has just returned to with no visible cause.
+   *
+   * Every one of them is applied by the SERVER — `/users` already accepts search, role and
+   * status — so what comes back is a page of the matches, never a page of everything with
+   * the misses dropped afterwards. That is what keeps the count and the pager honest.
+   */
+  const [userSearch, setUserSearch] = useState('');
+  const [userSearchDraft, setUserSearchDraft] = useState('');
+  const [userRoleFilter, setUserRoleFilter] = useState<UserRole | ''>('');
+  const [userStatusFilter, setUserStatusFilter] = useState<AccountStatus | ''>('');
+  const hasUserFilters = Boolean(userSearch || userRoleFilter || userStatusFilter);
   const [error, setError] = useState<string | null>(null);
 
   const [editorRole, setEditorRole] = useState<RoleDto | null | 'new'>(null);
@@ -98,7 +119,16 @@ export function AccessPage(): ReactElement {
     try {
       // A page rather than the first fifty. The old fixed limit silently hid the fifty-first
       // user, with nothing on screen to say a cap had been reached.
-      const page = await rbacService.users({ page: userPage, limit: USER_PAGE_SIZE });
+      //
+      // The filters are spread in only when set: the query schema types `role` and `status`
+      // as enums, so an empty string is a validation error rather than "no filter".
+      const page = await rbacService.users({
+        page: userPage,
+        limit: USER_PAGE_SIZE,
+        ...(userSearch ? { search: userSearch } : {}),
+        ...(userRoleFilter ? { role: userRoleFilter } : {}),
+        ...(userStatusFilter ? { status: userStatusFilter } : {}),
+      });
       setUsers(page.items);
       setUserTotal({ total: page.total, totalPages: page.totalPages });
     } catch (caught) {
@@ -106,7 +136,7 @@ export function AccessPage(): ReactElement {
       setUsers([]);
       setUserTotal({ total: 0, totalPages: 0 });
     }
-  }, [userPage]);
+  }, [userPage, userSearch, userRoleFilter, userStatusFilter]);
 
   useEffect(() => {
     void loadRoles();
@@ -117,6 +147,32 @@ export function AccessPage(): ReactElement {
     // rows before changing the page, so a page change comes back through here too.
     if (activeTab === 'users' && users === null) void loadUsers();
   }, [activeTab, users, loadUsers]);
+
+  /**
+   * Applies a filter change.
+   *
+   * Clearing the rows is what actually triggers the refetch — the effect above only fetches
+   * while `users` is null, which is the same mechanism paging uses. Resetting to page one
+   * matters more here than it looks: page four of the unfiltered directory is usually past
+   * the end of a filtered one, and the reader would land on an empty table having just
+   * narrowed a list they could see.
+   */
+  function applyUserFilter(change: () => void): void {
+    change();
+    setUserPage(1);
+    setUsers(null);
+  }
+
+  function clearUserFilters(): void {
+    applyUserFilter(() => {
+      // The draft goes with them. Text left in a box that no longer filters anything reads
+      // as a filter that has stopped working.
+      setUserSearchDraft('');
+      setUserSearch('');
+      setUserRoleFilter('');
+      setUserStatusFilter('');
+    });
+  }
 
   function switchTab(tab: TabKey): void {
     const next = new URLSearchParams(searchParams);
@@ -343,8 +399,8 @@ export function AccessPage(): ReactElement {
   return (
     <>
       <PageHeader
-        title="Хэрэглэгч, role, permission"
-        breadcrumbs={[{ label: 'Нүүр', to: '/dashboard' }, { label: 'Хэрэглэгч, role, permission' }]}
+        title="Хэрэглэгчийн эрх"
+        breadcrumbs={[{ label: 'Нүүр', to: '/dashboard' }, { label: 'Хэрэглэгчийн эрх' }]}
         actions={
           canManage && activeTab === 'roles' ? (
             <Button onClick={() => setEditorRole('new')}>Шинэ role</Button>
@@ -413,8 +469,89 @@ export function AccessPage(): ReactElement {
 
         {activeTab === 'users' && (
           <>
-            <div className="flex justify-end px-3 py-2">
-              <ColumnPicker controller={userColumnState} />
+            {/*
+              The filter row lives inside the tab panel rather than in a FILTER_BAR of its
+              own: that constant carries its own white card, and this is already inside one.
+              The controls themselves are the shared ones, so it reads as the same furniture
+              as every list page.
+            */}
+            <div className="flex flex-wrap items-end gap-3 border-b border-slate-200 px-3 py-3">
+              <div className="min-w-[220px] flex-1">
+                <label htmlFor="access-user-search" className={FILTER_LABEL}>
+                  Хайлт
+                </label>
+                <SearchField
+                  id="access-user-search"
+                  value={userSearchDraft}
+                  onChange={(event) => setUserSearchDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'Enter') return;
+                    applyUserFilter(() => setUserSearch(userSearchDraft.trim()));
+                  }}
+                  onBlur={() => {
+                    // Committing on blur as well as on Enter, matching every other search
+                    // box in the app. Guarded so that merely tabbing through the field does
+                    // not throw away the page the reader is on.
+                    if (userSearchDraft.trim() === userSearch) return;
+                    applyUserFilter(() => setUserSearch(userSearchDraft.trim()));
+                  }}
+                  placeholder="Нэр, имэйл, утсаар хайх"
+                />
+              </div>
+
+              <div>
+                <label htmlFor="access-user-role" className={FILTER_LABEL}>
+                  Эрх
+                </label>
+                <select
+                  id="access-user-role"
+                  className={FILTER_SELECT}
+                  value={userRoleFilter}
+                  onChange={(event) =>
+                    applyUserFilter(() => setUserRoleFilter(event.target.value as UserRole | ''))
+                  }
+                >
+                  <option value="">Бүх эрх</option>
+                  {USER_ROLES.map((role) => (
+                    <option key={role} value={role}>
+                      {USER_ROLE_LABELS[role]}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label htmlFor="access-user-status" className={FILTER_LABEL}>
+                  Төлөв
+                </label>
+                <select
+                  id="access-user-status"
+                  className={FILTER_SELECT}
+                  value={userStatusFilter}
+                  onChange={(event) =>
+                    applyUserFilter(() =>
+                      setUserStatusFilter(event.target.value as AccountStatus | ''),
+                    )
+                  }
+                >
+                  <option value="">Бүх төлөв</option>
+                  {ACCOUNT_STATUSES.map((status) => (
+                    <option key={status} value={status}>
+                      {ACCOUNT_STATUS_LABELS[status]}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {hasUserFilters && (
+                <Button variant="ghost" size="sm" onClick={clearUserFilters}>
+                  Шүүлтүүр цэвэрлэх
+                </Button>
+              )}
+
+              <div className="ml-auto">
+                <ColumnPicker controller={userColumnState} />
+              </div>
             </div>
             <DataTable
               columns={userColumnState.visibleColumns}
@@ -422,7 +559,10 @@ export function AccessPage(): ReactElement {
               rowKey={(row) => row.id}
               numbering={{ page: userPage, limit: USER_PAGE_SIZE }}
               loading={users === null}
-              emptyTitle="Хэрэглэгч байхгүй"
+              emptyTitle={hasUserFilters ? 'Илэрц олдсонгүй' : 'Хэрэглэгч байхгүй'}
+              {...(hasUserFilters
+                ? { emptyDescription: 'Шүүлтүүрт тохирох хэрэглэгч алга. Шүүлтүүрээ өөрчилж үзнэ үү.' }
+                : {})}
             />
             <Pagination
               page={userPage}

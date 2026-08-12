@@ -153,7 +153,7 @@ export const NAVIGATION: readonly NavSection[] = [
     items: [
       {
         key: 'access',
-        label: 'Хэрэглэгч, role, permission',
+        label: 'Хэрэглэгчийн эрх',
         path: '/access',
         permissions: [PERMISSIONS.RBAC_VIEW],
         icon: 'ACCESS',

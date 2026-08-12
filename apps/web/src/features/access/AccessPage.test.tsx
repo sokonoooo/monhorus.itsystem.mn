@@ -478,3 +478,142 @@ describe('AccessPage', () => {
     expect(assign).toHaveAttribute('title', 'Эрх хүрэлцэхгүй');
   });
 });
+
+/**
+ * Filtering the user directory.
+ *
+ * Every filter is applied by the server — `/users` already accepts search, role and status —
+ * so these assert on what was ASKED FOR rather than on what is rendered. A screen that
+ * fetched everything and hid the misses would still show the right rows while reporting a
+ * total that counts users the reader cannot see, and only the request reveals the
+ * difference.
+ */
+describe('AccessPage user filters', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(rbacService, 'permissions').mockResolvedValue(CATALOGUE);
+    vi.spyOn(rbacService, 'roles').mockResolvedValue([makeRole()]);
+  });
+
+  function mockUsers() {
+    return vi.spyOn(rbacService, 'users').mockResolvedValue({
+      items: [makeAccount()],
+      page: 1,
+      limit: 20,
+      total: 45,
+      totalPages: 3,
+    });
+  }
+
+  async function openUsersTab(user: ReturnType<typeof userEvent.setup>) {
+    renderWithAuth(<AccessPage />, { permissions: [PERMISSIONS.RBAC_VIEW] });
+    await user.click(screen.getByRole('tab', { name: 'Хэрэглэгч' }));
+    await screen.findByRole('table');
+  }
+
+  it('asks the server to search rather than filtering what came back', async () => {
+    const user = userEvent.setup();
+    const users = mockUsers();
+
+    await openUsersTab(user);
+    await user.type(screen.getByLabelText('Хайлт'), 'дорж');
+    await user.tab();
+
+    await waitFor(() =>
+      expect(users).toHaveBeenLastCalledWith(expect.objectContaining({ search: 'дорж' })),
+    );
+  });
+
+  it('asks the server to filter by role and by status', async () => {
+    const user = userEvent.setup();
+    const users = mockUsers();
+
+    await openUsersTab(user);
+    await user.selectOptions(screen.getByLabelText('Эрх'), 'admin');
+    await waitFor(() =>
+      expect(users).toHaveBeenLastCalledWith(expect.objectContaining({ role: 'admin' })),
+    );
+
+    await user.selectOptions(screen.getByLabelText('Төлөв'), 'suspended');
+    // Both travel together: narrowing by status must not drop the role already chosen.
+    await waitFor(() =>
+      expect(users).toHaveBeenLastCalledWith(
+        expect.objectContaining({ role: 'admin', status: 'suspended' }),
+      ),
+    );
+  });
+
+  /** The requirement: a filter must survive paging, or page two is a different question. */
+  it('keeps the filters when the reader turns the page', async () => {
+    const user = userEvent.setup();
+    const users = mockUsers();
+
+    await openUsersTab(user);
+    await user.selectOptions(screen.getByLabelText('Эрх'), 'admin');
+    await waitFor(() =>
+      expect(users).toHaveBeenLastCalledWith(expect.objectContaining({ page: 1, role: 'admin' })),
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Дараах' }));
+
+    await waitFor(() =>
+      expect(users).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2, role: 'admin' })),
+    );
+  });
+
+  /** Page four of the whole directory is usually past the end of a filtered one. */
+  it('returns to the first page when a filter changes', async () => {
+    const user = userEvent.setup();
+    const users = mockUsers();
+
+    await openUsersTab(user);
+    await user.click(screen.getByRole('button', { name: 'Дараах' }));
+    await waitFor(() =>
+      expect(users).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2 })),
+    );
+
+    await user.selectOptions(screen.getByLabelText('Төлөв'), 'active');
+
+    await waitFor(() =>
+      expect(users).toHaveBeenLastCalledWith(
+        expect.objectContaining({ page: 1, status: 'active' }),
+      ),
+    );
+  });
+
+  it('sends no filter key at all when a filter is cleared', async () => {
+    const user = userEvent.setup();
+    const users = mockUsers();
+
+    await openUsersTab(user);
+    await user.selectOptions(screen.getByLabelText('Эрх'), 'admin');
+    await waitFor(() =>
+      expect(users).toHaveBeenLastCalledWith(expect.objectContaining({ role: 'admin' })),
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Шүүлтүүр цэвэрлэх' }));
+
+    // Absent, not empty: the query schema types role as an enum, so '' is a 400.
+    await waitFor(() => {
+      const last = users.mock.calls.at(-1)?.[0] ?? {};
+      expect('role' in last).toBe(false);
+    });
+    expect(screen.getByLabelText('Хайлт')).toHaveValue('');
+  });
+
+  it('offers the clear control only while something is filtered', async () => {
+    const user = userEvent.setup();
+    mockUsers();
+
+    await openUsersTab(user);
+    expect(
+      screen.queryByRole('button', { name: 'Шүүлтүүр цэвэрлэх' }),
+    ).not.toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText('Төлөв'), 'active');
+
+    expect(
+      await screen.findByRole('button', { name: 'Шүүлтүүр цэвэрлэх' }),
+    ).toBeInTheDocument();
+  });
+});
