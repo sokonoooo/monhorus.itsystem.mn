@@ -517,3 +517,280 @@ describe('FloorDetailPage object table paging', () => {
     expect(screen.queryByRole('button', { name: 'Дараах' })).not.toBeInTheDocument();
   });
 });
+
+/**
+ * Searching and filtering the object table.
+ *
+ * The load-bearing requirement is the last test in this block: the plan above the table
+ * draws from the unfiltered list, so narrowing the table must never take a marker off the
+ * drawing. Everything else here is the ordinary filter contract — the conditions compose,
+ * the count is stated, and clearing puts the whole floor back.
+ */
+describe('FloorDetailPage object search and filters', () => {
+  const PANEL_TYPE = { id: 't-panel', code: 'DB', name: 'Түгээх самбар' };
+  const LIGHT_TYPE = { id: 't-light', code: 'LT', name: 'Гэрэлтүүлэг' };
+
+  /** Three objects spanning two types and three statuses, all placed on the plan. */
+  const FLOOR_OBJECTS = [
+    makeObjectListItem({
+      id: 'o-panel',
+      code: 'DB-1',
+      name: 'Түгээх самбар нэг',
+      status: 'ACTIVE',
+      planPosition: { x: 10, y: 10 },
+      objectType: { ...PANEL_TYPE, icon: 'PANEL', iconUrl: null, showOnPlan: true },
+    }),
+    makeObjectListItem({
+      id: 'o-light-a',
+      code: 'LT-1',
+      name: 'Гэрэлтүүлэг нэг',
+      status: 'INACTIVE',
+      planPosition: { x: 20, y: 20 },
+      objectType: { ...LIGHT_TYPE, icon: 'LIGHT', iconUrl: null, showOnPlan: true },
+    }),
+    makeObjectListItem({
+      id: 'o-light-b',
+      code: 'LT-2',
+      name: 'Гэрэлтүүлэг хоёр',
+      status: 'DECOMMISSIONED',
+      planPosition: { x: 30, y: 30 },
+      objectType: { ...LIGHT_TYPE, icon: 'LIGHT', iconUrl: null, showOnPlan: true },
+    }),
+  ];
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(projectService, 'getFloor').mockResolvedValue(makeFloor());
+    vi.spyOn(projectService, 'getFloorPlan').mockResolvedValue(makeFloorPlan());
+    vi.spyOn(projectService, 'floorLoad').mockResolvedValue(makeFloorLoad());
+    vi.spyOn(objectMasterService, 'list').mockResolvedValue(makePage(FLOOR_OBJECTS, 100));
+  });
+
+  async function renderAndWait() {
+    renderFloor([PERMISSIONS.OBJECT_VIEW, PERMISSIONS.OBJECT_MASTER_VIEW]);
+    return screen.findByRole('table');
+  }
+
+  /** The object table, scoped so the assertions cannot drift onto the plan's own controls. */
+  function tableRows(): HTMLElement[] {
+    return within(screen.getByRole('table')).getAllByRole('row').slice(1);
+  }
+
+  it('searches by object name', async () => {
+    const user = userEvent.setup();
+    await renderAndWait();
+
+    await user.type(screen.getByLabelText('Хайлт'), 'Гэрэлтүүлэг нэг');
+    await user.tab();
+
+    await waitFor(() => expect(tableRows()).toHaveLength(1));
+    expect(within(screen.getByRole('table')).getByText('Гэрэлтүүлэг нэг')).toBeInTheDocument();
+  });
+
+  /** Code and name are both searchable; an engineer reads a code off the equipment. */
+  it('searches by object code', async () => {
+    const user = userEvent.setup();
+    await renderAndWait();
+
+    await user.type(screen.getByLabelText('Хайлт'), 'DB-1');
+    await user.tab();
+
+    await waitFor(() => expect(tableRows()).toHaveLength(1));
+    expect(within(screen.getByRole('table')).getByText('Түгээх самбар нэг')).toBeInTheDocument();
+  });
+
+  it('filters by object type', async () => {
+    const user = userEvent.setup();
+    await renderAndWait();
+
+    await user.selectOptions(screen.getByLabelText('Объектын төрөл'), LIGHT_TYPE.id);
+
+    await waitFor(() => expect(tableRows()).toHaveLength(2));
+    expect(
+      within(screen.getByRole('table')).queryByText('Түгээх самбар нэг'),
+    ).not.toBeInTheDocument();
+  });
+
+  /** The dropdown offers only the types this floor actually uses. */
+  it('offers no type that the floor does not use', async () => {
+    await renderAndWait();
+
+    const picker = screen.getByLabelText('Объектын төрөл');
+    const labels = within(picker)
+      .getAllByRole('option')
+      .map((option) => option.textContent);
+    expect(labels).toEqual(['Бүх төрөл', 'Гэрэлтүүлэг', 'Түгээх самбар']);
+  });
+
+  it('filters by status', async () => {
+    const user = userEvent.setup();
+    await renderAndWait();
+
+    await user.selectOptions(screen.getByLabelText('Төлөв'), 'DECOMMISSIONED');
+
+    await waitFor(() => expect(tableRows()).toHaveLength(1));
+    expect(within(screen.getByRole('table')).getByText('Гэрэлтүүлэг хоёр')).toBeInTheDocument();
+  });
+
+  /** The point of the feature: each control narrows what the previous one left. */
+  it('applies the search and the filters together', async () => {
+    const user = userEvent.setup();
+    await renderAndWait();
+
+    await user.selectOptions(screen.getByLabelText('Объектын төрөл'), LIGHT_TYPE.id);
+    await waitFor(() => expect(tableRows()).toHaveLength(2));
+
+    // Both lights match the search; only one of them is decommissioned.
+    await user.type(screen.getByLabelText('Хайлт'), 'Гэрэлтүүлэг');
+    await user.tab();
+    await user.selectOptions(screen.getByLabelText('Төлөв'), 'DECOMMISSIONED');
+
+    await waitFor(() => expect(tableRows()).toHaveLength(1));
+    expect(within(screen.getByRole('table')).getByText('Гэрэлтүүлэг хоёр')).toBeInTheDocument();
+  });
+
+  it('states how many objects the filters matched, against the floor total', async () => {
+    const user = userEvent.setup();
+    await renderAndWait();
+
+    expect(screen.getByText('3 объект')).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText('Төлөв'), 'ACTIVE');
+
+    expect(await screen.findByText('Шүүлтүүрт тохирсон: 1 / 3')).toBeInTheDocument();
+  });
+
+  it('restores the whole floor when the filters are cleared', async () => {
+    const user = userEvent.setup();
+    await renderAndWait();
+
+    await user.type(screen.getByLabelText('Хайлт'), 'DB-1');
+    await user.tab();
+    await user.selectOptions(screen.getByLabelText('Төлөв'), 'ACTIVE');
+    await waitFor(() => expect(tableRows()).toHaveLength(1));
+
+    await user.click(screen.getByRole('button', { name: 'Шүүлтүүр цэвэрлэх' }));
+
+    await waitFor(() => expect(tableRows()).toHaveLength(3));
+    // The typed text goes with it. Leaving it in a box that no longer filters anything
+    // reads as a filter that has stopped working.
+    expect(screen.getByLabelText('Хайлт')).toHaveValue('');
+    expect(screen.queryByRole('button', { name: 'Шүүлтүүр цэвэрлэх' })).not.toBeInTheDocument();
+  });
+
+  it('says the floor has no match rather than claiming it has no objects', async () => {
+    const user = userEvent.setup();
+    await renderAndWait();
+
+    await user.type(screen.getByLabelText('Хайлт'), 'байхгүй зүйл');
+    await user.tab();
+
+    expect(await screen.findByText('Илэрц олдсонгүй')).toBeInTheDocument();
+    expect(screen.queryByText('Объект бүртгэгдээгүй')).not.toBeInTheDocument();
+  });
+
+  /**
+   * A floor big enough to page, where a filter changes how many pages there are.
+   * 25 lights and 5 panels: filtering to lights must leave 2 pages, not the 30-object
+   * floor's 2 pages of everything.
+   */
+  function mockMixedFloor() {
+    const lights = Array.from({ length: 25 }, (_, index) =>
+      makeObjectListItem({
+        id: `light-${index}`,
+        code: `LT-${index}`,
+        name: `Гэрэлтүүлэг ${index}`,
+        status: 'ACTIVE',
+        objectType: { ...LIGHT_TYPE, icon: 'LIGHT', iconUrl: null, showOnPlan: true },
+      }),
+    );
+    const panels = Array.from({ length: 5 }, (_, index) =>
+      makeObjectListItem({
+        id: `panel-${index}`,
+        code: `DB-${index}`,
+        name: `Самбар ${index}`,
+        status: 'INACTIVE',
+        objectType: { ...PANEL_TYPE, icon: 'PANEL', iconUrl: null, showOnPlan: true },
+      }),
+    );
+    return vi
+      .spyOn(objectMasterService, 'list')
+      .mockResolvedValue(makePage([...lights, ...panels], 100));
+  }
+
+  it('pages the filtered results rather than the whole floor', async () => {
+    const user = userEvent.setup();
+    mockMixedFloor();
+    await renderAndWait();
+
+    // Unfiltered: 30 objects across two pages.
+    expect(screen.getByText(/Нийт 30/)).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText('Объектын төрөл'), LIGHT_TYPE.id);
+
+    // Filtered: the pager counts the 25 matches, and the last page holds the remaining 5.
+    await waitFor(() => expect(screen.getByText(/Нийт 25/)).toBeInTheDocument());
+    expect(tableRows()).toHaveLength(20);
+
+    await user.click(screen.getByRole('button', { name: 'Дараах' }));
+
+    await waitFor(() => expect(tableRows()).toHaveLength(5));
+    // Numbering keeps running across the filtered set: the second page starts at 21.
+    expect(
+      within(screen.getByRole('table')).getAllByRole('cell')[0]?.textContent?.trim(),
+    ).toBe('21');
+  });
+
+  /** Page 2 of the old filter is usually past the end of the new one. */
+  it('returns to the first page when a filter changes', async () => {
+    const user = userEvent.setup();
+    mockMixedFloor();
+    await renderAndWait();
+
+    await user.click(screen.getByRole('button', { name: 'Дараах' }));
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole('table')).getAllByRole('cell')[0]?.textContent?.trim(),
+      ).toBe('21'),
+    );
+
+    await user.selectOptions(screen.getByLabelText('Объектын төрөл'), PANEL_TYPE.id);
+
+    // Five panels, shown from row 1 rather than an empty page 2.
+    await waitFor(() => expect(tableRows()).toHaveLength(5));
+    expect(
+      within(screen.getByRole('table')).getAllByRole('cell')[0]?.textContent?.trim(),
+    ).toBe('1');
+  });
+
+  /**
+   * THE one that matters. A filter narrows the table; the drawing above it still has to
+   * show every device on the floor, or somebody sent to find a light that was filtered
+   * out of the table will not find it on the plan either.
+   *
+   * Asserted through the plan's layer toggles rather than its markers: react-flow lays
+   * nothing out under jsdom, so counting `.react-flow__node` would pass on an empty
+   * canvas and prove nothing. The toggles are plain buttons built from the very list the
+   * panel was handed — one per type, carrying how many of that type it will draw — so if
+   * the panel were ever given the filtered list, these would thin out with the table.
+   */
+  it('leaves the floor plan holding every object while the table is filtered', async () => {
+    const user = userEvent.setup();
+    await renderAndWait();
+
+    // One panel and two lights, before any filtering.
+    expect(screen.getByRole('button', { name: /Түгээх самбар\s*1/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Гэрэлтүүлэг\s*2/ })).toBeInTheDocument();
+
+    // Narrow the table to a single light. The panel is now absent from the table...
+    await user.selectOptions(screen.getByLabelText('Төлөв'), 'DECOMMISSIONED');
+    await waitFor(() => expect(tableRows()).toHaveLength(1));
+    expect(
+      within(screen.getByRole('table')).queryByText('Түгээх самбар нэг'),
+    ).not.toBeInTheDocument();
+
+    // ...and still on the plan, with both layers and both counts untouched.
+    expect(screen.getByRole('button', { name: /Түгээх самбар\s*1/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Гэрэлтүүлэг\s*2/ })).toBeInTheDocument();
+  });
+});

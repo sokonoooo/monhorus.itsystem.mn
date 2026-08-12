@@ -1,4 +1,6 @@
 import {
+  OBJECT_STATUSES,
+  OBJECT_STATUS_LABELS,
   PERMISSIONS,
   updateFloorSchema,
   type FloorDto,
@@ -7,7 +9,7 @@ import {
   type ObjectListItemDto,
 } from '@monhorus/shared';
 import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
 import { Alert } from '../../components/ui/Alert';
 import { Button } from '../../components/ui/Button';
@@ -18,9 +20,10 @@ import { Drawer } from '../../components/ui/Drawer';
 import { RiskBadge } from '../../components/ui/DomainBadges';
 import { PageHeader } from '../../components/ui/PageHeader';
 import { RowActions } from '../../components/ui/RowActions';
+import { SearchField } from '../../components/ui/SearchField';
 import { ErrorState, Skeleton } from '../../components/ui/States';
 import { useToast } from '../../components/ui/ToastProvider';
-import { FIELD_TEXTAREA, FILTER_LABEL } from '../../components/ui/control-styles';
+import { FIELD_TEXTAREA, FILTER_LABEL, FILTER_SELECT } from '../../components/ui/control-styles';
 import { useAuth } from '../../contexts/auth-context';
 import { useTableColumns } from '../../hooks/use-table-columns';
 import { ApiError } from '../../lib/api-client';
@@ -265,7 +268,39 @@ export function FloorDetailPage(): ReactElement {
    * visibly flicker; a refetch now keeps the content on screen.
    */
   const hasLoadedRef = useRef(false);
-  const [objectPage, setObjectPage] = useState(1);
+  /**
+   * Search, filters and the page live in the URL, as they do on every list page: a filtered
+   * floor is then a link somebody can send ("the decommissioned panels on level 3"), and a
+   * reload does not silently drop back to the unfiltered list.
+   */
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchDraft, setSearchDraft] = useState(() => searchParams.get('search') ?? '');
+
+  const search = searchParams.get('search') ?? '';
+  const typeFilter = searchParams.get('type') ?? '';
+  const statusFilter = searchParams.get('status') ?? '';
+  const hasFilters = Boolean(search || typeFilter || statusFilter);
+
+  const parsedPage = Number.parseInt(searchParams.get('page') ?? '1', 10);
+  const objectPage = Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : 1;
+
+  function updateParam(key: string, value: string): void {
+    const next = new URLSearchParams(searchParams);
+    if (value) next.set(key, value);
+    else next.delete(key);
+    // Any filter change invalidates the page number: page 4 of the unfiltered list is
+    // usually past the end of the filtered one, which would answer with an empty table.
+    if (key !== 'page') next.delete('page');
+    setSearchParams(next);
+  }
+
+  function clearFilters(): void {
+    // The draft is cleared too. Leaving the typed text sitting in a box that no longer
+    // filters anything is the bug most of the list pages still have.
+    setSearchDraft('');
+    setSearchParams(new URLSearchParams());
+  }
+
   const [editOpen, setEditOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [unlinkTarget, setUnlinkTarget] = useState<ObjectListItemDto | null>(null);
@@ -426,12 +461,45 @@ export function FloorDetailPage(): ReactElement {
 
   const columnState = useTableColumns('floor-objects', objectColumns);
 
-  const objectTotalPages = Math.max(1, Math.ceil(objects.length / OBJECT_TABLE_PAGE_SIZE));
-  // Unlinking or deleting shortens the list under the reader, and the last page can stop
-  // existing while they are standing on it. Clamping here shows them the new last page
-  // instead of an empty table with a page number past the end.
+  /**
+   * The types actually present on this floor, for the filter's options.
+   *
+   * Built from the objects already loaded rather than from the type registry, so the
+   * dropdown never offers a type that would return nothing here, and the page makes no
+   * extra request to populate it.
+   */
+  const typeOptions = Array.from(
+    new Map(
+      objects
+        .filter((object) => object.objectType !== null)
+        .map((object) => [object.objectType!.id, object.objectType!.name] as const),
+    ),
+  ).sort((left, right) => left[1].localeCompare(right[1], 'mn'));
+
+  /**
+   * Filtering happens here, over the whole in-memory list, and NOT at the server.
+   *
+   * That is what keeps the floor plan intact: `FloorPlanPanel` is handed `objects`, the
+   * unfiltered list, so every marker stays drawn while the table narrows. Filtering at the
+   * server would either strip markers off the drawing or force a second full fetch to put
+   * them back. The three conditions compose — each one narrows what the previous left.
+   */
+  const needle = search.trim().toLowerCase();
+  const filteredObjects = objects.filter((object) => {
+    if (typeFilter && object.objectType?.id !== typeFilter) return false;
+    if (statusFilter && object.status !== statusFilter) return false;
+    if (!needle) return true;
+    return (
+      object.name.toLowerCase().includes(needle) || object.code.toLowerCase().includes(needle)
+    );
+  });
+
+  const objectTotalPages = Math.max(1, Math.ceil(filteredObjects.length / OBJECT_TABLE_PAGE_SIZE));
+  // Unlinking, deleting or narrowing a filter shortens the list under the reader, and the
+  // last page can stop existing while they are standing on it. Clamping here shows them the
+  // new last page instead of an empty table with a page number past the end.
   const currentObjectPage = Math.min(objectPage, objectTotalPages);
-  const visibleObjects = objects.slice(
+  const visibleObjects = filteredObjects.slice(
     (currentObjectPage - 1) * OBJECT_TABLE_PAGE_SIZE,
     currentObjectPage * OBJECT_TABLE_PAGE_SIZE,
   );
@@ -652,20 +720,106 @@ export function FloorDetailPage(): ReactElement {
               </div>
             </div>
 
+            {/*
+              The filter row sits inside the objects card rather than in a FILTER_BAR of its
+              own: that constant carries its own white card, and nesting one white card in
+              another is the treatment the customer tabs already rejected. The controls
+              themselves are the shared ones, so this reads as the same furniture.
+            */}
+            <div className="flex flex-wrap items-end gap-3 border-b border-slate-200 px-5 py-3">
+              <div className="min-w-[220px] flex-1">
+                <label htmlFor="floor-object-search" className={FILTER_LABEL}>
+                  Хайлт
+                </label>
+                <SearchField
+                  id="floor-object-search"
+                  value={searchDraft}
+                  onChange={(event) => setSearchDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') updateParam('search', searchDraft.trim());
+                  }}
+                  onBlur={() => updateParam('search', searchDraft.trim())}
+                  placeholder="Объектын нэр эсвэл код"
+                />
+              </div>
+
+              <div>
+                <label htmlFor="floor-object-type" className={FILTER_LABEL}>
+                  Объектын төрөл
+                </label>
+                <select
+                  id="floor-object-type"
+                  className={FILTER_SELECT}
+                  value={typeFilter}
+                  onChange={(event) => updateParam('type', event.target.value)}
+                >
+                  <option value="">Бүх төрөл</option>
+                  {typeOptions.map(([id, name]) => (
+                    <option key={id} value={id}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label htmlFor="floor-object-status" className={FILTER_LABEL}>
+                  Төлөв
+                </label>
+                <select
+                  id="floor-object-status"
+                  className={FILTER_SELECT}
+                  value={statusFilter}
+                  onChange={(event) => updateParam('status', event.target.value)}
+                >
+                  <option value="">Бүх төлөв</option>
+                  {OBJECT_STATUSES.map((status) => (
+                    <option key={status} value={status}>
+                      {OBJECT_STATUS_LABELS[status]}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {hasFilters && (
+                <Button variant="ghost" size="sm" onClick={clearFilters}>
+                  Шүүлтүүр цэвэрлэх
+                </Button>
+              )}
+
+              {/*
+                Stated here rather than left to the pager, which hides itself below two
+                pages — exactly the case a filter usually produces. Both numbers are given
+                while filtering, because "3" alone cannot be told from a floor that only
+                ever had three objects. Deliberately NOT worded "Нийт N": the pager says
+                that already, and two different "Нийт 25" on one screen read as a
+                contradiction the moment a filter makes them disagree.
+              */}
+              <p className="ml-auto whitespace-nowrap text-xs text-slate-600">
+                {hasFilters
+                  ? `Шүүлтүүрт тохирсон: ${filteredObjects.length} / ${objects.length}`
+                  : `${objects.length} объект`}
+              </p>
+            </div>
+
             <DataTable
               columns={columnState.visibleColumns}
               rows={visibleObjects}
               rowKey={(row) => row.id}
               numbering={{ page: currentObjectPage, limit: OBJECT_TABLE_PAGE_SIZE }}
               onRowClick={(row) => navigate(`/floors/${floor.id}/objects/${row.id}`)}
-              emptyTitle="Объект бүртгэгдээгүй"
-              emptyDescription="Самбар, хэлхээ, тоноглолыг энэ давхарт нэмнэ үү."
+              emptyTitle={hasFilters ? 'Илэрц олдсонгүй' : 'Объект бүртгэгдээгүй'}
+              emptyDescription={
+                hasFilters
+                  ? 'Шүүлтүүрт тохирох объект алга. Шүүлтүүрээ өөрчилж үзнэ үү.'
+                  : 'Самбар, хэлхээ, тоноглолыг энэ давхарт нэмнэ үү.'
+              }
             />
             <Pagination
               page={currentObjectPage}
               totalPages={objectTotalPages}
-              total={objects.length}
-              onPageChange={setObjectPage}
+              total={filteredObjects.length}
+              onPageChange={(next) => updateParam('page', String(next))}
             />
           </div>
         )}
