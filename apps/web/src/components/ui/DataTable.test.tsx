@@ -173,3 +173,135 @@ describe('DataTable row expansion', () => {
     expect(onRowClick).not.toHaveBeenCalled();
   });
 });
+
+
+/**
+ * ROW NUMBERING, tested on the table rather than through any one page.
+ *
+ * Thirteen pages now ask for a № column, and the thing that can go wrong is the same in
+ * all of them: the number restarting at 1 on every page, which makes "check row 34"
+ * meaningless. The arithmetic lives in the component precisely so it can be pinned once,
+ * here, instead of thirteen times in thirteen page tests.
+ */
+describe('DataTable numbering', () => {
+  /** The text of the first cell of each body row, which is № when numbering is on. */
+  function firstCells(): string[] {
+    return screen
+      .getAllByRole('row')
+      .slice(1) // drop the header row
+      .map((row) => within(row).getAllByRole('cell')[0]?.textContent?.trim() ?? '');
+  }
+
+  it('adds no column at all when numbering is not asked for', () => {
+    render(<DataTable columns={COLUMNS} rows={ROWS} rowKey={(row) => row.id} />);
+
+    // Opt-in: a table that never asked keeps exactly the markup it had.
+    expect(screen.queryByRole('columnheader', { name: '№' })).toBeNull();
+    expect(firstCells()).toEqual(['Эхний мөр', 'Хоёр дахь мөр']);
+  });
+
+  it('numbers from one when asked for plain numbering', () => {
+    render(
+      <DataTable columns={COLUMNS} rows={ROWS} rowKey={(row) => row.id} numbering />,
+    );
+
+    expect(screen.getByRole('columnheader', { name: '№' })).toBeInTheDocument();
+    expect(firstCells()).toEqual(['1', '2']);
+  });
+
+  it('continues the numbering across pages', () => {
+    render(
+      <DataTable
+        columns={COLUMNS}
+        rows={ROWS}
+        rowKey={(row) => row.id}
+        numbering={{ page: 2, limit: 20 }}
+      />,
+    );
+
+    // THE POINT OF THE WHOLE FEATURE. Page 2 of 20 begins at 21, not at 1.
+    expect(firstCells()).toEqual(['21', '22']);
+  });
+
+  it('numbers the first page from one, not from the page size', () => {
+    render(
+      <DataTable
+        columns={COLUMNS}
+        rows={ROWS}
+        rowKey={(row) => row.id}
+        numbering={{ page: 1, limit: 20 }}
+      />,
+    );
+
+    // The off-by-one that a hand-written `page * limit + index` would get wrong.
+    expect(firstCells()).toEqual(['1', '2']);
+  });
+
+  it('numbers a later page of a different size correctly', () => {
+    render(
+      <DataTable
+        columns={COLUMNS}
+        rows={ROWS}
+        rowKey={(row) => row.id}
+        numbering={{ page: 4, limit: 25 }}
+      />,
+    );
+
+    expect(firstCells()).toEqual(['76', '77']);
+  });
+
+  it('never numbers below one, whatever it is handed', () => {
+    render(
+      <DataTable
+        columns={COLUMNS}
+        rows={ROWS}
+        rowKey={(row) => row.id}
+        numbering={{ page: 0, limit: -20 }}
+      />,
+    );
+
+    // A page of 0 arrives from a malformed url. Numbering from 1 is wrong but readable;
+    // numbering from -19 is neither.
+    expect(firstCells()).toEqual(['1', '2']);
+  });
+
+  it('puts № after the expander when a table has both', async () => {
+    const user = userEvent.setup();
+    render(
+      <DataTable
+        columns={COLUMNS}
+        rows={ROWS}
+        rowKey={(row) => row.id}
+        numbering={{ page: 2, limit: 20 }}
+        renderExpanded={(row) => <p>Дэлгэрэнгүй {row.name}</p>}
+        expandedKeys={[]}
+        onToggleExpand={() => undefined}
+      />,
+    );
+
+    const bodyRows = screen.getAllByRole('row').slice(1);
+    const cells = within(bodyRows[0]!).getAllByRole('cell');
+    // The expander keeps the first cell; № is second, then the data.
+    expect(cells[1]?.textContent?.trim()).toBe('21');
+    expect(user).toBeDefined();
+  });
+
+  it('spans the detail panel across the number column too', () => {
+    render(
+      <DataTable
+        columns={COLUMNS}
+        rows={ROWS}
+        rowKey={(row) => row.id}
+        numbering
+        renderExpanded={(row) => <p>Дэлгэрэнгүй {row.name}</p>}
+        expandedKeys={['a']}
+        onToggleExpand={() => undefined}
+      />,
+    );
+
+    const panel = screen.getByText('Дэлгэрэнгүй Эхний мөр').closest('td');
+    // Expander + № + one data column. A short colSpan leaves the panel not reaching the
+    // table's edge, which looks like a rendering fault.
+    expect(panel).toHaveAttribute('colspan', '3');
+  });
+});

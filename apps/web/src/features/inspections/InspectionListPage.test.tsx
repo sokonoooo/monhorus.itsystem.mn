@@ -115,6 +115,29 @@ describe('InspectionListPage', () => {
     expect(within(table).getAllByText('Үнэлгээгүй').length).toBeGreaterThan(0);
   });
 
+  /**
+   * Row numbers only mean something if they are continuous: asked to "check conclusion 26",
+   * a reader must find it as row 26 on page two, not as row 1 all over again.
+   */
+  it('numbers page two from 26 rather than restarting at 1', async () => {
+    vi.spyOn(inspectionService, 'list').mockResolvedValue({
+      ...makePage([makeInspection()], 25),
+      page: 2,
+      total: 26,
+      totalPages: 2,
+    });
+
+    renderWithAuth(<InspectionListPage />, {
+      permissions: [PERMISSIONS.OBJECT_MASTER_VIEW],
+      route: '/inspections?page=2',
+    });
+
+    const table = await screen.findByRole('table');
+    expect(within(table).getByRole('columnheader', { name: '№' })).toBeInTheDocument();
+    const firstRow = within(table).getAllByRole('row')[1]!;
+    expect(within(firstRow).getAllByRole('cell')[0]).toHaveTextContent(/^26$/);
+  });
+
   it('shows the band counters in the header', async () => {
     vi.spyOn(inspectionService, 'list').mockResolvedValue(makePage([makeInspection()]));
 
