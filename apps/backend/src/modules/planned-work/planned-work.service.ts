@@ -21,6 +21,10 @@ import {
 import { Types, type FilterQuery, type HydratedDocument } from 'mongoose';
 
 import { AppError } from '../../common/errors/app-error';
+import {
+  customerScopeFilter,
+  resolveCustomerScope,
+} from '../../common/security/customer-scope';
 import { ERROR_CODES } from '../../common/errors/error-codes';
 import type { AuthContext } from '../../common/types/express';
 import type { RequestMeta } from '../../common/utils/request-meta.util';
@@ -579,9 +583,20 @@ export async function getPlannedWorkById(
 ): Promise<PlannedWorkDto> {
   const now = new Date();
 
-  const assignmentFilter = await resolveAssignedWorkFilter<IPlannedWork>(actor);
-  const filter: FilterQuery<IPlannedWork> = { _id: new Types.ObjectId(plannedWorkId) };
-  if (assignmentFilter) filter.$and = [assignmentFilter];
+  const scope = resolveCustomerScope(actor);
+  const filter: FilterQuery<IPlannedWork> = {
+    _id: new Types.ObjectId(plannedWorkId),
+    // In the QUERY, not a check on the loaded document, so another organisation's work is
+    // indistinguishable from one that does not exist. Answering "forbidden" would confirm
+    // the id is real and turn this into a probe for other tenants' identifiers.
+    ...customerScopeFilter(scope),
+  };
+
+  // Skipped for a customer for the same reason the list skips it: no employee card.
+  if (scope.mode === 'STAFF') {
+    const assignmentFilter = await resolveAssignedWorkFilter<IPlannedWork>(actor);
+    if (assignmentFilter) filter.$and = [assignmentFilter];
+  }
 
   const work = await PlannedWork.findOne(filter).populate([...LIST_POPULATE]);
   if (!work) {
@@ -612,12 +627,29 @@ export async function listPlannedWork(
   actor: AuthContext,
 ): Promise<PaginatedData<PlannedWorkListItemDto>> {
   const now = new Date();
-  const filter: FilterQuery<IPlannedWork> = {};
+  const scope = resolveCustomerScope(actor);
+  const filter: FilterQuery<IPlannedWork> = { ...customerScopeFilter(scope) };
 
-  const assignmentFilter = await resolveAssignedWorkFilter<IPlannedWork>(actor);
-  if (assignmentFilter) filter.$and = [assignmentFilter];
+  /**
+   * Assignment scope is a STAFF question and is skipped for a customer.
+   *
+   * It narrows to the work an employee is on, and a portal account has no employee card —
+   * so applying it would answer the empty list for every customer. Tenancy is a customer's
+   * boundary and `customerScopeFilter` above has already applied it.
+   */
+  if (scope.mode === 'STAFF') {
+    const assignmentFilter = await resolveAssignedWorkFilter<IPlannedWork>(actor);
+    if (assignmentFilter) filter.$and = [assignmentFilter];
+  }
 
-  if (query.customerId) filter.customer = new Types.ObjectId(query.customerId);
+  /**
+   * A customer's own tenant is already pinned, so a `customerId` they send is DISCARDED
+   * rather than honoured — the same rule the service-request list follows. Trusting it
+   * would let the filter widen the very boundary it sits inside.
+   */
+  if (scope.mode === 'STAFF' && query.customerId) {
+    filter.customer = new Types.ObjectId(query.customerId);
+  }
   if (query.projectId) filter.project = new Types.ObjectId(query.projectId);
   if (query.buildingId) filter.building = new Types.ObjectId(query.buildingId);
   if (query.employeeId) filter.assignedEmployees = new Types.ObjectId(query.employeeId);
@@ -696,9 +728,42 @@ export async function createPlannedWork(
   actor: AuthContext,
   meta: RequestMeta,
 ): Promise<PlannedWorkDto> {
+  /**
+   * A CUSTOMER may raise work, and what they raise is a REQUEST rather than a plan.
+   *
+   * Decided from the authenticated account, never from the body: `resolveCustomerScope`
+   * reads the tenant off the account, so a customer cannot raise work in another
+   * organisation's name however the payload is shaped. Three things are then forced
+   * regardless of what was sent —
+   *
+   *   - the status is PENDING_APPROVAL, so it is not yet a commitment;
+   *   - the crew is empty, which is what makes "cannot be assigned before approval" true
+   *     of the DATA rather than a rule the caller is trusted to follow;
+   *   - the owner is their own organisation.
+   *
+   * Staff creation is completely unchanged and still lands in DRAFT with whatever crew the
+   * planner named.
+   */
+  const scope = resolveCustomerScope(actor);
+  const raisedByCustomer = scope.mode === 'CUSTOMER';
+
   const location = await resolveLocation(input.projectId ?? null, input.buildingId);
-  const employeeIds = await assertEmployeesExist(input.assignedEmployeeIds);
-  const teamId = input.assignedTeamId ? await assertTeamExists(input.assignedTeamId) : null;
+
+  if (raisedByCustomer && String(location.customerId) !== scope.customerId) {
+    // The location chain named somebody else's building. Reported as a validation failure
+    // rather than a 403 so it cannot be used to probe which building ids exist.
+    throw AppError.badRequest(
+      ERROR_CODES.VALIDATION_ERROR,
+      'Барилга танай байгууллагад хамаарахгүй байна.',
+      [{ field: 'buildingId', message: 'Өөр байгууллагын барилга.' }],
+    );
+  }
+
+  const employeeIds = raisedByCustomer
+    ? []
+    : await assertEmployeesExist(input.assignedEmployeeIds);
+  const teamId =
+    !raisedByCustomer && input.assignedTeamId ? await assertTeamExists(input.assignedTeamId) : null;
 
   const plannedEndDate = new Date(input.plannedEndDate);
 
@@ -713,7 +778,7 @@ export async function createPlannedWork(
     plannedEndDate,
     // Captured once so a later reschedule cannot erase the original commitment.
     originalPlannedEndDate: plannedEndDate,
-    status: 'DRAFT',
+    status: raisedByCustomer ? 'PENDING_APPROVAL' : 'DRAFT',
     assignedEmployees: employeeIds,
     assignedTeam: teamId,
     createdBy: new Types.ObjectId(actor.userId),
@@ -780,6 +845,25 @@ export async function updatePlannedWork(
       );
     }
     work.plannedStartDate = start;
+  }
+
+  /**
+   * NOBODY IS ASSIGNED TO A WORK THAT HAS NOT BEEN APPROVED.
+   *
+   * This is the second half of the gate. Forcing an empty crew at creation stops a customer
+   * assigning; this stops anyone else doing it through the ordinary edit path while the
+   * request is still pending. Refused rather than ignored — a planner who believes they
+   * have staffed a job and has not is worse off than one who gets an error.
+   */
+  if (
+    work.status === 'PENDING_APPROVAL' &&
+    (input.assignedEmployeeIds !== undefined || input.assignedTeamId !== undefined)
+  ) {
+    throw AppError.badRequest(
+      ERROR_CODES.VALIDATION_ERROR,
+      'Батлагдаагүй ажилд хариуцагч томилох боломжгүй. Эхлээд батална уу.',
+      [{ field: 'assignedEmployeeIds', message: 'Батлагдсаны дараа томилно.' }],
+    );
   }
 
   if (input.assignedEmployeeIds !== undefined) {

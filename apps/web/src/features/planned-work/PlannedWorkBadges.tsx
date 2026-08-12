@@ -29,6 +29,11 @@ const VIOLET = 'bg-violet-50 text-violet-700 ring-violet-200';
 
 const WORK_STATUS_STYLES: Record<PlannedWorkEffectiveStatus, string> = {
   DRAFT: GREY,
+  // Amber, like PAUSED and unlike DRAFT: a customer request waiting on a decision is
+  // somebody's outstanding item, not a quiet nothing-happening-yet. This map is exhaustive
+  // over the status union, so this entry is required for the file to compile — it is the
+  // only change the new status forces on any staff screen.
+  PENDING_APPROVAL: YELLOW,
   PLANNED: BLUE,
   STARTED: BLUE,
   PAUSED: YELLOW,

@@ -36,7 +36,7 @@ import {
   enforcePasswordChange,
   requireAuth,
 } from '../../middlewares/authenticate.middleware';
-import { requirePermission } from '../../middlewares/authorize.middleware';
+import { requireAnyPermission, requirePermission } from '../../middlewares/authorize.middleware';
 import { validate } from '../../middlewares/validate.middleware';
 import { inspectionReportRouter } from '../inspection-report/inspection-report.routes';
 import { upload } from '../storage/storage.service';
@@ -91,7 +91,10 @@ plannedWorkRouter.use(
  */
 plannedWorkRouter.get(
   '/',
-  requirePermission(PERMISSIONS.PLANNED_WORK_VIEW),
+  // The portal key admits a CUSTOMER to their OWN work only: `listPlannedWork` resolves the
+  // tenant from the account and puts it in the query, so the permission answers "may you
+  // look at this module" and the scope answers "at whose records".
+  requireAnyPermission(PERMISSIONS.PLANNED_WORK_VIEW, PERMISSIONS.PORTAL_PLANNED_WORK_VIEW),
   validate({ query: plannedWorkListQuerySchema }),
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
@@ -110,7 +113,9 @@ plannedWorkRouter.get(
 
 plannedWorkRouter.post(
   '/',
-  requirePermission(PERMISSIONS.PLANNED_WORK_CREATE),
+  // A customer raising work is a REQUEST: `createPlannedWork` forces PENDING_APPROVAL, an
+  // empty crew and their own organisation for a portal caller, whatever the body says.
+  requireAnyPermission(PERMISSIONS.PLANNED_WORK_CREATE, PERMISSIONS.PORTAL_PLANNED_WORK_CREATE),
   validate({ body: createPlannedWorkSchema }),
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
@@ -128,7 +133,9 @@ plannedWorkRouter.post(
 
 plannedWorkRouter.get(
   '/:plannedWorkId',
-  requirePermission(PERMISSIONS.PLANNED_WORK_VIEW),
+  // Same split as the list: the portal key gets in, the tenant predicate in the query
+  // decides whose record. Another organisation's id is a 404, never a 403.
+  requireAnyPermission(PERMISSIONS.PLANNED_WORK_VIEW, PERMISSIONS.PORTAL_PLANNED_WORK_VIEW),
   validate({ params: workParams }),
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {

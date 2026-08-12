@@ -44,6 +44,7 @@ export function PortalHomePage(): ReactElement {
 
   const canCreate = can(PERMISSIONS.PORTAL_SERVICE_REQUEST_CREATE);
   const canSeeSites = can(PERMISSIONS.PORTAL_BUILDING_VIEW);
+  const canRequestWork = can(PERMISSIONS.PORTAL_PLANNED_WORK_CREATE);
 
   const [recent, setRecent] = useState<ServiceRequestListItemDto[] | null>(null);
   const [openCount, setOpenCount] = useState(0);
@@ -99,15 +100,15 @@ export function PortalHomePage(): ReactElement {
             </Link>
           </div>
 
-          {canCreate && (
+          {canRequestWork && (
             <div className="rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
-              <p className="text-xs font-medium text-slate-500">Төлөвлөгөөт үзлэг</p>
+              <p className="text-xs font-medium text-slate-500">Төлөвлөгөөт ажил</p>
               <p className="mt-1 text-sm text-slate-700">
-                Урьдчилан сэргийлэх үзлэг хүсэх. Хүлээн авч баталсны дараа ажилтан
-                хуваарилагдана.
+                Урьдчилан сэргийлэх үзлэг, засварын хүсэлт илгээх. Батлагдсаны дараа ажилтан
+                томилогдоно.
               </p>
               <Link
-                to="/portal/requests/new?type=PLANNED_INSPECTION"
+                to="/portal/planned-work/new"
                 className="mt-2 inline-block text-xs font-medium text-blue-600 hover:underline"
               >
                 Хүсэлт илгээх

@@ -1,6 +1,7 @@
 import type {
   ApiResponse,
   BuildingDto,
+  CreatePlannedWorkInput,
   CreateServiceRequestInput,
   CustomerWorkReportDto,
   FloorDto,
@@ -9,6 +10,9 @@ import type {
   ObjectListItemDto,
   ProjectDto,
   PaginatedData,
+  PlannedWorkDto,
+  PlannedWorkListItemDto,
+  PlannedWorkListQuery,
   ServiceRequestAttachmentDto,
   ServiceRequestDetailDto,
   ServiceRequestListItemDto,
@@ -35,11 +39,17 @@ function toParams(query: Record<string, unknown>): Record<string, string | numbe
  * is the complete list of what a customer's browser asks for, so "what can the portal
  * reach" is answerable by reading one screen of code instead of grepping five services.
  *
- * EVERY ENDPOINT HERE ALREADY EXISTS AND ALREADY ACCEPTS A `portal.*` KEY. Nothing new was
- * added to the backend for the portal, and nothing here is doing any securing: each of
- * these is bounded server-side by `resolveCustomerScope`, which reads the tenant from the
- * authenticated account and discards anything the request carries. A `customerId` sent
- * from here would be ignored, which is why none is ever sent.
+ * EVERY ENDPOINT HERE IS AN EXISTING ONE. The service-request and site reads already
+ * accepted a `portal.*` key before this portal existed; the three planned-work methods call
+ * routes that already existed and were widened to accept `portal.planned_work.*` — no new
+ * route, no new shape, no parallel API.
+ *
+ * NOTHING HERE IS DOING ANY SECURING. Each of these is bounded server-side by
+ * `resolveCustomerScope`, which reads the tenant from the authenticated account and
+ * discards anything the request carries; a `customerId` sent from here would be ignored,
+ * which is why none is ever sent. The same is true of the approval rule: a work raised on
+ * this client is forced to PENDING_APPROVAL with no crew by the server, not by the absence
+ * of those fields in the payload below.
  */
 export const portalService = {
   // -- Service requests -------------------------------------------------------
@@ -96,6 +106,44 @@ export const portalService = {
       await apiClient.get<ApiResponse<CustomerWorkReportDto>>(
         `/service-requests/${requestId}/report/customer`,
       ),
+    );
+  },
+
+  // -- Planned work -----------------------------------------------------------
+
+  /**
+   * The customer's own planned work, at every stage.
+   *
+   * `GET /planned-work` accepts `portal.planned_work.view` and applies the tenant predicate
+   * from the account, so no `customerId` is sent — it would be discarded, and sending one
+   * would imply it might not be.
+   */
+  async listPlannedWork(
+    query: PlannedWorkListQuery = {},
+  ): Promise<PaginatedData<PlannedWorkListItemDto>> {
+    return unwrap(
+      await apiClient.get<ApiResponse<PaginatedData<PlannedWorkListItemDto>>>('/planned-work', {
+        params: toParams(query as Record<string, unknown>),
+      }),
+    );
+  },
+
+  async getPlannedWork(plannedWorkId: string): Promise<PlannedWorkDto> {
+    return unwrap(
+      await apiClient.get<ApiResponse<PlannedWorkDto>>(`/planned-work/${plannedWorkId}`),
+    );
+  },
+
+  /**
+   * Raise a request for scheduled maintenance.
+   *
+   * The same endpoint and the same shared schema staff use. What differs is decided
+   * server-side from the account: a portal caller's work is forced to PENDING_APPROVAL with
+   * an empty crew, so no crew is sent from here and sending one would change nothing.
+   */
+  async createPlannedWork(payload: CreatePlannedWorkInput): Promise<PlannedWorkDto> {
+    return unwrap(
+      await apiClient.post<ApiResponse<PlannedWorkDto>>('/planned-work', payload),
     );
   },
 

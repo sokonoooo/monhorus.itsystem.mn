@@ -255,7 +255,15 @@ export async function transitionPlannedWork(
         break;
       }
 
-      case 'CANCEL': {
+      case 'CANCEL':
+      /**
+       * REJECT shares CANCEL's bookkeeping because it shares its destination: refusing a
+       * customer's request ends the record, and the reason it ends is the thing the
+       * customer needs to read. Falling through rather than repeating the four writes keeps
+       * the two from drifting — a reason recorded on one and not the other would be a
+       * cancelled work with no explanation on somebody's portal screen.
+       */
+      case 'REJECT': {
         update.cancelReason = reason;
         update.cancelledBy = new Types.ObjectId(actor.userId);
         update.cancelledByName = actor.fullName;

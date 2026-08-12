@@ -14,6 +14,20 @@ import { PERMISSIONS, type PermissionKey } from './permissions';
  */
 export const PLANNED_WORK_LIFECYCLE_STATUSES = [
   'DRAFT',
+  /**
+   * Raised by a CUSTOMER and waiting on an authorised approver.
+   *
+   * Only a customer's own request enters here. Staff creating work keep the existing
+   * DRAFT -> PLANNED path untouched, which is why PLAN is still in the action matrix
+   * below: this state is an additional entry point, not a replacement for the one the
+   * planners already use.
+   *
+   * Nothing is assigned while a work sits here. `assignedEmployees` is what every scope
+   * check and every technician-facing query reads, so a pending work having none is what
+   * "cannot be assigned before approval" actually means — it is a property of the data
+   * rather than a rule callers are trusted to observe.
+   */
+  'PENDING_APPROVAL',
   'PLANNED',
   'STARTED',
   'PAUSED',
@@ -31,6 +45,7 @@ export type PlannedWorkEffectiveStatus = (typeof PLANNED_WORK_EFFECTIVE_STATUSES
 
 export const PLANNED_WORK_STATUS_LABELS: Record<PlannedWorkEffectiveStatus, string> = {
   DRAFT: 'Төсөл',
+  PENDING_APPROVAL: 'Хүлээгдэж буй',
   PLANNED: 'Төлөвлөгдсөн',
   STARTED: 'Хэрэгжиж байна',
   PAUSED: 'Түр зогссон',
@@ -240,6 +255,8 @@ export const REPORT_SUBMITTABLE_STATUSES: readonly PlannedWorkReportStatus[] = [
  */
 export const PLANNED_WORK_ACTIONS = [
   'PLAN',
+  'APPROVE',
+  'REJECT',
   'START',
   'PAUSE',
   'RESUME',
@@ -258,12 +275,49 @@ export interface PlannedWorkActionRule {
 }
 
 export const PLANNED_WORK_ACTION_RULES: Record<PlannedWorkAction, PlannedWorkActionRule> = {
+  /**
+   * The staff path, UNCHANGED. A planner still takes their own draft straight to PLANNED.
+   * The approval gate below is an additional entry point for customer-raised work, not a
+   * replacement for this one.
+   */
   PLAN: {
     label: 'Төлөвлөх',
     from: ['DRAFT'],
     to: 'PLANNED',
     requiresReason: false,
     permission: PERMISSIONS.PLANNED_WORK_CHANGE_STATUS,
+  },
+  /**
+   * Accept a customer's request. This is the only way out of PENDING_APPROVAL other than
+   * refusing it, and it is what makes the work assignable: PLANNED is the first status
+   * from which the existing assign path will accept a crew.
+   *
+   * `planned_work.approve` is a key of its own, deliberately not `change_status` — which
+   * DISPATCH and TECHNICIAN both hold — and not `approve_report`, which means "sign off a
+   * finished job's write-up". Committing the company to work a customer asked for is a
+   * third thing and gets its own key.
+   */
+  APPROVE: {
+    label: 'Батлах',
+    from: ['PENDING_APPROVAL'],
+    to: 'PLANNED',
+    requiresReason: false,
+    permission: PERMISSIONS.PLANNED_WORK_APPROVE,
+  },
+  /**
+   * Refuse it, with a reason the customer reads on their own screen.
+   *
+   * Lands on CANCELLED rather than DRAFT: a customer cannot edit a draft, so returning it
+   * there would strand the record in a state its author cannot act on and its owner has
+   * not agreed to own. CANCELLED is a real end state, it already requires a reason, and
+   * the customer can raise a fresh request.
+   */
+  REJECT: {
+    label: 'Татгалзах',
+    from: ['PENDING_APPROVAL'],
+    to: 'CANCELLED',
+    requiresReason: true,
+    permission: PERMISSIONS.PLANNED_WORK_APPROVE,
   },
   START: {
     label: 'Ажил эхлүүлэх',

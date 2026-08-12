@@ -83,6 +83,13 @@ export const NAVIGATION: readonly NavSection[] = [
         icon: 'SERVICE_REQUEST',
       },
       {
+        key: 'portal-planned-work',
+        label: 'Төлөвлөгөөт ажил',
+        path: '/portal/planned-work',
+        permissions: [PERMISSIONS.PORTAL_PLANNED_WORK_VIEW],
+        icon: 'PLANNED_WORK',
+      },
+      {
         key: 'portal-sites',
         label: 'Миний барилга',
         path: '/portal/sites',

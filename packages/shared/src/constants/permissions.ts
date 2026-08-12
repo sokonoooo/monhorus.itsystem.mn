@@ -116,6 +116,16 @@ export const PERMISSIONS = {
   PLANNED_WORK_RESCHEDULE: 'planned_work.reschedule',
   PLANNED_WORK_CANCEL: 'planned_work.cancel',
   PLANNED_WORK_RECORD_PROGRESS: 'planned_work.record_progress',
+  /**
+   * Approving or refusing a customer-raised PLAN, before any work happens.
+   *
+   * NOT the same key as `planned_work.approve_report`, and the two are easy to confuse:
+   * this one decides whether a job the customer asked for goes ahead and therefore becomes
+   * assignable; that one decides whether a finished job's write-up is accepted. Merging
+   * them would mean granting sign-off over paperwork also handed somebody the authority to
+   * commit the company's technicians to new work.
+   */
+  PLANNED_WORK_APPROVE: 'planned_work.approve',
   PLANNED_WORK_SUBMIT_REPORT: 'planned_work.submit_report',
   PLANNED_WORK_APPROVE_REPORT: 'planned_work.approve_report',
 
@@ -250,6 +260,17 @@ export const PERMISSIONS = {
   PORTAL_SERVICE_REQUEST_VIEW: 'portal.service_request.view',
   PORTAL_SERVICE_REQUEST_CREATE: 'portal.service_request.create',
   PORTAL_PROFILE_VIEW: 'portal.profile.view',
+  /**
+   * Raising, and then following, a request for scheduled maintenance on the caller's own
+   * sites.
+   *
+   * These admit a customer to the planned-work module as a REQUESTER and a reader of their
+   * own records, and to nothing else. The lifecycle, the crew, the sub-tasks and the
+   * reports stay behind the `planned_work.*` keys, which no customer holds. A work created
+   * on this key is forced to PENDING_APPROVAL with no crew, whatever the request body says.
+   */
+  PORTAL_PLANNED_WORK_VIEW: 'portal.planned_work.view',
+  PORTAL_PLANNED_WORK_CREATE: 'portal.planned_work.create',
 } as const;
 
 export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -345,6 +366,7 @@ export const PERMISSION_LABELS: Record<PermissionKey, string> = {
   'planned_work.reschedule': 'Төлөвлөгөөт ажлын хугацаа сунгах',
   'planned_work.cancel': 'Төлөвлөгөөт ажил цуцлах',
   'planned_work.record_progress': 'Ажлын биелэлт бүртгэх',
+  'planned_work.approve': 'Төлөвлөгөөт ажил батлах',
   'planned_work.submit_report': 'Тайлан хянуулахаар илгээх',
   'planned_work.approve_report': 'Тайлан батлах',
 
@@ -388,6 +410,8 @@ export const PERMISSION_LABELS: Record<PermissionKey, string> = {
   'portal.service_request.view': 'Өөрийн үйлчилгээний хүсэлтийг харах',
   'portal.service_request.create': 'Үйлчилгээний хүсэлт илгээх',
   'portal.profile.view': 'Өөрийн профайл харах',
+  'portal.planned_work.view': 'Өөрийн төлөвлөгөөт ажил харах',
+  'portal.planned_work.create': 'Төлөвлөгөөт ажлын хүсэлт илгээх',
 };
 
 export function permissionModuleOf(key: PermissionKey): PermissionModule {
@@ -475,8 +499,8 @@ export const SYSTEM_ROLE_DEFAULT_PERMISSIONS: Record<SystemRoleKey, readonly Per
     P.MATERIAL_VIEW, P.MATERIAL_MANAGE,
     P.PLANNED_WORK_VIEW, P.PLANNED_WORK_CREATE, P.PLANNED_WORK_UPDATE,
     P.PLANNED_WORK_CHANGE_STATUS, P.PLANNED_WORK_RESCHEDULE, P.PLANNED_WORK_CANCEL,
-    P.PLANNED_WORK_RECORD_PROGRESS, P.PLANNED_WORK_SUBMIT_REPORT,
-    P.PLANNED_WORK_APPROVE_REPORT,
+    P.PLANNED_WORK_RECORD_PROGRESS, P.PLANNED_WORK_APPROVE,
+    P.PLANNED_WORK_SUBMIT_REPORT, P.PLANNED_WORK_APPROVE_REPORT,
     P.DISPATCH_VIEW, P.DISPATCH_ASSIGN, P.DISPATCH_EXTEND_SLA,
     P.INVOICE_VIEW, P.INVOICE_MANAGE, P.INVOICE_SEND, P.INVOICE_RECORD_PAYMENT,
     P.INVOICE_CANCEL,
@@ -498,8 +522,8 @@ export const SYSTEM_ROLE_DEFAULT_PERMISSIONS: Record<SystemRoleKey, readonly Per
     P.SERVICE_REQUEST_CHANGE_STATUS,
     P.PLANNED_WORK_VIEW, P.PLANNED_WORK_CREATE, P.PLANNED_WORK_UPDATE,
     P.PLANNED_WORK_CHANGE_STATUS, P.PLANNED_WORK_RESCHEDULE, P.PLANNED_WORK_CANCEL,
-    P.PLANNED_WORK_RECORD_PROGRESS, P.PLANNED_WORK_SUBMIT_REPORT,
-    P.PLANNED_WORK_APPROVE_REPORT,
+    P.PLANNED_WORK_RECORD_PROGRESS, P.PLANNED_WORK_APPROVE,
+    P.PLANNED_WORK_SUBMIT_REPORT, P.PLANNED_WORK_APPROVE_REPORT,
     P.DISPATCH_VIEW, P.DISPATCH_EXTEND_SLA,
     // Section 14.2 gives Менежер sight of revenue and receivables but no money actions.
     P.INVOICE_VIEW,
@@ -679,6 +703,8 @@ export const SYSTEM_ROLE_DEFAULT_PERMISSIONS: Record<SystemRoleKey, readonly Per
     P.PORTAL_SERVICE_REQUEST_VIEW,
     P.PORTAL_SERVICE_REQUEST_CREATE,
     P.PORTAL_PROFILE_VIEW,
+    P.PORTAL_PLANNED_WORK_VIEW,
+    P.PORTAL_PLANNED_WORK_CREATE,
     P.NOTIFICATION_VIEW,
   ],
 };

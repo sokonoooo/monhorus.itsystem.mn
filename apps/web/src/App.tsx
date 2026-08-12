@@ -45,6 +45,9 @@ import { SettingsPage } from './features/settings/SettingsPage';
 import { PortalFloorPage } from './features/portal/PortalFloorPage';
 import { PortalHomePage } from './features/portal/PortalHomePage';
 import { PortalObjectDetailPage } from './features/portal/PortalObjectDetailPage';
+import { PortalPlannedWorkCreatePage } from './features/portal/PortalPlannedWorkCreatePage';
+import { PortalPlannedWorkDetailPage } from './features/portal/PortalPlannedWorkDetailPage';
+import { PortalPlannedWorkListPage } from './features/portal/PortalPlannedWorkListPage';
 import { PortalRequestCreatePage } from './features/portal/PortalRequestCreatePage';
 import { PortalRequestDetailPage } from './features/portal/PortalRequestDetailPage';
 import { PortalRequestListPage } from './features/portal/PortalRequestListPage';
@@ -473,6 +476,30 @@ export default function App(): ReactElement {
             element={
               <Page anyOf={[PERMISSIONS.PORTAL_SERVICE_REQUEST_VIEW]}>
                 <PortalRequestDetailPage />
+              </Page>
+            }
+          />
+          <Route
+            path="/portal/planned-work"
+            element={
+              <Page anyOf={[PERMISSIONS.PORTAL_PLANNED_WORK_VIEW]}>
+                <PortalPlannedWorkListPage />
+              </Page>
+            }
+          />
+          <Route
+            path="/portal/planned-work/new"
+            element={
+              <Page anyOf={[PERMISSIONS.PORTAL_PLANNED_WORK_CREATE]}>
+                <PortalPlannedWorkCreatePage />
+              </Page>
+            }
+          />
+          <Route
+            path="/portal/planned-work/:plannedWorkId"
+            element={
+              <Page anyOf={[PERMISSIONS.PORTAL_PLANNED_WORK_VIEW]}>
+                <PortalPlannedWorkDetailPage />
               </Page>
             }
           />

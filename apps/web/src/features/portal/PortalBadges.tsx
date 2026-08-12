@@ -1,5 +1,7 @@
 import {
+  PLANNED_WORK_STATUS_LABELS,
   SERVICE_REQUEST_STATUS_LABELS,
+  type PlannedWorkEffectiveStatus,
   type ServiceRequestStatus,
 } from '@monhorus/shared';
 import type { ReactElement } from 'react';
@@ -51,4 +53,40 @@ export function PortalStatusBadge({ status }: { status: ServiceRequestStatus }):
 
 export function PortalUrgentBadge(): ReactElement {
   return <span className={`${BASE} ${RED}`}>Яаралтай</span>;
+}
+
+/**
+ * Planned-work status for the portal.
+ *
+ * Read from the customer's side of the transaction: PENDING_APPROVAL is amber because it
+ * is the state they are waiting on somebody for, and it is the one they will look for.
+ * Everything from PLANNED onwards is "we have agreed to do this", which is blue until it
+ * is done.
+ *
+ * Labels come from the shared map unchanged, for the same reason the request badge does —
+ * a second vocabulary is how a customer and a planner end up describing the same record
+ * differently to each other.
+ */
+const PORTAL_WORK_STATUS_STYLES: Record<PlannedWorkEffectiveStatus, string> = {
+  DRAFT: GREY,
+  PENDING_APPROVAL: AMBER,
+  PLANNED: BLUE,
+  STARTED: BLUE,
+  PAUSED: AMBER,
+  OVERDUE: RED,
+  COMPLETED: GREEN,
+  ARCHIVED: GREEN,
+  CANCELLED: RED,
+};
+
+export function PortalWorkStatusBadge({
+  status,
+}: {
+  status: PlannedWorkEffectiveStatus;
+}): ReactElement {
+  return (
+    <span className={`${BASE} ${PORTAL_WORK_STATUS_STYLES[status]}`}>
+      {PLANNED_WORK_STATUS_LABELS[status]}
+    </span>
+  );
 }

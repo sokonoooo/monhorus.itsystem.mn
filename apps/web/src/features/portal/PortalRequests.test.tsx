@@ -9,6 +9,8 @@ import { makePage, makeServiceRequest } from '../../test/fixtures';
 import { renderWithAuth } from '../../test/render';
 import { planMarkerObjects, unplacedOnPlanCount } from './PortalFloorPlan';
 import { PortalRequestCreatePage } from './PortalRequestCreatePage';
+import { PortalPlannedWorkCreatePage } from './PortalPlannedWorkCreatePage';
+import { PortalPlannedWorkDetailPage } from './PortalPlannedWorkDetailPage';
 import { PortalRequestListPage } from './PortalRequestListPage';
 
 const CUSTOMER_ID = '507f1f77bcf86cd799439011';
@@ -29,12 +31,18 @@ const CUSTOMER_IDENTITY = {
   phone: '99112233',
 };
 
-function renderPortal(ui: Parameters<typeof renderWithAuth>[0], route: string) {
+function renderPortal(
+  ui: Parameters<typeof renderWithAuth>[0],
+  route: string,
+  /** Required for a screen that reads `useParams` — without a matched route it gets none. */
+  path?: string,
+) {
   return renderWithAuth(ui, {
     permissions: PORTAL_PERMISSIONS,
     role: 'customer',
     user: CUSTOMER_IDENTITY,
     route,
+    ...(path ? { path } : {}),
   });
 }
 
@@ -246,5 +254,122 @@ describe('floor plan marker rules', () => {
     const order = planMarkerObjects([critical, unassessed, normal]).map((object) => object.id);
 
     expect(order).toEqual(['unassessed', 'normal', 'critical']);
+  });
+});
+
+describe('raising planned work from the portal', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(portalService, 'listProjects').mockResolvedValue(makePage([]));
+    vi.spyOn(portalService, 'listBuildingsIn').mockResolvedValue(
+      makePage([{ id: BUILDING_ID, name: 'Төв барилга' } as never]),
+    );
+  });
+
+  /**
+   * The customer is told what will happen before they submit, because "you asked, nobody is
+   * on it yet" is the whole difference between this and a service request.
+   */
+  it('says the request waits for approval before anyone is assigned', async () => {
+    renderPortal(<PortalPlannedWorkCreatePage />, '/portal/planned-work/new');
+
+    expect(
+      await screen.findByText(/Хүсэлт илгээснээр ажил «Хүлээгдэж буй» төлөвт орно/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Батлагдтал хэн ч томилогдохгүй/)).toBeInTheDocument();
+  });
+
+  /** No crew field at all — the server forces it empty, and offering one would be a lie. */
+  it('offers the customer no way to name a crew', async () => {
+    renderPortal(<PortalPlannedWorkCreatePage />, '/portal/planned-work/new');
+
+    await screen.findByText('Ажил');
+    expect(screen.queryByText(/Хариуцах ажилтан/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/Баг/)).not.toBeInTheDocument();
+  });
+
+  it('posts a real planned work with an empty crew', async () => {
+    const create = vi
+      .spyOn(portalService, 'createPlannedWork')
+      .mockResolvedValue({ id: 'w1', workNumber: 'PW-202609-0001' } as never);
+
+    const user = userEvent.setup();
+    renderPortal(<PortalPlannedWorkCreatePage />, '/portal/planned-work/new');
+
+    await user.selectOptions(await screen.findByLabelText(/^Барилга/), BUILDING_ID);
+    await user.type(screen.getByLabelText(/^Ажлын нэр/), 'Улирлын үзлэг');
+    await user.type(screen.getByLabelText(/^Санал болгож буй эхлэх огноо/), '2026-09-01');
+    await user.type(screen.getByLabelText(/^Санал болгож буй дуусах огноо/), '2026-09-03');
+    await user.click(screen.getByRole('button', { name: 'Илгээх' }));
+
+    await waitFor(() => {
+      expect(create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          buildingId: BUILDING_ID,
+          title: 'Улирлын үзлэг',
+          assignedEmployeeIds: [],
+        }),
+      );
+    });
+  });
+});
+
+describe('following planned work in the portal', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('tells a pending work that it is waiting on an approver', async () => {
+    vi.spyOn(portalService, 'getPlannedWork').mockResolvedValue({
+      id: 'w1',
+      workNumber: 'PW-202609-0001',
+      title: 'Улирлын үзлэг',
+      lifecycleStatus: 'PENDING_APPROVAL',
+      effectiveStatus: 'PENDING_APPROVAL',
+      building: { id: BUILDING_ID, name: 'Төв барилга' },
+      project: null,
+      plannedStartDate: '2026-09-01T00:00:00.000Z',
+      plannedEndDate: '2026-09-03T00:00:00.000Z',
+      createdAt: '2026-08-20T00:00:00.000Z',
+      description: null,
+      cancelReason: null,
+    } as never);
+
+    renderPortal(
+      <PortalPlannedWorkDetailPage />,
+      '/portal/planned-work/w1',
+      '/portal/planned-work/:plannedWorkId',
+    );
+
+    expect(await screen.findByText('Батлахыг хүлээж байна')).toBeInTheDocument();
+    expect(screen.getByText(/батлагдсаны дараа гүйцэтгэх ажилтан томилогдож/)).toBeInTheDocument();
+  });
+
+  it('shows the reason when an approver refused it', async () => {
+    vi.spyOn(portalService, 'getPlannedWork').mockResolvedValue({
+      id: 'w1',
+      workNumber: 'PW-202609-0001',
+      title: 'Улирлын үзлэг',
+      lifecycleStatus: 'CANCELLED',
+      effectiveStatus: 'CANCELLED',
+      building: { id: BUILDING_ID, name: 'Төв барилга' },
+      project: null,
+      plannedStartDate: '2026-09-01T00:00:00.000Z',
+      plannedEndDate: '2026-09-03T00:00:00.000Z',
+      createdAt: '2026-08-20T00:00:00.000Z',
+      description: null,
+      cancelReason: 'Тухайн хугацаанд боломжгүй.',
+    } as never);
+
+    renderPortal(
+      <PortalPlannedWorkDetailPage />,
+      '/portal/planned-work/w1',
+      '/portal/planned-work/:plannedWorkId',
+    );
+
+    // The label appears twice by design — once as the alert heading, once on the status
+    // badge — so the reason is what this asserts on, and the label only as a pair.
+    expect(await screen.findAllByText('Цуцлагдсан')).toHaveLength(2);
+    expect(screen.getByText('Тухайн хугацаанд боломжгүй.')).toBeInTheDocument();
   });
 });
