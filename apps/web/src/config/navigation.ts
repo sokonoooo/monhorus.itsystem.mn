@@ -51,6 +51,46 @@ export interface NavSection {
 }
 
 export const NAVIGATION: readonly NavSection[] = [
+  /**
+   * The customer portal.
+   *
+   * Keyed on `portal.*`, which no staff account can hold — the RBAC assignment chokepoint
+   * refuses a portal key on a staff tier and a staff key on a customer tier — so this
+   * section is structurally invisible to staff and the staff sections structurally
+   * invisible here. That is why both live in one list behind one permission filter rather
+   * than behind a role branch: the permission set already separates them, and a branch
+   * would be a second, weaker copy of a rule the server enforces.
+   */
+  {
+    key: 'portal',
+    label: null,
+    items: [
+      {
+        key: 'portal-home',
+        label: 'Нүүр',
+        path: '/portal',
+        // Both keys, because the route is an any-of on the same pair. Listing one would
+        // make the page reachable by URL and invisible in the menu to a caller holding the
+        // other — the disagreement this file exists to prevent.
+        permissions: [PERMISSIONS.PORTAL_SERVICE_REQUEST_VIEW, PERMISSIONS.PORTAL_BUILDING_VIEW],
+        icon: 'DASHBOARD',
+      },
+      {
+        key: 'portal-requests',
+        label: 'Миний хүсэлт',
+        path: '/portal/requests',
+        permissions: [PERMISSIONS.PORTAL_SERVICE_REQUEST_VIEW],
+        icon: 'SERVICE_REQUEST',
+      },
+      {
+        key: 'portal-sites',
+        label: 'Миний барилга',
+        path: '/portal/sites',
+        permissions: [PERMISSIONS.PORTAL_BUILDING_VIEW],
+        icon: 'PROJECT',
+      },
+    ],
+  },
   {
     key: 'overview',
     label: null,

@@ -115,7 +115,11 @@ export function AppShell({ children }: { children: ReactNode }): ReactElement {
             {collapsed ? 'M' : 'Monhorus'}
           </span>
           {!collapsed && (
-            <span className="truncate text-xs text-slate-500">Админ самбар</span>
+            <span className="truncate text-xs text-slate-500">
+              {/* A customer is not looking at an admin console, and telling them they are
+                  is the first thing they read on the page. */}
+              {user?.role === 'customer' ? 'Харилцагчийн хэсэг' : 'Админ самбар'}
+            </span>
           )}
         </div>
 
