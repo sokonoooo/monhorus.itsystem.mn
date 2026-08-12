@@ -11,7 +11,9 @@ import { useEffect, useState, type ReactElement } from 'react';
 import { RISK_SURFACE_STYLES } from '../../components/ui/DomainBadges';
 import { EmptyState } from '../../components/ui/States';
 import { authorisedFileUrl } from '../../lib/file-url';
+import { useAuthorisedFileUrls } from '../../lib/use-authorised-file-urls';
 import { markerStyle } from '../projects/plan-geometry';
+import { ObjectTypeGlyph } from '../projects/plan-icons';
 
 /** What a band-less object is called. "No finding yet" is an absence, not a sixth band. */
 const UNASSESSED_LABEL = 'Үнэлгээгүй';
@@ -91,6 +93,22 @@ export function PortalFloorPlan({
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [imageFailed, setImageFailed] = useState(false);
 
+  /**
+   * Custom type icons, fetched once per DISTINCT icon rather than once per marker.
+   *
+   * `objectType.iconUrl` is an authenticated download path, so it cannot be used as a bare
+   * `src`. This is the same resolution the staff panel performs, and the deduplication is
+   * the point of it: one icon shared by forty markers must cost one request, not forty.
+   */
+  const iconFiles = [
+    ...new Set(
+      objects
+        .map((object) => object.objectType?.iconUrl ?? null)
+        .filter((url): url is string => url !== null),
+    ),
+  ].map((url) => ({ id: url, downloadUrl: url }));
+  const iconUrls = useAuthorisedFileUrls(iconFiles);
+
   useEffect(() => {
     let cancelled = false;
     let revoke: string | null = null;
@@ -159,16 +177,27 @@ export function PortalFloorPlan({
               onClick={() => onOpenObject(object)}
               style={markerStyle(object.planPosition ?? null)}
               /*
-                A real button, not a coloured div. It is the only way into the equipment from
-                the drawing, so it has to be a focus stop with a name: the plan is then
-                traversable by keyboard and a screen reader hears the equipment and its band
-                rather than "graphic". `-translate-*-1/2` is the CSS spelling of centring the
-                marker on its point.
+                Shaped like the staff marker, deliberately: a risk-coloured pill carrying the
+                object type's own glyph and its code. An unadorned coloured dot — which this
+                was — makes a busy floor read as a field of identical circles, because the
+                colour only says how bad it is and nothing at all about what it is.
+
+                A real button rather than a styled div: it is the only way into the equipment
+                from the drawing, so it has to be a focus stop with a name. `-translate-*-1/2`
+                is the CSS spelling of centring the marker on its stored point.
               */
-              className={`absolute h-5 w-5 -translate-x-1/2 -translate-y-1/2 rounded-full ring-2 ring-white focus:outline-none focus-visible:ring-4 focus-visible:ring-blue-600 ${
+              className={`absolute flex -translate-x-1/2 -translate-y-1/2 items-center gap-1 whitespace-nowrap rounded-full px-1.5 py-1 text-[10px] font-semibold shadow-sm ring-2 ring-inset focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600 ${
                 RISK_SURFACE_STYLES[level ?? 'UNASSESSED']
               }`}
-            />
+            >
+              <ObjectTypeGlyph
+                icon={object.objectType?.icon ?? null}
+                iconUrl={
+                  object.objectType?.iconUrl ? (iconUrls[object.objectType.iconUrl] ?? null) : null
+                }
+              />
+              <span>{object.code}</span>
+            </button>
           );
         })}
     </div>

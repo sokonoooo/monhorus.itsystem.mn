@@ -449,4 +449,50 @@ describe('following planned work in the portal', () => {
     expect(screen.queryByText('Ням Цэрэн')).not.toBeInTheDocument();
     expect(screen.queryByText(/Хариуцагч/)).not.toBeInTheDocument();
   });
+
+  /**
+   * Read-only by construction: every planned-work write is keyed on a `planned_work.*`
+   * permission no customer holds, so an edit control here would be an offer the server
+   * refuses. Asserted rather than assumed, because the admin page this mirrors has them.
+   */
+  it('offers no way to change the work, and hides an unapproved report', async () => {
+    vi.spyOn(portalService, 'getPlannedWork').mockResolvedValue({
+      id: 'w1',
+      workNumber: 'PW-202609-0001',
+      title: 'Улирлын үзлэг',
+      lifecycleStatus: 'STARTED',
+      effectiveStatus: 'STARTED',
+      building: { id: BUILDING_ID, name: 'Төв барилга' },
+      project: null,
+      plannedStartDate: '2026-09-01T00:00:00.000Z',
+      plannedEndDate: '2026-09-03T00:00:00.000Z',
+      createdAt: '2026-08-20T00:00:00.000Z',
+      description: null,
+      cancelReason: null,
+      progressPercent: 0,
+      completedQuantity: 0,
+      totalQuantity: 0,
+      tasks: [],
+      floorProgress: [],
+      materials: [{ name: 'Автомат таслуур', quantity: 2, unit: 'PIECE' }],
+      // Submitted but NOT approved: the customer must not read it yet.
+      report: { status: 'SUBMITTED', visibleToCustomer: false, conclusion: 'Дотоод бичвэр', recommendation: null },
+    } as never);
+
+    renderPortal(
+      <PortalPlannedWorkDetailPage />,
+      '/portal/planned-work/w1',
+      '/portal/planned-work/:plannedWorkId',
+    );
+
+    // Materials are visible …
+    expect(await screen.findByText('Автомат таслуур')).toBeInTheDocument();
+    // … the unapproved conclusion is not …
+    expect(screen.queryByText('Дотоод бичвэр')).not.toBeInTheDocument();
+    expect(screen.getByText(/тайлан батлагдсаны дараа энд харагдана/i)).toBeInTheDocument();
+    // … and nothing offers to change the work.
+    for (const label of [/Засах/, /Хугацаа сунгах/, /Дэд ажил нэмэх/, /Материал засах/, /Цуцлах/]) {
+      expect(screen.queryByRole('button', { name: label })).not.toBeInTheDocument();
+    }
+  });
 });

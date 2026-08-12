@@ -1,4 +1,4 @@
-import type { PlannedWorkDto } from '@monhorus/shared';
+import { MATERIAL_UNIT_LABELS, type PlannedWorkDto } from '@monhorus/shared';
 import { useCallback, useEffect, useState, type ReactElement } from 'react';
 import { useParams } from 'react-router-dom';
 
@@ -217,6 +217,71 @@ export function PortalPlannedWorkDetailPage(): ReactElement {
             ))}
           </div>
         )}
+
+        {/*
+          Materials, read-only. The admin page puts an "edit" button beside this; there is
+          none here because every planned-work write is keyed on a `planned_work.*`
+          permission no customer holds, so a button would be an offer the server refuses.
+        */}
+        {(work.materials ?? []).length > 0 && (
+          <div className="overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-slate-200">
+            <div className="border-b border-slate-200 px-5 py-3">
+              <h2 className="text-sm font-semibold text-slate-900">Төлөвлөсөн материал</h2>
+            </div>
+            <ul className="divide-y divide-slate-100">
+              {(work.materials ?? []).map((material) => (
+                <li
+                  key={`${material.name}-${material.unit}`}
+                  className="flex items-center justify-between gap-3 px-5 py-2.5"
+                >
+                  <span className="truncate text-sm text-slate-800">{material.name}</span>
+                  <span className="shrink-0 text-sm text-slate-600">
+                    {material.quantity} {MATERIAL_UNIT_LABELS[material.unit]}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/*
+          The conclusion, and only once it has been signed off.
+          `visibleToCustomer` is the server's own answer to that question — it is
+          `status === 'APPROVED'` — so the gate is read from the record rather than
+          re-derived here. The actor stamps on the report carry user ids and staff names and
+          are deliberately not rendered.
+        */}
+        <div className="rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
+          <h2 className="mb-2 text-sm font-semibold text-slate-900">Тайлан</h2>
+
+          {!work.report?.visibleToCustomer ? (
+            <p className="text-sm text-slate-600">
+              Ажил дуусаж, тайлан батлагдсаны дараа энд харагдана.
+            </p>
+          ) : (
+            <div className="space-y-3">
+              {work.report.conclusion && (
+                <div>
+                  <p className="text-xs font-medium text-slate-500">Дүгнэлт</p>
+                  <p className="mt-0.5 whitespace-pre-wrap text-sm text-slate-800">
+                    {work.report.conclusion}
+                  </p>
+                </div>
+              )}
+              {work.report.recommendation && (
+                <div>
+                  <p className="text-xs font-medium text-slate-500">Зөвлөмж</p>
+                  <p className="mt-0.5 whitespace-pre-wrap text-sm text-slate-800">
+                    {work.report.recommendation}
+                  </p>
+                </div>
+              )}
+              {!work.report.conclusion && !work.report.recommendation && (
+                <p className="text-sm text-slate-600">Тайлангийн бичвэр оруулаагүй байна.</p>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </>
   );
