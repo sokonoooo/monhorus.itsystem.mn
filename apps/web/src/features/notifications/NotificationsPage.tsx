@@ -9,6 +9,7 @@ import { useCallback, useEffect, useState, type ReactElement } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { Alert } from '../../components/ui/Alert';
+import { Pagination } from '../../components/ui/DataTable';
 import { Button } from '../../components/ui/Button';
 import { PageHeader } from '../../components/ui/PageHeader';
 import { EmptyState, ErrorState, Skeleton } from '../../components/ui/States';
@@ -40,12 +41,21 @@ const SEVERITY_DOTS: Record<NotificationSeverity, string> = {
  * open, so nothing is sent by email, SMS or push and the screen says so rather than
  * implying a delivery that never happens.
  */
+/**
+ * Notifications per page.
+ *
+ * Twenty, matching the lists elsewhere. The old fixed fifty was not a page size but a cap:
+ * the fifty-first notification simply could not be reached.
+ */
+const NOTIFICATION_PAGE_SIZE = 20;
+
 export function NotificationsPage(): ReactElement {
   const navigate = useNavigate();
   const { notify } = useToast();
 
   const [data, setData] = useState<PaginatedData<NotificationDto> | null>(null);
   const [unreadOnly, setUnreadOnly] = useState(false);
+  const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [marking, setMarking] = useState(false);
@@ -54,13 +64,19 @@ export function NotificationsPage(): ReactElement {
     setLoading(true);
     setError(null);
     try {
-      setData(await notificationService.list({ limit: 50, ...(unreadOnly ? { unreadOnly: true } : {}) }));
+      setData(
+        await notificationService.list({
+          page,
+          limit: NOTIFICATION_PAGE_SIZE,
+          ...(unreadOnly ? { unreadOnly: true } : {}),
+        }),
+      );
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : 'Мэдэгдэл ачаалж чадсангүй.');
     } finally {
       setLoading(false);
     }
-  }, [unreadOnly]);
+  }, [unreadOnly, page]);
 
   useEffect(() => {
     void load();
@@ -102,7 +118,12 @@ export function NotificationsPage(): ReactElement {
         breadcrumbs={[{ label: 'Нүүр', to: '/dashboard' }, { label: 'Мэдэгдэл' }]}
         actions={
           <>
-            <Button variant="secondary" onClick={() => setUnreadOnly((current) => !current)}>
+            <Button variant="secondary" onClick={() => {
+                // Back to the first page: page three of "all" is rarely page three of
+                // "unread only", and is usually past its end.
+                setPage(1);
+                setUnreadOnly((current) => !current);
+              }}>
               {unreadOnly ? 'Бүгдийг харах' : 'Зөвхөн уншаагүй'}
             </Button>
             <Button onClick={() => void handleMarkAll()} loading={marking} disabled={unread === 0}>
@@ -154,6 +175,20 @@ export function NotificationsPage(): ReactElement {
             </li>
           ))}
         </ul>
+      )}
+
+      {/*
+        A card list rather than a table, so it takes the pager but no № column: a running
+        number against a notification is not something a reader ever refers to, where a
+        row of a report genuinely is.
+      */}
+      {!loading && error === null && data !== null && (
+        <Pagination
+          page={data.page}
+          totalPages={data.totalPages}
+          total={data.total}
+          onPageChange={setPage}
+        />
       )}
     </>
   );

@@ -13,6 +13,16 @@ describe('NotificationsPage', () => {
     vi.restoreAllMocks();
   });
 
+  it('asks for one page rather than a fixed fifty', async () => {
+    const list = vi.spyOn(notificationService, 'list');
+
+    renderWithAuth(<NotificationsPage />, { permissions: [] });
+    await waitFor(() =>
+      // The old call was a cap, not a window: the fifty-first notification was unreachable.
+      expect(list).toHaveBeenCalledWith(expect.objectContaining({ page: 1, limit: 20 })),
+    );
+  });
+
   it('lists notifications with their event and time', async () => {
     vi.spyOn(notificationService, 'list').mockResolvedValue(makePage([makeNotification()]));
 

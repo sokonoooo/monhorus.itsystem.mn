@@ -114,6 +114,72 @@ describe('AccessPage', () => {
     expect(screen.getAllByRole('menuitem', { name: 'Устгах' })).toHaveLength(1);
   });
 
+  /**
+   * The users tab used to ask for a fixed fifty and render whatever came back, so the
+   * fifty-first user was unreachable with nothing on screen saying so.
+   */
+  it('asks for one page of users rather than a fixed fifty', async () => {
+    vi.spyOn(rbacService, 'roles').mockResolvedValue([makeRole()]);
+    const users = vi.spyOn(rbacService, 'users').mockResolvedValue({
+      items: [makeAccount()],
+      page: 1,
+      limit: 20,
+      total: 45,
+      totalPages: 3,
+    });
+    const user = userEvent.setup();
+
+    renderWithAuth(<AccessPage />, { permissions: [PERMISSIONS.RBAC_VIEW] });
+    await user.click(screen.getByRole('tab', { name: 'Хэрэглэгч' }));
+
+    await waitFor(() =>
+      expect(users).toHaveBeenCalledWith(expect.objectContaining({ page: 1, limit: 20 })),
+    );
+  });
+
+  it('numbers the users and continues the numbering onto the next page', async () => {
+    vi.spyOn(rbacService, 'roles').mockResolvedValue([makeRole()]);
+    const users = vi.spyOn(rbacService, 'users').mockResolvedValue({
+      items: [makeAccount()],
+      page: 1,
+      limit: 20,
+      total: 45,
+      totalPages: 3,
+    });
+    const user = userEvent.setup();
+
+    renderWithAuth(<AccessPage />, { permissions: [PERMISSIONS.RBAC_VIEW] });
+    await user.click(screen.getByRole('tab', { name: 'Хэрэглэгч' }));
+    await screen.findByText('Дорж Бат');
+
+    const table = screen.getByRole('table');
+    expect(within(table).getByRole('columnheader', { name: '№' })).toBeInTheDocument();
+    expect(within(table).getAllByRole('row')[1]!.textContent).toMatch(/^1/);
+
+    // Дараах asks the server for the next window, and the numbering follows it.
+    await user.click(screen.getByRole('button', { name: 'Дараах' }));
+    await waitFor(() =>
+      expect(users).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2 })),
+    );
+  });
+
+  /**
+   * Roles are numbered but never paged. A role is a permission set an administrator
+   * defines by hand, so the list is bounded by how many distinct jobs an organisation
+   * has — a pager there would be a control that never appears.
+   */
+  it('numbers the roles without offering a pager', async () => {
+    vi.spyOn(rbacService, 'roles').mockResolvedValue([makeRole()]);
+
+    renderWithAuth(<AccessPage />, { permissions: [PERMISSIONS.RBAC_VIEW] });
+    await screen.findByText('Тусгай role');
+
+    const table = screen.getByRole('table');
+    expect(within(table).getByRole('columnheader', { name: '№' })).toBeInTheDocument();
+    expect(within(table).getAllByRole('row')[1]!.textContent).toMatch(/^1/);
+    expect(screen.queryByRole('button', { name: 'Дараах' })).not.toBeInTheDocument();
+  });
+
   it('hides every management action without rbac.manage', async () => {
     vi.spyOn(rbacService, 'roles').mockResolvedValue([makeRole()]);
     const user = userEvent.setup();

@@ -16,6 +16,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } 
 import { useSearchParams } from 'react-router-dom';
 
 import { Alert } from '../../components/ui/Alert';
+import { Pagination } from '../../components/ui/DataTable';
 import { Button } from '../../components/ui/Button';
 import { PageHeader } from '../../components/ui/PageHeader';
 import { EmptyState, ErrorState, Skeleton } from '../../components/ui/States';
@@ -100,6 +101,17 @@ function KpiCard({ kpi }: { kpi: KpiValueDto }): ReactElement {
  * to the backend needs no change here. Export is CSV with a UTF-8 BOM, which Excel opens
  * directly, plus the browser print dialog for PDF (rule 17.20).
  */
+/**
+ * Rows per page on screen.
+ *
+ * Twenty-five rather than the endpoint's own default of a thousand: that default belongs
+ * to the CSV export, which has no pager and must carry the whole report in one response.
+ */
+const REPORT_PAGE_SIZE = 25;
+
+/** What an export asks for: one response carrying the whole report, as it always has. */
+const REPORT_EXPORT_LIMIT = 1000;
+
 export function ReportsPage(): ReactElement {
   const { can } = useAuth();
   const { notify } = useToast();
@@ -110,14 +122,20 @@ export function ReportsPage(): ReactElement {
   const reportKey = (searchParams.get('report') as ReportKey | null) ?? 'SLA';
   const dateFrom = searchParams.get('dateFrom') ?? monthStart();
   const dateTo = searchParams.get('dateTo') ?? today();
+  // In the url so a page is linkable and survives a reload, like every filter here.
+  const page = Math.max(1, Number(searchParams.get('page') ?? '1') || 1);
 
   const query = useMemo<ReportQuery>(
     () => ({
       dateFrom: `${dateFrom}T00:00:00.000Z`,
       dateTo: `${dateTo}T23:59:59.999Z`,
-      limit: 1000,
+      page,
+      // A page-sized window. The endpoint's own default is far higher because that is
+      // what the CSV export wants — an export has no pager and must carry the whole
+      // report — but a screen has one, so it asks for what it can show.
+      limit: REPORT_PAGE_SIZE,
     }),
-    [dateFrom, dateTo],
+    [dateFrom, dateTo, page],
   );
 
   const [report, setReport] = useState<ReportResultDto | null>(null);
@@ -158,13 +176,21 @@ export function ReportsPage(): ReactElement {
     const next = new URLSearchParams(searchParams);
     if (value) next.set(key, value);
     else next.delete(key);
+    // Any filter change puts the reader back on page one. Page four of the old filter is
+    // rarely a page of the new one, and is often past its end — which would answer with an
+    // empty table for a filter that actually matches plenty.
+    if (key !== 'page') next.delete('page');
     setSearchParams(next);
   }
 
   async function handleExport(): Promise<void> {
     setExporting(true);
     try {
-      await reportService.downloadCsv(reportKey, query);
+      // Deliberately NOT `query`: an export has no pager, so it carries the whole report
+      // rather than the window the screen happens to be showing. The high limit is the
+      // one this page has always exported with; only the page is dropped.
+      const { page: _page, ...whole } = query;
+      await reportService.downloadCsv(reportKey, { ...whole, limit: REPORT_EXPORT_LIMIT });
       notify('CSV файл татагдлаа.', 'success');
     } catch (caught) {
       notify(caught instanceof ApiError ? caught.message : 'Татаж чадсангүй.', 'error');
@@ -275,12 +301,15 @@ export function ReportsPage(): ReactElement {
         <div className="overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-slate-200">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-5 py-3">
             <h2 className="text-sm font-semibold text-slate-900">{report.label}</h2>
-            <span className="text-xs text-slate-500">Нийт {report.rows.length} мөр</span>
+            <span className="text-xs text-slate-500">Нийт {report.total} мөр</span>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-slate-50 text-xs text-slate-600">
                 <tr>
+                  <th className="w-12 whitespace-nowrap px-4 py-2 text-right font-medium">
+                    №
+                  </th>
                   {report.columns.map((column) => (
                     <th
                       key={column.key}
@@ -296,6 +325,9 @@ export function ReportsPage(): ReactElement {
               <tbody className="divide-y divide-slate-100">
                 {report.rows.map((row, index) => (
                   <tr key={index} className="hover:bg-slate-50">
+                    <td className="px-4 py-2 text-right tabular-nums text-slate-500">
+                      {(report.page - 1) * report.limit + index + 1}
+                    </td>
                     {report.columns.map((column) => (
                       <td
                         key={column.key}
@@ -314,6 +346,8 @@ export function ReportsPage(): ReactElement {
               {report.totals && (
                 <tfoot className="border-t border-slate-200 bg-slate-50 font-medium">
                   <tr>
+                    {/* Empty cell under №, or every total sits one column to the left. */}
+                    <td className="px-4 py-2" />
                     {report.columns.map((column) => (
                       <td
                         key={column.key}
@@ -334,6 +368,16 @@ export function ReportsPage(): ReactElement {
               )}
             </table>
           </div>
+          {/*
+            The same pager the nine DataTable lists use, so paging behaves identically
+            wherever a reader meets it. It hides itself on a single-page report.
+          */}
+          <Pagination
+            page={report.page}
+            totalPages={report.totalPages}
+            total={report.total}
+            onPageChange={(next) => updateParam('page', String(next))}
+          />
         </div>
       )}
     </>
