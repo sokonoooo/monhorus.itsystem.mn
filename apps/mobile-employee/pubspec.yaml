@@ -40,6 +40,7 @@ dependencies:
   # Needs NSCameraUsageDescription and NSPhotoLibraryUsageDescription in
   # ios/Runner/Info.plist — iOS terminates the app on first use without them.
   image_picker: ^1.1.2
+  flutter_svg: ^2.3.0
 
 dev_dependencies:
   flutter_test:

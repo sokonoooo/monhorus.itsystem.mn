@@ -110,9 +110,9 @@ class ServiceRequestDetailScreen extends ConsumerWidget {
     final String? resolvedBuildingId = detail?.building?.id ?? buildingId;
     final String? resolvedBuildingName = detail?.building?.name ?? buildingName;
 
-    // The outcome of a transition or an approval, said once. Listened for here rather than
-    // inside the two sections because both watch the same controller, and a message shown
-    // by each of them would be the same sentence twice.
+    // The outcome of a transition, said once. Listened for at the screen's root rather than
+    // inside _ProgressSection so the toast survives that section rebuilding itself out of
+    // existence when the move it just made changes which transitions are legal.
     ref.listen<RequestActionState>(serviceRequestActionProvider(requestId),
         (RequestActionState? _, RequestActionState next) {
       final String? message = next.message;
@@ -290,7 +290,7 @@ class ServiceRequestDetailScreen extends ConsumerWidget {
                 ),
               ),
 
-              _ApprovalSection(requestId: requestId, detail: detail),
+              _ApprovalSection(detail: detail),
             ],
           ),
         ),
@@ -608,87 +608,60 @@ class _ReasonSheetState extends State<_ReasonSheet> {
   }
 }
 
-/// Settling the conclusion, for the holder of `service_request.approve_report`.
+/// Where a handed-in conclusion has got to — a statement, never a control.
 ///
-/// OFFERED OFF THE REQUEST'S OWN STATUS, NOT THE CONCLUSION'S, and that is a deliberate
-/// constraint rather than an approximation. Reading the conclusion is
-/// `GET /service-requests/:id/report`, which is `getOrCreate`: it MINTS a draft attributed
-/// to the caller on first read. Fetching it here to find out whether it is SUBMITTED would
-/// make every technician who merely opened a request the author of an empty conclusion on
-/// it — the same reason the editor is behind an explicit tap. REPORT_SUBMITTED on the
-/// request is the same fact carried by a read that costs nothing, since submitting the
-/// conclusion is what puts the request there.
+/// THERE IS NO "Дүгнэлт батлах" BUTTON ON THIS APP, AND THERE MUST NOT BE ONE. Approving a
+/// conclusion is an OFFICE act, performed on the web admin: it is the moment somebody other
+/// than the author accepts the work, writes it into the report store and moves every named
+/// piece of equipment's assessment. The field app is where the conclusion is WRITTEN, so an
+/// approve control here would let the same person who wrote a conclusion sign it off from
+/// the same screen — the app approving its own work — and no permission grant makes that a
+/// sensible thing for a phone in a plant room to offer.
 ///
-/// APPROVE ONLY. There is no return control and there is no client method behind one:
-/// returning stays on `service_request.change_status`, because a return is a judgement
-/// passed on somebody else's work.
-class _ApprovalSection extends ConsumerWidget {
-  const _ApprovalSection({required this.requestId, required this.detail});
+/// SO THIS SECTION IS NOT PERMISSION-GATED, and the absence of a gate is the point. It used
+/// to branch on `service_request.approve_report`: the key drew the button, and its absence
+/// drew a "Батлах эрх байхгүй" apology naming the missing permission. Both branches are
+/// gone. A holder of `service_request.approve_report` — or of the office's whole
+/// `service_request.change_status` — sees exactly what a technician sees, because the
+/// button's absence is a decision about WHERE approval happens and not about who may do it.
+/// `POST /service-requests/:id/report/approve` still exists and the web admin still calls
+/// it; this app simply no longer has a client for it.
+///
+/// WHAT IS LEFT IS ONE NEUTRAL SENTENCE, off the REQUEST'S own status rather than the
+/// conclusion's, and that read is deliberate rather than approximate. Reading the conclusion
+/// is `GET /service-requests/:id/report`, which is `getOrCreate`: it MINTS a draft attributed
+/// to the caller on first read, so fetching it here to discover whether it is SUBMITTED
+/// would make every technician who merely opened a request the author of an empty conclusion
+/// on it — the same reason the editor sits behind an explicit tap. REPORT_SUBMITTED on the
+/// request is that same fact, carried by a read that has already happened.
+///
+/// Shown to everyone who can see the request, assigned or not: nothing is written from here,
+/// so there is nothing to withhold from a colleague or from a reader of the open pool. It is
+/// simply what has happened to this job.
+class _ApprovalSection extends StatelessWidget {
+  const _ApprovalSection({required this.detail});
 
-  final String requestId;
   final ServiceRequestDetailModel? detail;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final ServiceRequestDetailModel? record = detail;
-    // Nothing to settle unless a conclusion has actually been handed in.
+    // Nothing to say unless a conclusion has actually been handed in. On every other status
+    // this is not a quieter notice, it is no notice: "waiting for the office" printed on a
+    // job nobody has written up yet is noise.
     if (record == null || record.status != ServiceRequestStatus.reportSubmitted) {
       return const SizedBox.shrink();
     }
 
-    final ConclusionGrants grants = ref.watch(conclusionGrantsProvider);
-    if (!grants.isKnown) return const SizedBox.shrink();
-
-    if (!grants.canApproveConclusion) {
-      return const Padding(
-        padding: EdgeInsets.only(top: 12),
-        child: NoticeBanner(
-          margin: EdgeInsets.zero,
-          tone: EmployeeTokens.muted,
-          icon: Icons.lock_outline,
-          title: 'Батлах эрх байхгүй',
-          text: 'Дүгнэлт хянуулахаар илгээгдсэн байна. Танд '
-              '"service_request.approve_report" эрх байхгүй тул батлах боломжгүй — '
-              'оффис хянаж батална.',
-        ),
-      );
-    }
-
-    final PlannedWorkAssignment assignment = resolveRequestAssignment(
-      request: record,
-      identity: ref.watch(workIdentityProvider).valueOrNull,
-      grants: ref.watch(workGrantsProvider),
-    );
-    if (assignment.blocksWrites) return const SizedBox.shrink();
-
-    final RequestActionState action = ref.watch(serviceRequestActionProvider(requestId));
-
-    return Padding(
-      padding: const EdgeInsets.only(top: 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        mainAxisSize: MainAxisSize.min,
-        children: <Widget>[
-          const NoticeBanner(
-            margin: EdgeInsets.zero,
-            tone: EmployeeTokens.yellow,
-            icon: Icons.rate_review_outlined,
-            title: 'Дүгнэлт хянуулахаар илгээгдсэн',
-            text: 'Батласнаар дүгнэлт тайлангийн санд бичигдэж, дурдсан тоноглолын '
-                'үнэлгээ шинэчлэгдэнэ. Буцаахыг зөвхөн оффис хийнэ.',
-          ),
-          const SizedBox(height: 12),
-          WorkButton(
-            label: 'Дүгнэлт батлах',
-            icon: Icons.verified_outlined,
-            busy: action.pending == 'APPROVE',
-            onPressed: action.isBusy
-                ? null
-                : () => ref
-                    .read(serviceRequestActionProvider(requestId).notifier)
-                    .approveConclusion(),
-          ),
-        ],
+    return const Padding(
+      padding: EdgeInsets.only(top: 12),
+      child: NoticeBanner(
+        margin: EdgeInsets.zero,
+        tone: EmployeeTokens.muted,
+        icon: Icons.schedule_outlined,
+        title: 'Дүгнэлт хянуулахаар илгээгдсэн',
+        text: 'Дүгнэлт илгээгдсэн бөгөөд оффис хянаж батална. Батлах, буцаах хоёрыг '
+            'аль алиныг нь оффис хийх тул энэ аппаас гүйцэтгэхгүй.',
       ),
     );
   }

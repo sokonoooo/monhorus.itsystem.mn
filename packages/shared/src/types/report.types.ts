@@ -27,7 +27,19 @@ export interface ReportResultDto {
   dateFrom: string | null;
   dateTo: string | null;
   columns: readonly ReportColumnDto[];
+  /** One window of the report, at most `limit` rows wide. */
   rows: readonly ReportRowDto[];
+  /** The window this response carries. */
+  page: number;
+  limit: number;
+  /**
+   * Rows matching the filter across every page, and what the footer is computed over.
+   *
+   * A footer reading "Нийт 20" on page one of five would be a lie, and a money column
+   * summing one page would be a worse one, so the totals below describe the whole set.
+   */
+  total: number;
+  totalPages: number;
   /** Column-keyed totals rendered as a footer row. Null when a total is meaningless. */
   totals: ReportRowDto | null;
   /** Set when the row set was capped, so a truncated export is never silent. */
@@ -40,6 +52,8 @@ export interface ReportQuery {
   customerId?: string;
   projectId?: string;
   employeeId?: string;
+  /** The window to ask for. Absent means the first page. */
+  page?: number;
   limit?: number;
 }
 

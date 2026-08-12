@@ -96,6 +96,29 @@ describe('ObjectTypesPage', () => {
     expect(remove).toHaveBeenCalledWith('t1');
   });
 
+  /**
+   * Row numbers only mean something if they are continuous: asked to "check type 51",
+   * a reader must find it as row 51 on page two, not as row 1 all over again.
+   */
+  it('numbers page two from 51 rather than restarting at 1', async () => {
+    vi.spyOn(objectTypeService, 'list').mockResolvedValue({
+      ...makePage([makeType()]),
+      page: 2,
+      total: 51,
+      totalPages: 2,
+    });
+
+    renderWithAuth(<ObjectTypesPage />, {
+      permissions: [PERMISSIONS.OBJECT_MASTER_VIEW],
+      route: '/object-types?page=2',
+    });
+
+    const table = await screen.findByRole('table');
+    expect(within(table).getByRole('columnheader', { name: '№' })).toBeInTheDocument();
+    const firstRow = within(table).getAllByRole('row')[1]!;
+    expect(within(firstRow).getAllByRole('cell')[0]).toHaveTextContent(/^51$/);
+  });
+
   it('drops the usage and status columns from the table', async () => {
     vi.spyOn(objectTypeService, 'list').mockResolvedValue(makePage([makeType()]));
 

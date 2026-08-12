@@ -40,6 +40,17 @@ dependencies:
   # ios/Runner/Info.plist — iOS terminates the app on first use without them.
   image_picker: ^1.1.2
 
+  # Draws an object type's uploaded icon on the floor plan.
+  #
+  # Same package and same version as apps/mobile-employee, deliberately: a type's
+  # artwork must look identical to the customer reading a plan and to the technician
+  # standing on the floor, and the two apps parse the file with the same renderer.
+  #
+  # The file is drawn from bytes already in memory — `SvgPicture.memory` — never from a
+  # URL: the icon route wants the bearer header like every other stored file, so it goes
+  # through the same authenticated fetch the plan image does.
+  flutter_svg: ^2.3.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

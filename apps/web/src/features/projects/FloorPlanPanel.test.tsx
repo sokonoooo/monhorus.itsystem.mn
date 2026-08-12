@@ -1560,6 +1560,34 @@ describe('FloorPlanPanel custom type icons', () => {
     expect(markerGlyph('o1')).toBeNull();
   });
 
+  /**
+   * The bug this whole treatment exists for.
+   *
+   * An uploaded icon used to be painted as a picture, and a picture renders in its own
+   * isolated context: a `currentColor` inside it resolved to black instead of to the
+   * marker's risk colour, so a custom icon came out black on every band — unreadable on
+   * the red of CRITICAL, invisible on the near black of OUT_OF_SERVICE. Drawn as a mask
+   * the file supplies only its shape and the colour under it is `currentColor`, which is
+   * the same inherited value the built-in glyph is stroked with.
+   */
+  it('tints the uploaded icon with the marker colour instead of painting it', async () => {
+    renderPanel({ objects: [placedObject({ objectType: WITH_ICON })] });
+    await readyCanvas();
+
+    await waitFor(() => expect(markerImage('o1')).not.toBeNull());
+
+    // The element carrying the icon is the masked box, not the probe image.
+    const painted = markerImage('o1')!.parentElement!;
+    expect(painted.style.maskImage || painted.style.webkitMaskImage).toContain('blob:icon');
+    // Case-insensitive: a CSS keyword is, and jsdom hands it back lowercased.
+    expect(painted.style.backgroundColor.toLowerCase()).toBe('currentcolor');
+    // Contained rather than stretched: an upload is whatever shape it was drawn at.
+    expect(painted.style.maskSize || painted.style.webkitMaskSize).toBe('contain');
+
+    // And the picture itself paints nothing — it is only there to report a failure.
+    expect(markerImage('o1')).toHaveAttribute('hidden');
+  });
+
   it('leaves a type with no uploaded icon on its built-in glyph', async () => {
     renderPanel({ objects: [placedObject()] });
     await readyCanvas();

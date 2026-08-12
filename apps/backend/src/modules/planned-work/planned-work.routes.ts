@@ -47,9 +47,15 @@ import {
   loadReportState,
   returnReport,
   submitReport,
+  taskPhotoIdsOf,
   toReportDto,
   updateReport,
 } from './planned-work.report.service';
+import { plannedWorkReportDocument } from '../report-pdf/planned-work-report.pdf';
+import { renderPdf } from '../report-pdf/pdf.renderer';
+import { sendPdf } from '../report-pdf/pdf.response';
+import { loadReportBranding } from '../report-pdf/report-branding';
+import { loadTaskPhotos, MAX_PHOTOS_PER_TASK } from '../report-pdf/report-images';
 import { requirePlannedWorkAssignmentScope } from './planned-work.scope';
 import { transitionPlannedWork } from './planned-work.transition.service';
 
@@ -407,6 +413,58 @@ plannedWorkRouter.get(
         report: state.report ? toReportDto(state.report, auth, state.blockers) : null,
         preview,
       });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+/**
+ * The same report, as a PDF laid out like the office's own «Үзлэгийн тайлан».
+ *
+ * Assembled from `buildReportPreview` — the identical call the JSON endpoint above makes
+ * — so the document cannot say anything different from the screen it was exported off.
+ * A second query shaped for printing would be a second answer to the same question, and
+ * the two would drift.
+ *
+ * Read-keyed on `planned_work.view`: this renders what the caller may already read, and
+ * a download is not a stronger act than the page it copies.
+ */
+plannedWorkRouter.get(
+  '/:plannedWorkId/report/pdf',
+  requirePermission(PERMISSIONS.PLANNED_WORK_VIEW),
+  validate({ params: workParams }),
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const auth = requireAuth(req);
+      const work = await plannedWorkService.findPlannedWorkOrThrow(
+        pathParam(req, 'plannedWorkId'),
+      );
+      const state = await loadReportState(work);
+      const preview = state.preview ?? (await buildReportPreview(work, state.report));
+      const report = state.report ? toReportDto(state.report, auth, state.blockers) : null;
+
+      // A report that cannot be assembled cannot be printed. The screen renders an empty
+      // state here; a download has no equivalent, and answering with a valid-looking PDF
+      // of nothing would be worse than saying so.
+      if (preview === null) {
+        throw AppError.badRequest(
+          ERROR_CODES.VALIDATION_ERROR,
+          'Тайлан бүрдээгүй тул PDF үүсгэх боломжгүй.',
+        );
+      }
+
+      const [branding, photos] = await Promise.all([
+        loadReportBranding(),
+        // The photographs the sub-tasks carry. The preview reports counts; the document
+        // wants the pictures, so they are fetched and re-encoded here.
+        taskPhotoIdsOf(work).then((ids) => loadTaskPhotos(ids, MAX_PHOTOS_PER_TASK)),
+      ]);
+
+      const pdf = await renderPdf(
+        plannedWorkReportDocument(preview, report, branding, photos),
+      );
+      sendPdf(res, pdf, `tailan-${preview.workNumber}`);
     } catch (error) {
       next(error);
     }

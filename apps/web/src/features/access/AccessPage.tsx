@@ -13,7 +13,7 @@ import { StatusBadge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
 import { ColumnPicker } from '../../components/ui/ColumnPicker';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
-import { DataTable, type Column } from '../../components/ui/DataTable';
+import { DataTable, Pagination, type Column } from '../../components/ui/DataTable';
 import { Drawer } from '../../components/ui/Drawer';
 import { PageHeader } from '../../components/ui/PageHeader';
 import { RowActions, type RowActionItem } from '../../components/ui/RowActions';
@@ -35,6 +35,14 @@ type TabKey = 'roles' | 'users';
  * remain editable by a holder of rbac.manage. The backend enforces both rules, so this
  * screen only avoids offering the action.
  */
+/**
+ * Users per page.
+ *
+ * Twenty, matching every other list in the app, so a reader meets the same rhythm
+ * wherever they are.
+ */
+const USER_PAGE_SIZE = 20;
+
 export function AccessPage(): ReactElement {
   const { can, user: actor } = useAuth();
   const { notify } = useToast();
@@ -52,6 +60,15 @@ export function AccessPage(): ReactElement {
   const [roles, setRoles] = useState<RoleDto[] | null>(null);
   const [catalogue, setCatalogue] = useState<PermissionCatalogueEntry[]>([]);
   const [users, setUsers] = useState<UserDto[] | null>(null);
+  /**
+   * The user list's window, held here rather than in the url.
+   *
+   * The url on this screen already carries `tab`, and a page number that outlived a tab
+   * switch would put a reader on page four of a list they have just come back to. Roles
+   * and users are two independent lists behind one address.
+   */
+  const [userPage, setUserPage] = useState(1);
+  const [userTotal, setUserTotal] = useState({ total: 0, totalPages: 0 });
   const [error, setError] = useState<string | null>(null);
 
   const [editorRole, setEditorRole] = useState<RoleDto | null | 'new'>(null);
@@ -79,19 +96,25 @@ export function AccessPage(): ReactElement {
   const loadUsers = useCallback(async (): Promise<void> => {
     setError(null);
     try {
-      const page = await rbacService.users({ limit: 50 });
+      // A page rather than the first fifty. The old fixed limit silently hid the fifty-first
+      // user, with nothing on screen to say a cap had been reached.
+      const page = await rbacService.users({ page: userPage, limit: USER_PAGE_SIZE });
       setUsers(page.items);
+      setUserTotal({ total: page.total, totalPages: page.totalPages });
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : 'Хэрэглэгч ачаалж чадсангүй.');
       setUsers([]);
+      setUserTotal({ total: 0, totalPages: 0 });
     }
-  }, []);
+  }, [userPage]);
 
   useEffect(() => {
     void loadRoles();
   }, [loadRoles]);
 
   useEffect(() => {
+    // The null guard is what stops this refiring on its own result. Paging clears the
+    // rows before changing the page, so a page change comes back through here too.
     if (activeTab === 'users' && users === null) void loadUsers();
   }, [activeTab, users, loadUsers]);
 
@@ -358,6 +381,13 @@ export function AccessPage(): ReactElement {
               columns={roleColumnState.visibleColumns}
               rows={roles ?? []}
               rowKey={(row) => row.id}
+              // NUMBERED BUT NOT PAGED, and deliberately. A role is a permission set an
+              // administrator defines by hand: the system ships a fixed handful and an
+              // installation adds a few, so the list is bounded by how many distinct jobs
+              // an organisation has. Paging it would add a control that never appears —
+              // `Pagination` hides itself below two pages — for a list that fits on one
+              // screen. The endpoint returns them all, and that is the right answer here.
+              numbering
               loading={roles === null}
               emptyTitle="Role байхгүй"
               emptyDescription="Системийн role-ууд эхний ажиллагаанд автоматаар үүснэ."
@@ -374,8 +404,20 @@ export function AccessPage(): ReactElement {
               columns={userColumnState.visibleColumns}
               rows={users ?? []}
               rowKey={(row) => row.id}
+              numbering={{ page: userPage, limit: USER_PAGE_SIZE }}
               loading={users === null}
               emptyTitle="Хэрэглэгч байхгүй"
+            />
+            <Pagination
+              page={userPage}
+              totalPages={userTotal.totalPages}
+              total={userTotal.total}
+              onPageChange={(next) => {
+                // Clearing the rows first so the table shows its skeleton rather than the
+                // previous page's users under the new page's number.
+                setUsers(null);
+                setUserPage(next);
+              }}
             />
           </>
         )}

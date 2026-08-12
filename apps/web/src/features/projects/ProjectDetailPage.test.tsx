@@ -71,6 +71,37 @@ describe('ProjectDetailPage building create', () => {
     vi.spyOn(projectService, 'listBuildings').mockResolvedValue(makePage([]));
   });
 
+  /**
+   * `BLD-001` is drawn from a per-customer counter the server holds. The pattern keeps `^`
+   * and drops `$` because `Field` appends a `*` to a required label, so a plain equality
+   * query would pass even with the field still on screen.
+   */
+  it('asks for no code when creating a building', async () => {
+    const user = userEvent.setup();
+
+    renderProject();
+    const drawer = await openBuildingDrawer(user);
+
+    expect(within(drawer).queryByLabelText(/^Код/)).toBeNull();
+  });
+
+  /** Absent, not empty: the create schema strips what it does not declare. */
+  it('sends a create payload with no code key at all', async () => {
+    const create = vi.spyOn(projectService, 'createBuilding').mockResolvedValue(makeBuilding());
+    const user = userEvent.setup();
+
+    renderProject();
+    const drawer = await openBuildingDrawer(user);
+
+    await user.type(within(drawer).getByLabelText(/^Барилгын нэр/), 'Кодгүй барилга');
+    await user.click(within(drawer).getByRole('button', { name: 'Хадгалах' }));
+
+    await waitFor(() => {
+      expect(create).toHaveBeenCalledWith(expect.not.objectContaining({ code: expect.anything() }));
+    });
+    expect('code' in create.mock.calls[0]![0]).toBe(false);
+  });
+
   it('sends the coordinates chosen on the map together with the rest of the form', async () => {
     const create = vi.spyOn(projectService, 'createBuilding').mockResolvedValue(makeBuilding());
     const user = userEvent.setup();
@@ -78,7 +109,6 @@ describe('ProjectDetailPage building create', () => {
     renderProject();
     const drawer = await openBuildingDrawer(user);
 
-    await user.type(within(drawer).getByLabelText(/^Код/), 'BLD-9');
     await user.type(within(drawer).getByLabelText(/^Барилгын нэр/), 'Шинэ корпус');
     await user.type(within(drawer).getByLabelText('Хаяг'), 'Их сургуулийн гудамж 3');
     await user.click(within(drawer).getByRole('button', { name: 'Газрын зураг дээр дарах' }));
@@ -89,7 +119,6 @@ describe('ProjectDetailPage building create', () => {
     await waitFor(() => {
       expect(create).toHaveBeenCalledWith({
         projectId: PROJECT_ID,
-        code: 'BLD-9',
         name: 'Шинэ корпус',
         address: 'Их сургуулийн гудамж 3',
         gpsLatitude: 47.9175,
@@ -106,7 +135,6 @@ describe('ProjectDetailPage building create', () => {
     renderProject();
     const drawer = await openBuildingDrawer(user);
 
-    await user.type(within(drawer).getByLabelText(/^Код/), 'BLD-8');
     await user.type(within(drawer).getByLabelText(/^Барилгын нэр/), 'Агуулах');
     await user.type(within(drawer).getByLabelText('Өргөрөг'), '48');
     await user.type(within(drawer).getByLabelText('Уртраг'), '107');
@@ -128,7 +156,6 @@ describe('ProjectDetailPage building create', () => {
     renderProject();
     const drawer = await openBuildingDrawer(user);
 
-    await user.type(within(drawer).getByLabelText(/^Код/), 'BLD-7');
     await user.type(within(drawer).getByLabelText(/^Барилгын нэр/), 'Зогсоол');
     await user.type(within(drawer).getByLabelText('Өргөрөг'), '48');
 
@@ -147,7 +174,6 @@ describe('ProjectDetailPage building create', () => {
     renderProject();
     const drawer = await openBuildingDrawer(user);
 
-    await user.type(within(drawer).getByLabelText(/^Код/), 'BLD-6');
     await user.type(within(drawer).getByLabelText(/^Барилгын нэр/), 'Дэд станц');
 
     await user.click(within(drawer).getByRole('button', { name: 'Хадгалах' }));
