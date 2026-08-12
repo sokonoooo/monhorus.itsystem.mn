@@ -8,9 +8,11 @@ import { validate } from '../../middlewares/validate.middleware';
 import * as authController from './auth.controller';
 import {
   changePasswordSchema,
+  forgotPasswordSchema,
   loginSchema,
   logoutSchema,
   refreshSchema,
+  resetPasswordSchema,
 } from './auth.validation';
 
 const rateLimitBody = {
@@ -41,7 +43,9 @@ const refreshLimiter = rateLimit({
 export const authRouter = Router();
 
 // --- Public ----------------------------------------------------------------
-// Note: there is deliberately no /register and no /forgot-password route.
+// Note: there is deliberately no /register route. Password recovery, which used to be
+// absent for the same reason, now exists over email — see the two routes at the bottom of
+// this section.
 authRouter.post(
   '/login',
   credentialLimiter,
@@ -57,6 +61,26 @@ authRouter.post(
 );
 
 authRouter.post('/logout', validate({ body: logoutSchema }), authController.logoutHandler);
+
+/**
+ * Password recovery. Both are public by necessity — the caller has no credential, which is
+ * the entire problem being solved — and both carry the credential limiter, because an
+ * unthrottled reset endpoint is a mail bomb aimed at whichever address the attacker picks
+ * and an unthrottled redeem endpoint is somewhere to guess tokens.
+ */
+authRouter.post(
+  '/forgot-password',
+  credentialLimiter,
+  validate({ body: forgotPasswordSchema }),
+  authController.forgotPasswordHandler,
+);
+
+authRouter.post(
+  '/reset-password',
+  credentialLimiter,
+  validate({ body: resetPasswordSchema }),
+  authController.resetPasswordHandler,
+);
 
 // --- Authenticated ---------------------------------------------------------
 // Both routes are intentionally reachable while status is must_change_password,

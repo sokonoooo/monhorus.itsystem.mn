@@ -7,7 +7,9 @@ import { PermissionGuard } from './components/PermissionGuard';
 import { ToastProvider } from './components/ui/ToastProvider';
 import { AuthProvider } from './contexts/auth-context';
 import { ChangePasswordPage } from './features/auth/ChangePasswordPage';
+import { ForgotPasswordPage } from './features/auth/ForgotPasswordPage';
 import { LoginPage } from './features/auth/LoginPage';
+import { ResetPasswordPage } from './features/auth/ResetPasswordPage';
 import { AccessPage } from './features/access/AccessPage';
 import { AuditLogPage } from './features/audit/AuditLogPage';
 import { CalendarPage } from './features/calendar/CalendarPage';
@@ -68,6 +70,13 @@ export default function App(): ReactElement {
         <ToastProvider>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
+          {/*
+            Password recovery, unauthenticated by necessity — the whole point is that the
+            caller cannot sign in. Both must stay outside ProtectedRoute, or the link in the
+            email bounces the reader to the login screen they cannot get past.
+          */}
+          <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+          <Route path="/reset-password/:token" element={<ResetPasswordPage />} />
 
           <Route
             path="/change-password"

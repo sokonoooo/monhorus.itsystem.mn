@@ -39,3 +39,20 @@ export interface ChangePasswordRequest {
   currentPassword: string;
   newPassword: string;
 }
+
+/**
+ * Asking for a reset link.
+ *
+ * There is no response type to pair with this. The endpoint answers the same fixed message
+ * whether or not the address is registered, and returns no data at all, precisely so a
+ * caller cannot learn which it was.
+ */
+export interface ForgotPasswordRequest {
+  email: string;
+}
+
+/** Redeeming a reset link. The token comes from the emailed URL, never from the user. */
+export interface ResetPasswordRequest {
+  token: string;
+  newPassword: string;
+}

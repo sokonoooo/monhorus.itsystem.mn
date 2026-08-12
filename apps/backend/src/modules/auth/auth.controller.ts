@@ -7,9 +7,11 @@ import { requireAuth } from '../../middlewares/authenticate.middleware';
 import * as authService from './auth.service';
 import type {
   ChangePasswordBody,
+  ForgotPasswordBody,
   LoginBody,
   LogoutBody,
   RefreshBody,
+  ResetPasswordBody,
 } from './auth.validation';
 
 /** Controllers stay thin: unwrap, delegate, wrap. No business rules live here. */
@@ -61,6 +63,43 @@ export async function changePasswordHandler(
   try {
     await authService.changePassword(req.body, requireAuth(req), meta(req));
     noContent(res, 'Нууц үг солигдлоо. Дахин нэвтэрнэ үү.');
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * The one message every outcome gets.
+ *
+ * Sent whether the address is registered, unregistered, or belongs to a suspended account,
+ * and whether or not the mail actually went out. Wording it as "if the address is
+ * registered" is what lets it be truthful in all of those cases at once without confirming
+ * any of them.
+ */
+const RESET_REQUESTED_MESSAGE =
+  'Хэрэв энэ имэйл бүртгэлтэй бол нууц үг сэргээх холбоос илгээгдлээ. Ирсэн захидлаа шалгана уу.';
+
+export async function forgotPasswordHandler(
+  req: Request<unknown, unknown, ForgotPasswordBody>,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    await authService.requestPasswordReset(req.body.email, meta(req));
+    noContent(res, RESET_REQUESTED_MESSAGE);
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function resetPasswordHandler(
+  req: Request<unknown, unknown, ResetPasswordBody>,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    await authService.resetPassword(req.body, meta(req));
+    noContent(res, 'Нууц үг шинэчлэгдлээ. Шинэ нууц үгээрээ нэвтэрнэ үү.');
   } catch (error) {
     next(error);
   }
