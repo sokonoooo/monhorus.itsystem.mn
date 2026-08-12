@@ -10,6 +10,7 @@ import { Types, type FilterQuery } from 'mongoose';
 import { AppError } from '../../common/errors/app-error';
 import { ERROR_CODES } from '../../common/errors/error-codes';
 import type { AuthContext } from '../../common/types/express';
+import { CREATOR_POPULATE, creatorName } from '../../common/utils/creator.util';
 import type { RequestMeta } from '../../common/utils/request-meta.util';
 import { recordAudit } from '../audit/audit.service';
 import { deleteStoredFile } from '../storage/storage.service';
@@ -53,6 +54,7 @@ export function toObjectTypeDto(type: Doc<IObjectType>, objectCount: number): Ob
     iconUrl: objectTypeIconUrl(type.iconFile),
     isActive: type.isActive,
     objectCount,
+    createdByName: creatorName(type.createdBy),
     createdAt: type.createdAt.toISOString(),
     updatedAt: type.updatedAt.toISOString(),
   };
@@ -123,7 +125,11 @@ export async function listObjectTypes(
 
   const skip = (query.page - 1) * query.limit;
   const [rows, total] = await Promise.all([
-    ObjectType.find(filter).sort({ category: 1, name: 1 }).skip(skip).limit(query.limit),
+    ObjectType.find(filter)
+      .populate(CREATOR_POPULATE)
+      .sort({ category: 1, name: 1 })
+      .skip(skip)
+      .limit(query.limit),
     ObjectType.countDocuments(filter),
   ]);
 
@@ -139,7 +145,7 @@ export async function listObjectTypes(
 }
 
 export async function getObjectTypeById(objectTypeId: string): Promise<ObjectTypeDto> {
-  const type = await ObjectType.findById(objectTypeId);
+  const type = await ObjectType.findById(objectTypeId).populate(CREATOR_POPULATE);
   if (!type) throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Тоноглолын төрөл олдсонгүй.');
   const counts = await objectCountsFor([type._id]);
   return toObjectTypeDto(type, counts.get(String(type._id)) ?? 0);
@@ -186,6 +192,10 @@ export async function createObjectType(
     meta,
     newValue: { code: type.code, name: type.name, category: type.category },
   });
+
+  // Resolved on the way out so the row the client inserts into the list carries the creator
+  // it was just stamped with, rather than a dash until the next refetch.
+  await type.populate(CREATOR_POPULATE);
 
   return toObjectTypeDto(type, 0);
 }
@@ -250,6 +260,8 @@ export async function updateObjectType(
       isActive: type.isActive,
     },
   });
+
+  await type.populate(CREATOR_POPULATE);
 
   const counts = await objectCountsFor([type._id]);
   return toObjectTypeDto(type, counts.get(String(type._id)) ?? 0);

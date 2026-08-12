@@ -27,6 +27,7 @@ import {
   type ResolvedCustomerScope,
 } from '../../common/security/customer-scope';
 import type { AuthContext } from '../../common/types/express';
+import { creatorName } from '../../common/utils/creator.util';
 import type { RequestMeta } from '../../common/utils/request-meta.util';
 import { recordAudit } from '../audit/audit.service';
 import { notify } from '../notification/notification.service';
@@ -113,6 +114,7 @@ export function toListItemDto(
     status: request.status,
     assignedEmployees: employees,
     assignedTeam: ref(request.assignedTeam as unknown as NamedRef),
+    createdByName: creatorName(request.createdBy, request.createdByName),
     createdAt: request.createdAt.toISOString(),
     slaDueAt: request.slaDueAt.toISOString(),
     slaState: sla.state,

@@ -166,6 +166,11 @@ export function ProjectListPage(): ReactElement {
       render: (row) => <RiskSummaryCell summary={row.riskSummary} />,
     },
     { key: 'status', header: 'Төлөв', render: (row) => <ActiveBadge isActive={row.isActive} /> },
+    {
+      key: 'createdBy',
+      header: 'Үүсгэсэн',
+      render: (row) => <span className="text-slate-700">{row.createdByName ?? '-'}</span>,
+    },
   ];
 
   const columnState = useTableColumns('projects', columns);

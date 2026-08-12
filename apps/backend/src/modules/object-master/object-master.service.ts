@@ -35,6 +35,7 @@ import {
   type ResolvedCustomerScope,
 } from '../../common/security/customer-scope';
 import type { AuthContext } from '../../common/types/express';
+import { CREATOR_POPULATE, creatorName } from '../../common/utils/creator.util';
 import type { RequestMeta } from '../../common/utils/request-meta.util';
 import { logger } from '../../config/logger';
 import { AuditLog } from '../audit/audit-log.model';
@@ -122,6 +123,7 @@ const LIST_POPULATE = [
   { path: 'objectType', select: 'code name icon iconFile generatesConclusion showOnPlan' },
   { path: 'customer', select: 'name' },
   { path: 'floor', select: 'name parent' },
+  CREATOR_POPULATE,
 ] as const;
 
 const PHOTO_SELECT = 'originalName mimeType sizeBytes uploadedByName storageKey createdAt';
@@ -200,6 +202,7 @@ export async function toObjectListItemDto(
     calculatedLoad: figures.calculated,
     measuredLoadKw: object.measuredLoadKw,
     loadVariance: figures.variance,
+    createdByName: creatorName(object.createdBy),
     createdAt: object.createdAt.toISOString(),
   };
 }

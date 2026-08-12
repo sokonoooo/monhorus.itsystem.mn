@@ -23,6 +23,7 @@ import { Types, type FilterQuery, type HydratedDocument } from 'mongoose';
 import { AppError } from '../../common/errors/app-error';
 import { ERROR_CODES } from '../../common/errors/error-codes';
 import type { AuthContext } from '../../common/types/express';
+import { creatorName } from '../../common/utils/creator.util';
 import type { RequestMeta } from '../../common/utils/request-meta.util';
 import { recordAudit } from '../audit/audit.service';
 import { notify } from '../notification/notification.service';
@@ -115,6 +116,7 @@ function toListItemDto(invoice: WithId<IInvoice>, now: Date): InvoiceListItemDto
     status: invoice.status,
     effectiveStatus: effectiveInvoiceStatus(invoice, now),
     overdueDays: overdueDaysOf(invoice, now),
+    createdByName: creatorName(invoice.createdBy, invoice.createdByName),
     createdAt: invoice.createdAt.toISOString(),
   };
 }

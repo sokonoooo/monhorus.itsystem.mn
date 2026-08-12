@@ -168,6 +168,7 @@ export function UsersPage(): ReactElement {
                   <th className="px-4 py-3 text-left font-semibold text-slate-700">
                     Сүүлд нэвтэрсэн
                   </th>
+                  <th className="px-4 py-3 text-left font-semibold text-slate-700">Үүсгэсэн</th>
                   <th className="px-4 py-3 text-right font-semibold text-slate-700">Үйлдэл</th>
                 </tr>
               </thead>
@@ -211,6 +212,9 @@ export function UsersPage(): ReactElement {
                             timeZone: 'Asia/Ulaanbaatar',
                           })
                         : 'Нэвтрээгүй'}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className="text-slate-700">{item.createdByName ?? '-'}</span>
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex justify-end gap-2">

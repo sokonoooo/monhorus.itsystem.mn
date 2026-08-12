@@ -453,6 +453,11 @@ export function BuildingDetailPage(): ReactElement {
       ),
     },
     { key: 'status', header: 'Төлөв', render: (row) => <ActiveBadge isActive={row.isActive} /> },
+    {
+      key: 'createdBy',
+      header: 'Үүсгэсэн',
+      render: (row) => <span className="text-slate-700">{row.createdByName ?? '-'}</span>,
+    },
   ];
 
   const columnState = useTableColumns('building-floors', columns);

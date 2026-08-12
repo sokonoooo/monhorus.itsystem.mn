@@ -52,6 +52,7 @@ export function makeCustomer(overrides: Partial<CustomerDto> = {}): CustomerDto 
     responsibleEmployeeName: null,
     notes: null,
     isActive: true,
+    createdByName: 'Б. Энхтөр',
     ...overrides,
   };
 }
@@ -90,6 +91,7 @@ export function makeServiceRequest(
     assignedEmployees: [],
     assignedTeam: null,
     createdAt: '2026-01-01T00:00:00.000Z',
+    createdByName: 'Б. Энхтөр',
     slaDueAt: '2026-01-01T06:00:00.000Z',
     slaState: 'STARTED',
     slaRemainingMinutes: 300,
@@ -125,6 +127,7 @@ export function makePlannedWorkListItem(
     assignedTeam: null,
     reportStatus: null,
     createdAt: '2026-06-25T00:00:00.000Z',
+    createdByName: 'Б. Энхтөр',
     ...overrides,
   };
 }
@@ -164,6 +167,7 @@ export function makePlannedWorkTask(
     missingEvidence: ['Ажлын өмнөх зураг', 'Ажлын дараах зураг', 'Тайлбар', 'Зөвлөмж'],
     completedAt: null,
     createdAt: '2026-06-25T00:00:00.000Z',
+    createdByName: 'Б. Энхтөр',
     updatedAt: '2026-06-25T00:00:00.000Z',
     ...overrides,
   };
@@ -314,6 +318,7 @@ export function makeProject(overrides: Partial<ProjectDto> = {}): ProjectDto {
     objectCount: 42,
     riskSummary: makeRiskSummary(),
     rollup: makeRollup(),
+    createdByName: 'Б. Энхтөр',
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
     deleteBlockers: [],
@@ -338,6 +343,7 @@ export function makeBuilding(overrides: Partial<BuildingDto> = {}): BuildingDto 
     objectCount: 21,
     riskSummary: makeRiskSummary(),
     rollup: makeRollup(),
+    createdByName: 'Б. Энхтөр',
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
     deleteBlockers: [],
@@ -364,6 +370,7 @@ export function makeFloor(overrides: Partial<FloorDto> = {}): FloorDto {
     objectCount: 3,
     riskSummary: makeRiskSummary(),
     rollup: makeRollup(),
+    createdByName: 'Б. Энхтөр',
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
     deleteBlockers: [],
@@ -409,6 +416,7 @@ export function makeObjectType(overrides: Partial<ObjectTypeDto> = {}): ObjectTy
     iconUrl: null,
     isActive: true,
     objectCount: 0,
+    createdByName: 'Б. Энхтөр',
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
     ...overrides,
@@ -442,6 +450,7 @@ export function makeObjectListItem(
     calculatedLoad: { valueKw: 18.4, complete: true, reasons: [] },
     measuredLoadKw: null,
     loadVariance: { valueKw: null, complete: false, reasons: [] },
+    createdByName: 'Б. Энхтөр',
     createdAt: '2026-01-01T00:00:00.000Z',
     ...overrides,
   };
@@ -517,6 +526,7 @@ export function makeInvoiceListItem(
     status: 'DRAFT',
     effectiveStatus: 'DRAFT',
     overdueDays: null,
+    createdByName: 'Б. Энхтөр',
     createdAt: '2026-07-01T00:00:00.000Z',
     ...overrides,
   };

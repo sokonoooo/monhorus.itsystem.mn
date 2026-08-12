@@ -643,6 +643,11 @@ export function ObjectTypesPage(): ReactElement {
       render: (row) => <span className="text-slate-700">{OBJECT_ICON_LABELS[row.icon]}</span>,
     },
     {
+      key: 'createdBy',
+      header: 'Үүсгэсэн',
+      render: (row) => <span className="text-slate-700">{row.createdByName ?? '-'}</span>,
+    },
+    {
       key: 'actions',
       header: 'Үйлдэл',
       align: 'right',

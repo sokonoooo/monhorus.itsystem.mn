@@ -23,6 +23,7 @@ import { Types, type FilterQuery, type HydratedDocument } from 'mongoose';
 import { AppError } from '../../common/errors/app-error';
 import { ERROR_CODES } from '../../common/errors/error-codes';
 import type { AuthContext } from '../../common/types/express';
+import { CREATOR_POPULATE, creatorName } from '../../common/utils/creator.util';
 import type { RequestMeta } from '../../common/utils/request-meta.util';
 import { hasPermission } from '../../middlewares/authorize.middleware';
 import { recordAudit } from '../audit/audit.service';
@@ -319,6 +320,7 @@ const LIST_POPULATE = [
   { path: 'building', select: 'name' },
   { path: 'assignedEmployees', select: 'firstName lastName' },
   { path: 'assignedTeam', select: 'name' },
+  CREATOR_POPULATE,
 ] as const;
 
 function namedRef(value: unknown): { id: string; name: string } {
@@ -435,6 +437,7 @@ export function toTaskDto(
     ),
     missingEvidence: missingTaskEvidenceOf(task),
     completedAt: task.completedAt?.toISOString() ?? null,
+    createdByName: creatorName(task.createdBy),
     createdAt: task.createdAt.toISOString(),
     updatedAt: task.updatedAt.toISOString(),
   };
@@ -471,6 +474,7 @@ export function toListItemDto(
     assignedEmployees: employeeRefs(work.assignedEmployees),
     assignedTeam: work.assignedTeam ? namedRef(work.assignedTeam) : null,
     reportStatus,
+    createdByName: creatorName(work.createdBy),
     createdAt: work.createdAt.toISOString(),
   };
 }
@@ -486,6 +490,7 @@ async function loadDetail(
       { path: 'afterPhotos', select: 'originalName mimeType sizeBytes uploadedByName storageKey createdAt' },
       { path: 'assignedEmployee', select: 'firstName lastName' },
       { path: 'relatedObjects', select: 'name' },
+      CREATOR_POPULATE,
     ])
     .sort({ plannedStartDate: 1, title: 1 });
 
@@ -937,6 +942,7 @@ export async function createTask(
     plannedEndDate: end,
     assignedEmployee: assignedEmployee ?? null,
     relatedObjects,
+    createdBy: new Types.ObjectId(actor.userId),
   });
 
   await recalculatePlannedWorkProgress(work._id);

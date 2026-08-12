@@ -15,6 +15,7 @@ import { Types, type FilterQuery } from 'mongoose';
 import { AppError } from '../../common/errors/app-error';
 import { ERROR_CODES } from '../../common/errors/error-codes';
 import type { AuthContext } from '../../common/types/express';
+import { CREATOR_POPULATE } from '../../common/utils/creator.util';
 import type { RequestMeta } from '../../common/utils/request-meta.util';
 import { logger } from '../../config/logger';
 import { hasPermission } from '../../middlewares/authorize.middleware';
@@ -611,7 +612,13 @@ export async function listEmployees(
   const sort: Record<string, 1 | -1> = { [query.sortBy]: query.sortDir === 'asc' ? 1 : -1 };
 
   const [items, total] = await Promise.all([
-    Employee.find(filter).populate([...ORG_POPULATE]).sort(sort).skip(skip).limit(query.limit),
+    // `CREATOR_POPULATE` is added here rather than to `ORG_POPULATE`, which the detail and
+    // self endpoints also use: only the directory row renders a creator.
+    Employee.find(filter)
+      .populate([...ORG_POPULATE, CREATOR_POPULATE])
+      .sort(sort)
+      .skip(skip)
+      .limit(query.limit),
     Employee.countDocuments(filter),
   ]);
 

@@ -18,6 +18,7 @@ function makeRow(overrides: Partial<UserDto> = {}): UserDto {
     customerName: 'Central Tower ХХК',
     lastLoginAt: null,
     createdBy: null,
+    createdByName: 'Б. Энхтөр',
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
     ...overrides,

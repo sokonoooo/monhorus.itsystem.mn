@@ -290,6 +290,15 @@ export interface IPlannedWorkTask {
   conclusionByName: string | null;
   conclusionAt: Date | null;
   /**
+   * Who added this sub-task to the plan.
+   *
+   * Distinct from `conclusionBy` above, which is who wrote the verdict on it. The two are
+   * routinely different people — a planner lays the work out, an engineer walks it — and
+   * conflating them would credit the planner with a conclusion they never made. Null on
+   * rows that predate the field.
+   */
+  createdBy: Types.ObjectId | null;
+  /**
    * First instant this sub-task was reported begun — `started: true` or any completed
    * quantity. STICKY: set once and never moved or cleared, because it records when the
    * physical work started.
@@ -352,6 +361,7 @@ const plannedWorkTaskSchema = new Schema<IPlannedWorkTask>(
     conclusionBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
     conclusionByName: { type: String, default: null },
     conclusionAt: { type: Date, default: null },
+    createdBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
     startedAt: { type: Date, default: null },
     quantityCompletedAt: { type: Date, default: null },
     score: { type: Number, default: null, min: 0, max: 100 },

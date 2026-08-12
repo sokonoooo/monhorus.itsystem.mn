@@ -192,6 +192,11 @@ export function ObjectDetailPage(): ReactElement {
       ),
     },
     { key: 'status', header: 'Төлөв', render: (row) => <ObjectStatusBadge status={row.status} /> },
+    {
+      key: 'createdBy',
+      header: 'Үүсгэсэн',
+      render: (row) => <span className="text-slate-700">{row.createdByName ?? '-'}</span>,
+    },
   ];
 
   // The two child tables share a column set but not a preference: a caller may want the

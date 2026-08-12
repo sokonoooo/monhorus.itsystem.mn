@@ -110,3 +110,40 @@ describe('ProjectListPage', () => {
     );
   });
 });
+
+/**
+ * The creator column.
+ *
+ * Projects had no creator field at all until now, so the interesting case is the second
+ * test: every record that already existed has nothing to show, and must say so plainly
+ * rather than rendering an empty cell that reads as a rendering fault.
+ */
+describe('ProjectListPage creator column', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('shows who created each project', async () => {
+    vi.spyOn(projectService, 'listProjects').mockResolvedValue(
+      makePage([makeProject({ createdByName: 'Б. Энхтөр' })]),
+    );
+
+    renderWithAuth(<ProjectListPage />, { permissions: [PERMISSIONS.OBJECT_VIEW] });
+
+    const table = await screen.findByRole('table');
+    expect(within(table).getByRole('columnheader', { name: 'Үүсгэсэн' })).toBeInTheDocument();
+    expect(within(table).getByText('Б. Энхтөр')).toBeInTheDocument();
+  });
+
+  it('renders a dash for a record created before the creator was recorded', async () => {
+    vi.spyOn(projectService, 'listProjects').mockResolvedValue(
+      makePage([makeProject({ createdByName: null })]),
+    );
+
+    renderWithAuth(<ProjectListPage />, { permissions: [PERMISSIONS.OBJECT_VIEW] });
+
+    const table = await screen.findByRole('table');
+    const cells = within(within(table).getAllByRole('row')[1]!).getAllByRole('cell');
+    expect(cells.at(-1)).toHaveTextContent('-');
+  });
+});

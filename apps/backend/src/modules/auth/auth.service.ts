@@ -6,6 +6,7 @@ import { Types } from 'mongoose';
 import { AppError } from '../../common/errors/app-error';
 import { ERROR_CODES } from '../../common/errors/error-codes';
 import type { AuthContext } from '../../common/types/express';
+import { creatorName } from '../../common/utils/creator.util';
 import { env } from '../../config/env';
 import { logger } from '../../config/logger';
 import {
@@ -37,6 +38,14 @@ export function toUserDto(user: UserDocument | (IUser & { _id: Types.ObjectId })
       ? (customer as { _id: Types.ObjectId; name?: string })
       : null;
 
+  // `createdBy` arrives populated on the admin list, which resolves the creator's name, and
+  // as a bare id everywhere else. The id is read off the document rather than stringifying
+  // whatever arrived, because `String(populatedDocument)` is not an id.
+  const creator = user.createdBy as Types.ObjectId | { _id: Types.ObjectId } | null;
+  const creatorId = creator
+    ? String(creator instanceof Types.ObjectId ? creator : creator._id)
+    : null;
+
   return {
     id: String(user._id),
     fullName: user.fullName,
@@ -47,7 +56,8 @@ export function toUserDto(user: UserDocument | (IUser & { _id: Types.ObjectId })
     customerId: customer ? String(populated ? populated._id : customer) : null,
     customerName: populated?.name ?? null,
     lastLoginAt: user.lastLoginAt ? user.lastLoginAt.toISOString() : null,
-    createdBy: user.createdBy ? String(user.createdBy) : null,
+    createdBy: creatorId,
+    createdByName: creatorName(creator),
     createdAt: user.createdAt.toISOString(),
     updatedAt: user.updatedAt.toISOString(),
   };

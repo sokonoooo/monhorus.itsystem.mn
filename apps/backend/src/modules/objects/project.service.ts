@@ -26,6 +26,7 @@ import {
   type ResolvedCustomerScope,
 } from '../../common/security/customer-scope';
 import type { AuthContext } from '../../common/types/express';
+import { CREATOR_POPULATE, creatorName } from '../../common/utils/creator.util';
 import type { RequestMeta } from '../../common/utils/request-meta.util';
 import { recordAudit } from '../audit/audit.service';
 import { Employee } from '../employee/employee.model';
@@ -468,6 +469,7 @@ export async function toProjectDto(
     objectCount: counts.objects,
     riskSummary,
     rollup: await rollupOf(node._id),
+    createdByName: creatorName(node.createdBy),
     createdAt: node.createdAt.toISOString(),
     updatedAt: node.updatedAt.toISOString(),
     deleteBlockers: await deleteBlockersFor(node),
@@ -496,6 +498,7 @@ export async function toBuildingDto(
     objectCount: counts.objects,
     riskSummary,
     rollup: await rollupOf(node._id),
+    createdByName: creatorName(node.createdBy),
     createdAt: node.createdAt.toISOString(),
     updatedAt: node.updatedAt.toISOString(),
     deleteBlockers: await deleteBlockersFor(node),
@@ -532,6 +535,7 @@ export async function toFloorDto(
     objectCount,
     riskSummary,
     rollup: await rollupOf(node._id),
+    createdByName: creatorName(node.createdBy),
     createdAt: node.createdAt.toISOString(),
     updatedAt: node.updatedAt.toISOString(),
     deleteBlockers: await deleteBlockersFor(node),
@@ -563,6 +567,7 @@ export async function listProjects(
       .populate([
         { path: 'customer', select: 'name' },
         { path: 'attributes.responsibleEmployee', select: 'firstName lastName' },
+        CREATOR_POPULATE,
       ])
       .sort({ [sortField]: query.sortDir === 'asc' ? 1 : -1 })
       .skip(skip)
@@ -594,6 +599,7 @@ async function loadProject(
   }).populate([
     { path: 'customer', select: 'name' },
     { path: 'attributes.responsibleEmployee', select: 'firstName lastName' },
+    CREATOR_POPULATE,
   ]);
   if (!node) {
     throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Төсөл олдсонгүй.');
@@ -656,6 +662,7 @@ export async function createProject(
       endDate: input.endDate ? new Date(input.endDate) : null,
     },
     isActive: true,
+    createdBy: new Types.ObjectId(actor.userId),
   });
 
   await recordAudit({
@@ -776,7 +783,7 @@ export async function listBuildings(
   const skip = (query.page - 1) * query.limit;
   const [rows, total] = await Promise.all([
     ObjectNode.find(filter)
-      .populate({ path: 'parent', select: 'name' })
+      .populate([{ path: 'parent', select: 'name' }, CREATOR_POPULATE])
       .sort({ name: 1 })
       .skip(skip)
       .limit(query.limit),
@@ -804,7 +811,7 @@ export async function getBuildingById(
     _id: buildingId,
     kind: 'BUILDING',
     ...customerScopeFilter(scope),
-  }).populate({ path: 'parent', select: 'name' });
+  }).populate([{ path: 'parent', select: 'name' }, CREATOR_POPULATE]);
   if (!node) {
     throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Барилга олдсонгүй.');
   }
@@ -848,6 +855,7 @@ export async function createBuilding(
       gpsLongitude: input.gpsLongitude ?? null,
     },
     isActive: true,
+    createdBy: new Types.ObjectId(actor.userId),
   });
 
   await recordAudit({
@@ -945,7 +953,7 @@ export async function listFloors(
   const skip = (query.page - 1) * query.limit;
   const [rows, total] = await Promise.all([
     ObjectNode.find(filter)
-      .populate({ path: 'parent', select: 'name' })
+      .populate([{ path: 'parent', select: 'name' }, CREATOR_POPULATE])
       .sort({ 'attributes.floorNumber': 1, name: 1 })
       .skip(skip)
       .limit(query.limit),
@@ -980,7 +988,7 @@ export async function getFloorById(
     _id: floorId,
     kind: 'FLOOR',
     ...customerScopeFilter(scope),
-  }).populate({ path: 'parent', select: 'name' });
+  }).populate([{ path: 'parent', select: 'name' }, CREATOR_POPULATE]);
   if (!node) {
     throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Давхар олдсонгүй.');
   }
@@ -1029,6 +1037,7 @@ export async function createFloor(
       purpose: input.purpose ?? null,
     },
     isActive: true,
+    createdBy: new Types.ObjectId(actor.userId),
   });
 
   await recordAudit({

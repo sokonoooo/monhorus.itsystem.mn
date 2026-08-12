@@ -203,6 +203,11 @@ export function PlannedWorkListPage(): ReactElement {
       header: 'Баг',
       render: (row) => <span className="text-slate-700">{row.assignedTeam?.name ?? '-'}</span>,
     },
+    {
+      key: 'createdBy',
+      header: 'Үүсгэсэн',
+      render: (row) => <span className="text-slate-700">{row.createdByName ?? '-'}</span>,
+    },
   ];
 
   const columnState = useTableColumns('planned-work', columns);

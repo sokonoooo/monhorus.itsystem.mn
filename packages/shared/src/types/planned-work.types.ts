@@ -103,6 +103,14 @@ export interface PlannedWorkTaskDto {
   /** Mongolian labels of the evidence still missing before the task may be DONE. */
   missingEvidence: readonly string[];
   completedAt: string | null;
+  /**
+   * Who created the record, resolved to a display name.
+   *
+   * Null where it is not known: rows created before the creator was recorded, and
+   * records the system itself made. The screen renders that as a dash rather than
+   * guessing, because an absent creator is a real answer here.
+   */
+  createdByName: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -248,6 +256,14 @@ export interface PlannedWorkListItemDto {
   assignedEmployees: readonly NamedRefDto[];
   assignedTeam: NamedRefDto | null;
   reportStatus: PlannedWorkReportStatus | null;
+  /**
+   * Who created the record, resolved to a display name.
+   *
+   * Null where it is not known: rows created before the creator was recorded, and
+   * records the system itself made. The screen renders that as a dash rather than
+   * guessing, because an absent creator is a real answer here.
+   */
+  createdByName: string | null;
   createdAt: string;
 }
 

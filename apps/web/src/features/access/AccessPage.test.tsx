@@ -18,6 +18,7 @@ function makeRole(overrides: Partial<RoleDto> = {}): RoleDto {
     permissions: [PERMISSIONS.EMPLOYEE_VIEW],
     isSystem: false,
     userCount: 0,
+    createdByName: 'Б. Энхтөр',
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
     ...overrides,
@@ -40,6 +41,7 @@ function makeAccount(overrides: Partial<UserDto> = {}): UserDto {
     customerName: null,
     lastLoginAt: null,
     createdBy: null,
+    createdByName: 'Б. Энхтөр',
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
     ...overrides,
@@ -78,6 +80,33 @@ describe('AccessPage', () => {
     expect(await screen.findByText('Системийн админ')).toBeInTheDocument();
     const table = screen.getByRole('table');
     expect(within(table).getByText('Системийн')).toBeInTheDocument();
+  });
+
+  /**
+   * A seeded role was created by nobody. Saying "Систем" distinguishes that from a role
+   * whose creator was simply never recorded, which is what the dash means.
+   */
+  it('credits a seeded role to the system rather than to nobody', async () => {
+    vi.spyOn(rbacService, 'roles').mockResolvedValue([
+      makeRole({ name: 'Системийн админ', isSystem: true, createdByName: null }),
+    ]);
+
+    renderWithAuth(<AccessPage />, { permissions: [PERMISSIONS.RBAC_VIEW] });
+
+    const table = await screen.findByRole('table');
+    expect(within(table).getByRole('columnheader', { name: 'Үүсгэсэн' })).toBeInTheDocument();
+    expect(within(table).getByText('Систем')).toBeInTheDocument();
+  });
+
+  it('names the administrator who defined a custom role', async () => {
+    vi.spyOn(rbacService, 'roles').mockResolvedValue([
+      makeRole({ name: 'Санхүү', isSystem: false, createdByName: 'Б. Энхтөр' }),
+    ]);
+
+    renderWithAuth(<AccessPage />, { permissions: [PERMISSIONS.RBAC_VIEW] });
+
+    const table = await screen.findByRole('table');
+    expect(within(table).getByText('Б. Энхтөр')).toBeInTheDocument();
   });
 
   it('flags a role that grants salary visibility', async () => {

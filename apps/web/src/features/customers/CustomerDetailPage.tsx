@@ -247,6 +247,9 @@ export function CustomerDetailPage(): ReactElement {
                           Сарын төлбөр
                         </th>
                         <th className="px-3 py-2 text-left font-semibold text-slate-700">Төлөв</th>
+                        <th className="px-3 py-2 text-left font-semibold text-slate-700">
+                          Үүсгэсэн
+                        </th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
@@ -285,6 +288,9 @@ export function CustomerDetailPage(): ReactElement {
                             >
                               {SERVICE_AGREEMENT_STATUS_LABELS[agreement.status]}
                             </span>
+                          </td>
+                          <td className="px-3 py-2">
+                            <span className="text-slate-700">{agreement.createdByName ?? '-'}</span>
                           </td>
                         </tr>
                       ))}
