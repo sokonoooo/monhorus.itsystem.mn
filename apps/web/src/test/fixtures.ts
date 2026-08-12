@@ -622,6 +622,12 @@ export function makeReportResult(overrides: Partial<ReportResultDto> = {}): Repo
       { key: 'slaResult', label: 'SLA үр дүн', format: 'TEXT' },
       { key: 'extendedMinutes', label: 'Сунгасан (мин)', format: 'NUMBER', align: 'right' },
     ],
+    // One page holding everything, which is what a fixture wants unless a test is
+    // specifically about paging and overrides these.
+    page: 1,
+    limit: 25,
+    total: 2,
+    totalPages: 1,
     rows: [
       { requestNumber: 'SR-202607-0001', slaResult: 'Хугацаанд багтсан', extendedMinutes: 0 },
     ],
