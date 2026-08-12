@@ -11,7 +11,11 @@ import { PageHeader } from '../../components/ui/PageHeader';
 import { useAuth } from '../../contexts/auth-context';
 import { ApiError } from '../../lib/api-client';
 import { portalService } from '../../services/portal.service';
-import { PortalWorkStatusBadge } from './PortalBadges';
+import {
+  LateBadge,
+  PlannedWorkStatusBadge,
+  ProgressBar,
+} from '../planned-work/PlannedWorkBadges';
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
@@ -57,9 +61,18 @@ export function PortalPlannedWorkListPage(): ReactElement {
     void load();
   }, [load]);
 
+  /**
+   * The staff columns, minus the people.
+   *
+   * Deliberately the same shape, order and components as `PlannedWorkListPage` — the badge,
+   * the progress bar and the lateness chip are imported from it rather than reimplemented,
+   * so the two screens cannot drift apart visually. What is dropped is `Харилцагч` (a
+   * customer knows who they are), `Хариуцагч` and `Баг`: who inside the company is on the
+   * job is not a customer's business, and it is the one thing this list must never leak.
+   */
   const columns: Column<PlannedWorkListItemDto>[] = [
     {
-      key: 'title',
+      key: 'work',
       header: 'Ажил',
       render: (row) => (
         <div className="min-w-0">
@@ -74,17 +87,39 @@ export function PortalPlannedWorkListPage(): ReactElement {
       render: (row) => <span className="text-slate-700">{row.building?.name ?? '-'}</span>,
     },
     {
-      key: 'status',
-      header: 'Төлөв',
-      render: (row) => <PortalWorkStatusBadge status={row.effectiveStatus} />,
+      key: 'plannedStart',
+      header: 'Эхлэх',
+      render: (row) => <span className="text-slate-700">{formatDate(row.plannedStartDate)}</span>,
     },
     {
-      key: 'dates',
-      header: 'Хугацаа',
+      key: 'plannedEnd',
+      header: 'Дуусах',
+      render: (row) => <span className="text-slate-700">{formatDate(row.plannedEndDate)}</span>,
+    },
+    {
+      key: 'status',
+      header: 'Төлөв',
+      render: (row) => <PlannedWorkStatusBadge status={row.effectiveStatus} />,
+    },
+    {
+      key: 'late',
+      header: 'Хоцролт',
+      render: (row) =>
+        row.completedLate ? (
+          <LateBadge delayMinutes={row.delayMinutes} />
+        ) : (
+          <span className="text-slate-400">-</span>
+        ),
+    },
+    {
+      key: 'progress',
+      header: 'Биелэлт',
       render: (row) => (
-        <span className="text-slate-700">
-          {formatDate(row.plannedStartDate)} — {formatDate(row.plannedEndDate)}
-        </span>
+        <ProgressBar
+          percent={row.progressPercent}
+          completedQuantity={row.completedQuantity}
+          totalQuantity={row.totalQuantity}
+        />
       ),
     },
   ];

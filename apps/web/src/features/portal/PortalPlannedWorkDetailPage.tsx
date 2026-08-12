@@ -8,7 +8,13 @@ import { PageHeader } from '../../components/ui/PageHeader';
 import { ErrorState, Skeleton } from '../../components/ui/States';
 import { ApiError } from '../../lib/api-client';
 import { portalService } from '../../services/portal.service';
-import { PortalWorkStatusBadge } from './PortalBadges';
+import {
+  LateBadge,
+  PlannedWorkStatusBadge,
+  ProgressBar,
+  TaskStatusBadge,
+} from '../planned-work/PlannedWorkBadges';
+import { groupTasksByFloor } from '../planned-work/PlannedWorkFloorSections';
 
 function formatDate(iso: string | null): string {
   if (!iso) return '-';
@@ -79,6 +85,10 @@ export function PortalPlannedWorkDetailPage(): ReactElement {
     );
   }
 
+  // Defaulted rather than assumed present: a work with no sub-tasks yet — which every
+  // freshly raised request is — must render its status, not throw on an absent array.
+  const floorGroups = groupTasksByFloor(work.tasks ?? [], work.floorProgress ?? []);
+
   return (
     <>
       <PageHeader
@@ -118,7 +128,8 @@ export function PortalPlannedWorkDetailPage(): ReactElement {
 
         <div className="rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
           <div className="mb-4">
-            <PortalWorkStatusBadge status={work.effectiveStatus} />
+            <PlannedWorkStatusBadge status={work.effectiveStatus} />
+            {work.completedLate && <LateBadge delayMinutes={work.delayMinutes} />}
           </div>
 
           <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
@@ -137,7 +148,75 @@ export function PortalPlannedWorkDetailPage(): ReactElement {
               </p>
             </div>
           )}
+
+          <div className="mt-4">
+            <p className="mb-1 text-xs font-medium text-slate-500">Биелэлт</p>
+            <ProgressBar
+              percent={work.progressPercent}
+              completedQuantity={work.completedQuantity}
+              totalQuantity={work.totalQuantity}
+            />
+          </div>
         </div>
+
+        {/*
+          The work breakdown, floor by floor, exactly as the staff detail groups it —
+          `groupTasksByFloor` is imported rather than reimplemented so the two cannot order
+          or bucket things differently.
+
+          WHAT IS OMITTED, AND WHY. Each `PlannedWorkTaskDto` also carries
+          `assignedEmployeeName`, `conclusionByName` and the technician's working note. None
+          of it is rendered: the customer is being shown WHAT is being done and how far along
+          it is, not who is doing it or what they wrote to each other on the way. The signed
+          conclusion reaches them through the approved report instead.
+        */}
+        {floorGroups.length > 0 && (
+          <div className="space-y-3">
+            {floorGroups.map((group) => (
+              <div
+                key={group.key}
+                className="overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-slate-200"
+              >
+                <div className="flex flex-wrap items-center gap-3 border-b border-slate-200 px-5 py-3">
+                  <h2 className="text-sm font-semibold text-slate-900">{group.name}</h2>
+                  <span className="text-xs text-slate-500">{group.tasks.length} дэд ажил</span>
+                  {group.progress && (
+                    <div className="ml-auto">
+                      <ProgressBar
+                        percent={group.progress.progressPercent}
+                        completedQuantity={group.progress.completedQuantity}
+                        totalQuantity={group.progress.totalQuantity}
+                      />
+                    </div>
+                  )}
+                </div>
+
+                <ul className="divide-y divide-slate-100">
+                  {group.tasks.map((task) => (
+                    <li key={task.id} className="flex flex-wrap items-center gap-3 px-5 py-3">
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium text-slate-900">
+                          {task.title}
+                        </p>
+                        <p className="text-xs text-slate-500">
+                          {formatDate(task.plannedStartDate)} — {formatDate(task.plannedEndDate)}
+                        </p>
+                      </div>
+                      <TaskStatusBadge status={task.status} />
+                      <div className="w-40">
+                        <ProgressBar
+                          percent={task.progressPercent}
+                          completedQuantity={task.completedQuantity}
+                          totalQuantity={task.totalQuantity}
+                        />
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </>
   );

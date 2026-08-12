@@ -372,4 +372,81 @@ describe('following planned work in the portal', () => {
     expect(await screen.findAllByText('Цуцлагдсан')).toHaveLength(2);
     expect(screen.getByText('Тухайн хугацаанд боломжгүй.')).toBeInTheDocument();
   });
+
+  /**
+   * The customer detail mirrors the staff one — progress, floor grouping, sub-tasks — and
+   * must not carry the people. `PlannedWorkTaskDto` has `assignedEmployeeName` on it, so
+   * the omission is a rendering decision and therefore worth pinning.
+   */
+  it('shows the work breakdown by floor without naming anybody', async () => {
+    vi.spyOn(portalService, 'getPlannedWork').mockResolvedValue({
+      id: 'w1',
+      workNumber: 'PW-202609-0001',
+      title: 'Улирлын үзлэг',
+      lifecycleStatus: 'STARTED',
+      effectiveStatus: 'STARTED',
+      building: { id: BUILDING_ID, name: 'Төв барилга' },
+      project: null,
+      plannedStartDate: '2026-09-01T00:00:00.000Z',
+      plannedEndDate: '2026-09-03T00:00:00.000Z',
+      createdAt: '2026-08-20T00:00:00.000Z',
+      description: null,
+      cancelReason: null,
+      completedLate: false,
+      delayMinutes: null,
+      progressPercent: 60,
+      completedQuantity: 6,
+      totalQuantity: 10,
+      floorProgress: [
+        {
+          floorId: 'f1',
+          floorName: '2-р давхар',
+          taskCount: 1,
+          totalQuantity: 10,
+          completedQuantity: 6,
+          remainingQuantity: 4,
+          progressPercent: 60,
+        },
+      ],
+      tasks: [
+        {
+          id: 't1',
+          plannedWorkId: 'w1',
+          floorId: 'f1',
+          floorName: '2-р давхар',
+          title: 'Самбарын үзлэг',
+          status: 'IN_PROGRESS',
+          unit: 'PIECE',
+          totalQuantity: 10,
+          completedQuantity: 6,
+          remainingQuantity: 4,
+          progressPercent: 60,
+          plannedStartDate: '2026-09-01T00:00:00.000Z',
+          plannedEndDate: '2026-09-03T00:00:00.000Z',
+          assignedEmployeeName: 'Бат Дорж',
+          conclusionByName: 'Ням Цэрэн',
+          relatedObjects: [],
+          beforePhotos: [],
+          afterPhotos: [],
+          missingEvidence: [],
+        },
+      ],
+    } as never);
+
+    renderPortal(
+      <PortalPlannedWorkDetailPage />,
+      '/portal/planned-work/w1',
+      '/portal/planned-work/:plannedWorkId',
+    );
+
+    // The breakdown is there …
+    expect(await screen.findByText('2-р давхар')).toBeInTheDocument();
+    expect(screen.getByText('Самбарын үзлэг')).toBeInTheDocument();
+    expect(screen.getByText('1 дэд ажил')).toBeInTheDocument();
+
+    // … and nobody is named on it.
+    expect(screen.queryByText('Бат Дорж')).not.toBeInTheDocument();
+    expect(screen.queryByText('Ням Цэрэн')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Хариуцагч/)).not.toBeInTheDocument();
+  });
 });

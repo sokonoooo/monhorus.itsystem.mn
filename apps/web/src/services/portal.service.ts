@@ -183,7 +183,10 @@ export const portalService = {
   async listObjects(floorId: string): Promise<PaginatedData<ObjectListItemDto>> {
     return unwrap(
       await apiClient.get<ApiResponse<PaginatedData<ObjectListItemDto>>>('/objects-master', {
-        params: { floorId, page: 1, limit: 200 },
+        // 100 is the cap `objectListQuerySchema` enforces, not a preference. Asking for more
+        // is a 400, which surfaced as "the floor page is broken" rather than as anything
+        // about paging.
+        params: { floorId, page: 1, limit: 100 },
       }),
     );
   },
