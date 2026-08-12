@@ -13,7 +13,7 @@ import { Alert } from '../../components/ui/Alert';
 import { Button } from '../../components/ui/Button';
 import { ColumnPicker } from '../../components/ui/ColumnPicker';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
-import { DataTable, type Column } from '../../components/ui/DataTable';
+import { DataTable, Pagination, type Column } from '../../components/ui/DataTable';
 import { Drawer } from '../../components/ui/Drawer';
 import { RiskBadge } from '../../components/ui/DomainBadges';
 import { PageHeader } from '../../components/ui/PageHeader';
@@ -199,6 +199,18 @@ const OBJECT_PAGE_LIMIT = 100;
 const MAX_OBJECT_PAGES = 20;
 
 /**
+ * Rows of the object table per screen.
+ *
+ * This pages the already-loaded list in the browser rather than asking the server for a
+ * window, which is the opposite of what the list pages do — and deliberate. The plan above
+ * the table needs EVERY object at once, because a marker missing from a drawing is a device
+ * nobody will find, and `fetchAllFloorObjects` below exists to guarantee that. Once the
+ * whole list is in hand, fetching a page of it again would be a second request for data
+ * already on the client.
+ */
+const OBJECT_TABLE_PAGE_SIZE = 20;
+
+/**
  * Every object on the floor, not the first hundred.
  *
  * The list endpoint pages and its limit is capped at 100, so a single request silently lost
@@ -253,6 +265,7 @@ export function FloorDetailPage(): ReactElement {
    * visibly flicker; a refetch now keeps the content on screen.
    */
   const hasLoadedRef = useRef(false);
+  const [objectPage, setObjectPage] = useState(1);
   const [editOpen, setEditOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [unlinkTarget, setUnlinkTarget] = useState<ObjectListItemDto | null>(null);
@@ -412,6 +425,16 @@ export function FloorDetailPage(): ReactElement {
   ];
 
   const columnState = useTableColumns('floor-objects', objectColumns);
+
+  const objectTotalPages = Math.max(1, Math.ceil(objects.length / OBJECT_TABLE_PAGE_SIZE));
+  // Unlinking or deleting shortens the list under the reader, and the last page can stop
+  // existing while they are standing on it. Clamping here shows them the new last page
+  // instead of an empty table with a page number past the end.
+  const currentObjectPage = Math.min(objectPage, objectTotalPages);
+  const visibleObjects = objects.slice(
+    (currentObjectPage - 1) * OBJECT_TABLE_PAGE_SIZE,
+    currentObjectPage * OBJECT_TABLE_PAGE_SIZE,
+  );
 
   if (loading) {
     return (
@@ -631,11 +654,18 @@ export function FloorDetailPage(): ReactElement {
 
             <DataTable
               columns={columnState.visibleColumns}
-              rows={objects}
+              rows={visibleObjects}
               rowKey={(row) => row.id}
+              numbering={{ page: currentObjectPage, limit: OBJECT_TABLE_PAGE_SIZE }}
               onRowClick={(row) => navigate(`/floors/${floor.id}/objects/${row.id}`)}
               emptyTitle="Объект бүртгэгдээгүй"
               emptyDescription="Самбар, хэлхээ, тоноглолыг энэ давхарт нэмнэ үү."
+            />
+            <Pagination
+              page={currentObjectPage}
+              totalPages={objectTotalPages}
+              total={objects.length}
+              onPageChange={setObjectPage}
             />
           </div>
         )}

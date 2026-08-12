@@ -227,3 +227,88 @@ describe('ProjectDetailPage delete blockers', () => {
     expect(screen.queryByText('Устгах боломжгүй')).not.toBeInTheDocument();
   });
 });
+
+/**
+ * Buildings under a project used to arrive as one `limit: 100` fetch rendered whole, so a
+ * large project's hundred-and-first building was absent from the page with nothing saying
+ * so. These pin the window, the numbering across it, and the pager that moves it.
+ */
+describe('ProjectDetailPage building list paging', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(projectService, 'getProject').mockResolvedValue(makeProject());
+  });
+
+  function buildingPage(page: number, count: number, total: number) {
+    return {
+      items: Array.from({ length: count }, (_, offset) =>
+        makeBuilding({
+          id: `b-${page}-${offset}`,
+          code: `BLD-${page}-${offset}`,
+          name: `Барилга ${page}-${offset}`,
+        }),
+      ),
+      page,
+      limit: 20,
+      total,
+      totalPages: Math.ceil(total / 20),
+    };
+  }
+
+  it('asks for one page of buildings rather than a hundred', async () => {
+    const list = vi
+      .spyOn(projectService, 'listBuildings')
+      .mockResolvedValue(buildingPage(1, 20, 120));
+
+    renderProject();
+    await screen.findByRole('table');
+
+    expect(list).toHaveBeenCalledWith({ projectId: PROJECT_ID, page: 1, limit: 20 });
+  });
+
+  it('numbers the buildings continuously across pages', async () => {
+    vi.spyOn(projectService, 'listBuildings').mockResolvedValue(buildingPage(3, 20, 120));
+
+    renderProject();
+
+    const table = await screen.findByRole('table');
+    expect(within(table).getByRole('columnheader', { name: '№' })).toBeInTheDocument();
+    // Page 3 of 20 begins at 41. Restarting at 1 is the failure this exists to catch.
+    expect(within(table).getAllByRole('cell')[0]?.textContent?.trim()).toBe('41');
+  });
+
+  it('states the project total rather than the rows on screen', async () => {
+    vi.spyOn(projectService, 'listBuildings').mockResolvedValue(buildingPage(1, 20, 120));
+
+    renderProject();
+    await screen.findByRole('table');
+
+    expect(screen.getByText(/Нийт 120/)).toBeInTheDocument();
+  });
+
+  it('asks the server for the next page when the pager is used', async () => {
+    const user = userEvent.setup();
+    const list = vi
+      .spyOn(projectService, 'listBuildings')
+      .mockResolvedValue(buildingPage(1, 20, 120));
+
+    renderProject();
+    await screen.findByRole('table');
+
+    await user.click(screen.getByRole('button', { name: 'Дараах' }));
+
+    await waitFor(() =>
+      expect(list).toHaveBeenLastCalledWith({ projectId: PROJECT_ID, page: 2, limit: 20 }),
+    );
+  });
+
+  /** One page is one screen: the pager has nothing to offer and must not appear. */
+  it('offers no pager when every building fits on one page', async () => {
+    vi.spyOn(projectService, 'listBuildings').mockResolvedValue(buildingPage(1, 3, 3));
+
+    renderProject();
+    await screen.findByRole('table');
+
+    expect(screen.queryByRole('button', { name: 'Дараах' })).not.toBeInTheDocument();
+  });
+});

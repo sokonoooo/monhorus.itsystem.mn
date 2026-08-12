@@ -397,6 +397,10 @@ export function InvoiceDetailPage(): ReactElement {
             <table className="w-full text-sm">
               <thead className="bg-slate-50 text-xs text-slate-600">
                 <tr>
+                  {/* Numbered but not paged: the lines travel inside the invoice's own
+                      payload, and an invoice is read and signed as one document. The
+                      numbers give a caller on the phone a way to say which line. */}
+                  <th className="w-12 whitespace-nowrap px-5 py-2 text-right font-medium">№</th>
                   <th className="px-5 py-2 text-left font-medium">Тайлбар</th>
                   <th className="px-5 py-2 text-left font-medium">Эх үүсвэр</th>
                   <th className="px-5 py-2 text-right font-medium">Тоо</th>
@@ -405,8 +409,11 @@ export function InvoiceDetailPage(): ReactElement {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {invoice.lines.map((line) => (
+                {invoice.lines.map((line, index) => (
                   <tr key={line.id}>
+                    <td className="px-5 py-2.5 text-right tabular-nums text-slate-500">
+                      {index + 1}
+                    </td>
                     <td className="px-5 py-2.5 text-slate-900">{line.description}</td>
                     <td className="px-5 py-2.5 text-xs text-slate-500">
                       {INVOICE_LINE_SOURCE_LABELS[line.source]}
@@ -425,7 +432,7 @@ export function InvoiceDetailPage(): ReactElement {
               </tbody>
               <tfoot className="border-t border-slate-200 bg-slate-50">
                 <tr>
-                  <td colSpan={4} className="px-5 py-2 text-right text-xs text-slate-600">
+                  <td colSpan={5} className="px-5 py-2 text-right text-xs text-slate-600">
                     Дүн
                   </td>
                   <td className="px-5 py-2 text-right tabular-nums text-slate-900">
@@ -433,7 +440,7 @@ export function InvoiceDetailPage(): ReactElement {
                   </td>
                 </tr>
                 <tr>
-                  <td colSpan={4} className="px-5 py-2 text-right text-xs text-slate-600">
+                  <td colSpan={5} className="px-5 py-2 text-right text-xs text-slate-600">
                     Татвар ({invoice.taxPercent}%)
                   </td>
                   <td className="px-5 py-2 text-right tabular-nums text-slate-900">
@@ -441,7 +448,7 @@ export function InvoiceDetailPage(): ReactElement {
                   </td>
                 </tr>
                 <tr>
-                  <td colSpan={4} className="px-5 py-2 text-right text-sm font-semibold text-slate-900">
+                  <td colSpan={5} className="px-5 py-2 text-right text-sm font-semibold text-slate-900">
                     Нийт
                   </td>
                   <td className="px-5 py-2 text-right text-sm font-semibold">

@@ -3,10 +3,10 @@ import { useEffect, useState, type ReactElement } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { ColumnPicker } from '../../components/ui/ColumnPicker';
-import { DataTable, type Column } from '../../components/ui/DataTable';
+import { DataTable, Pagination, type Column } from '../../components/ui/DataTable';
 import { useTableColumns } from '../../hooks/use-table-columns';
 import { ApiError } from '../../lib/api-client';
-import { invoiceService } from '../../services/invoice.service';
+import { invoiceService, type InvoicePage } from '../../services/invoice.service';
 import { BillingTypeBadge, InvoiceStatusBadge, Money } from '../invoices/InvoiceBadges';
 
 function formatDate(iso: string | null): string {
@@ -14,23 +14,40 @@ function formatDate(iso: string | null): string {
   return new Date(iso).toLocaleDateString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
 }
 
+/**
+ * Invoices per screen.
+ *
+ * The tab used to ask for fifty and render them all, so a long-standing customer's
+ * fifty-first invoice was unreachable from this page — not hidden behind a control, simply
+ * absent. The summary above the table is computed by the server over the whole set, so it
+ * keeps telling the truth about the receivable position while the table shows one page.
+ */
+const INVOICE_PAGE_SIZE = 20;
+
 /** Invoices issued to this customer, with their receivable position. */
 export function CustomerInvoicesTab({ customerId }: { customerId: string }): ReactElement {
   const navigate = useNavigate();
-  const [rows, setRows] = useState<InvoiceListItemDto[]>([]);
-  const [summary, setSummary] = useState<InvoiceSummaryDto | null>(null);
+  const [result, setResult] = useState<InvoicePage | null>(null);
+  const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Switching customer while standing on page 3 would otherwise open the next customer on
+  // a page that is often past the end of their shorter list.
+  useEffect(() => {
+    setPage(1);
+  }, [customerId]);
+
   useEffect(() => {
     let cancelled = false;
+    setLoading(true);
+    setError(null);
 
     invoiceService
-      .list({ customerId, limit: 50 })
-      .then((page) => {
+      .list({ customerId, page, limit: INVOICE_PAGE_SIZE })
+      .then((next) => {
         if (cancelled) return;
-        setRows(page.items as InvoiceListItemDto[]);
-        setSummary(page.summary);
+        setResult(next);
       })
       .catch((caught: unknown) => {
         if (!cancelled) {
@@ -44,7 +61,10 @@ export function CustomerInvoicesTab({ customerId }: { customerId: string }): Rea
     return () => {
       cancelled = true;
     };
-  }, [customerId]);
+  }, [customerId, page]);
+
+  const rows: InvoiceListItemDto[] = result?.items ?? [];
+  const summary: InvoiceSummaryDto | null = result?.summary ?? null;
 
   const columns: ReadonlyArray<Column<InvoiceListItemDto>> = [
     {
@@ -133,9 +153,16 @@ export function CustomerInvoicesTab({ customerId }: { customerId: string }): Rea
           rowKey={(row) => row.id}
           loading={loading}
           error={error}
+          numbering={{ page, limit: INVOICE_PAGE_SIZE }}
           onRowClick={(row) => navigate(`/invoices/${row.id}`)}
           emptyTitle="Нэхэмжлэл алга"
           emptyDescription="Энэ харилцагчид нэхэмжлэл илгээгээгүй байна."
+        />
+        <Pagination
+          page={page}
+          totalPages={result?.totalPages ?? 1}
+          total={result?.total ?? 0}
+          onPageChange={setPage}
         />
       </div>
     </div>

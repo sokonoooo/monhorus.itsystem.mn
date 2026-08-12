@@ -941,4 +941,55 @@ describe('ObjectDetailPage', () => {
 
     expect(await screen.findByText('Объект олдсонгүй.')).toBeInTheDocument();
   });
+
+  /**
+   * Numbered but not paged: the history arrives inside the object's own payload, so there
+   * is no second page to ask for. The column still earns its place — it is what lets one
+   * reader tell another which entry they are looking at.
+   */
+  it('numbers the assessment history from 1', async () => {
+    const assessment = (id: string, assessedAt: string) => ({
+      id,
+      objectId: OBJECT_ID,
+      previousScore: 90,
+      newScore: 70,
+      riskLevel: 'ATTENTION' as const,
+      assessedById: 'u1',
+      assessedByName: 'Бат Дорж',
+      judgedById: null,
+      judgedByName: null,
+      assessedAt,
+      photos: [],
+      conclusion: 'Холболт сулласан',
+      recommendation: 'Чангалах',
+      actionTaken: null,
+      measuredLoadKw: 5.2,
+      measurements: [],
+      repairRequired: true,
+      revisitRequired: false,
+      revisitDate: null,
+      revisitOwnerName: null,
+      sourceLabel: null,
+      createdAt: assessedAt,
+    });
+
+    vi.spyOn(objectMasterService, 'getById').mockResolvedValue(makeObjectDetail());
+    vi.spyOn(objectMasterService, 'history').mockResolvedValue(
+      makeObjectHistory({
+        assessments: [
+          assessment('a1', '2026-07-10T00:00:00.000Z'),
+          assessment('a2', '2026-07-11T00:00:00.000Z'),
+        ],
+      }),
+    );
+
+    renderDetail([PERMISSIONS.OBJECT_MASTER_VIEW]);
+
+    const table = await screen.findByRole('table', { name: 'Үнэлгээний түүх' });
+    expect(within(table).getByRole('columnheader', { name: '№' })).toBeInTheDocument();
+    const rows = within(table).getAllByRole('row');
+    // Row 0 is the header; the two entries below it read 1 and 2.
+    expect(within(rows[1]!).getAllByRole('cell')[0]?.textContent?.trim()).toBe('1');
+    expect(within(rows[2]!).getAllByRole('cell')[0]?.textContent?.trim()).toBe('2');
+  });
 });

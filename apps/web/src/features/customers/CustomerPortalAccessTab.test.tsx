@@ -1,5 +1,5 @@
 import { PERMISSIONS, type PaginatedData, type UserDto } from '@monhorus/shared';
-import { screen, within } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -98,5 +98,53 @@ describe('CustomerPortalAccessTab', () => {
     expect(
       screen.queryByRole('button', { name: 'Нэвтрэх эрх үүсгэх' }),
     ).not.toBeInTheDocument();
+  });
+
+  /**
+   * The tab asked for a hundred accounts and rendered whatever came back, so a large
+   * organisation's accounts past the first hundred were unreachable here.
+   */
+  it('asks for one page of accounts rather than a hundred', async () => {
+    const list = vi.spyOn(userService, 'list').mockResolvedValue({
+      items: [makeAccount()],
+      page: 1,
+      limit: 20,
+      total: 1,
+      totalPages: 1,
+    });
+
+    render();
+    await screen.findByText('Болд Ганаа');
+
+    expect(list).toHaveBeenCalledWith({ customerId: 'c1', page: 1, limit: 20 });
+  });
+
+  it('numbers the accounts continuously across pages', async () => {
+    const user = userEvent.setup();
+    const list = vi.spyOn(userService, 'list').mockImplementation(async (query) => ({
+      items: [makeAccount({ id: `u-${query?.page ?? 1}` })],
+      page: query?.page ?? 1,
+      limit: 20,
+      total: 25,
+      totalPages: 2,
+    }));
+
+    render();
+
+    const table = await screen.findByRole('table', { name: 'Нэвтрэх эрх' });
+    expect(within(table).getByRole('columnheader', { name: '№' })).toBeInTheDocument();
+    expect(within(table).getAllByRole('cell')[0]?.textContent?.trim()).toBe('1');
+
+    await user.click(screen.getByRole('button', { name: 'Дараах' }));
+
+    // Page 2 of 20 begins at 21, and the second page is fetched rather than sliced here.
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole('table', { name: 'Нэвтрэх эрх' }))
+          .getAllByRole('cell')[0]
+          ?.textContent?.trim(),
+      ).toBe('21'),
+    );
+    expect(list).toHaveBeenLastCalledWith({ customerId: 'c1', page: 2, limit: 20 });
   });
 });

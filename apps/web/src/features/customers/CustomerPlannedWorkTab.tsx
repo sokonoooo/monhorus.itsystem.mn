@@ -6,10 +6,18 @@ import { useEffect, useState, type ReactElement } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { ColumnPicker } from '../../components/ui/ColumnPicker';
-import { DataTable, type Column } from '../../components/ui/DataTable';
+import { DataTable, Pagination, type Column } from '../../components/ui/DataTable';
 import { useTableColumns } from '../../hooks/use-table-columns';
 import { ApiError } from '../../lib/api-client';
 import { plannedWorkService } from '../../services/planned-work.service';
+
+/**
+ * Planned works per screen.
+ *
+ * As with the invoices tab, this asked for fifty and rendered them whole, so a customer
+ * with a longer history had works that this page could not reach at all.
+ */
+const PLANNED_WORK_PAGE_SIZE = 20;
 
 function formatDate(iso: string | null): string {
   if (!iso) return '-';
@@ -36,16 +44,29 @@ function ProgressCell({ percent }: { percent: number }): ReactElement {
 export function CustomerPlannedWorkTab({ customerId }: { customerId: string }): ReactElement {
   const navigate = useNavigate();
   const [rows, setRows] = useState<PlannedWorkListItemDto[]>([]);
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // A page number from the previous customer is rarely valid for the next one.
+  useEffect(() => {
+    setPage(1);
+  }, [customerId]);
+
   useEffect(() => {
     let cancelled = false;
+    setLoading(true);
+    setError(null);
 
     plannedWorkService
-      .list({ customerId, limit: 50 })
-      .then((page) => {
-        if (!cancelled) setRows(page.items as PlannedWorkListItemDto[]);
+      .list({ customerId, page, limit: PLANNED_WORK_PAGE_SIZE })
+      .then((next) => {
+        if (cancelled) return;
+        setRows(next.items as PlannedWorkListItemDto[]);
+        setTotal(next.total);
+        setTotalPages(next.totalPages);
       })
       .catch((caught: unknown) => {
         if (!cancelled) {
@@ -61,7 +82,7 @@ export function CustomerPlannedWorkTab({ customerId }: { customerId: string }): 
     return () => {
       cancelled = true;
     };
-  }, [customerId]);
+  }, [customerId, page]);
 
   const columns: ReadonlyArray<Column<PlannedWorkListItemDto>> = [
     {
@@ -134,10 +155,12 @@ export function CustomerPlannedWorkTab({ customerId }: { customerId: string }): 
           rowKey={(row) => row.id}
           loading={loading}
           error={error}
+          numbering={{ page, limit: PLANNED_WORK_PAGE_SIZE }}
           onRowClick={(row) => navigate(`/planned-work/${row.id}`)}
           emptyTitle="Төлөвлөгөөт ажил алга"
           emptyDescription="Энэ харилцагчид төлөвлөгөөт ажил бүртгэгдээгүй байна."
         />
+        <Pagination page={page} totalPages={totalPages} total={total} onPageChange={setPage} />
       </div>
     </div>
   );

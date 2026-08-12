@@ -2,6 +2,7 @@ import {
   PERMISSIONS,
   createBuildingSchema,
   type BuildingDto,
+  type PaginatedData,
   type ProjectDto,
 } from '@monhorus/shared';
 import { useCallback, useEffect, useState, type ReactElement } from 'react';
@@ -11,7 +12,7 @@ import { Alert } from '../../components/ui/Alert';
 import { Button } from '../../components/ui/Button';
 import { ColumnPicker } from '../../components/ui/ColumnPicker';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
-import { DataTable, type Column } from '../../components/ui/DataTable';
+import { DataTable, Pagination, type Column } from '../../components/ui/DataTable';
 import { Drawer } from '../../components/ui/Drawer';
 import { MapPicker } from '../../components/ui/MapPicker';
 import { PageHeader } from '../../components/ui/PageHeader';
@@ -25,6 +26,15 @@ import { projectService } from '../../services/project.service';
 import { RiskSummaryCell } from './objects/ObjectBadges';
 import { Field, TextInput } from '../employees/FormControls';
 import { ActiveBadge } from './ProjectListPage';
+
+/**
+ * Buildings under a project, one screen at a time.
+ *
+ * The list was fetched with `limit: 100` and rendered whole, so the 101st building of a
+ * large project was dropped with nothing on screen to say so. A window with a pager under
+ * it states its own total instead, and grows past a hundred.
+ */
+const BUILDING_PAGE_SIZE = 20;
 
 function formatDate(iso: string | null): string {
   if (!iso) return '-';
@@ -205,23 +215,21 @@ export function ProjectDetailPage(): ReactElement {
   const canManage = can(PERMISSIONS.OBJECT_MANAGE);
 
   const [project, setProject] = useState<ProjectDto | null>(null);
-  const [buildings, setBuildings] = useState<BuildingDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
 
-  const load = useCallback(async (): Promise<void> => {
+  const [buildings, setBuildings] = useState<PaginatedData<BuildingDto> | null>(null);
+  const [buildingPage, setBuildingPage] = useState(1);
+  const [buildingsError, setBuildingsError] = useState<string | null>(null);
+
+  const loadProject = useCallback(async (): Promise<void> => {
     if (!projectId) return;
     setLoading(true);
     setError(null);
     try {
-      const [detail, buildingPage] = await Promise.all([
-        projectService.getProject(projectId),
-        projectService.listBuildings({ projectId, limit: 100 }),
-      ]);
-      setProject(detail);
-      setBuildings(buildingPage.items);
+      setProject(await projectService.getProject(projectId));
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : 'Төсөл ачаалж чадсангүй.');
     } finally {
@@ -229,9 +237,37 @@ export function ProjectDetailPage(): ReactElement {
     }
   }, [projectId]);
 
+  /**
+   * Buildings load on their own so turning a page reloads the table and not the project:
+   * driving both from one fetch would blank the whole screen to a skeleton to change a
+   * page, and the header, dates and description above have not changed.
+   */
+  const loadBuildings = useCallback(async (): Promise<void> => {
+    if (!projectId) return;
+    // Cleared first, so the table shows its skeleton rather than the previous page's
+    // buildings sitting under the new page's row numbers.
+    setBuildings(null);
+    setBuildingsError(null);
+    try {
+      setBuildings(
+        await projectService.listBuildings({
+          projectId,
+          page: buildingPage,
+          limit: BUILDING_PAGE_SIZE,
+        }),
+      );
+    } catch (caught) {
+      setBuildingsError(caught instanceof ApiError ? caught.message : 'Барилга ачаалж чадсангүй.');
+    }
+  }, [projectId, buildingPage]);
+
   useEffect(() => {
-    void load();
-  }, [load]);
+    void loadProject();
+  }, [loadProject]);
+
+  useEffect(() => {
+    void loadBuildings();
+  }, [loadBuildings]);
 
   async function handleDelete(): Promise<void> {
     if (!project) return;
@@ -383,11 +419,24 @@ export function ProjectDetailPage(): ReactElement {
           </div>
           <DataTable
             columns={columnState.visibleColumns}
-            rows={buildings}
+            rows={buildings?.items ?? []}
             rowKey={(row) => row.id}
+            loading={buildings === null && buildingsError === null}
+            error={buildingsError}
+            onRetry={() => void loadBuildings()}
+            numbering={{
+              page: buildings?.page ?? buildingPage,
+              limit: buildings?.limit ?? BUILDING_PAGE_SIZE,
+            }}
             onRowClick={(row) => navigate(`/buildings/${row.id}`)}
             emptyTitle="Барилга бүртгэгдээгүй"
             emptyDescription="Давхар болон объект нэмэхийн тулд эхлээд барилга бүртгэнэ үү."
+          />
+          <Pagination
+            page={buildings?.page ?? buildingPage}
+            totalPages={buildings?.totalPages ?? 1}
+            total={buildings?.total ?? 0}
+            onPageChange={setBuildingPage}
           />
         </div>
 
@@ -410,7 +459,9 @@ export function ProjectDetailPage(): ReactElement {
         onClose={() => setDrawerOpen(false)}
         onSaved={() => {
           setDrawerOpen(false);
-          void load();
+          // Both: the table gains a row, and the project's delete blockers change with it.
+          void loadProject();
+          void loadBuildings();
         }}
       />
 

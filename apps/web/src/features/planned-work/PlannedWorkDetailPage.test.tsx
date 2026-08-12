@@ -890,6 +890,29 @@ describe('PlannedWorkDetailPage', () => {
     expect(screen.getByRole('button', { name: /^1 давхар/ })).toHaveTextContent('1 дэд ажил');
   });
 
+  /**
+   * Numbered but not paged, and numbered per floor. These sections are separate tables
+   * under separate headings, so a reader asked to check the second task on the second
+   * floor counts down that table — a number running across the whole page would send them
+   * to the wrong row.
+   */
+  it('numbers the sub-tasks from 1 within each floor section', async () => {
+    vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(twoFloorWork());
+
+    renderDetail([PERMISSIONS.PLANNED_WORK_VIEW]);
+
+    const first = await screen.findByRole('table', { name: '1 давхар дэд ажил' });
+    const second = screen.getByRole('table', { name: '2 давхар дэд ажил' });
+
+    for (const table of [first, second]) {
+      expect(within(table).getByRole('columnheader', { name: '№' })).toBeInTheDocument();
+      const rows = within(table).getAllByRole('row');
+      // Row 0 is the header. These rows expand, so the first cell is the expander and the
+      // number sits in the second — the same order the header renders them in.
+      expect(within(rows[1]!).getAllByRole('cell')[1]?.textContent?.trim()).toBe('1');
+    }
+  });
+
   it('collects the floorless sub-tasks into a trailing unassigned section', async () => {
     vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(
       makePlannedWork({

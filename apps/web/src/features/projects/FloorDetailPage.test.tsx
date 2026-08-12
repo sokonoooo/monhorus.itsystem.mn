@@ -249,8 +249,10 @@ describe('FloorDetailPage', () => {
 
     renderFloor([PERMISSIONS.OBJECT_VIEW, PERMISSIONS.OBJECT_MASTER_VIEW]);
 
-    // The row that only exists on the second page.
-    expect(await screen.findByText('Тоноглол 2-49')).toBeInTheDocument();
+    // The table windows its rows now, so the object that only exists on the second fetched
+    // page is no longer on screen at first paint. What proves both fetches were merged is
+    // the count over the whole set: 150 is only reachable if the second request landed.
+    expect(await screen.findByText(/Нийт 150/)).toBeInTheDocument();
     expect(list).toHaveBeenCalledWith({ floorId: FLOOR_ID, limit: 100, page: 1 });
     expect(list).toHaveBeenCalledWith({ floorId: FLOOR_ID, limit: 100, page: 2 });
     // And it stops when the pages run out rather than asking forever.
@@ -432,5 +434,86 @@ describe('FloorDetailPage', () => {
     renderFloor([PERMISSIONS.OBJECT_VIEW]);
 
     expect(await screen.findByText('Давхар олдсонгүй.')).toBeInTheDocument();
+  });
+});
+
+/**
+ * The object table pages, and the plan above it does not.
+ *
+ * This is the one table in the app that pages in the browser rather than at the server,
+ * because the plan needs every object at once to draw its markers. These pin both halves:
+ * the table shows a window with continuous numbering, and turning a page costs no request.
+ */
+describe('FloorDetailPage object table paging', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(projectService, 'getFloor').mockResolvedValue(makeFloor());
+    vi.spyOn(projectService, 'getFloorPlan').mockResolvedValue(makeFloorPlan());
+    vi.spyOn(projectService, 'floorLoad').mockResolvedValue(makeFloorLoad());
+  });
+
+  /** 25 objects: one full page of 20 and a second page holding the rest. */
+  function mockObjects(count: number) {
+    return vi.spyOn(objectMasterService, 'list').mockResolvedValue(
+      makePage(
+        Array.from({ length: count }, (_, index) =>
+          makeObjectListItem({
+            id: `o-${index}`,
+            code: `EQ-${index}`,
+            name: `Тоноглол ${index}`,
+          }),
+        ),
+        100,
+      ),
+    );
+  }
+
+  it('shows one page of objects and numbers it from 1', async () => {
+    mockObjects(25);
+
+    renderFloor([PERMISSIONS.OBJECT_VIEW, PERMISSIONS.OBJECT_MASTER_VIEW]);
+
+    const table = await screen.findByRole('table');
+    expect(within(table).getByRole('columnheader', { name: '№' })).toBeInTheDocument();
+    expect(within(table).getAllByRole('cell')[0]?.textContent?.trim()).toBe('1');
+    // The 21st object belongs to the second page and must not be on screen yet.
+    expect(within(table).queryByText('Тоноглол 20')).not.toBeInTheDocument();
+  });
+
+  it('counts the pager against every object on the floor', async () => {
+    mockObjects(25);
+
+    renderFloor([PERMISSIONS.OBJECT_VIEW, PERMISSIONS.OBJECT_MASTER_VIEW]);
+    await screen.findByRole('table');
+
+    expect(screen.getByText(/Нийт 25/)).toBeInTheDocument();
+  });
+
+  it('continues the numbering onto the second page without fetching again', async () => {
+    const user = userEvent.setup();
+    const list = mockObjects(25);
+
+    renderFloor([PERMISSIONS.OBJECT_VIEW, PERMISSIONS.OBJECT_MASTER_VIEW]);
+    await screen.findByRole('table');
+    const before = list.mock.calls.length;
+
+    await user.click(screen.getByRole('button', { name: 'Дараах' }));
+
+    const table = await screen.findByRole('table');
+    await waitFor(() =>
+      expect(within(table).getAllByRole('cell')[0]?.textContent?.trim()).toBe('21'),
+    );
+    expect(within(table).getByText('Тоноглол 20')).toBeInTheDocument();
+    // The whole list was already in hand; a second page of it is not a second request.
+    expect(list.mock.calls.length).toBe(before);
+  });
+
+  it('offers no pager when the floor fits on one page', async () => {
+    mockObjects(3);
+
+    renderFloor([PERMISSIONS.OBJECT_VIEW, PERMISSIONS.OBJECT_MASTER_VIEW]);
+    await screen.findByRole('table');
+
+    expect(screen.queryByRole('button', { name: 'Дараах' })).not.toBeInTheDocument();
   });
 });

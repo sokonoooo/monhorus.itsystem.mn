@@ -188,6 +188,10 @@ export function FloorTaskSection({
             columns={columns}
             rows={group.tasks}
             rowKey={(row) => row.id}
+            // Numbered per floor, and restarting at 1 in each section is the point: these
+            // are separate tables under separate headings, and a reader checking the third
+            // task on this floor counts down this table, not across the page.
+            numbering
             ariaLabel={`${group.name} дэд ажил`}
             emptyTitle="Дэд ажил бүртгэгдээгүй"
             renderExpanded={(row) => <TaskEquipmentPanel task={row} />}

@@ -11,7 +11,7 @@ import { useCallback, useEffect, useState, type FormEvent, type ReactElement } f
 import { Alert } from '../../components/ui/Alert';
 import { Button } from '../../components/ui/Button';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
-import { DataTable, type Column } from '../../components/ui/DataTable';
+import { DataTable, Pagination, type Column } from '../../components/ui/DataTable';
 import { Input } from '../../components/ui/Input';
 import { Modal } from '../../components/ui/Modal';
 import { RowActions, type RowActionItem } from '../../components/ui/RowActions';
@@ -85,6 +85,16 @@ function formatDate(iso: string | null): string {
 }
 
 /**
+ * Portal accounts per screen.
+ *
+ * Most customers have a handful, so `Pagination` hides itself here more often than not —
+ * it shows nothing below two pages. It is wired up anyway because the fetch it replaces
+ * asked for a hundred and dropped whatever came after, which is a quiet failure rather
+ * than a rare one.
+ */
+const PORTAL_USER_PAGE_SIZE = 20;
+
+/**
  * The portal logins of one customer organisation.
  *
  * A customer signs in through the same endpoint as staff; what makes the account a tenant
@@ -100,6 +110,9 @@ export function CustomerPortalAccessTab({ customerId }: { customerId: string }):
   const { notify } = useToast();
 
   const [rows, setRows] = useState<UserDto[]>([]);
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
@@ -117,13 +130,20 @@ export function CustomerPortalAccessTab({ customerId }: { customerId: string }):
     setLoading(true);
     setError(null);
     try {
-      const page = await userService.list({ customerId, limit: 100 });
-      setRows(page.items);
+      const result = await userService.list({ customerId, page, limit: PORTAL_USER_PAGE_SIZE });
+      setRows(result.items);
+      setTotal(result.total);
+      setTotalPages(result.totalPages);
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : 'Нэвтрэх эрх ачаалж чадсангүй.');
     } finally {
       setLoading(false);
     }
+  }, [customerId, page]);
+
+  // A page number from the previous customer is rarely valid for the next one.
+  useEffect(() => {
+    setPage(1);
   }, [customerId]);
 
   useEffect(() => {
@@ -246,10 +266,12 @@ export function CustomerPortalAccessTab({ customerId }: { customerId: string }):
           loading={loading}
           error={error}
           onRetry={() => void load()}
+          numbering={{ page, limit: PORTAL_USER_PAGE_SIZE }}
           ariaLabel="Нэвтрэх эрх"
           emptyTitle="Нэвтрэх эрх байхгүй"
           emptyDescription="Энэ харилцагчид порталд нэвтрэх бүртгэл үүсгээгүй байна."
         />
+        <Pagination page={page} totalPages={totalPages} total={total} onPageChange={setPage} />
       </div>
 
       <CreatePortalAccountModal

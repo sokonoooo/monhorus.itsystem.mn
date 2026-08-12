@@ -491,6 +491,9 @@ export function PlannedWorkDetailPage(): ReactElement {
             columns={materialColumnState.visibleColumns}
             rows={work.materials}
             rowKey={(row) => row.name}
+            // NUMBERED BUT NOT PAGED: the materials travel inside the work's own detail
+            // payload, so there is no endpoint to ask for a second page of.
+            numbering
             emptyTitle="Материал бүртгэгдээгүй"
             emptyDescription="Ажилд шаардагдах материалын нэр, тоо энд харагдана."
           />

@@ -4,6 +4,7 @@ import {
   updateBuildingSchema,
   type BuildingDto,
   type FloorDto,
+  type PaginatedData,
 } from '@monhorus/shared';
 import { useCallback, useEffect, useState, type ReactElement } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
@@ -12,7 +13,7 @@ import { Alert } from '../../components/ui/Alert';
 import { Button } from '../../components/ui/Button';
 import { ColumnPicker } from '../../components/ui/ColumnPicker';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
-import { DataTable, type Column } from '../../components/ui/DataTable';
+import { DataTable, Pagination, type Column } from '../../components/ui/DataTable';
 import { Drawer } from '../../components/ui/Drawer';
 import { MapPicker } from '../../components/ui/MapPicker';
 import { PageHeader } from '../../components/ui/PageHeader';
@@ -27,6 +28,15 @@ import { RiskSummaryCell } from './objects/ObjectBadges';
 import { Field, TextInput } from '../employees/FormControls';
 import { GpsErrors, type GpsPosition } from './ProjectDetailPage';
 import { ActiveBadge } from './ProjectListPage';
+
+/**
+ * Floors under a building, one screen at a time.
+ *
+ * As with buildings under a project, this was a `limit: 100` fetch rendered whole, which
+ * dropped the 101st floor silently. A tower tall enough to hit that is rare, but the page
+ * gave no sign either way; a pager states the total it is counting against.
+ */
+const FLOOR_PAGE_SIZE = 20;
 
 /**
  * Inline edit for the building itself, and inline create for its floors.
@@ -319,24 +329,22 @@ export function BuildingDetailPage(): ReactElement {
   const canManage = can(PERMISSIONS.OBJECT_MANAGE);
 
   const [building, setBuilding] = useState<BuildingDto | null>(null);
-  const [floors, setFloors] = useState<FloorDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [editOpen, setEditOpen] = useState(false);
   const [floorOpen, setFloorOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
 
-  const load = useCallback(async (): Promise<void> => {
+  const [floors, setFloors] = useState<PaginatedData<FloorDto> | null>(null);
+  const [floorPage, setFloorPage] = useState(1);
+  const [floorsError, setFloorsError] = useState<string | null>(null);
+
+  const loadBuilding = useCallback(async (): Promise<void> => {
     if (!buildingId) return;
     setLoading(true);
     setError(null);
     try {
-      const [detail, floorPage] = await Promise.all([
-        projectService.getBuilding(buildingId),
-        projectService.listFloors({ buildingId, limit: 100 }),
-      ]);
-      setBuilding(detail);
-      setFloors(floorPage.items);
+      setBuilding(await projectService.getBuilding(buildingId));
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : 'Барилга ачаалж чадсангүй.');
     } finally {
@@ -344,9 +352,36 @@ export function BuildingDetailPage(): ReactElement {
     }
   }, [buildingId]);
 
+  /**
+   * Floors load on their own so turning a page reloads the table and not the building
+   * above it. See the same split in ProjectDetailPage.
+   */
+  const loadFloors = useCallback(async (): Promise<void> => {
+    if (!buildingId) return;
+    // Cleared first, so the table shows its skeleton rather than the previous page's
+    // floors sitting under the new page's row numbers.
+    setFloors(null);
+    setFloorsError(null);
+    try {
+      setFloors(
+        await projectService.listFloors({
+          buildingId,
+          page: floorPage,
+          limit: FLOOR_PAGE_SIZE,
+        }),
+      );
+    } catch (caught) {
+      setFloorsError(caught instanceof ApiError ? caught.message : 'Давхар ачаалж чадсангүй.');
+    }
+  }, [buildingId, floorPage]);
+
   useEffect(() => {
-    void load();
-  }, [load]);
+    void loadBuilding();
+  }, [loadBuilding]);
+
+  useEffect(() => {
+    void loadFloors();
+  }, [loadFloors]);
 
   async function handleDelete(): Promise<void> {
     if (!building) return;
@@ -514,11 +549,24 @@ export function BuildingDetailPage(): ReactElement {
           </div>
           <DataTable
             columns={columnState.visibleColumns}
-            rows={floors}
+            rows={floors?.items ?? []}
             rowKey={(row) => row.id}
+            loading={floors === null && floorsError === null}
+            error={floorsError}
+            onRetry={() => void loadFloors()}
+            numbering={{
+              page: floors?.page ?? floorPage,
+              limit: floors?.limit ?? FLOOR_PAGE_SIZE,
+            }}
             onRowClick={(row) => navigate(`/floors/${row.id}`)}
             emptyTitle="Давхар бүртгэгдээгүй"
             emptyDescription="План зураг болон объект нэмэхийн тулд давхар бүртгэнэ үү."
+          />
+          <Pagination
+            page={floors?.page ?? floorPage}
+            totalPages={floors?.totalPages ?? 1}
+            total={floors?.total ?? 0}
+            onPageChange={setFloorPage}
           />
         </div>
 
@@ -541,7 +589,8 @@ export function BuildingDetailPage(): ReactElement {
         onClose={() => setEditOpen(false)}
         onSaved={() => {
           setEditOpen(false);
-          void load();
+          // Editing the building leaves its floors alone, so only the detail reloads.
+          void loadBuilding();
         }}
       />
 
@@ -551,7 +600,9 @@ export function BuildingDetailPage(): ReactElement {
         onClose={() => setFloorOpen(false)}
         onSaved={() => {
           setFloorOpen(false);
-          void load();
+          // Both: the table gains a row, and the building's delete blockers change with it.
+          void loadBuilding();
+          void loadFloors();
         }}
       />
 

@@ -1,5 +1,5 @@
 import type { PaginatedData, UserDto } from '@monhorus/shared';
-import { screen } from '@testing-library/react';
+import { screen, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { userService } from '../../services/user.service';
@@ -62,5 +62,29 @@ describe('UsersPage organisation column', () => {
 
     expect(await screen.findByText('Дорж Бат')).toBeInTheDocument();
     expect(screen.queryByText('Холбогдоогүй')).not.toBeInTheDocument();
+  });
+
+  /**
+   * This table is hand-rolled rather than a shared DataTable, so its № column carries its
+   * own copy of the across-pages arithmetic and needs its own guard against restarting at
+   * 1 on every page.
+   */
+  it('numbers the accounts continuously across pages', async () => {
+    vi.spyOn(userService, 'list').mockResolvedValue({
+      items: [makeRow(), makeRow({ id: 'u2', fullName: 'Сараа Түмэн' })],
+      page: 3,
+      limit: 20,
+      total: 120,
+      totalPages: 6,
+    });
+
+    renderWithAuth(<UsersPage />);
+
+    const table = await screen.findByRole('table');
+    expect(within(table).getByRole('columnheader', { name: '№' })).toBeInTheDocument();
+    const rows = within(table).getAllByRole('row');
+    // Page 3 of 20 begins at 41, and the row under it is 42.
+    expect(within(rows[1]!).getAllByRole('cell')[0]?.textContent?.trim()).toBe('41');
+    expect(within(rows[2]!).getAllByRole('cell')[0]?.textContent?.trim()).toBe('42');
   });
 });
