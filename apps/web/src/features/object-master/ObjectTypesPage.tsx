@@ -751,6 +751,9 @@ export function ObjectTypesPage(): ReactElement {
           columns={columnState.visibleColumns}
           rows={data?.items ?? []}
           rowKey={(row) => row.id}
+          // Numbered off the response rather than the query, so a request in flight can
+          // never number the rows on screen against the page they did not come from.
+          numbering={{ page: data?.page ?? 1, limit: data?.limit ?? 50 }}
           loading={loading}
           error={error}
           onRetry={() => void load()}
