@@ -56,13 +56,17 @@ class CustomerPortalRemoteDataSource {
     );
   }
 
-  /// GET /buildings.
+  /// GET /buildings. `buildingListQuerySchema` caps `limit` at 100, which is what
+  /// this asks for: the caller sums `riskSummary` across the answer, so a page that
+  /// stops short of the customer's buildings is a truncated sum. `total` on the
+  /// response says whether one page was enough, and the caller reads the rest when
+  /// it was not.
   Future<PaginatedData<BuildingModel>> listBuildings({
     required ResolvedCustomerScope scope,
     String? projectId,
     String? search,
     int page = 1,
-    int limit = 50,
+    int limit = 100,
   }) {
     return _client.request<PaginatedData<BuildingModel>>(
       path: '/buildings',
@@ -252,6 +256,25 @@ class CustomerPortalRemoteDataSource {
       method: 'GET',
       decoder: (Object? json) =>
           ServiceRequestDetailModel.fromJson(json! as Map<String, dynamic>),
+    );
+  }
+
+  /// GET /service-requests/:requestId/report/customer.
+  ///
+  /// The customer-facing projection of the technician's conclusion: eleven fields, no
+  /// report id, no internal notes. Answers **404** when the request carries no report,
+  /// when the report is not APPROVED, and when the request is not this customer's —
+  /// the three are deliberately indistinguishable. It creates nothing.
+  ///
+  /// The 404 is a legitimate answer rather than a fault, so the repository turns it
+  /// into a null instead of a failure; see
+  /// [CustomerPortalRepository.getCustomerWorkReport].
+  Future<CustomerWorkReportModel> getCustomerWorkReport(String requestId) {
+    return _client.request<CustomerWorkReportModel>(
+      path: '/service-requests/$requestId/report/customer',
+      method: 'GET',
+      decoder: (Object? json) =>
+          CustomerWorkReportModel.fromJson(json! as Map<String, dynamic>),
     );
   }
 

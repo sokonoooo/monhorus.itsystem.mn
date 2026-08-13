@@ -21,6 +21,7 @@ class ServiceRequestCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final ServiceRequestStatus? status = request.status;
     final AccentTone statusTone = status?.tone ?? AccentTone.neutral;
+    final double? fraction = status?.progress;
     final Color railColor = request.isUrgent
         ? CustomerTokens.red
         : statusTone.foreground;
@@ -86,11 +87,15 @@ class ServiceRequestCard extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   style: CustomerTokens.rowSub,
                 ),
-                const SizedBox(height: 8),
-                ProgressRail(
-                  fraction: status?.progress ?? 0,
-                  color: railColor,
-                ),
+                // Drawn only when the status has a position on the workflow to
+                // report. A cancelled request — and any status off the linear path —
+                // gets no rail at all, because a rail is a fill and every fill this
+                // card could pick for one would be invented. The status pill above
+                // already says what happened.
+                if (fraction != null) ...<Widget>[
+                  const SizedBox(height: 8),
+                  ProgressRail(fraction: fraction, color: railColor),
+                ],
               ],
             ),
           ),

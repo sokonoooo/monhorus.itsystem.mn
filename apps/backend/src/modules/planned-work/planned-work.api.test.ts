@@ -28,6 +28,8 @@ const ALL_PLANNED_WORK = [
   PERMISSIONS.PLANNED_WORK_CREATE,
   PERMISSIONS.PLANNED_WORK_UPDATE,
   PERMISSIONS.PLANNED_WORK_CHANGE_STATUS,
+  // Reaching PLANNED now needs an approver, so the happy-path operator holds the key.
+  PERMISSIONS.PLANNED_WORK_APPROVE,
   PERMISSIONS.PLANNED_WORK_RESCHEDULE,
   PERMISSIONS.PLANNED_WORK_CANCEL,
   PERMISSIONS.PLANNED_WORK_RECORD_PROGRESS,
@@ -38,6 +40,8 @@ let app: Express;
 let org: OrgFixture;
 let objects: ObjectFixture;
 let token: string;
+/** The crew APPROVE is given whenever a fixture just needs *some* valid employee. */
+let crewEmployeeId: string;
 
 async function login(email: string, password: string): Promise<string> {
   const response = await request(app).post(`${API}/auth/login`).send({ email, password });
@@ -103,6 +107,33 @@ async function transition(
 }
 
 /**
+ * Drives a work from DRAFT to PLANNED, which is TWO actions now rather than one.
+ *
+ * PLAN no longer reaches PLANNED: it submits the work for approval and lands on
+ * PENDING_APPROVAL. APPROVE is what makes it PLANNED, it needs
+ * `planned_work.approve`, and it refuses to run without a crew — approving the work and
+ * staffing it are one decision. Every fixture that used to say `transition(id, 'PLAN')`
+ * says this instead; the tests that are ABOUT the transitions still spell both out.
+ */
+async function planAndApprove(
+  workId: string,
+  crew: readonly string[] = [crewEmployeeId],
+  bearer = token,
+): Promise<request.Response> {
+  const submitted = await transition(workId, 'PLAN', undefined, bearer);
+  expect(submitted.status).toBe(200);
+  expect(submitted.body.data.lifecycleStatus).toBe('PENDING_APPROVAL');
+
+  const approved = await request(app)
+    .post(`${API}/planned-work/${workId}/transition`)
+    .set('Authorization', `Bearer ${bearer}`)
+    .send({ action: 'APPROVE', assignedEmployeeIds: crew });
+  expect(approved.status).toBe(200);
+  expect(approved.body.data.lifecycleStatus).toBe('PLANNED');
+  return approved;
+}
+
+/**
  * Drives a task to genuine completion: full quantity plus all five pieces of evidence.
  * Photos are attached as real uploads because that is the only way evidence exists.
  */
@@ -135,7 +166,7 @@ async function completeTask(workId: string, taskId: string, quantity = 10): Prom
 async function completedWork(): Promise<string> {
   const workId = await createWork();
   const taskId = await addTask(workId);
-  await transition(workId, 'PLAN');
+  await planAndApprove(workId);
   await transition(workId, 'START');
   await completeTask(workId, taskId);
   const done = await transition(workId, 'COMPLETE');
@@ -172,6 +203,7 @@ beforeEach(async () => {
   objects = await createObjectFixture();
   const user = await createUserWithPermissions('pw@test.mn', ALL_PLANNED_WORK);
   token = await login(user.email, user.password);
+  crewEmployeeId = await activeEmployee();
 });
 
 describe('POST /planned-work', () => {
@@ -479,7 +511,7 @@ describe('sub-tasks', () => {
   it('clamps completed quantity when the total is reduced below it', async () => {
     const workId = await createWork();
     const taskId = await addTask(workId, { totalQuantity: 20 });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
 
     await request(app)
@@ -502,7 +534,7 @@ describe('sub-tasks', () => {
   it('refuses to delete a task that already has recorded progress', async () => {
     const workId = await createWork();
     const taskId = await addTask(workId);
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
     await request(app)
       .post(`${API}/planned-work/${workId}/tasks/${taskId}/progress`)
@@ -522,7 +554,7 @@ describe('progress recording', () => {
   it('refuses a completed quantity above the total', async () => {
     const workId = await createWork();
     const taskId = await addTask(workId, { totalQuantity: 10 });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
 
     const response = await request(app)
@@ -539,7 +571,7 @@ describe('progress recording', () => {
     const bigTask = await addTask(workId, { title: 'Том ажил', totalQuantity: 180 });
     await addTask(workId, { title: 'Жижиг ажил 1', totalQuantity: 10 });
     await addTask(workId, { title: 'Жижиг ажил 2', totalQuantity: 10 });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
 
     const response = await request(app)
@@ -558,7 +590,7 @@ describe('progress recording', () => {
   it('holds a fully counted task at IN_PROGRESS until evidence is complete', async () => {
     const workId = await createWork();
     const taskId = await addTask(workId, { totalQuantity: 5 });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
 
     const response = await request(app)
@@ -581,7 +613,7 @@ describe('progress recording', () => {
   it('reaches DONE once quantity and all five evidence items exist', async () => {
     const workId = await createWork();
     const taskId = await addTask(workId, { totalQuantity: 10 });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
     await completeTask(workId, taskId);
 
@@ -597,7 +629,7 @@ describe('progress recording', () => {
   it('pulls a task back out of DONE when evidence is removed', async () => {
     const workId = await createWork();
     const taskId = await addTask(workId);
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
     await completeTask(workId, taskId);
 
@@ -619,7 +651,7 @@ describe('progress recording', () => {
     const workId = await createWork();
     const kept = await addTask(workId, { title: 'Хийх ажил', totalQuantity: 10 });
     const skipped = await addTask(workId, { title: 'Хийхгүй ажил', totalQuantity: 90 });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
 
     await request(app)
@@ -642,7 +674,7 @@ describe('progress recording', () => {
     const workId = await createWork();
     const onFloor = await addTask(workId, { title: 'Давхарт', totalQuantity: 40 });
     await addTask(workId, { title: 'Давхаргүй', floorId: null, totalQuantity: 60 });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
 
     const response = await request(app)
@@ -676,7 +708,7 @@ describe('progress recording', () => {
   it('refuses a caller without planned_work.record_progress', async () => {
     const workId = await createWork();
     const taskId = await addTask(workId);
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
 
     const observer = await createUserWithPermissions('pwobs@test.mn', [
@@ -701,7 +733,7 @@ describe('sub-task note and evaluation', () => {
   async function startedWorkWithTask(): Promise<{ workId: string; taskId: string }> {
     const workId = await createWork();
     const taskId = await addTask(workId, { totalQuantity: 10 });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
     return { workId, taskId };
   }
@@ -845,7 +877,7 @@ describe('sub-task conclusion authorship and duration', () => {
   ): Promise<{ workId: string; taskId: string }> {
     const workId = await createWork();
     const taskId = await addTask(workId, { totalQuantity: 10, ...overrides });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
     return { workId, taskId };
   }
@@ -985,7 +1017,7 @@ describe('sub-task conclusion authorship and duration', () => {
   it('keeps the completion instant across a re-derivation that pulls the task out of DONE', async () => {
     const workId = await createWork();
     const taskId = await addTask(workId);
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
     await completeTask(workId, taskId);
 
@@ -1069,16 +1101,46 @@ describe('sub-task conclusion authorship and duration', () => {
 });
 
 describe('lifecycle transitions', () => {
-  it('walks DRAFT to PLANNED to STARTED', async () => {
+  /**
+   * The walk itself, spelled out rather than run through `planAndApprove`, because the
+   * two-step shape of it is the thing under test: PLAN submits, APPROVE commits.
+   */
+  it('walks DRAFT to PENDING_APPROVAL to PLANNED to STARTED', async () => {
     const workId = await createWork();
 
-    const planned = await transition(workId, 'PLAN');
+    const submitted = await transition(workId, 'PLAN');
+    expect(submitted.status).toBe(200);
+    // PLAN is a submission for approval now, not the plan itself.
+    expect(submitted.body.data.lifecycleStatus).toBe('PENDING_APPROVAL');
+
+    const planned = await request(app)
+      .post(`${API}/planned-work/${workId}/transition`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ action: 'APPROVE', assignedEmployeeIds: [crewEmployeeId] });
     expect(planned.status).toBe(200);
     expect(planned.body.data.lifecycleStatus).toBe('PLANNED');
+    // Approving and staffing are one decision, so PLANNED never arrives unstaffed.
+    expect(
+      (planned.body.data.assignedEmployees as { id: string }[]).map((entry) => entry.id),
+    ).toEqual([crewEmployeeId]);
 
     const started = await transition(workId, 'START');
     expect(started.body.data.lifecycleStatus).toBe('STARTED');
     expect(started.body.data.actualStartDate).not.toBeNull();
+  });
+
+  it('refuses to approve without a crew, and refuses START while pending', async () => {
+    const workId = await createWork();
+    expect((await transition(workId, 'PLAN')).status).toBe(200);
+
+    const unstaffed = await transition(workId, 'APPROVE');
+    expect(unstaffed.status).toBe(400);
+    expect(unstaffed.body.message).toContain('ажилтныг сонгоно');
+
+    // Still pending, so the work has not become startable by failing to be approved.
+    const premature = await transition(workId, 'START');
+    expect(premature.status).toBe(400);
+    expect((await PlannedWork.findById(workId))?.status).toBe('PENDING_APPROVAL');
   });
 
   it('refuses a transition that is not in the matrix', async () => {
@@ -1098,7 +1160,7 @@ describe('lifecycle transitions', () => {
 
   it('requires a reason to pause and records the pause history', async () => {
     const workId = await createWork();
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
 
     const noReason = await transition(workId, 'PAUSE');
@@ -1114,7 +1176,7 @@ describe('lifecycle transitions', () => {
 
   it('never shifts the deadline when pausing or resuming', async () => {
     const workId = await createWork();
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
     await transition(workId, 'PAUSE', 'Түр зогсоов');
 
@@ -1129,7 +1191,7 @@ describe('lifecycle transitions', () => {
 
   it('resumes to STARTED when the work had begun', async () => {
     const workId = await createWork();
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
     await transition(workId, 'PAUSE', 'Түр зогсоов');
 
@@ -1139,7 +1201,7 @@ describe('lifecycle transitions', () => {
 
   it('resumes to PLANNED when the work had never begun', async () => {
     const workId = await createWork();
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'PAUSE', 'Хойшлуулав');
 
     const resumed = await transition(workId, 'RESUME');
@@ -1150,7 +1212,7 @@ describe('lifecycle transitions', () => {
   it('refuses completion while a task is unfinished, and lists the blockers', async () => {
     const workId = await createWork();
     await addTask(workId, { totalQuantity: 10 });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
 
     const response = await transition(workId, 'COMPLETE');
@@ -1161,7 +1223,7 @@ describe('lifecycle transitions', () => {
 
   it('refuses completion of a work with no sub-tasks', async () => {
     const workId = await createWork();
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
 
     const response = await transition(workId, 'COMPLETE');
@@ -1243,8 +1305,10 @@ describe('lifecycle transitions', () => {
       systemUser: limited.userId,
     }).then((employee) => String(employee._id));
 
+    // Approved WITH that same employee as the crew: APPROVE writes the crew, so approving
+    // with anybody else would quietly undo the assignment this test depends on.
     const workId = await createWork({ assignedEmployeeIds: [employeeId] });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId, [employeeId]);
 
     const detail = await request(app)
       .get(`${API}/planned-work/${workId}`)
@@ -1262,12 +1326,13 @@ describe('lifecycle transitions', () => {
 
   it('writes a status change audit record for every transition', async () => {
     const workId = await createWork();
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
 
     const entries = await AuditLog.find({ entityType: 'PlannedWork', entityId: workId });
     const statusChanges = entries.filter((entry) => entry.action === 'StatusChanged');
-    expect(statusChanges).toHaveLength(2);
+    // Three transitions were performed — PLAN, APPROVE, START — so three rows.
+    expect(statusChanges).toHaveLength(3);
   });
 });
 
@@ -1277,7 +1342,7 @@ describe('overdue behaviour', () => {
       plannedStartDate: '2020-01-01T00:00:00.000Z',
       plannedEndDate: '2020-01-31T00:00:00.000Z',
     });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     return workId;
   }
 
@@ -1344,7 +1409,7 @@ describe('overdue behaviour', () => {
       plannedStartDate: '2020-01-01T00:00:00.000Z',
       plannedEndDate: '2020-01-31T00:00:00.000Z',
     });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     // Clear the stamp the transition read left behind, to simulate a never-opened work.
     // The audit log is append-only, so the earlier breach row cannot be deleted; the
     // assertion is on the delta the job produces instead.
@@ -1368,7 +1433,7 @@ describe('overdue behaviour', () => {
       plannedStartDate: '2099-01-01T00:00:00.000Z',
       plannedEndDate: '2099-01-31T00:00:00.000Z',
     });
-    await transition(onTime, 'PLAN');
+    await planAndApprove(onTime);
 
     const overdueList = await request(app)
       .get(`${API}/planned-work?status=OVERDUE`)
@@ -1470,7 +1535,7 @@ describe('overdue behaviour', () => {
       plannedStartDate: '2020-01-02T00:00:00.000Z',
       plannedEndDate: '2020-01-30T00:00:00.000Z',
     });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
     await completeTask(workId, taskId);
 

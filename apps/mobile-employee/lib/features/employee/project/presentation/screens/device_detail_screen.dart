@@ -3,15 +3,19 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../presentation/theme/employee_tokens.dart';
 import '../../data/models/object_models.dart';
+import '../../data/models/project_models.dart';
+import '../../data/models/report_record_models.dart';
 import '../../domain/entities/object_enums.dart';
 import '../../domain/entities/risk_level.dart';
 import '../format.dart';
 import '../providers/project_providers.dart';
 import '../widgets/assessment_sheet.dart';
 import '../widgets/authenticated_image.dart';
+import '../widgets/floor_plan_markers.dart';
 import '../widgets/project_async_view.dart';
 import '../widgets/project_ui.dart';
-import '../widgets/report_sheet.dart';
+import '../widgets/report_record_sheet.dart';
+import 'floor_detail_screen.dart';
 
 /// `s-device-detail` — level 5: one device.
 ///
@@ -57,7 +61,7 @@ class DeviceDetailScreen extends ConsumerWidget {
         onRefresh: () async {
           ref
             ..invalidate(objectDetailProvider(objectId))
-            ..invalidate(objectHistoryProvider(objectId));
+            ..invalidate(objectReportsProvider(objectId));
         },
         child: ListView(
           physics: const AlwaysScrollableScrollPhysics(),
@@ -79,8 +83,15 @@ class DeviceDetailScreen extends ConsumerWidget {
               builder: (BuildContext ctx, ObjectDetailModel data) =>
                   _DeviceBody(device: data),
             ),
-            const SectionHeading('Тайлангийн бүх түүх'),
-            _HistorySection(objectId: objectId, deviceLabel: fallbackTitle),
+            const SectionHeading('Тайлангууд'),
+            _ReportsSection(
+              objectId: objectId,
+              deviceLabel: current == null
+                  ? fallbackTitle
+                  : (current.code.isEmpty
+                      ? current.name
+                      : '${current.code} · ${current.name}'),
+            ),
           ],
         ),
       ),
@@ -143,17 +154,25 @@ class _DeviceBody extends StatelessWidget {
                           spacing: 5,
                           runSpacing: 5,
                           children: <Widget>[
+                            // Flexible because these two sit in a column beside the
+                            // score ring, which leaves them a little over 200px, and
+                            // the longest band name — "Анхаарах шаардлагатай" — does
+                            // not fit that at the real typeface's metrics. The pill
+                            // ellipsises rather than overflowing its own chip; the
+                            // full wording is still on the accessible label.
                             EmployeePill(
                               label: band?.label ?? unassessedLabel,
                               tone: riskTone(band),
                               showGlyph: true,
                               glyphLevel: band,
                               semanticLabel: riskSemanticLabel(band),
+                              flexibleText: true,
                             ),
                             if (device.status != null)
                               EmployeePill(
                                 label: device.status!.label,
                                 tone: device.status!.tone,
+                                flexibleText: true,
                               ),
                           ],
                         ),
@@ -219,8 +238,23 @@ class _DeviceBody extends StatelessWidget {
           NoticeBanner.info(text: latest.recommendation!),
         ],
 
-        const SectionHeading('Зураг', topPadding: 4),
-        _PhotoSection(photos: device.photos),
+        // A panel is an enclosure, and what a technician opening one wants first is what
+        // is inside it. Two lists rather than one: a circuit is FED BY the panel and a
+        // device is HOUSED IN it, and a device that names both appears in each.
+        if (device.childCircuits.isNotEmpty) ...<Widget>[
+          SectionHeading('Хэлхээ (${device.childCircuits.length})', topPadding: 4),
+          _ChildObjectList(objects: device.childCircuits, device: device),
+        ],
+        if (device.mountedEquipment.isNotEmpty) ...<Widget>[
+          SectionHeading(
+            'Самбарт байрлах тоноглол (${device.mountedEquipment.length})',
+            topPadding: 4,
+          ),
+          _ChildObjectList(objects: device.mountedEquipment, device: device),
+        ],
+
+        const SectionHeading('Байршил', topPadding: 4),
+        _LocationSection(device: device),
 
         _AssessAction(device: device),
       ],
@@ -428,63 +462,140 @@ class _AttributeCard extends StatelessWidget {
   }
 }
 
-/// The object's own picture set.
+/// Where the equipment actually is, drawn on its floor's plan.
 ///
-/// Deliberately not the assessment evidence. `recordAssessment` files a photo against
-/// the ASSESSMENT, never against `object.photos` — no route in the API appends to
-/// that array — so a picture taken through "Дүгнэлт тайлан бичих" appears on its
-/// report in the history below, not here. The empty state says so, because otherwise
-/// a technician who has just photographed the device would reasonably expect to find
-/// it in this strip.
-class _PhotoSection extends StatelessWidget {
-  const _PhotoSection({required this.photos});
+/// REPLACES THE PICTURE STRIP THAT USED TO SIT HERE. That strip rendered
+/// `object.photos`, an array no route in this app can append to — `recordAssessment`
+/// files evidence against the ASSESSMENT, never against the object — so for a
+/// technician it was permanently empty and explained itself with an apology. A plan
+/// with the device marked on it answers the question they were actually asking when
+/// they scrolled this far: which of the things in this room is it.
+///
+/// `object.photos` is untouched on the model and still parsed. The field is real and
+/// other clients render it; a screen choosing not to draw something is no reason to
+/// stop reading it off the wire.
+///
+/// Read-only and un-zoomable, matching the fault plan on a service request. The whole
+/// floor, pinchable, is one tap away on the breadcrumb.
+class _LocationSection extends ConsumerWidget {
+  const _LocationSection({required this.device});
 
-  final List<ObjectPhotoModel> photos;
+  final ObjectDetailModel device;
 
   @override
-  Widget build(BuildContext context) {
-    final List<ObjectPhotoModel> images =
-        photos.where((ObjectPhotoModel photo) => photo.isImage).toList();
+  Widget build(BuildContext context, WidgetRef ref) {
+    final PlanPositionModel? position = device.planPosition;
+    final String? floorId = device.floorId;
 
-    if (images.isEmpty) {
+    // Nothing to draw, and two different reasons for it, said apart: a device nobody
+    // linked to a floor, versus one nobody has placed on the drawing.
+    if (floorId == null || floorId.isEmpty) {
       return const ProjectEmptyState(
-        icon: Icons.photo_camera_outlined,
-        message: 'Энэ төхөөрөмжид зураг хавсаргаагүй байна. Дүгнэлтэд хавсаргасан '
-            'зураг доорх тайлангийн түүхэд харагдана.',
+        icon: Icons.map_outlined,
+        message: 'Энэ төхөөрөмж давхарт холбогдоогүй тул планд харуулах боломжгүй.',
+      );
+    }
+    if (position == null) {
+      return const ProjectEmptyState(
+        icon: Icons.wrong_location_outlined,
+        message: 'Энэ төхөөрөмжийг план дээр байрлуулаагүй байна.',
       );
     }
 
-    return SizedBox(
-      height: 170,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.fromLTRB(
-          EmployeeTokens.gutter,
-          0,
-          EmployeeTokens.gutter,
-          10,
-        ),
-        itemCount: images.length,
-        separatorBuilder: (BuildContext _, int __) => const SizedBox(width: 8),
-        itemBuilder: (BuildContext _, int index) {
-          final ObjectPhotoModel photo = images[index];
-          return ClipRRect(
-            borderRadius: BorderRadius.circular(EmployeeTokens.radiusRow),
-            child: Container(
-              width: 200,
-              decoration: BoxDecoration(
-                color: EmployeeTokens.white,
-                border: Border.all(
-                  color: EmployeeTokens.line,
-                  width: EmployeeTokens.hairline,
-                ),
-                borderRadius: BorderRadius.circular(EmployeeTokens.radiusRow),
-              ),
-              child: AuthenticatedImage(fileId: photo.id, fit: BoxFit.cover),
-            ),
+    return ProjectAsyncView<FloorPlanModel?>(
+      value: ref.watch(floorPlanProvider(floorId)),
+      onRetry: () => ref.invalidate(floorPlanProvider(floorId)),
+      builder: (BuildContext ctx, FloorPlanModel? plan) {
+        if (plan == null) {
+          return const ProjectEmptyState(
+            icon: Icons.map_outlined,
+            message: 'Энэ давхарт план зураг импортлогдоогүй байна.',
           );
-        },
-      ),
+        }
+        if (!plan.isImage) {
+          return ProjectEmptyState(
+            icon: Icons.description_outlined,
+            message: '${plan.fileName} нь зураг биш файл тул планыг харуулах '
+                'боломжгүй байна.',
+          );
+        }
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            ProjectCard(
+              padding: EdgeInsets.zero,
+              child: Container(
+                color: EmployeeTokens.white,
+                child: AuthenticatedImage.sizedToImage(
+                  fileId: plan.fileId,
+                  // The same layer the floor plan draws, handed one object. A marker
+                  // here is then recognisably the marker the technician tapped to get
+                  // here — same dot, same type icon, same risk colour — rather than a
+                  // second visual vocabulary for the same equipment.
+                  //
+                  // Deliberately NOT filtered through `planMarkersOf`. That filter asks
+                  // "may this type be scattered across a floor drawing", which is a
+                  // question about a crowded plan; a reader who has opened one device
+                  // and scrolled to its location has asked where THIS thing is, and the
+                  // answer does not depend on whether its type is drawn on the floor
+                  // overview. A placed object shows its position here either way.
+                  overlay: FloorPlanMarkerLayer(
+                    objects: <ObjectListItemModel>[device],
+                    // Already on this device's screen; tapping it again goes nowhere.
+                    onTap: (ObjectListItemModel _) {},
+                  ),
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(
+                EmployeeTokens.labelGutter,
+                0,
+                EmployeeTokens.labelGutter,
+                10,
+              ),
+              child: Text(
+                joinParts(<String?>[device.buildingName, device.floorName]),
+                style: EmployeeTokens.microNote,
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+/// The circuits a panel feeds, or the devices bolted inside it.
+///
+/// Reuses [DeviceRow], the row the floor's own device list is built from, so a piece of
+/// equipment looks and behaves the same wherever it is listed — including opening its
+/// own detail screen on tap, which is what makes a panel navigable rather than just
+/// descriptive.
+class _ChildObjectList extends StatelessWidget {
+  const _ChildObjectList({required this.objects, required this.device});
+
+  final List<ObjectListItemModel> objects;
+
+  /// The panel being viewed. Read only for the names its children fall back to: a child
+  /// row carries its own floor and building where the server sent them, and inherits
+  /// the panel's otherwise, so the screen it opens is not left with an empty crumb.
+  final ObjectDetailModel device;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        for (final ObjectListItemModel child in objects)
+          DeviceRow(
+            object: child,
+            floorName: child.floorName ?? device.floorName ?? '',
+            buildingName: child.buildingName ?? device.buildingName ?? '',
+            projectName: '',
+          ),
+      ],
     );
   }
 }
@@ -543,60 +654,56 @@ class _AssessAction extends ConsumerWidget {
   }
 }
 
-/// The device's written history.
+/// Every report that recorded a finding on this piece of equipment.
 ///
-/// `GET /objects-master/:id/history` returns two views of the same records: a
-/// `timeline` of every event (assessments, measurements, requests, planned work and
-/// audit rows) and the full `assessments` behind the assessment rows. The timeline is
-/// what is listed; tapping a row that has a full assessment opens it.
-class _HistorySection extends ConsumerWidget {
-  const _HistorySection({required this.objectId, required this.deviceLabel});
+/// REPLACES THE EVENT TIMELINE THAT USED TO SIT HERE. That list came from
+/// `GET /objects-master/:id/history`, which folds measurements, audit rows and request
+/// events in beside the written conclusions — a change log, useful to somebody auditing
+/// the record and largely noise to a technician standing at the equipment asking what
+/// was concluded about it. Only the rows that happened to resolve to a full assessment
+/// could even be opened; the rest were text.
+///
+/// `GET /objects-master/:objectId/reports` answers the question directly, and answers it
+/// across all four kinds — an assessment raised on the device, the result of a planned
+/// work, the conclusion of a service request, and anything signed off as a consolidated
+/// report. EVERY row here opens.
+class _ReportsSection extends ConsumerWidget {
+  const _ReportsSection({required this.objectId, required this.deviceLabel});
 
   final String objectId;
   final String deviceLabel;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    return ProjectAsyncView<ObjectHistoryModel>(
-      value: ref.watch(objectHistoryProvider(objectId)),
-      onRetry: () => ref.invalidate(objectHistoryProvider(objectId)),
-      builder: (BuildContext ctx, ObjectHistoryModel history) {
-        if (history.timeline.isEmpty) {
+    return ProjectAsyncView<List<ReportRecordModel>>(
+      value: ref.watch(objectReportsProvider(objectId)),
+      onRetry: () => ref.invalidate(objectReportsProvider(objectId)),
+      builder: (BuildContext ctx, List<ReportRecordModel> reports) {
+        if (reports.isEmpty) {
           return const ProjectEmptyState(
-            icon: Icons.history_outlined,
-            message: 'Энэ төхөөрөмжид бүртгэгдсэн тайлан, түүх алга байна.',
+            icon: Icons.description_outlined,
+            message: 'Энэ төхөөрөмжид бүртгэгдсэн тайлан алга байна.',
           );
         }
 
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
-            ProjectCard(
-              padding: const EdgeInsets.symmetric(horizontal: 14),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: <Widget>[
-                  for (int i = 0; i < history.timeline.length; i++)
-                    _HistoryRow(
-                      entry: history.timeline[i],
-                      assessment: history.assessmentFor(history.timeline[i]),
-                      deviceLabel: deviceLabel,
-                      isLast: i == history.timeline.length - 1,
-                    ),
-                ],
+            for (final ReportRecordModel report in reports)
+              _ReportRow(
+                report: report,
+                objectId: objectId,
+                deviceLabel: deviceLabel,
               ),
-            ),
             Padding(
               padding: const EdgeInsets.fromLTRB(
                 EmployeeTokens.labelGutter,
-                0,
+                4,
                 EmployeeTokens.labelGutter,
                 0,
               ),
               child: Text(
-                '${history.assessments.length} дүгнэлт · '
-                '${history.timeline.length} бичлэг. Дүгнэлт бүхий мөрийг дарж '
-                'тайланг бүтнээр нь харна.',
+                '${reports.length} тайлан. Мөрийг дарж дэлгэрэнгүйг харна.',
                 style: EmployeeTokens.microNote,
               ),
             ),
@@ -607,52 +714,45 @@ class _HistorySection extends ConsumerWidget {
   }
 }
 
-class _HistoryRow extends StatelessWidget {
-  const _HistoryRow({
-    required this.entry,
-    required this.assessment,
+/// One report row, built from the same [ProjectRow] the device lists use.
+class _ReportRow extends StatelessWidget {
+  const _ReportRow({
+    required this.report,
+    required this.objectId,
     required this.deviceLabel,
-    required this.isLast,
   });
 
-  final ObjectHistoryEntryModel entry;
-  final ObjectAssessmentModel? assessment;
+  final ReportRecordModel report;
+  final String objectId;
   final String deviceLabel;
-  final bool isLast;
 
   @override
   Widget build(BuildContext context) {
-    final RiskLevel? band = entry.riskLevel;
-    final ObjectHistoryKind kind = entry.kind ?? ObjectHistoryKind.audit;
-    final ObjectAssessmentModel? full = assessment;
+    final RiskLevel? band = report.riskLevel;
 
-    return TimelineEntry(
-      title: entry.title,
-      meta: joinParts(<String?>[
-        formatDateTime(entry.occurredAt),
-        entry.actorName,
-        kind.label,
-        entry.newScore == null ? null : 'Оноо ${entry.newScore}',
+    return ProjectRow(
+      leading: RowTile(
+        tone: riskTone(band),
+        // The score where the report carries one, the type's glyph otherwise. A tile
+        // reading "0" would state a score nobody recorded.
+        text: report.overallScore == null ? null : '${report.overallScore}',
+        icon: report.overallScore == null ? Icons.description_outlined : null,
+        level: band,
+        showGlyph: true,
+      ),
+      title: report.titleLine,
+      subtitle: joinParts(<String?>[
+        formatDate(report.occurredAt),
+        report.status?.label,
+        report.approvedByName,
       ]),
-      excerpt: entry.detail,
-      tone: band?.tone ?? Tone.neutral,
-      icon: kind.glyph,
-      isLast: isLast,
-      trailing: band == null
-          ? null
-          : EmployeePill(
-              label: band.shortLabel,
-              tone: band.tone,
-              showGlyph: true,
-              glyphLevel: band,
-              semanticLabel: band.label,
-            ),
-      onTap: full == null
-          ? null
-          : () => ReportSheet.show(
-                context,
-                ReportView.fromAssessment(full, deviceLabel: deviceLabel),
-              ),
+      trailing: RiskPill(score: report.overallScore, level: band),
+      onTap: () => ReportRecordSheet.show(
+        context,
+        reportId: report.id,
+        objectId: objectId,
+        deviceLabel: deviceLabel,
+      ),
     );
   }
 }

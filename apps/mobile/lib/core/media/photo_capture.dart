@@ -166,10 +166,10 @@ Future<PhotoCaptureResult> capturePhoto({
 String _messageForPlatformError(PlatformException error, PhotoSource source) {
   switch (error.code) {
     case 'camera_access_denied':
-      return 'Камер ашиглах зөвшөөрөл олгогдоогүй байна. Тохиргоо → Монхорус '
+      return 'Камер ашиглах зөвшөөрөл олгогдоогүй байна. Тохиргоо → Monhorus Mobile '
           'хэсгээс камерын зөвшөөрлийг идэвхжүүлнэ үү.';
     case 'photo_access_denied':
-      return 'Зургийн сан руу хандах зөвшөөрөл олгогдоогүй байна. Тохиргоо → '
+      return 'Зургийн сан руу хандах зөвшөөрөл олгогдоогүй байна. Тохиргоо → Monhorus Mobile '
           'Монхорус хэсгээс зургийн зөвшөөрлийг идэвхжүүлнэ үү.';
     case 'no_available_camera':
       return 'Энэ төхөөрөмж дээр камер олдсонгүй. Зургийн сангаас сонгоно уу.';

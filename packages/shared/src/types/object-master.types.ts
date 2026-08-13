@@ -49,7 +49,24 @@ export interface ObjectTypeDto {
   insidePanel: boolean;
   /** Section 4.1: тухайн төхөөрөмж дээр үзлэгийн дүгнэлт бүртгэх боломж. */
   generatesConclusion: boolean;
+  /**
+   * The built-in glyph, and the FALLBACK whenever `iconUrl` is null.
+   *
+   * Still required, still unchanged: every type registered before custom icons existed
+   * keeps working with no migration, and a client that never learns about `iconUrl`
+   * renders exactly what it rendered before.
+   */
   icon: ObjectIcon;
+  /** The uploaded SVG behind `iconUrl`, or null. Present so a form can tell "keep" from "clear". */
+  iconFileId: string | null;
+  /**
+   * Download path for the type's custom SVG icon, or null when it has none.
+   *
+   * Global, exactly as the type is: object types carry no `customer` and are shared by
+   * every tenant, so the icon reveals nothing about anybody's records. Render it with
+   * `<img src={iconUrl}>` — never inline the markup into the host document.
+   */
+  iconUrl: string | null;
   isActive: boolean;
   /** Objects currently using this type. A type in use cannot be deleted. */
   objectCount: number;
@@ -165,6 +182,15 @@ export interface ObjectListItemDto {
     code: string;
     name: string;
     icon: ObjectIcon;
+    /**
+     * The type's custom SVG, or null to fall back to `icon`.
+     *
+     * Inlined here beside `icon` for the same reason `showOnPlan` is: the floor plan draws
+     * every marker from one object list and must not have to fetch the whole type registry
+     * — which `object_master.view` alone does not always reach — to answer "what do I draw"
+     * per row.
+     */
+    iconUrl: string | null;
     showOnPlan: boolean;
   } | null;
   customerId: string;

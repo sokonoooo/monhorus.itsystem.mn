@@ -1,10 +1,13 @@
-import { PERMISSIONS } from '@monhorus/shared';
-import { screen, within } from '@testing-library/react';
+import { PERMISSIONS, SETTING_KEYS, type SettingEntryDto, type SettingsDto } from '@monhorus/shared';
+import { screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { invalidateRiskBands } from '../../hooks/use-risk-bands';
+import { ApiError } from '../../lib/api-client';
 import { objectService } from '../../services/object.service';
 import { projectService } from '../../services/project.service';
 import { inspectionService } from '../../services/report.service';
+import { settingsService } from '../../services/settings.service';
 import {
   makeInspection,
   makeInspectionSummary,
@@ -13,12 +16,52 @@ import {
 import { renderWithAuth } from '../../test/render';
 import { InspectionListPage } from './InspectionListPage';
 
+function evalEntry(key: SettingEntryDto['key'], value: number): SettingEntryDto {
+  return {
+    key,
+    group: 'evaluation',
+    label: key,
+    hint: '',
+    type: 'integer',
+    value,
+    defaultValue: value,
+    isOverridden: true,
+    min: 1,
+    max: 100,
+    unit: 'оноо',
+    updatedByName: null,
+    updatedAt: null,
+  };
+}
+
+/** Thresholds deliberately unlike the shipped 81/61/41/21, so a fallback would be visible. */
+function evaluationSettings(): SettingsDto {
+  return {
+    canManage: true,
+    groups: [
+      {
+        group: 'evaluation',
+        label: 'Үнэлгээ',
+        description: '',
+        entries: [
+          evalEntry(SETTING_KEYS.EVAL_NORMAL_MIN, 90),
+          evalEntry(SETTING_KEYS.EVAL_ATTENTION_MIN, 70),
+          evalEntry(SETTING_KEYS.EVAL_SCHEDULE_REPAIR_MIN, 50),
+          evalEntry(SETTING_KEYS.EVAL_CRITICAL_MIN, 30),
+        ],
+      },
+    ],
+  };
+}
+
 describe('InspectionListPage', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    invalidateRiskBands();
     vi.spyOn(objectService, 'customers').mockResolvedValue([]);
     vi.spyOn(projectService, 'listProjects').mockResolvedValue(makePage([]));
     vi.spyOn(inspectionService, 'summary').mockResolvedValue(makeInspectionSummary());
+    vi.spyOn(settingsService, 'get').mockResolvedValue(evaluationSettings());
   });
 
   it('lists device conclusions with their location and conclusion text', async () => {
@@ -72,6 +115,29 @@ describe('InspectionListPage', () => {
     expect(within(table).getAllByText('Үнэлгээгүй').length).toBeGreaterThan(0);
   });
 
+  /**
+   * Row numbers only mean something if they are continuous: asked to "check conclusion 26",
+   * a reader must find it as row 26 on page two, not as row 1 all over again.
+   */
+  it('numbers page two from 26 rather than restarting at 1', async () => {
+    vi.spyOn(inspectionService, 'list').mockResolvedValue({
+      ...makePage([makeInspection()], 25),
+      page: 2,
+      total: 26,
+      totalPages: 2,
+    });
+
+    renderWithAuth(<InspectionListPage />, {
+      permissions: [PERMISSIONS.OBJECT_MASTER_VIEW],
+      route: '/inspections?page=2',
+    });
+
+    const table = await screen.findByRole('table');
+    expect(within(table).getByRole('columnheader', { name: '№' })).toBeInTheDocument();
+    const firstRow = within(table).getAllByRole('row')[1]!;
+    expect(within(firstRow).getAllByRole('cell')[0]).toHaveTextContent(/^26$/);
+  });
+
   it('shows the band counters in the header', async () => {
     vi.spyOn(inspectionService, 'list').mockResolvedValue(makePage([makeInspection()]));
 
@@ -92,6 +158,36 @@ describe('InspectionListPage', () => {
     renderWithAuth(<InspectionListPage />, { permissions: [PERMISSIONS.OBJECT_MASTER_VIEW] });
 
     expect(await screen.findByText(/нэгдсэн оноо гаргахгүй/)).toBeInTheDocument();
+  });
+
+  it('draws the legend from the thresholds in force, not from the shipped constants', async () => {
+    vi.spyOn(inspectionService, 'list').mockResolvedValue(makePage([makeInspection()]));
+
+    renderWithAuth(<InspectionListPage />, { permissions: [PERMISSIONS.OBJECT_MASTER_VIEW] });
+
+    expect(await screen.findByText('90-100% Хэвийн')).toBeInTheDocument();
+    expect(screen.getByText('0-29% Ашиглах боломжгүй')).toBeInTheDocument();
+    // The shipped defaults start the green band at 81; this installation starts it at 90.
+    expect(screen.queryByText('81-100% Хэвийн')).not.toBeInTheDocument();
+  });
+
+  /**
+   * The bug: `use-risk-bands` fell back to the bundled `RISK_BANDS` when the settings read
+   * failed, so a refused `GET /settings` printed 81-100% as though that were the threshold
+   * in force. Saying nothing is the only honest answer.
+   */
+  it('says nothing about the bands when the thresholds cannot be read', async () => {
+    const get = vi
+      .spyOn(settingsService, 'get')
+      .mockRejectedValue(new ApiError('Энэ үйлдлийг хийх эрх байхгүй байна.', 'FORBIDDEN', 403));
+    vi.spyOn(inspectionService, 'list').mockResolvedValue(makePage([makeInspection()]));
+
+    renderWithAuth(<InspectionListPage />, { permissions: [PERMISSIONS.OBJECT_MASTER_VIEW] });
+
+    await waitFor(() => expect(get).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByText(/81-100%/)).not.toBeInTheDocument());
+    expect(screen.queryByText(/%\s*Хэвийн/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/0-20% Ашиглах боломжгүй/)).not.toBeInTheDocument();
   });
 
   it('offers the prototype filter set', async () => {

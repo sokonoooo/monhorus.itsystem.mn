@@ -1,6 +1,7 @@
 import {
   SERVICE_REQUEST_STATUSES,
   SERVICE_REQUEST_TYPES,
+  type PlanPositionDto,
   type ServiceRequestStatus,
   type ServiceRequestType,
 } from '@monhorus/shared';
@@ -28,6 +29,15 @@ export interface IServiceRequest {
   panel: Types.ObjectId | null;
   circuit: Types.ObjectId | null;
   device: Types.ObjectId | null;
+
+  /**
+   * Where on the floor's plan image the problem is, normalised to 0..1 of the drawing's
+   * width and height — the same convention, and the same shape, an object's placement uses.
+   *
+   * Meaningless without `floor`, since there is no drawing to point at, and deliberately
+   * independent of `room`: a caller may know the spot without a zone having been named.
+   */
+  planPosition: PlanPositionDto | null;
 
   requestType: ServiceRequestType;
   isUrgent: boolean;
@@ -90,6 +100,20 @@ const statusHistorySchema = new Schema<IServiceRequestStatusHistory>(
   { _id: true },
 );
 
+/**
+ * The pin, bounded here as well as in the shared schema.
+ *
+ * The service is not the only writer of a request document — the seed script and any future
+ * migration write it directly — and a coordinate outside the drawing is unusable.
+ */
+const planPositionSchema = new Schema<PlanPositionDto>(
+  {
+    x: { type: Number, required: true, min: 0, max: 1 },
+    y: { type: Number, required: true, min: 0, max: 1 },
+  },
+  { _id: false },
+);
+
 const serviceRequestSchema = new Schema<IServiceRequest>(
   {
     requestNumber: { type: String, required: true, unique: true, uppercase: true, trim: true },
@@ -103,6 +127,7 @@ const serviceRequestSchema = new Schema<IServiceRequest>(
     panel: { type: Schema.Types.ObjectId, ref: 'ObjectNode', default: null },
     circuit: { type: Schema.Types.ObjectId, ref: 'ObjectNode', default: null },
     device: { type: Schema.Types.ObjectId, ref: 'ObjectNode', default: null },
+    planPosition: { type: planPositionSchema, default: null },
 
     requestType: { type: String, enum: SERVICE_REQUEST_TYPES, required: true, index: true },
     isUrgent: { type: Boolean, default: false, index: true },

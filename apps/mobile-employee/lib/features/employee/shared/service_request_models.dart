@@ -1,5 +1,12 @@
 import '../../../core/util/json_parse.dart';
+import '../project/data/models/object_models.dart';
 import 'service_request_vocabulary.dart';
+
+/// The fault pin's coordinate type is the object tree's own [PlanPositionModel] — the
+/// same normalised pair a device's placement uses, because it is the same drawing and
+/// the same arithmetic. Re-exported so a screen reading `planPosition` off a request
+/// does not have to reach into the project feature's model file to name its type.
+export '../project/data/models/object_models.dart' show PlanPositionModel;
 
 /// Mirrors `ServiceRequestListItemDto` — one row of `GET /service-requests`.
 ///
@@ -209,6 +216,7 @@ class ServiceRequestDetailModel {
     required this.contactPhone,
     required this.attachments,
     required this.locationPath,
+    required this.planPosition,
   });
 
   final String id;
@@ -244,6 +252,17 @@ class ServiceRequestDetailModel {
   /// prints the trail, it does not navigate it.
   final List<String> locationPath;
 
+  /// Where on [floor]'s plan the reporter said the fault is, or null when they marked
+  /// nothing.
+  ///
+  /// A fraction of the drawing's width and height, so the mark survives the plan being
+  /// re-imported at another resolution. It is the ONE fact on this record that a
+  /// sentence cannot carry: "3-р давхар" names a floor, not the panel at the far end of
+  /// the corridor, and the technician walking in is the person who needs the
+  /// difference. Read-only in this app — placing the pin is the customer's act, on the
+  /// intake form.
+  final PlanPositionModel? planPosition;
+
   factory ServiceRequestDetailModel.fromJson(Map<String, dynamic> json) {
     return ServiceRequestDetailModel(
       id: parseString(json['id']) ?? '',
@@ -274,6 +293,10 @@ class ServiceRequestDetailModel {
         ServiceRequestAttachmentModel.fromJson,
       ),
       locationPath: _breadcrumbNames(json['locationPath']),
+      // Null for a malformed or out-of-range coordinate rather than a throw — see
+      // [PlanPositionModel.fromJson]. The request then reads as "no pin", which is the
+      // truthful state; a corrupt pair must not cost the whole record.
+      planPosition: PlanPositionModel.fromJson(json['planPosition']),
     );
   }
 

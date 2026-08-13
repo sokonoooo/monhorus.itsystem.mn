@@ -20,10 +20,14 @@ abstract interface class CustomerPortalRepository {
     ResolvedCustomerScope scope,
   );
 
+  /// One page of the customer's buildings. [page] is exposed because a caller that
+  /// sums over the result — the home summary — has to be able to read past the
+  /// first page; `PaginatedData.total` says whether it must.
   Future<ApiResult<PaginatedData<BuildingModel>>> listBuildings(
     ResolvedCustomerScope scope, {
     String? projectId,
     String? search,
+    int page,
   });
 
   Future<ApiResult<BuildingModel>> getBuilding(String buildingId);
@@ -53,6 +57,18 @@ abstract interface class CustomerPortalRepository {
   });
 
   Future<ApiResult<ServiceRequestDetailModel>> getServiceRequest(String requestId);
+
+  /// The technician's approved conclusion, or **null** when there is not one.
+  ///
+  /// Nullable rather than failing, because `GET /:requestId/report/customer` answers
+  /// 404 for every state that is not an approved report — none written, one still in
+  /// draft, one submitted, one returned — and "the conclusion is not ready" is not an
+  /// error the customer can act on. A genuine fault (no network, a 500, a session that
+  /// expired) still comes back as a [Failure], so the screen can tell the two apart.
+  ///
+  /// Takes no scope: the route resolves the customer from the session and answers 404
+  /// for a request that is not theirs, so there is nothing for the client to narrow.
+  Future<ApiResult<CustomerWorkReportModel?>> getCustomerWorkReport(String requestId);
 
   /// Uploads one picture and returns the attachment the create call must name.
   ///

@@ -470,7 +470,9 @@ export function InspectionListPage(): ReactElement {
       </div>
 
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <RiskLegend bands={bands} />
+        {/* Null means the thresholds could not be read. The legend then says nothing
+            rather than printing the shipped defaults as though they were in force. */}
+        {bands === null ? <span /> : <RiskLegend bands={bands} />}
         <ColumnPicker controller={columnState} />
       </div>
 
@@ -479,6 +481,9 @@ export function InspectionListPage(): ReactElement {
           columns={columnState.visibleColumns}
           rows={data?.items ?? []}
           rowKey={(row) => row.id}
+          // Numbered off the response rather than the query, so a request in flight can
+          // never number the rows on screen against the page they did not come from.
+          numbering={{ page: data?.page ?? 1, limit: data?.limit ?? 25 }}
           loading={loading}
           error={error}
           onRowClick={(row) =>

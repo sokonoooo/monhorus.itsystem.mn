@@ -2,19 +2,22 @@ import {
   PERMISSIONS,
   createBuildingSchema,
   type BuildingDto,
+  type BuildingListQuery,
+  type PaginatedData,
   type ProjectDto,
 } from '@monhorus/shared';
-import { useCallback, useEffect, useState, type ReactElement } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
 import { Alert } from '../../components/ui/Alert';
 import { Button } from '../../components/ui/Button';
 import { ColumnPicker } from '../../components/ui/ColumnPicker';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
-import { DataTable, type Column } from '../../components/ui/DataTable';
+import { DataTable, Pagination, type Column } from '../../components/ui/DataTable';
 import { Drawer } from '../../components/ui/Drawer';
 import { MapPicker } from '../../components/ui/MapPicker';
 import { PageHeader } from '../../components/ui/PageHeader';
+import { SearchField } from '../../components/ui/SearchField';
 import { ErrorState, Skeleton } from '../../components/ui/States';
 import { useToast } from '../../components/ui/ToastProvider';
 import { FIELD_TEXTAREA, FILTER_LABEL } from '../../components/ui/control-styles';
@@ -56,7 +59,12 @@ export function GpsErrors({
   return <p className="mt-1 text-xs text-red-600">{message}</p>;
 }
 
-/** Inline building create, so a project can be populated without leaving the page. */
+/**
+ * Inline building create, so a project can be populated without leaving the page.
+ *
+ * No code is asked for: `BLD-001` is issued by the server against a per-customer counter,
+ * and a code the browser proposed could only ever be a guess at it.
+ */
 function BuildingDrawer({
   projectId,
   open,
@@ -69,7 +77,6 @@ function BuildingDrawer({
   onSaved: () => void;
 }): ReactElement {
   const { notify } = useToast();
-  const [code, setCode] = useState('');
   const [name, setName] = useState('');
   const [address, setAddress] = useState('');
   const [position, setPosition] = useState<GpsPosition>(NO_POSITION);
@@ -80,7 +87,6 @@ function BuildingDrawer({
 
   useEffect(() => {
     if (!open) return;
-    setCode('');
     setName('');
     setAddress('');
     setPosition(NO_POSITION);
@@ -95,7 +101,6 @@ function BuildingDrawer({
 
     const parsed = createBuildingSchema.safeParse({
       projectId,
-      code: code.trim().toUpperCase(),
       name: name.trim(),
       address: address.trim() || null,
       gpsLatitude: position.latitude,
@@ -151,9 +156,6 @@ function BuildingDrawer({
         {formError && <Alert variant="error">{formError}</Alert>}
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Field label="Код" required error={fieldErrors.code}>
-            <TextInput value={code} onChange={(value) => setCode(value.toUpperCase())} disabled={submitting} />
-          </Field>
           <Field label="Барилгын нэр" required error={fieldErrors.name}>
             <TextInput value={name} onChange={setName} disabled={submitting} />
           </Field>
@@ -205,24 +207,38 @@ export function ProjectDetailPage(): ReactElement {
 
   const canManage = can(PERMISSIONS.OBJECT_MANAGE);
 
+  // The building table's page and search live in the URL, the same as the project list:
+  // this route reads nothing else from the query string, so there is nothing to clash with,
+  // and a link to page 3 of a long project's buildings stays a link.
+  const [searchParams, setSearchParams] = useSearchParams();
+
   const [project, setProject] = useState<ProjectDto | null>(null);
-  const [buildings, setBuildings] = useState<BuildingDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
 
-  const load = useCallback(async (): Promise<void> => {
+  const [buildings, setBuildings] = useState<PaginatedData<BuildingDto> | null>(null);
+  const [buildingsLoading, setBuildingsLoading] = useState(true);
+  const [buildingsError, setBuildingsError] = useState<string | null>(null);
+  const [searchDraft, setSearchDraft] = useState(() => searchParams.get('search') ?? '');
+
+  const buildingQuery = useMemo<BuildingListQuery>(() => {
+    const page = Number.parseInt(searchParams.get('page') ?? '1', 10);
+    return {
+      ...(projectId ? { projectId } : {}),
+      page: Number.isFinite(page) && page > 0 ? page : 1,
+      limit: 20,
+      ...(searchParams.get('search') ? { search: searchParams.get('search')! } : {}),
+    };
+  }, [projectId, searchParams]);
+
+  const loadProject = useCallback(async (): Promise<void> => {
     if (!projectId) return;
     setLoading(true);
     setError(null);
     try {
-      const [detail, buildingPage] = await Promise.all([
-        projectService.getProject(projectId),
-        projectService.listBuildings({ projectId, limit: 100 }),
-      ]);
-      setProject(detail);
-      setBuildings(buildingPage.items);
+      setProject(await projectService.getProject(projectId));
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : 'Төсөл ачаалж чадсангүй.');
     } finally {
@@ -230,9 +246,50 @@ export function ProjectDetailPage(): ReactElement {
     }
   }, [projectId]);
 
+  // The list is fetched apart from the detail so that turning a page or typing a search
+  // reloads the table alone, rather than throwing the whole page back to its skeleton.
+  const requestIdRef = useRef(0);
+  const queryKey = JSON.stringify(buildingQuery);
+
+  const loadBuildings = useCallback(async (): Promise<void> => {
+    if (!projectId) return;
+    const requestId = ++requestIdRef.current;
+    setBuildingsLoading(true);
+    setBuildingsError(null);
+    try {
+      const result = await projectService.listBuildings(JSON.parse(queryKey) as BuildingListQuery);
+      if (requestId !== requestIdRef.current) return;
+      setBuildings(result);
+    } catch (caught) {
+      if (requestId !== requestIdRef.current) return;
+      setBuildingsError(caught instanceof ApiError ? caught.message : 'Барилга ачаалж чадсангүй.');
+    } finally {
+      if (requestId === requestIdRef.current) setBuildingsLoading(false);
+    }
+  }, [projectId, queryKey]);
+
   useEffect(() => {
-    void load();
-  }, [load]);
+    void loadProject();
+  }, [loadProject]);
+
+  useEffect(() => {
+    void loadBuildings();
+  }, [loadBuildings]);
+
+  /** Creating a building changes both the list and the counts on the detail. */
+  const load = useCallback(async (): Promise<void> => {
+    await Promise.all([loadProject(), loadBuildings()]);
+  }, [loadProject, loadBuildings]);
+
+  function updateParam(key: string, value: string): void {
+    const next = new URLSearchParams(searchParams);
+    if (value) next.set(key, value);
+    else next.delete(key);
+    // Any filter change starts again at the first page; row 21 of the old result is
+    // not row 21 of the new one.
+    if (key !== 'page') next.delete('page');
+    setSearchParams(next);
+  }
 
   async function handleDelete(): Promise<void> {
     if (!project) return;
@@ -374,6 +431,23 @@ export function ProjectDetailPage(): ReactElement {
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-5 py-3">
             <h2 className="text-sm font-semibold text-slate-900">Барилга</h2>
             <div className="flex items-center gap-2">
+              <div className="w-52">
+                {/* Labelled for a screen reader only: the heading beside it already says
+                    which table this searches. */}
+                <label htmlFor="prj-building-search" className="sr-only">
+                  Хайлт
+                </label>
+                <SearchField
+                  id="prj-building-search"
+                  value={searchDraft}
+                  onChange={(event) => setSearchDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') updateParam('search', searchDraft.trim());
+                  }}
+                  onBlur={() => updateParam('search', searchDraft.trim())}
+                  placeholder="Нэр эсвэл код"
+                />
+              </div>
               <ColumnPicker controller={columnState} />
               {canManage && project.isActive && (
                 <Button variant="secondary" size="sm" onClick={() => setDrawerOpen(true)}>
@@ -384,12 +458,30 @@ export function ProjectDetailPage(): ReactElement {
           </div>
           <DataTable
             columns={columnState.visibleColumns}
-            rows={buildings}
+            rows={buildings?.items ?? []}
             rowKey={(row) => row.id}
+            // Numbered off the response rather than the query, so a request in flight can
+            // never number the rows on screen against the page they did not come from.
+            numbering={{ page: buildings?.page ?? 1, limit: buildings?.limit ?? 20 }}
+            loading={buildingsLoading}
+            error={buildingsError}
+            onRetry={() => void loadBuildings()}
             onRowClick={(row) => navigate(`/buildings/${row.id}`)}
             emptyTitle="Барилга бүртгэгдээгүй"
-            emptyDescription="Давхар болон объект нэмэхийн тулд эхлээд барилга бүртгэнэ үү."
+            emptyDescription={
+              searchParams.get('search')
+                ? 'Хайлтад тохирох барилга алга.'
+                : 'Давхар болон объект нэмэхийн тулд эхлээд барилга бүртгэнэ үү.'
+            }
           />
+          {buildings && (
+            <Pagination
+              page={buildings.page}
+              totalPages={buildings.totalPages}
+              total={buildings.total}
+              onPageChange={(page) => updateParam('page', String(page))}
+            />
+          )}
         </div>
 
         {/* The reasons deletion is blocked close the page: they explain an action that is

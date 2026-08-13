@@ -15,7 +15,7 @@ import {
   makePage,
 } from '../../test/fixtures';
 import { renderWithAuth } from '../../test/render';
-import { FloorDetailPage } from './FloorDetailPage';
+import { FloorDetailPage, filterFloorObjects } from './FloorDetailPage';
 
 const FLOOR_ID = '507f1f77bcf86cd799439121';
 
@@ -219,6 +219,51 @@ describe('FloorDetailPage', () => {
     expect(screen.getByText('Чангалах')).toBeInTheDocument();
   });
 
+  /**
+   * The list endpoint caps a page at 100, so one request quietly lost everything past the
+   * first page — a floor with 120 devices showed 100 and said nothing about the rest.
+   */
+  it('walks every page of objects rather than stopping at the first hundred', async () => {
+    vi.spyOn(projectService, 'getFloor').mockResolvedValue(makeFloor());
+    vi.spyOn(projectService, 'getFloorPlan').mockResolvedValue(makeFloorPlan());
+
+    const page = (index: number, items: number) => ({
+      items: Array.from({ length: items }, (_, offset) =>
+        makeObjectListItem({
+          id: `o-${index}-${offset}`,
+          code: `EQ-${index}-${offset}`,
+          name: `Тоноглол ${index}-${offset}`,
+        }),
+      ),
+      page: index,
+      limit: 100,
+      total: 150,
+      totalPages: 2,
+    });
+
+    const list = vi
+      .spyOn(objectMasterService, 'list')
+      .mockImplementation(async (query) =>
+        (query?.page ?? 1) === 1 ? page(1, 100) : page(2, 50),
+      );
+
+    renderFloor([PERMISSIONS.OBJECT_VIEW, PERMISSIONS.OBJECT_MASTER_VIEW]);
+
+    /*
+      The second page's rows are proven to have ARRIVED rather than to be on screen. The
+      table now pages at 20, so row 150 is not rendered — but the pager's total counts the
+      whole fetched set, so it still fails if the walk stops at the first hundred. The plan,
+      which is the reason the walk exists, is given all 150 either way.
+    */
+    // A longer wait than the default: this resolves only after BOTH pages have been
+    // fetched in sequence, which is marginal against 1s on a loaded machine.
+    expect(await screen.findByText(/Нийт 150/, undefined, { timeout: 5000 })).toBeInTheDocument();
+    expect(list).toHaveBeenCalledWith({ floorId: FLOOR_ID, limit: 100, page: 1 });
+    expect(list).toHaveBeenCalledWith({ floorId: FLOOR_ID, limit: 100, page: 2 });
+    // And it stops when the pages run out rather than asking forever.
+    expect(list).toHaveBeenCalledTimes(2);
+  });
+
   it('reports Бүрэн бус instead of a zero when a load figure is incomplete', async () => {
     vi.spyOn(projectService, 'getFloor').mockResolvedValue(makeFloor());
     vi.spyOn(projectService, 'getFloorPlan').mockResolvedValue(makeFloorPlan());
@@ -338,6 +383,27 @@ describe('FloorDetailPage', () => {
     expect(within(menu).queryByRole('menuitem', { name: 'Салгах' })).not.toBeInTheDocument();
   });
 
+  /**
+   * `FLR-001` is issued by the server and `updateFloorSchema` is `.strict()`, so a code
+   * sent from this drawer would be refused rather than ignored. The pattern keeps `^` and
+   * drops `$` because `Field` appends a `*` to a required label, so a plain equality query
+   * would pass even with the field still on screen.
+   */
+  it('asks for no code on the edit drawer', async () => {
+    vi.spyOn(projectService, 'getFloor').mockResolvedValue(makeFloor());
+    vi.spyOn(projectService, 'getFloorPlan').mockResolvedValue(makeFloorPlan());
+    const user = userEvent.setup();
+
+    renderFloor([PERMISSIONS.OBJECT_VIEW, PERMISSIONS.OBJECT_MANAGE]);
+
+    await user.click(await screen.findByRole('button', { name: 'Засах' }));
+    const drawer = await screen.findByRole('dialog');
+
+    expect(within(drawer).queryByLabelText(/^Код/)).toBeNull();
+    // The name is still editable, so this is the drawer and not an empty match.
+    expect(within(drawer).getByLabelText(/^Давхрын нэр/)).toHaveValue('2 давхар');
+  });
+
   /** The floor stores a free-text description; the edit drawer has to be able to set it. */
   it('sends the description along with the other general fields on edit', async () => {
     vi.spyOn(projectService, 'getFloor').mockResolvedValue(makeFloor());
@@ -373,5 +439,34 @@ describe('FloorDetailPage', () => {
     renderFloor([PERMISSIONS.OBJECT_VIEW]);
 
     expect(await screen.findByText('Давхар олдсонгүй.')).toBeInTheDocument();
+  });
+});
+
+describe('searching the floor objects table', () => {
+  const rows = [
+    { id: '1', code: 'PNL-001', name: 'Гол самбар', objectType: { name: 'Самбар' } },
+    { id: '2', code: 'LGT-014', name: 'Коридор гэрэл', objectType: { name: 'Гэрэлтүүлэг' } },
+    { id: '3', code: 'LGT-015', name: 'Шатны гэрэл', objectType: { name: 'Гэрэлтүүлэг' } },
+  ] as never[];
+
+  it('matches on code, name and type', () => {
+    expect(filterFloorObjects(rows, 'pnl').map((row) => row.id)).toEqual(['1']);
+    expect(filterFloorObjects(rows, 'шатны').map((row) => row.id)).toEqual(['3']);
+    expect(filterFloorObjects(rows, 'гэрэлтүүлэг').map((row) => row.id)).toEqual(['2', '3']);
+  });
+
+  it('returns everything for a blank search rather than nothing', () => {
+    expect(filterFloorObjects(rows, '')).toHaveLength(3);
+    expect(filterFloorObjects(rows, '   ')).toHaveLength(3);
+  });
+
+  /**
+   * Searching in memory is only defensible because the fetch already walked every page for
+   * the plan. If that ever narrowed, this search would quietly cover one page instead of the
+   * floor — so the completeness of the input is the thing worth stating.
+   */
+  it('is case-insensitive and searches the whole set it is given', () => {
+    expect(filterFloorObjects(rows, 'LGT')).toHaveLength(2);
+    expect(filterFloorObjects(rows, 'lgt')).toHaveLength(2);
   });
 });

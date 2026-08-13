@@ -5,6 +5,7 @@ import type {
   SlaState,
 } from '../constants/service-request';
 import type { EmployeeRefDto } from './employee.types';
+import type { PlanPositionDto } from './object-master.types';
 import type { ObjectBreadcrumbDto } from './object.types';
 
 export interface ServiceRequestListItemDto {
@@ -14,8 +15,17 @@ export interface ServiceRequestListItemDto {
   project: { id: string; name: string } | null;
   building: { id: string; name: string } | null;
   floor: { id: string; name: string } | null;
+  /** The zone (ROOM node) named on the request, when one was chosen. */
   room: { id: string; name: string } | null;
   device: { id: string; name: string } | null;
+  /**
+   * Optional pin on the floor plan, normalised 0..1 exactly as an object's placement is.
+   *
+   * Null when the caller named a location but never pointed at a spot, which is the common
+   * case. Optional on the type rather than required so a consumer written before pins
+   * existed still compiles; the server always sends the field.
+   */
+  planPosition?: PlanPositionDto | null;
   requestType: ServiceRequestType;
   isUrgent: boolean;
   status: ServiceRequestStatus;
@@ -65,6 +75,24 @@ export interface ServiceRequestDetailDto extends ServiceRequestListItemDto {
   revisitDueAt: string | null;
   parentRequestId: string | null;
   createdByName: string | null;
+  /**
+   * Whether this request's conclusion has been approved and is therefore readable.
+   *
+   * Exists so a client can decide whether to OFFER the conclusion at all. A customer cannot
+   * ask for a conclusion's status — `GET /:id/report/customer` answers 404 for anything not
+   * approved, precisely so the state of an unapproved one cannot be inferred — so without
+   * this flag the portal's only way to find out would be to call that endpoint and show or
+   * hide a tab on the strength of an error, which means every request detail screen would
+   * fire a request it expects to fail.
+   *
+   * NOT a proxy for the request's own status: `COMPLETED` is set by a human and live data
+   * has a COMPLETED request whose conclusion is still an empty draft. The flag is read from
+   * the conclusion itself.
+   *
+   * Optional on the type for the reason `planPosition` is: a consumer written before this
+   * existed still compiles. The server always sends it.
+   */
+  hasApprovedReport?: boolean;
   updatedAt: string;
 }
 
@@ -97,6 +125,8 @@ export interface CreateServiceRequestRequest {
   panelId?: string | null;
   circuitId?: string | null;
   deviceId?: string | null;
+  /** Optional pin on the floor plan. Rejected without `floorId`; independent of `roomId`. */
+  planPosition?: PlanPositionDto | null;
   requestType: ServiceRequestType;
   isUrgent: boolean;
   description: string;

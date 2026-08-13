@@ -28,6 +28,7 @@ import { FIELD_TEXTAREA, FILTER_LABEL } from '../../components/ui/control-styles
 import { useAuth } from '../../contexts/auth-context';
 import { useTableColumns } from '../../hooks/use-table-columns';
 import { ApiError } from '../../lib/api-client';
+import { plannedWorkService } from '../../services/planned-work.service';
 import { authorisedFileUrl } from '../../lib/file-url';
 import { inspectionReportService } from '../../services/inspection-report.service';
 import {
@@ -155,6 +156,31 @@ export function InspectionReportPage(): ReactElement {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
+
+  /**
+   * Renders the PDF and hands it to the browser.
+   *
+   * Its own busy flag rather than `busy`: that one gates the write and workflow buttons,
+   * and a download in flight is no reason the report cannot also be saved. A failure is
+   * surfaced in the page's existing banner — a download that silently does nothing is
+   * the worst outcome, because the button looks like it worked.
+   */
+  async function exportPdf(): Promise<void> {
+    if (report === null) return;
+    setExporting(true);
+    setActionError(null);
+    try {
+      await plannedWorkService.downloadInspectionReportPdf(plannedWorkId!, report.workNumber);
+    } catch (caught) {
+      setActionError(
+        caught instanceof ApiError ? caught.message : 'PDF үүсгэхэд алдаа гарлаа.',
+      );
+    } finally {
+      setExporting(false);
+    }
+  }
+
 
   const [inspectedScope, setInspectedScope] = useState('');
   const [issueSummary, setIssueSummary] = useState('');
@@ -542,6 +568,19 @@ export function InspectionReportPage(): ReactElement {
         breadcrumbs={breadcrumbs}
         actions={
           <>
+            {/*
+              Always offered, and deliberately not gated on the workflow state: the PDF is
+              a copy of what is already on screen, so anyone who may read the report may
+              take it away. Gating it on FINALISED would stop an inspector printing the
+              draft they are about to review.
+            */}
+            <Button
+              variant="secondary"
+              onClick={() => void exportPdf()}
+              disabled={exporting}
+            >
+              {exporting ? 'PDF бэлдэж байна…' : 'PDF татах'}
+            </Button>
             {editable && (
               <Button
                 variant="secondary"

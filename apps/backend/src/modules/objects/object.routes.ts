@@ -21,7 +21,7 @@ import {
   resolveCustomerScope,
   type ResolvedCustomerScope,
 } from '../../common/security/customer-scope';
-import { created, ok } from '../../common/utils/api-response.util';
+import { created, noContent, ok } from '../../common/utils/api-response.util';
 import { pathParam } from '../../common/utils/path-param.util';
 import { buildRequestMeta as meta } from '../../common/utils/request-meta.util';
 import {
@@ -129,6 +129,12 @@ objectRouter.get(
  *
  * Returns only the direct children of the requested parent, never the whole tree.
  * The dependent selector on the request form calls this once per level.
+ *
+ * Staff-only. It was briefly opened to `portal.floor.view` so the customer app's
+ * create-request sheet could list a floor's Өрөө/Бүс nodes; that sheet no longer collects
+ * a zone and neither mobile app reads this route, so the guard is back to the narrower of
+ * the two. The customer-facing hierarchy reads live on `/floors` and `/floors/:id`, which
+ * carry the portal key themselves.
  */
 objectRouter.get(
   '/nodes',
@@ -243,6 +249,33 @@ objectRouter.patch(
         meta(req),
       );
       ok(res, result, 'Объект шинэчлэгдлээ.');
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+/**
+ * Removes a node, or refuses with the reasons it cannot go.
+ *
+ * The general node "remove", and the only one that reaches the levels below a floor —
+ * `/projects`, `/buildings` and `/floors` each carry their own. Archiving through
+ * `PATCH { isActive: false }` stays the always-available alternative and is what a node
+ * something already references gets.
+ */
+objectRouter.delete(
+  '/nodes/:nodeId',
+  requirePermission(PERMISSIONS.OBJECT_MANAGE),
+  validate({ params: z.object({ nodeId: objectId }) }),
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      await objectService.deleteObjectNode(
+        pathParam(req, 'nodeId'),
+        scopeOf(req),
+        requireAuth(req),
+        meta(req),
+      );
+      noContent(res, 'Объект устгагдлаа.');
     } catch (error) {
       next(error);
     }

@@ -239,6 +239,49 @@ serviceRequestRouter.get(
   },
 );
 
+/**
+ * The conclusion, as the customer who raised the request may read it.
+ *
+ * A SEPARATE ROUTE FROM `GET /:requestId/report`, and it has to be. That one is
+ * `getOrCreateWorkReport`: a read that WRITES, minting a DRAFT stamped with the caller's
+ * name when the request has no conclusion yet. Hanging a portal key off it would have made
+ * every customer who opened the tab the recorded author of an empty conclusion — which is
+ * why the note above it says the portal is not admitted there, and why widening it was
+ * never the cheap option it looks like.
+ *
+ * A SEPARATE DTO for the same reason it is a separate route. `WorkReportDto` is the
+ * technician's working document — `returnReason`, `missing`, and four internal names — so
+ * the response is built field by field in `getCustomerWorkReport` rather than filtered
+ * here, where a later addition to the staff shape would have flowed straight through.
+ *
+ * BOTH KEYS. `service_request.view` keeps staff able to call it, so the portal's view of a
+ * conclusion is something an administrator can reproduce without a customer's account
+ * instead of guessing at it from the staff screen.
+ *
+ * Answers 404 unless the conclusion is APPROVED — see `getCustomerWorkReport` for why a
+ * draft, a submission and a return are all indistinguishable from nothing at all.
+ */
+serviceRequestRouter.get(
+  '/:requestId/report/customer',
+  requireAnyPermission(PERMISSIONS.SERVICE_REQUEST_VIEW, PERMISSIONS.PORTAL_SERVICE_REQUEST_VIEW),
+  validate({ params: requestIdParamSchema }),
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const auth = requireAuth(req);
+      ok(
+        res,
+        await workReportService.getCustomerWorkReport(
+          pathParam(req, 'requestId'),
+          resolveCustomerScope(auth),
+          auth,
+        ),
+      );
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
 serviceRequestRouter.put(
   '/:requestId/report',
   requirePermission(PERMISSIONS.SERVICE_REQUEST_UPDATE),

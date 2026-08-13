@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -194,11 +195,47 @@ FloorModel floorFixture({
   });
 }
 
+/// A floor plan, as `GET /floors/:floorId/plan` returns it.
+FloorPlanModel floorPlanFixture({
+  String fileId = '7b0000000000000000000031',
+  String mimeType = 'image/png',
+}) {
+  return FloorPlanModel.fromJson(<String, dynamic>{
+    'id': '7b0000000000000000000030',
+    'floorId': '6d0000000000000000000002',
+    'fileId': fileId,
+    'fileName': 'plan-2f.png',
+    'downloadUrl': '/api/v1/files/$fileId',
+    'mimeType': mimeType,
+    'sizeBytes': 4096,
+    'title': '2-р давхрын план',
+    'description': null,
+    'uploadedById': '5f1b0c2a11b34f68bfc40003',
+    'uploadedByName': 'Б. Энхтөр',
+    'uploadedAt': '2026-07-01T00:00:00.000Z',
+    'updatedAt': '2026-07-01T00:00:00.000Z',
+  });
+}
+
+/// A real 40x20 PNG, so `AuthenticatedImage.sizedToImage` decodes it, learns its
+/// aspect ratio and gives the overlay the drawing's own rectangle. An invented byte
+/// array would fail to decode and the layer under test would never be laid out.
+final Uint8List planPngBytes = base64Decode(
+  'iVBORw0KGgoAAAANSUhEUgAAACgAAAAUCAIAAABwJOjsAAAAJElEQVR42mM4cfbSgCCGUY'
+  'tHLR61eNTiUYtHLR61eNTikWMxANtHgkoTkECiAAAAAElFTkSuQmCC',
+);
+
+/// An object as the register holds it.
+///
+/// [planPosition] defaults to null because that is the ordinary case in the running
+/// database — only two of thirty-five objects have ever been placed on a drawing — so
+/// a test that wants a placed device must say so.
 ObjectDetailModel objectFixture({
   String id = '6e0000000000000000000003',
   String name = 'LDB-2F-02',
   int? score = 38,
   String? riskLevel = 'CRITICAL',
+  PlanPositionModel? planPosition,
 }) {
   return ObjectDetailModel.fromJson(<String, dynamic>{
     'id': id,
@@ -216,6 +253,7 @@ ObjectDetailModel objectFixture({
     'floorId': '6d0000000000000000000002',
     'floorName': '2-р давхар',
     'buildingName': 'Төв цамхаг',
+    'planPosition': planPosition?.toJson(),
     'status': 'ACTIVE',
     'latestAssessment': score == null
         ? null
@@ -296,6 +334,7 @@ ServiceRequestDetailModel serviceRequestFixture({
   String requestNumber = 'SR-202607-0012',
   String status = 'ASSIGNED',
   bool isUrgent = true,
+  bool hasApprovedReport = false,
 }) {
   return ServiceRequestDetailModel.fromJson(<String, dynamic>{
     'id': id,
@@ -384,6 +423,60 @@ ServiceRequestDetailModel serviceRequestFixture({
     'parentRequestId': null,
     'createdByName': 'Д. Оюунчимэг',
     'updatedAt': '2026-07-27T02:10:00.000Z',
+    'hasApprovedReport': hasApprovedReport,
+  });
+}
+
+/// The customer projection of a technician's conclusion, as
+/// `GET /service-requests/:requestId/report/customer` returns it — the eleven fields
+/// `CustomerWorkReportDto` declares and nothing else.
+CustomerWorkReportModel customerWorkReportFixture({
+  String? conclusion = 'Таслуурын холбогч халалттай байсныг сольж, ачааллыг тэнцүүлэв.',
+  String? recommendation = 'Гурван сарын дараа дахин хэмжилт хийлгэнэ үү.',
+  int? score = 38,
+  String? riskLevel = 'CRITICAL',
+  bool repairRequired = true,
+  bool revisitRequired = true,
+  // Noon UTC, so the local date the screen prints is 2026.08.20 whatever zone the
+  // suite runs in.
+  String? revisitDate = '2026-08-20T12:00:00.000Z',
+  int beforePhotoCount = 1,
+  int afterPhotoCount = 1,
+}) {
+  return CustomerWorkReportModel.fromJson(<String, dynamic>{
+    'conclusion': conclusion,
+    'recommendation': recommendation,
+    'score': score,
+    'riskLevel': riskLevel,
+    'repairRequired': repairRequired,
+    'revisitRequired': revisitRequired,
+    'revisitDate': revisitDate,
+    'beforePhotos': <Map<String, dynamic>>[
+      for (int i = 0; i < beforePhotoCount; i++)
+        <String, dynamic>{
+          'id': 'bb0000000000000000000b0$i',
+          'name': 'omnoh-$i.png',
+          'downloadUrl': '/api/v1/files/bb0000000000000000000b0$i',
+          'mimeType': 'image/png',
+          'sizeBytes': 2048,
+          'uploadedByName': 'Б. Энхтөр',
+          'uploadedAt': '2026-07-27T05:00:00.000Z',
+        },
+    ],
+    'afterPhotos': <Map<String, dynamic>>[
+      for (int i = 0; i < afterPhotoCount; i++)
+        <String, dynamic>{
+          'id': 'cc0000000000000000000c0$i',
+          'name': 'daraah-$i.png',
+          'downloadUrl': '/api/v1/files/cc0000000000000000000c0$i',
+          'mimeType': 'image/png',
+          'sizeBytes': 3072,
+          'uploadedByName': 'Б. Энхтөр',
+          'uploadedAt': '2026-07-27T07:30:00.000Z',
+        },
+    ],
+    'approvedAt': '2026-07-28T02:15:00.000Z',
+    'approvedByName': 'Ц. Ганбаатар',
   });
 }
 
@@ -438,11 +531,15 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
     List<NotificationModel>? notifications,
     ObjectDetailModel? objectDetail,
     ServiceRequestDetailModel? requestDetail,
+    Uint8List? fileBytes,
     this.floorPlan,
     this.objectHistory,
+    this.workReport,
     this.failure,
     this.uploadFailure,
-  })  : buildings = buildings ?? <BuildingModel>[buildingFixture()],
+    this.buildingPageSize = 100,
+  })  : fileBytes = fileBytes ?? Uint8List(0),
+        buildings = buildings ?? <BuildingModel>[buildingFixture()],
         floors = floors ?? <FloorModel>[floorFixture()],
         objects = objects ?? <ObjectListItemModel>[objectFixture()],
         requests =
@@ -452,6 +549,15 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
         requestDetail = requestDetail ?? serviceRequestFixture();
 
   final List<BuildingModel> buildings;
+
+  /// How many buildings one page of `GET /buildings` returns. Defaults to the
+  /// schema's own cap, so the ordinary test sees a single page.
+  final int buildingPageSize;
+
+  /// Page numbers `listBuildings` was called with, so a test can assert the caller
+  /// read past the first one instead of summing a truncated list.
+  final List<int> buildingPagesRequested = <int>[];
+
   final List<FloorModel> floors;
   final List<ObjectListItemModel> objects;
   final List<ServiceRequestListItemModel> requests;
@@ -459,6 +565,11 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
   final ObjectDetailModel objectDetail;
   final ServiceRequestDetailModel requestDetail;
   final FloorPlanModel? floorPlan;
+
+  /// What `GET /files/:fileId` returns. Empty by default, which every screen renders as
+  /// "could not read the picture"; a test that needs a plan to actually decode — the
+  /// pin tests — passes real PNG bytes.
+  final Uint8List fileBytes;
 
   /// The object timeline, for the accounts that are entitled to one.
   ///
@@ -468,6 +579,19 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
   /// screen that rendered the timeline for every account looked healthy in the suite and
   /// 403'd on every device page in the running app.
   final ObjectHistoryModel? objectHistory;
+
+  /// The approved conclusion `GET /:requestId/report/customer` answers with.
+  ///
+  /// Null - the default - stands for the endpoint's 404, which the repository turns
+  /// into a null rather than a failure. It covers every state that is not an approved
+  /// report: none written, still a draft, submitted, returned, or somebody else's
+  /// request.
+  final CustomerWorkReportModel? workReport;
+
+  /// Request ids the report endpoint was called for. A test asserts this stays EMPTY
+  /// when `hasApprovedReport` is false — not firing that request is the entire reason
+  /// the flag is on the detail response.
+  final List<String> workReportRequestedFor = <String>[];
 
   /// When set, every read fails with it.
   final Failure? failure;
@@ -519,9 +643,29 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
     ResolvedCustomerScope scope, {
     String? projectId,
     String? search,
+    int page = 1,
   }) async {
     requestedCustomerIds.add(scope.customerId);
-    return _result(_page(buildings));
+    buildingPagesRequested.add(page);
+
+    // Served in pages of [buildingPageSize] so a test can put more buildings behind
+    // the API than one page holds, the way `buildingListQuerySchema`'s `limit` cap
+    // means the real one does. `total` is always the whole set, which is the figure
+    // a caller must not confuse with the number of records it received.
+    final int start = (page - 1) * buildingPageSize;
+    final List<BuildingModel> slice = start >= buildings.length
+        ? const <BuildingModel>[]
+        : buildings.skip(start).take(buildingPageSize).toList(growable: false);
+
+    return _result(
+      PaginatedData<BuildingModel>(
+        items: slice,
+        page: page,
+        limit: buildingPageSize,
+        total: buildings.length,
+        totalPages: (buildings.length / buildingPageSize).ceil().clamp(1, 1 << 30),
+      ),
+    );
   }
 
   @override
@@ -584,6 +728,14 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
       _result(requestDetail);
 
   @override
+  Future<ApiResult<CustomerWorkReportModel?>> getCustomerWorkReport(
+    String requestId,
+  ) async {
+    workReportRequestedFor.add(requestId);
+    return _result<CustomerWorkReportModel?>(workReport);
+  }
+
+  @override
   Future<ApiResult<ServiceRequestAttachmentModel>> uploadServiceRequestAttachment(
     CapturedPhoto photo,
   ) async {
@@ -626,7 +778,7 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
 
   @override
   Future<ApiResult<Uint8List>> downloadFile(String fileId) async =>
-      _result(Uint8List(0));
+      _result(fileBytes);
 }
 
 /// Keeps [AuthController] off the secure-storage plugin, which has no

@@ -56,10 +56,10 @@ class ConclusionGrants {
   bool get canSelfProgress =>
       _permissions.contains(PermissionKeys.serviceRequestSelfProgress) || canReview;
 
-  /// Settling a submitted conclusion. APPROVE only — returning one is not offered by this
-  /// app at all, and `service_request.approve_report` could not reach it if it were.
-  bool get canApproveConclusion =>
-      _permissions.contains(PermissionKeys.serviceRequestApproveReport) || canReview;
+  // THERE IS NO `canApproveConclusion` HERE, AND ADDING ONE BACK WOULD BE A MISTAKE.
+  // Settling a submitted conclusion — approving it or returning it — happens on the web
+  // admin, so no screen in this app has an approval control for a grant to gate. A getter
+  // reading `service_request.approve_report` would be an invitation to draw one.
 
   /// True once the permission array has actually arrived, so a screen can tell "no
   /// grants" apart from "not asked yet".

@@ -93,9 +93,19 @@ class _TaskProgressSheetState extends ConsumerState<_TaskProgressSheet> {
   /// [_submitError] so a failed photo does not read as a failed progress entry.
   String? _photoError;
 
-  double get _remaining => widget.task.remainingQuantity
-      .clamp(0, widget.task.totalQuantity)
-      .toDouble();
+  /// What the server says is still outstanding, or null when the answer carried no
+  /// such figure. The device does not subtract `completedQuantity` from
+  /// `totalQuantity` to fill the gap — that was the recalculation the model dropped.
+  double? get _remaining {
+    final double? remaining = widget.task.remainingQuantity;
+    if (remaining == null) return null;
+    return remaining.clamp(0, widget.task.totalQuantity).toDouble();
+  }
+
+  /// The ceiling the stepper enforces. Without a stated remainder it falls back to
+  /// the total, which is also the server's figure: a looser bound the backend will
+  /// still check, rather than a tighter one the device made up.
+  double get _stepCeiling => _remaining ?? widget.task.totalQuantity;
 
   @override
   void initState() {
@@ -130,7 +140,7 @@ class _TaskProgressSheetState extends ConsumerState<_TaskProgressSheet> {
   }
 
   void _step(double delta) {
-    setState(() => _today = (_today + delta).clamp(0, _remaining).toDouble());
+    setState(() => _today = (_today + delta).clamp(0, _stepCeiling).toDouble());
   }
 
   /// The task as the server last described it.
@@ -368,7 +378,10 @@ class _TaskProgressSheetState extends ConsumerState<_TaskProgressSheet> {
                     value: _today,
                     total: task.totalQuantity,
                     unit: task.unit,
-                    onStep: _remaining <= 0 ? null : _step,
+                    // Disabled only when the server itself said nothing is left.
+                    // A missing remainder is not the same statement, and locking
+                    // the stepper on it would refuse an entry the API accepts.
+                    onStep: _stepCeiling <= 0 ? null : _step,
                   ),
                   const SizedBox(height: 12),
 

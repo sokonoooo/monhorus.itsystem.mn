@@ -10,7 +10,9 @@ import {
   SERVICE_REQUEST_TYPES,
   SERVICE_REQUEST_TYPE_LABELS,
   SETTING_KEYS,
+  aggregateProgress,
   effectivePlannedWorkStatus,
+  slaConfigOf,
   reconcileDashboardLayout,
   type DashboardLayoutDto,
   type DashboardWidgetPreference,
@@ -155,12 +157,38 @@ async function requestBlock(
 }> {
   const open = { status: { $nin: SETTLED_REQUEST_STATUSES } };
 
+  /**
+   * Near breach is the configured share of the SLA window being consumed, exactly as
+   * [evaluateSla] defines it — not "falls due before midnight". The two are different
+   * sets: a standard request raised an hour ago is due today and nowhere near breach,
+   * while an urgent one raised five hours ago on a six-hour window is past the threshold
+   * whatever the clock says. The threshold is read from settings so it moves with the
+   * configuration rather than being fixed here.
+   */
+  const slaConfig = slaConfigOf(await getSettings());
+  const consumedSlaMs = { $subtract: [now, '$slaStartedAt'] };
+  const slaWindowMs = { $subtract: ['$slaDueAt', '$slaStartedAt'] };
+  const nearBreachFilter = {
+    ...open,
+    // Already past due is BREACHED, which is its own count and not this one.
+    slaDueAt: { $gt: now },
+    $expr: {
+      $and: [
+        // A non-positive window has no ratio to consume; `evaluateSla` treats it as zero
+        // consumed rather than as instantly near breach.
+        { $gt: ['$slaDueAt', '$slaStartedAt'] },
+        { $gte: [consumedSlaMs, { $multiply: [slaConfig.nearBreachRatio, slaWindowMs] }] },
+      ],
+    },
+  };
+
   const [
     newRequests,
     unassignedRequests,
     urgentRequests,
     inProgress,
     dueToday,
+    nearBreach,
     breached,
     completedToday,
     statusGroups,
@@ -173,6 +201,7 @@ async function requestBlock(
       status: { $in: ['ACCEPTED', 'ON_THE_WAY', 'ON_SITE', 'IN_PROGRESS'] },
     }),
     ServiceRequest.countDocuments({ slaDueAt: { $gte: now, $lte: todayEnd }, ...open }),
+    ServiceRequest.countDocuments(nearBreachFilter),
     ServiceRequest.countDocuments({ slaDueAt: { $lt: now }, ...open }),
     ServiceRequest.countDocuments({
       status: 'COMPLETED',
@@ -195,8 +224,10 @@ async function requestBlock(
       newRequests,
       unassignedRequests,
       urgentRequests,
-      // Near breach is the SLA falling due before the end of today; breached is past due.
-      slaNearBreach: dueToday,
+      // Near breach is the SLA window being consumed past the configured ratio and not
+      // yet run out; breached is past due. `dueToday` is the calendar figure and stays
+      // its own field.
+      slaNearBreach: nearBreach,
       slaBreached: breached,
       inProgress,
       dueToday,
@@ -260,28 +291,43 @@ async function trendBlock(now: Date): Promise<DashboardTrendPoint[]> {
 
 async function plannedWorkBlock(now: Date): Promise<DashboardPlannedWorkSummary> {
   const works = await PlannedWork.find({ status: { $ne: 'ARCHIVED' } })
-    .select('status plannedEndDate progressPercent')
+    .select('status plannedEndDate totalQuantity completedQuantity')
     .lean();
 
   let inProgress = 0;
   let overdue = 0;
   let completed = 0;
-  let progressSum = 0;
 
   for (const work of works) {
     const effective = effectivePlannedWorkStatus(work.status, work.plannedEndDate, now);
     if (effective === 'OVERDUE') overdue += 1;
     else if (effective === 'STARTED') inProgress += 1;
     else if (effective === 'COMPLETED') completed += 1;
-    progressSum += work.progressPercent;
   }
+
+  /**
+   * Quantity-weighted, through the same aggregation the progress service uses, so the
+   * dashboard figure is the one the planned-work module would compute over the same set.
+   * The mean of the per-work percentages is a different number: it lets a single-task job
+   * outweigh a five-hundred-task one, which is exactly the weighting doctrine this
+   * codebase settled.
+   */
+  const progress = aggregateProgress(
+    works.map((work) => ({
+      totalQuantity: work.totalQuantity,
+      // Clamp as the progress service does: a stored overshoot must not inflate the rollup.
+      completedQuantity: Math.min(work.completedQuantity, work.totalQuantity),
+    })),
+  );
 
   return {
     total: works.length,
     inProgress,
     overdue,
     completed,
-    averageProgress: works.length === 0 ? 0 : Math.round(progressSum / works.length),
+    // Null, not zero, when there is nothing to weigh: no work at all, or no quantity
+    // recorded against any of it. Zero would read as "everything is at 0%".
+    averageProgress: progress.totalQuantity === 0 ? null : progress.progressPercent,
   };
 }
 

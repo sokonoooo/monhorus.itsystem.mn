@@ -18,6 +18,7 @@ import { ObjectRecord, ObjectType } from '../object-master/object-master.models'
 import { Customer } from '../objects/object.models';
 import { Role } from '../rbac/role.model';
 import { ServiceRequest } from '../service-request/service-request.model';
+import { WorkReport } from '../service-request/work-report.model';
 import { User } from '../user/user.model';
 import {
   ensureUploadDirectory,
@@ -146,6 +147,15 @@ interface Tenant {
   objectPhotoFileId: string;
   /** An attachment claimed by one of this tenant's service requests. */
   requestAttachmentFileId: string;
+  /**
+   * Before/after evidence on an APPROVED conclusion — the photos the customer read hands
+   * out download urls for. Parked on a USER id, never on the request, because that is
+   * exactly what production holds: `POST /files/work-report-photos` owns the file to the
+   * uploading technician and `saveWorkReport` only stores the id in the conclusion.
+   */
+  approvedReportPhotoFileId: string;
+  /** The same shape on a DRAFT conclusion, which no customer may read. */
+  draftReportPhotoFileId: string;
 }
 
 /** One organisation with a floor plan, an object photo and a request attachment. */
@@ -209,17 +219,40 @@ async function seedTenant(code: string): Promise<Tenant> {
     status: 'ACTIVE',
   });
 
-  const serviceRequest = await ServiceRequest.create({
-    requestNumber: `SR-${code}-0001`,
-    customer: customer._id,
-    building: new Types.ObjectId(building.body.data.id as string),
-    floor: new Types.ObjectId(floorId),
-    requestType: 'URGENT_CALL',
-    description: 'Таслуур халж байна.',
-    contactName: 'Тест',
-    contactPhone: '99112233',
-    slaStartedAt: new Date(),
-    slaDueAt: new Date(Date.now() + 6 * 60 * 60 * 1000),
+  const seedRequest = async (suffix: string) =>
+    ServiceRequest.create({
+      requestNumber: `SR-${code}-${suffix}`,
+      customer: customer._id,
+      building: new Types.ObjectId(building.body.data.id as string),
+      floor: new Types.ObjectId(floorId),
+      requestType: 'URGENT_CALL',
+      description: 'Таслуур халж байна.',
+      contactName: 'Тест',
+      contactPhone: '99112233',
+      slaStartedAt: new Date(),
+      slaDueAt: new Date(Date.now() + 6 * 60 * 60 * 1000),
+    });
+
+  const serviceRequest = await seedRequest('0001');
+  const approvedRequest = await seedRequest('0002');
+  const draftRequest = await seedRequest('0003');
+
+  // Parked on a user id, matching what `POST /files/work-report-photos` writes: the
+  // conclusion references the file and nothing ever re-owns it onto the request.
+  const uploaderId = new Types.ObjectId();
+  const approvedPhotoId = await plantFile('SERVICE_REQUEST', uploaderId);
+  const draftPhotoId = await plantFile('SERVICE_REQUEST', uploaderId);
+
+  await WorkReport.create({
+    serviceRequest: approvedRequest._id,
+    status: 'APPROVED',
+    beforePhotos: [new Types.ObjectId(approvedPhotoId)],
+    approvedAt: new Date(),
+  });
+  await WorkReport.create({
+    serviceRequest: draftRequest._id,
+    status: 'DRAFT',
+    afterPhotos: [new Types.ObjectId(draftPhotoId)],
   });
 
   return {
@@ -229,6 +262,8 @@ async function seedTenant(code: string): Promise<Tenant> {
     planFileId: plan.body.data.fileId as string,
     objectPhotoFileId: await plantFile('OBJECT', object._id),
     requestAttachmentFileId: await plantFile('SERVICE_REQUEST', serviceRequest._id),
+    approvedReportPhotoFileId: approvedPhotoId,
+    draftReportPhotoFileId: draftPhotoId,
   };
 }
 
@@ -301,6 +336,68 @@ describe('GET /files/:fileId for a customer', () => {
 
     const foreign = await download(tenantB.requestAttachmentFileId, customerToken);
     expect(foreign.status).toBe(404);
+  });
+
+  /**
+   * Conclusion evidence, which is the case the SERVICE_REQUEST branch could not resolve.
+   *
+   * A conclusion photo is parked on the uploading technician's USER id and never re-owned
+   * onto the request, so `ServiceRequest.findById(ownerId)` matched nothing and every
+   * before/after image on the customer's conclusion screen 404'd — the endpoint handed
+   * out download urls that could not be followed.
+   */
+  it('serves the before/after evidence on the calling customer own approved conclusion', async () => {
+    const response = await download(tenantA.approvedReportPhotoFileId, customerToken);
+
+    expect(response.status).toBe(200);
+    expect(response.headers['content-type']).toContain('image/png');
+  });
+
+  /**
+   * The security half. The widened lookup resolves the file through the conclusion, so it
+   * must resolve to that conclusion's OWN organisation and no other — otherwise it would
+   * have handed every customer every tenant's evidence for the cost of a guessed id.
+   */
+  it('reports another organisation conclusion evidence as not found', async () => {
+    const response = await download(tenantB.approvedReportPhotoFileId, customerToken);
+
+    expect(response.status).toBe(404);
+    expect(response.body.data).toBeNull();
+  });
+
+  /**
+   * The widening stops exactly where `GET /:id/report/customer` does. A customer who could
+   * fetch a draft conclusion's photographs would be reading a verdict nobody has signed
+   * off, one file at a time, while the endpoint that serves it still answered 404.
+   */
+  it('refuses evidence attached to a conclusion that is not approved', async () => {
+    const response = await download(tenantA.draftReportPhotoFileId, customerToken);
+
+    expect(response.status).toBe(404);
+  });
+
+  /** Staff are unaffected by the approval rule: a technician still reads their own draft. */
+  it('still serves an unapproved conclusion evidence to staff', async () => {
+    const staff = await createUserWithPermissions('files-sr-staff@test.mn', [
+      PERMISSIONS.SERVICE_REQUEST_VIEW,
+    ]);
+    const staffToken = await login(staff.email, staff.password);
+
+    const response = await download(tenantA.draftReportPhotoFileId, staffToken);
+
+    expect(response.status).toBe(200);
+  });
+
+  /**
+   * The pre-existing rule the widening had to preserve: an upload still sitting on its
+   * uploader, claimed by nothing, resolves to no organisation and stays unreadable.
+   */
+  it('still refuses an upload no request and no conclusion has claimed', async () => {
+    const parked = await plantFile('SERVICE_REQUEST', new Types.ObjectId());
+
+    const response = await download(parked, customerToken);
+
+    expect(response.status).toBe(404);
   });
 
   /**

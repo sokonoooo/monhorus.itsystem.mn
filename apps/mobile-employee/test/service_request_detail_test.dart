@@ -30,6 +30,10 @@ const String kFileId = 'f1';
 const String kEmployeeId = 'emp-1';
 
 /// The permission set the seeded TECHNICIAN role now carries for a service request.
+///
+/// `service_request.approve_report` is deliberately still in here even though this app no
+/// longer has an approve control anywhere: the default account holding the key is exactly
+/// what makes the conclusion assertions at the bottom of this file mean something.
 const Set<String> _fieldKeys = <String>{
   'service_request.view',
   'service_request.update',
@@ -73,7 +77,6 @@ Map<String, dynamic> _me() => <String, dynamic>{'id': kEmployeeId, 'name': 'До
 class _ActionRepository implements WorkRepository {
   final List<({ServiceRequestStatus status, String? reason})> moves =
       <({ServiceRequestStatus status, String? reason})>[];
-  int approvals = 0;
 
   @override
   Future<ApiResult<ServiceRequestDetailModel>> changeServiceRequestStatus({
@@ -526,11 +529,29 @@ void main() {
     expect(find.text('Төлөв өөрчлөх эрх байхгүй'), findsNothing);
   });
 
-  // -- Settling the conclusion ------------------------------------------------
+  // -- A handed-in conclusion, which this app states and never settles --------
+  //
+  // "Дүгнэлт батлах" used to live at the bottom of this screen, drawn for the holder of
+  // `service_request.approve_report` and replaced by a "Батлах эрх байхгүй" apology for
+  // everyone else. Both are gone, and NOT because the permission moved. Approving a
+  // conclusion is an OFFICE act performed on the web admin: it is the moment somebody other
+  // than the author accepts the work and it lands in the report store. This app is where the
+  // conclusion is WRITTEN, so an approve button here let the author sign off their own
+  // report from the same screen they wrote it on.
+  //
+  // The route itself is untouched — `POST /service-requests/:id/report/approve` still exists
+  // and the web admin still calls it. What was deleted is this client's whole chain down to
+  // the data source. These tests pin the removal by PERMISSION rather than by screenshot:
+  // the button must be absent for the accounts that would once have been given it, because
+  // "no approving from the field app" is the rule, not "no approving without the key".
 
-  testWidgets('a submitted conclusion offers approval to the holder of the key', (
+  /// The account that would have drawn the button. `_technician` holds
+  /// `service_request.approve_report`, exactly as the seeded TECHNICIAN role does.
+  testWidgets('the approve key no longer draws an approve control', (
     WidgetTester tester,
   ) async {
+    expect(_fieldKeys, contains('service_request.approve_report'));
+
     await _pump(
       tester,
       read: AsyncData<ServiceRequestDetailModel?>(
@@ -543,15 +564,19 @@ void main() {
       ),
     );
 
-    expect(find.text('Дүгнэлт батлах'), findsOneWidget);
-    // Returning is the office's judgement, so there is no control for it — only the
-    // sentence saying so. `service_request.approve_report` could not reach the route even
-    // if a button existed.
-    expect(find.text('Дүгнэлт буцаах'), findsNothing);
-    expect(find.textContaining('Буцаахыг зөвхөн оффис хийнэ'), findsOneWidget);
+    expect(find.text('Дүгнэлт батлах'), findsNothing);
+    // Nor the apology that used to stand in for it: nothing on this screen claims a
+    // permission is what is missing, because a permission is not what is missing.
+    expect(find.text('Батлах эрх байхгүй'), findsNothing);
+    expect(find.textContaining('service_request.approve_report'), findsNothing);
   });
 
-  testWidgets('without the approve key the reason is printed instead', (
+  /// THE ACTUAL REQUIREMENT. `service_request.change_status` is the office's entire
+  /// authority over a request and a strict superset of the approve key — the one account
+  /// that could argue for the button. It does not get one either: the control is absent from
+  /// this app for everybody, whatever they hold, because of WHERE approval happens rather
+  /// than who may do it. An office user signed into the field app approves on the web.
+  testWidgets('not even the office keys draw an approve control', (
     WidgetTester tester,
   ) async {
     await _pump(
@@ -560,6 +585,8 @@ void main() {
         'service_request.view',
         'service_request.update',
         'service_request.self_progress',
+        'service_request.approve_report',
+        'service_request.change_status',
       }),
       read: AsyncData<ServiceRequestDetailModel?>(
         ServiceRequestDetailModel.fromJson(
@@ -572,13 +599,81 @@ void main() {
     );
 
     expect(find.text('Дүгнэлт батлах'), findsNothing);
-    expect(find.text('Батлах эрх байхгүй'), findsOneWidget);
-    expect(find.textContaining('service_request.approve_report'), findsOneWidget);
+    expect(find.text('Батлах эрх байхгүй'), findsNothing);
+    // And it is not a return control in disguise either.
+    expect(find.text('Дүгнэлт буцаах'), findsNothing);
   });
 
-  /// Nothing has been handed in yet, so there is nothing to settle and no banner about it
-  /// either — an approval notice on an unsubmitted job is noise, not an explanation.
-  testWidgets('no approval control while the conclusion has not been submitted', (
+  /// What replaced it: one neutral sentence, identical for every reader, saying where the
+  /// conclusion has got to and who will settle it. A statement, not a withheld control.
+  testWidgets('REPORT_SUBMITTED says the office will approve it', (
+    WidgetTester tester,
+  ) async {
+    await _pump(
+      tester,
+      read: AsyncData<ServiceRequestDetailModel?>(
+        ServiceRequestDetailModel.fromJson(
+          _detailJson(
+            status: 'REPORT_SUBMITTED',
+            assignedEmployees: <Map<String, dynamic>>[_me()],
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('Дүгнэлт хянуулахаар илгээгдсэн'), findsOneWidget);
+    expect(find.textContaining('оффис хянаж батална'), findsOneWidget);
+  });
+
+  /// The same sentence for a reader with nothing but `service_request.view`. Nothing is
+  /// written from this section, so there is no grant to gate it on and none is read — the
+  /// notice is a fact about the job, not an entitlement.
+  testWidgets('the notice does not depend on any permission', (
+    WidgetTester tester,
+  ) async {
+    await _pump(
+      tester,
+      user: _userWith(<String>{'service_request.view'}),
+      read: AsyncData<ServiceRequestDetailModel?>(
+        ServiceRequestDetailModel.fromJson(
+          _detailJson(
+            status: 'REPORT_SUBMITTED',
+            assignedEmployees: <Map<String, dynamic>>[_me()],
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('Дүгнэлт хянуулахаар илгээгдсэн'), findsOneWidget);
+    expect(find.text('Дүгнэлт батлах'), findsNothing);
+  });
+
+  /// Nor on whose job it is. A colleague's request reads the same, for the same reason: the
+  /// section makes no write, so there is nothing to withhold from somebody who cannot act.
+  testWidgets("a colleague's submitted conclusion carries the same notice", (
+    WidgetTester tester,
+  ) async {
+    await _pump(
+      tester,
+      read: AsyncData<ServiceRequestDetailModel?>(
+        ServiceRequestDetailModel.fromJson(
+          _detailJson(
+            status: 'REPORT_SUBMITTED',
+            assignedEmployees: <Map<String, dynamic>>[
+              <String, dynamic>{'id': 'emp-2', 'name': 'Бат'},
+            ],
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('Дүгнэлт хянуулахаар илгээгдсэн'), findsOneWidget);
+    expect(find.text('Дүгнэлт батлах'), findsNothing);
+  });
+
+  /// Nothing has been handed in yet, so there is nothing to say and no banner about it
+  /// either — "waiting for the office" printed on an unwritten job is noise, not context.
+  testWidgets('no conclusion notice before the conclusion is submitted', (
     WidgetTester tester,
   ) async {
     await _pump(
@@ -593,7 +688,30 @@ void main() {
       ),
     );
 
+    expect(find.text('Дүгнэлт хянуулахаар илгээгдсэн'), findsNothing);
+    expect(find.textContaining('оффис хянаж батална'), findsNothing);
     expect(find.text('Дүгнэлт батлах'), findsNothing);
     expect(find.text('Батлах эрх байхгүй'), findsNothing);
+  });
+
+  /// And not on a job that has been completed either: the sentence is about a conclusion
+  /// awaiting the office, so it must not linger once the request has moved past that.
+  testWidgets('no conclusion notice once the request has moved on', (
+    WidgetTester tester,
+  ) async {
+    await _pump(
+      tester,
+      read: AsyncData<ServiceRequestDetailModel?>(
+        ServiceRequestDetailModel.fromJson(
+          _detailJson(
+            status: 'COMPLETED',
+            assignedEmployees: <Map<String, dynamic>>[_me()],
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('Дүгнэлт хянуулахаар илгээгдсэн'), findsNothing);
+    expect(find.text('Дүгнэлт батлах'), findsNothing);
   });
 }

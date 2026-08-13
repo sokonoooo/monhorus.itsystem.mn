@@ -62,12 +62,14 @@ class CustomerPortalRepositoryImpl implements CustomerPortalRepository {
     ResolvedCustomerScope scope, {
     String? projectId,
     String? search,
+    int page = 1,
   }) {
     return _guard(
       () => _remote.listBuildings(
         scope: scope,
         projectId: projectId,
         search: search,
+        page: page,
       ),
     );
   }
@@ -139,6 +141,29 @@ class CustomerPortalRepositoryImpl implements CustomerPortalRepository {
   @override
   Future<ApiResult<ServiceRequestDetailModel>> getServiceRequest(String requestId) {
     return _guard(() => _remote.getServiceRequest(requestId));
+  }
+
+  /// A 404 here is an answer, not a fault: the endpoint uses it for "no approved
+  /// conclusion" as well as for "not your request", and both mean the same thing to
+  /// the reader — there is nothing to show yet. It is turned into a null so the screen
+  /// renders the not-ready line rather than an error card. Every other status still
+  /// travels through [_mapException].
+  @override
+  Future<ApiResult<CustomerWorkReportModel?>> getCustomerWorkReport(
+    String requestId,
+  ) async {
+    try {
+      return Success<CustomerWorkReportModel?>(
+        await _remote.getCustomerWorkReport(requestId),
+      );
+    } on ServerException catch (error) {
+      if (error.statusCode == 404) {
+        return const Success<CustomerWorkReportModel?>(null);
+      }
+      return FailureResult<CustomerWorkReportModel?>(_mapException(error));
+    } catch (error) {
+      return FailureResult<CustomerWorkReportModel?>(_mapException(error));
+    }
   }
 
   @override

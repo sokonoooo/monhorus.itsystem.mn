@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/models/service_request_model.dart';
+import '../../domain/entities/risk_level.dart';
 import '../../domain/entities/service_request_enums.dart';
 import '../format.dart';
 import '../providers/customer_portal_providers.dart';
@@ -9,41 +10,103 @@ import '../theme/customer_tokens.dart';
 import '../widgets/authenticated_image.dart';
 import '../widgets/customer_async_view.dart';
 import '../widgets/customer_ui.dart';
+import '../widgets/risk_widgets.dart';
 import '../widgets/service_request_card.dart';
 import 'customer_shell_screen.dart';
 
-/// s-request-detail: one request, its SLA, its location trail and its progress.
-class ServiceRequestDetailScreen extends ConsumerWidget {
+/// Which half of the request the screen is showing.
+///
+/// [progress] is everything the screen carried before the conclusion existed — the
+/// SLA, the location trail and the status timeline. [report] is the technician's
+/// approved conclusion, which is a different document about the same request rather
+/// than one more section of it, and is fetched separately.
+enum _RequestTab { progress, report }
+
+/// s-request-detail: one request, its SLA, its location trail and its progress, plus
+/// the technician's conclusion once the office has approved one.
+class ServiceRequestDetailScreen extends ConsumerStatefulWidget {
   const ServiceRequestDetailScreen({super.key, required this.requestId});
 
   final String requestId;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<ServiceRequestDetailScreen> createState() =>
+      _ServiceRequestDetailScreenState();
+}
+
+class _ServiceRequestDetailScreenState
+    extends ConsumerState<ServiceRequestDetailScreen> {
+  _RequestTab _tab = _RequestTab.progress;
+
+  @override
+  Widget build(BuildContext context) {
     final AsyncValue<ServiceRequestDetailModel> request =
-        ref.watch(serviceRequestDetailProvider(requestId));
+        ref.watch(serviceRequestDetailProvider(widget.requestId));
 
     return CustomerScaffold(
       navBar: CustomerNavBar(
         title: request.valueOrNull?.requestNumber ?? 'Хүсэлт',
-        subtitle: 'Хүсэлтийн явц',
+        subtitle: switch (_tab) {
+          _RequestTab.progress => 'Хүсэлтийн явц',
+          _RequestTab.report => 'Техникчийн дүгнэлт',
+        },
       ),
-      body: RefreshIndicator(
-        onRefresh: () async =>
-            ref.invalidate(serviceRequestDetailProvider(requestId)),
-        child: CustomerAsyncView<ServiceRequestDetailModel>(
-          value: request,
-          onRetry: () => ref.invalidate(serviceRequestDetailProvider(requestId)),
-          builder: (BuildContext ctx, ServiceRequestDetailModel data) =>
-              _Body(request: data),
-        ),
+      // The tabs sit outside [CustomerAsyncView], as the floor screen puts them, so
+      // they stay tappable while the request is still in flight or has failed.
+      body: Column(
+        children: <Widget>[
+          TabRow(
+            labels: const <String>['Хүсэлтийн явц', 'Тайлан'],
+            selectedIndex: _tab.index,
+            onSelected: (int index) =>
+                setState(() => _tab = _RequestTab.values[index]),
+          ),
+          Expanded(
+            child: CustomerAsyncView<ServiceRequestDetailModel>(
+              value: request,
+              onRetry: () =>
+                  ref.invalidate(serviceRequestDetailProvider(widget.requestId)),
+              builder: (BuildContext ctx, ServiceRequestDetailModel data) =>
+                  _body(ctx, data),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _body(BuildContext context, ServiceRequestDetailModel request) {
+    return RefreshIndicator(
+      onRefresh: () async {
+        ref
+          ..invalidate(serviceRequestDetailProvider(widget.requestId))
+          ..invalidate(customerWorkReportProvider(widget.requestId));
+      },
+      child: ListView(
+        padding: const EdgeInsets.only(top: 8, bottom: 24),
+        children: <Widget>[
+          if (request.locationPath.isNotEmpty)
+            Breadcrumb(
+              parts: request.locationPath
+                  .map((ObjectBreadcrumbModel node) => node.name)
+                  .toList(growable: false),
+            ),
+          switch (_tab) {
+            _RequestTab.progress => _ProgressTab(request: request),
+            _RequestTab.report => _ReportTab(
+                requestId: widget.requestId,
+                hasApprovedReport: request.hasApprovedReport,
+              ),
+          },
+        ],
       ),
     );
   }
 }
 
-class _Body extends StatelessWidget {
-  const _Body({required this.request});
+/// The "Хүсэлтийн явц" tab: everything this screen showed before the report existed.
+class _ProgressTab extends StatelessWidget {
+  const _ProgressTab({required this.request});
 
   final ServiceRequestDetailModel request;
 
@@ -51,16 +114,10 @@ class _Body extends StatelessWidget {
   Widget build(BuildContext context) {
     final ServiceRequestStatus? status = request.status;
 
-    return ListView(
-      padding: const EdgeInsets.only(top: 8, bottom: 24),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      mainAxisSize: MainAxisSize.min,
       children: <Widget>[
-        if (request.locationPath.isNotEmpty)
-          Breadcrumb(
-            parts: request.locationPath
-                .map((ObjectBreadcrumbModel node) => node.name)
-                .toList(growable: false),
-          ),
-
         PanelCard(
           accent: request.isUrgent
               ? CustomerTokens.red
@@ -135,13 +192,18 @@ class _Body extends StatelessWidget {
                   SlaLine(request: request),
                 ],
               ),
-              const SizedBox(height: 10),
-              ProgressRail(
-                fraction: status?.progress ?? 0,
-                color: request.isUrgent
-                    ? CustomerTokens.red
-                    : (status?.tone.foreground ?? CustomerTokens.ink),
-              ),
+              // Absent for a cancelled request, and for any status off the linear
+              // workflow: see [ServiceRequestStatus.progress]. A part-full rail on
+              // work that was called off is a completion figure nobody stated.
+              if (status?.progress case final double fraction) ...<Widget>[
+                const SizedBox(height: 10),
+                ProgressRail(
+                  fraction: fraction,
+                  color: request.isUrgent
+                      ? CustomerTokens.red
+                      : (status?.tone.foreground ?? CustomerTokens.ink),
+                ),
+              ],
             ],
           ),
         ),
@@ -228,6 +290,165 @@ class _Body extends StatelessWidget {
     final String to = entry.toStatus?.label ?? '-';
     final ServiceRequestStatus? from = entry.fromStatus;
     return from == null ? '$to төлөвт бүртгэгдсэн' : '${from.label} → $to';
+  }
+}
+
+/// The "Тайлан" tab: the technician's conclusion, once the office has approved one.
+///
+/// [hasApprovedReport] is read BEFORE [customerWorkReportProvider] is watched, and
+/// that ordering is the point of the flag. Watching the provider is what issues
+/// `GET /:requestId/report/customer`, and that endpoint answers 404 for every request
+/// without an approved conclusion — which is most of them — so a request that has no
+/// report makes no call at all rather than one that is certain to fail.
+class _ReportTab extends ConsumerWidget {
+  const _ReportTab({required this.requestId, required this.hasApprovedReport});
+
+  final String requestId;
+  final bool hasApprovedReport;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    if (!hasApprovedReport) return const _ReportNotReady();
+
+    return CustomerAsyncView<CustomerWorkReportModel?>(
+      value: ref.watch(customerWorkReportProvider(requestId)),
+      onRetry: () => ref.invalidate(customerWorkReportProvider(requestId)),
+      // Null means the endpoint 404'd after the detail said there was a report: the
+      // conclusion was un-approved between the two reads, or the two raced. Nothing
+      // has gone wrong for the customer, so it reads as not-ready rather than as a
+      // failure.
+      builder: (BuildContext ctx, CustomerWorkReportModel? report) =>
+          report == null ? const _ReportNotReady() : _ReportBody(report: report),
+    );
+  }
+}
+
+/// What the tab says while there is no approved conclusion to show.
+///
+/// Stated as a stage of the work rather than as an absence, because it is one: the
+/// technician finishes, the office approves, and only then is there anything here.
+class _ReportNotReady extends StatelessWidget {
+  const _ReportNotReady();
+
+  @override
+  Widget build(BuildContext context) {
+    return const CustomerEmptyState(
+      icon: Icons.assignment_outlined,
+      message: 'Техникчийн дүгнэлт хараахан бэлэн болоогүй байна. Ажил дуусаж, '
+          'дүгнэлт баталгаажсаны дараа энд харагдана.',
+    );
+  }
+}
+
+class _ReportBody extends StatelessWidget {
+  const _ReportBody({required this.report});
+
+  final CustomerWorkReportModel report;
+
+  @override
+  Widget build(BuildContext context) {
+    final bool hasText = report.conclusion != null || report.recommendation != null;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      mainAxisSize: MainAxisSize.min,
+      children: <Widget>[
+        // The same ring the device screen prints an assessment with, fed the report's
+        // own score and the band the server derived for it. A missing score renders as
+        // a dash, never as a zero.
+        ScoreCircleCard(
+          score: report.score,
+          level: report.riskLevel,
+          title: report.riskLevel?.label ?? unassessedLabel,
+          body: report.score == null
+              ? 'Энэ ажилд тоон үнэлгээ бүртгэгдээгүй байна.'
+              : 'Ажил дууссаны дараа техникчийн өгсөн үнэлгээ.',
+        ),
+
+        const SectionCaption('Дүгнэлт ба зөвлөмж'),
+        PanelCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              if (report.conclusion != null) ...<Widget>[
+                const FieldLabel('Дүгнэлт'),
+                Text(
+                  report.conclusion!,
+                  style: CustomerTokens.body.copyWith(color: CustomerTokens.ink),
+                ),
+                const SizedBox(height: 12),
+              ],
+              if (report.recommendation != null) ...<Widget>[
+                const FieldLabel('Зөвлөмж'),
+                Text(
+                  report.recommendation!,
+                  style: CustomerTokens.body.copyWith(color: CustomerTokens.ink),
+                ),
+                const SizedBox(height: 12),
+              ],
+              if (!hasText) ...<Widget>[
+                Text(
+                  'Бичгэн тайлбар үлдээгээгүй байна.',
+                  style: CustomerTokens.rowSub,
+                ),
+                const SizedBox(height: 12),
+              ],
+              Wrap(
+                spacing: 7,
+                runSpacing: 5,
+                children: <Widget>[
+                  if (report.repairRequired)
+                    const StatusPill(
+                      label: 'Засвар шаардлагатай',
+                      tone: AccentTone.red,
+                    ),
+                  if (report.revisitRequired)
+                    const StatusPill(label: 'Дахин үзлэг', tone: AccentTone.yellow),
+                  if (report.revisitDate != null)
+                    StatusPill(
+                      label: 'Дахин очих ${formatDate(report.revisitDate)}',
+                      tone: AccentTone.neutral,
+                    ),
+                  // Said out loud rather than left as an empty row: "no further work"
+                  // is a result, and a blank space does not report it.
+                  if (!report.repairRequired && !report.revisitRequired)
+                    const StatusPill(
+                      label: 'Нэмэлт ажил шаардлагагүй',
+                      tone: AccentTone.green,
+                    ),
+                ],
+              ),
+            ],
+          ),
+        ),
+
+        const SectionCaption('Баталгаажуулалт'),
+        PanelCard(
+          padding: EdgeInsets.zero,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              _InfoRow('Баталсан хүн', report.approvedByName ?? '-'),
+              _InfoRow('Батлагдсан', formatDateTime(report.approvedAt)),
+            ],
+          ),
+        ),
+
+        // Labelled separately, and never merged: which picture is the fault and which
+        // is the repair is the whole point of keeping two sets.
+        if (report.beforePhotos.isNotEmpty) ...<Widget>[
+          const SectionCaption('Ажлын өмнөх зураг'),
+          for (final WorkReportPhotoModel photo in report.beforePhotos)
+            _AttachmentCard(attachment: photo),
+        ],
+        if (report.afterPhotos.isNotEmpty) ...<Widget>[
+          const SectionCaption('Ажлын дараах зураг'),
+          for (final WorkReportPhotoModel photo in report.afterPhotos)
+            _AttachmentCard(attachment: photo),
+        ],
+      ],
+    );
   }
 }
 

@@ -25,6 +25,14 @@ import { Field, Section, SelectInput, TextInput } from './FormControls';
  *
  * Saving never overwrites history: the backend closes the open period and appends a
  * new effective-dated record.
+ *
+ * That append is what makes seeding the form mandatory rather than a convenience. The
+ * backend writes every field of the new row from the payload — there is no merge with the
+ * period being closed — so a blank field is a written zero, not an unchanged value. The
+ * four allowances started at `'0'` and were never seeded from the loaded record, so
+ * raising somebody's base salary silently zeroed their transport, meal, phone and other
+ * allowances from the new effective date onward. Every field is therefore carried forward
+ * from the most recent record and only the dates are left for the user to supply.
  */
 export function EmployeeSalaryTab({ employeeId }: { employeeId: string | null }): ReactElement {
   const { can } = useAuth();
@@ -63,7 +71,34 @@ export function EmployeeSalaryTab({ employeeId }: { employeeId: string | null })
     employeeService
       .salaryHistory(employeeId)
       .then((rows) => {
-        if (!cancelled) setHistory(rows);
+        if (cancelled) return;
+        setHistory(rows);
+
+        /*
+         * The most recent record seeds the form.
+         *
+         * `listSalaryHistory` sorts by `effectiveFrom` descending, so the open period is
+         * first; `isCurrent` is preferred where present so a future-dated row cannot be
+         * mistaken for the one in force. The dates are deliberately not seeded: a new
+         * period must start strictly after the open one, and copying its start date would
+         * only produce a rejection.
+         */
+        const latest = rows.find((row) => row.isCurrent) ?? rows[0];
+        if (!latest) return;
+
+        setGrade(latest.grade ?? '');
+        setBaseSalary(String(latest.baseSalary));
+        setCurrency(latest.currency);
+        setCalculationType(latest.calculationType);
+        setBankName(latest.bankName ?? '');
+        setBankAccountName(latest.bankAccountName ?? '');
+        setBankAccountNumber(latest.bankAccountNumber ?? '');
+        setSocialInsurance(latest.socialInsurance);
+        setPersonalIncomeTax(latest.personalIncomeTax);
+        setTransportAllowance(String(latest.transportAllowance));
+        setMealAllowance(String(latest.mealAllowance));
+        setPhoneAllowance(String(latest.phoneAllowance));
+        setOtherAllowance(String(latest.otherAllowance));
       })
       .catch((caught: unknown) => {
         if (cancelled) return;
@@ -152,6 +187,7 @@ export function EmployeeSalaryTab({ employeeId }: { employeeId: string | null })
       <Alert variant="info">
         Цалингийн түүх хүчин төгөлдөр огноогоор хадгалагдана. Шинэ утга оруулахад өмнөх
         бичлэг устахгүй, харин хугацаа нь хаагдана.
+        {history.length > 0 && ' Талбарууд одоогийн бичлэгээс дүүргэгдсэн: өөрчлөөгүй утга хэвээр шилжинэ.'}
       </Alert>
 
       <Section title="Цалингийн мэдээлэл">

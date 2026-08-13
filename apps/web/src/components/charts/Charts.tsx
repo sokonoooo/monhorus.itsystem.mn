@@ -647,7 +647,13 @@ export function LineChart({
 
 // -- Progress ------------------------------------------------------------------
 
-/** A single percentage, for example planned-work completion. */
+/**
+ * A single percentage, for example planned-work completion.
+ *
+ * A null percentage is "nothing to report" and is drawn as a dash over an empty bar: the
+ * server sends null rather than zero precisely so this does not read as "everything is at
+ * 0%", and rendering it as zero here would put the claim back.
+ */
 export function ProgressChart({
   title,
   hint,
@@ -656,9 +662,27 @@ export function ProgressChart({
 }: {
   title: string;
   hint?: string;
-  percent: number;
+  percent: number | null;
   caption?: string;
 }): ReactElement {
+  if (percent === null) {
+    return (
+      <WidgetCard title={title} hint={hint}>
+        <div
+          className="flex flex-1 flex-col justify-center"
+          role="img"
+          aria-label={`${title}: мэдээлэл алга`}
+        >
+          <div className="mb-1.5 flex items-baseline justify-between">
+            <span className="text-3xl font-semibold tabular-nums text-slate-400">-</span>
+            {caption && <span className="text-xs text-slate-500">{caption}</span>}
+          </div>
+          <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-100" />
+        </div>
+      </WidgetCard>
+    );
+  }
+
   const clamped = Math.max(0, Math.min(100, percent));
   const tone =
     clamped >= 75 ? CHART_COLOURS.green : clamped >= 40 ? CHART_COLOURS.amber : CHART_COLOURS.red;

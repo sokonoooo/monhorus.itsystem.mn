@@ -38,7 +38,20 @@ export interface IObjectType {
   showOnPlan: boolean;
   insidePanel: boolean;
   generatesConclusion: boolean;
+  /**
+   * The built-in glyph key. Still required, still the fallback: `iconFile` overrides it
+   * when set, and every row registered before custom icons existed keeps rendering exactly
+   * what it always did with no migration.
+   */
   icon: ObjectIcon;
+  /**
+   * A sanitised custom SVG, or null.
+   *
+   * GLOBAL, exactly as the type is. An object type has no `customer` and is shared by every
+   * tenant, so its icon belongs to the catalogue rather than to an organisation. The file is
+   * cleaned once at upload; nothing here is ever trusted to be re-checked at read time.
+   */
+  iconFile: Types.ObjectId | null;
   isActive: boolean;
   createdBy: Types.ObjectId | null;
   createdAt: Date;
@@ -55,6 +68,10 @@ const objectTypeSchema = new Schema<IObjectType>(
     insidePanel: { type: Boolean, default: false },
     generatesConclusion: { type: Boolean, default: true },
     icon: { type: String, enum: OBJECT_ICONS, default: 'OTHER' },
+    // Defaulted to null so an existing document reads as "no custom icon" without being
+    // rewritten: the field is absent on every row registered before now, and an absent
+    // path with a default reads back as the default.
+    iconFile: { type: Schema.Types.ObjectId, ref: 'StoredFile', default: null },
     isActive: { type: Boolean, default: true, index: true },
     createdBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
   },

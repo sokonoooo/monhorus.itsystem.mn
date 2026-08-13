@@ -411,9 +411,7 @@ export function PlannedWorkDetailPage(): ReactElement {
             <SummaryRow label="Бодит дууссан" value={formatDate(work.actualEndDate)} />
             <SummaryRow
               label="Түр зогссон хугацаа"
-              value={`${Math.floor(work.totalPausedMinutes / 1440)} өдөр ${Math.floor(
-                (work.totalPausedMinutes % 1440) / 60,
-              )} цаг`}
+              value={formatMinutes(work.totalPausedMinutes)}
             />
             <SummaryRow label="Дэд ажлын тоо" value={String(work.taskCount)} />
           </dl>

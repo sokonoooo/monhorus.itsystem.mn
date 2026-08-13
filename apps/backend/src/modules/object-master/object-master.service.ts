@@ -20,6 +20,7 @@ import {
   type ObjectPhotoDto,
   type ObjectRefDto,
   type PaginatedData,
+  type QuickPlaceObjectInput,
   type UpdateObjectInput,
   type UpdateObjectPositionInput,
 } from '@monhorus/shared';
@@ -27,6 +28,7 @@ import { Types, type FilterQuery, type HydratedDocument } from 'mongoose';
 
 import { AppError } from '../../common/errors/app-error';
 import { ERROR_CODES } from '../../common/errors/error-codes';
+import { Counter, nextSequenceValue } from '../../common/models/counter.model';
 import {
   customerScopeFilter,
   resolveOwnerCustomerId,
@@ -48,6 +50,7 @@ import { getRiskBands } from '../settings/settings.service';
 import { StoredFile, type IStoredFile } from '../storage/stored-file.model';
 import { appendAssessmentHistory } from './assessment-history.service';
 import { loadFiguresOf } from './load.service';
+import { objectTypeIconUrl } from './object-type.service';
 import {
   ObjectAssessment,
   ObjectRecord,
@@ -67,6 +70,7 @@ function populatedType(
   code: string;
   name: string;
   icon: ObjectIcon;
+  iconFile?: Types.ObjectId | null;
   generatesConclusion?: boolean;
   showOnPlan?: boolean;
 } | null {
@@ -76,6 +80,7 @@ function populatedType(
     code: string;
     name: string;
     icon: ObjectIcon;
+    iconFile?: Types.ObjectId | null;
     generatesConclusion?: boolean;
     showOnPlan?: boolean;
   };
@@ -111,7 +116,10 @@ function named(value: unknown): string | null {
 }
 
 const LIST_POPULATE = [
-  { path: 'objectType', select: 'code name icon generatesConclusion showOnPlan' },
+  // `iconFile` is projected, not populated: the DTO needs the id to build a download path
+  // and nothing else about the file, so populating it would buy a lookup per row for data
+  // no client reads.
+  { path: 'objectType', select: 'code name icon iconFile generatesConclusion showOnPlan' },
   { path: 'customer', select: 'name' },
   { path: 'floor', select: 'name parent' },
 ] as const;
@@ -151,6 +159,9 @@ export async function toObjectListItemDto(
           code: type.code,
           name: type.name,
           icon: type.icon,
+          // The custom SVG when the registry has one, null to fall back to `icon` above.
+          // A projection that forgot the field reads as null, i.e. as the old behaviour.
+          iconUrl: objectTypeIconUrl(type.iconFile ?? null),
           // The registry's own answer to "may this appear on a plan". Defaulted rather
           // than asserted: a projection that forgot the field must read as "not on the
           // plan", never as a marker drawn on the strength of an undefined.
@@ -798,6 +809,232 @@ export async function createObject(
     action: 'Created',
     actor: { id: actor.userId, role: actor.role, label: actor.fullName },
     meta,
+    newValue: { code: object.code, name: object.name, category: object.category },
+  });
+
+  return getObjectById(String(object._id), scope);
+}
+
+// -- Quick placement ---------------------------------------------------------
+
+/**
+ * How many times an identifier may be re-drawn before the attempt is abandoned.
+ *
+ * Each retry advances an atomic counter, so the candidates never repeat and the loop is
+ * making real progress rather than spinning; the bound exists so a pathological collection
+ * — say a customer who hand-typed LAMP-001 through LAMP-020 — fails with a sentence instead
+ * of looping forever.
+ */
+const MAX_ALLOCATION_ATTEMPTS = 25;
+
+/** Codes are numbered per customer per type, because the unique index is per customer. */
+function codeCounterKey(customerId: Types.ObjectId, typeCode: string): string {
+  return `object-code:${String(customerId)}:${typeCode}`;
+}
+
+/** Names are numbered per floor per type: floor 1 and floor 2 both start at 1. */
+function nameCounterKey(floorId: Types.ObjectId, objectTypeId: Types.ObjectId): string {
+  return `object-name:${String(floorId)}:${String(objectTypeId)}`;
+}
+
+/**
+ * Brings a fresh name counter up to what the floor already shows.
+ *
+ * The dev data — and any floor filled in before quick placement existed — carries names
+ * somebody typed by hand, so a counter starting from zero would offer "Гэрэлтүүлэг 1" on a
+ * floor that already displays one. The scan runs once per (floor, type): after the counter
+ * document exists it is never repeated, so rapid clicking costs one atomic increment.
+ *
+ * `$max` rather than `$set` is what makes the seed safe against a concurrent allocation. If
+ * a click has already pushed the counter past the scanned maximum, `$max` leaves it alone;
+ * two seeds racing each other are idempotent for the same reason.
+ */
+async function seedNameCounter(
+  key: string,
+  floorId: Types.ObjectId,
+  typeName: string,
+): Promise<void> {
+  if (await Counter.exists({ key })) return;
+
+  const pattern = new RegExp(`^${escapeRegex(typeName)} (\\d+)$`);
+  const existing = await ObjectRecord.find({ floor: floorId, name: pattern }).select('name');
+
+  let highest = 0;
+  for (const row of existing) {
+    const match = pattern.exec(row.name);
+    const value = match ? Number(match[1]) : 0;
+    if (Number.isSafeInteger(value) && value > highest) highest = value;
+  }
+  if (highest === 0) return;
+
+  await Counter.updateOne({ key }, { $max: { value: highest } }, { upsert: true });
+}
+
+/**
+ * The next free `<type name> <n>` on this floor.
+ *
+ * RACE-FREE BY CONSTRUCTION. The number comes from the atomic counter, never from counting
+ * rows, so ten simultaneous clicks are handed ten different numbers. Counting would hand
+ * all ten the same one, and there is no unique index on `name` to catch it afterwards — the
+ * duplicates would simply be stored.
+ *
+ * The existence check on top of the counter covers what the counter cannot know about: a
+ * name typed by hand after the counter was seeded. A taken candidate is skipped rather than
+ * reused, and the skipped number is simply lost, which is the same gap behaviour deletion
+ * already produces and which invoice numbering already lives with.
+ */
+async function allocateObjectName(
+  typeName: string,
+  floorId: Types.ObjectId,
+  objectTypeId: Types.ObjectId,
+): Promise<string> {
+  const key = nameCounterKey(floorId, objectTypeId);
+  await seedNameCounter(key, floorId, typeName);
+
+  for (let attempt = 0; attempt < MAX_ALLOCATION_ATTEMPTS; attempt += 1) {
+    const sequence = await nextSequenceValue(key);
+    // The type name is used verbatim, slashes and all: "Хэлхээ/шугам 3" is what the
+    // administrator called the type, and rewriting it here would invent a second vocabulary
+    // for the same registry entry.
+    const candidate = `${typeName} ${sequence}`.slice(0, 200);
+    const taken = await ObjectRecord.exists({ floor: floorId, name: candidate });
+    if (!taken) return candidate;
+  }
+
+  throw AppError.conflict(
+    ERROR_CODES.DUPLICATE_KEY,
+    'Энэ давхарт чөлөөтэй нэр олдсонгүй. Нэрийг гараар оруулна уу.',
+  );
+}
+
+/**
+ * Places one object on a floor plan from a type and a coordinate alone.
+ *
+ * The identity is generated here rather than asked of the caller, because both halves of it
+ * are facts only the server holds: `code` is unique against a per-customer index the browser
+ * cannot see, and `name` is numbered against what the floor already shows.
+ *
+ * `category` and the attribute block come from the chosen type, so a caller cannot place a
+ * panel while claiming it is equipment. The blocks are created empty on purpose — every
+ * electrical field is optional and an object with none of them filled in is reported as
+ * "Бүрэн бус" by the load service rather than being rejected at entry, which is exactly the
+ * state a just-tapped pin should be in.
+ */
+export async function quickPlaceObject(
+  input: QuickPlaceObjectInput,
+  scope: ResolvedCustomerScope,
+  actor: AuthContext,
+  meta: RequestMeta,
+): Promise<ObjectDetailDto> {
+  // Same rule as `createObject`: the owner comes from the scope, and a customer naming
+  // another organisation is refused rather than quietly rewritten.
+  const ownerCustomerId = resolveOwnerCustomerId(scope, input.customerId);
+
+  const customer = await Customer.findById(ownerCustomerId).select('_id');
+  if (!customer) {
+    throw AppError.badRequest(ERROR_CODES.VALIDATION_ERROR, 'Харилцагч олдсонгүй.', [
+      { field: 'customerId', message: 'Харилцагч олдсонгүй.' },
+    ]);
+  }
+
+  const type = await ObjectType.findById(input.objectTypeId);
+  if (!type) {
+    throw AppError.badRequest(ERROR_CODES.VALIDATION_ERROR, 'Тоноглолын төрөл олдсонгүй.', [
+      { field: 'objectTypeId', message: 'Төрөл олдсонгүй.' },
+    ]);
+  }
+  if (!type.isActive) {
+    throw AppError.badRequest(
+      ERROR_CODES.VALIDATION_ERROR,
+      'Идэвхгүй болгосон төрлийг шинэ объектод сонгох боломжгүй.',
+      [{ field: 'objectTypeId', message: 'Төрөл идэвхгүй байна.' }],
+    );
+  }
+
+  // The same gate the full create uses: the floor must exist, be a FLOOR, be active, and
+  // belong to this customer.
+  const floorId = await assertFloorUsable(input.floorId, customer._id);
+
+  const name = await allocateObjectName(type.name, floorId, type._id);
+
+  const attributes: Record<string, unknown> = { panel: null, circuit: null, equipment: null };
+  if (type.category === 'PANEL') {
+    attributes.panel = { capacityKw: null, location: null, protection: null };
+  } else if (type.category === 'CIRCUIT') {
+    attributes.circuit = {
+      panel: null,
+      startPointObject: null,
+      endPointObject: null,
+      breakerRating: null,
+      cableType: null,
+      cableSectionMm2: null,
+      cableLengthM: null,
+      permittedCapacityKw: null,
+    };
+  } else {
+    attributes.equipment = {
+      circuit: null,
+      panel: null,
+      ratedPowerKw: null,
+      quantity: null,
+      usageCoefficient: null,
+      installedAt: null,
+      warrantyUntil: null,
+    };
+  }
+
+  /**
+   * THE COUNTER ALONE IS NOT ENOUGH.
+   *
+   * It guarantees two concurrent placements get different numbers, but it knows nothing
+   * about the codes already in the collection: a customer who registered LAMP-001 by hand
+   * before this endpoint existed owns a code the counter will offer as its first. So the
+   * insert itself is the test — a `11000` from the unique (customer, code) index means the
+   * candidate was taken, and the loop advances the counter and tries the next one. The
+   * pre-check spares the common case a thrown error; the catch is what makes it correct,
+   * including against another request inserting the same code between check and write.
+   */
+  let object: Doc<IObject> | null = null;
+  for (let attempt = 0; attempt < MAX_ALLOCATION_ATTEMPTS && !object; attempt += 1) {
+    const sequence = await nextSequenceValue(codeCounterKey(customer._id, type.code));
+    const code = `${type.code}-${String(sequence).padStart(3, '0')}`.slice(0, MAX_CODE_LENGTH);
+
+    if (await ObjectRecord.exists({ customer: customer._id, code })) continue;
+
+    try {
+      object = await ObjectRecord.create({
+        code,
+        name,
+        category: type.category,
+        objectType: type._id,
+        customer: customer._id,
+        floor: floorId,
+        planPosition: { x: input.planPosition.x, y: input.planPosition.y },
+        status: 'ACTIVE',
+        description: null,
+        notes: null,
+        ...attributes,
+        createdBy: new Types.ObjectId(actor.userId),
+      });
+    } catch (error) {
+      if ((error as { code?: number }).code !== 11000) throw error;
+    }
+  }
+
+  if (!object) {
+    throw AppError.conflict(
+      ERROR_CODES.DUPLICATE_KEY,
+      'Чөлөөтэй код олдсонгүй. Объектыг гараар бүртгэнэ үү.',
+    );
+  }
+
+  await recordAudit({
+    entityType: 'Object',
+    entityId: object._id,
+    action: 'Created',
+    actor: { id: actor.userId, role: actor.role, label: actor.fullName },
+    meta,
+    reason: 'quick placed on floor plan',
     newValue: { code: object.code, name: object.name, category: object.category },
   });
 

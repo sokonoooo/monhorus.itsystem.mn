@@ -1,4 +1,4 @@
-import { PERMISSIONS } from '@monhorus/shared';
+import { PERMISSIONS, type PermissionKey } from '@monhorus/shared';
 import { Types } from 'mongoose';
 import type { Express } from 'express';
 import request from 'supertest';
@@ -15,6 +15,8 @@ import {
 } from '../../test/helpers';
 import { StoredFile } from '../storage/stored-file.model';
 import { Employee } from '../employee/employee.model';
+import { Customer } from '../objects/object.models';
+import { User } from '../user/user.model';
 import { ServiceRequest, nextRequestNumber } from './service-request.model';
 import { WorkReport } from './work-report.model';
 import {
@@ -815,5 +817,366 @@ describe('Work conclusion — boundaries', () => {
     const seen = await getReport(requestId, token);
 
     expect(seen.status).toBe(200);
+  });
+});
+
+/**
+ * GET /service-requests/:requestId/report/customer — the finished verdict, read by the
+ * organisation that raised the request.
+ *
+ * Two things had to be true at once and neither was: a customer could not see the answer
+ * to their own request at all, and the only read that existed could not be opened to them
+ * because it CREATES. `GET /:id/report` is `getOrCreateWorkReport`, so a portal key on it
+ * would have stamped the customer's name onto an empty DRAFT the moment they opened the
+ * tab — which is why this is a separate route over `findWorkReport`, and why the count
+ * assertion below is the one that matters most in this file.
+ */
+describe('Work conclusion — the customer read', () => {
+  let customerToken: string;
+  let foreignCustomerId: Types.ObjectId;
+
+  let portalSequence = 0;
+
+  /**
+   * A signed-in `customer` account holding the portal key and nothing else.
+   *
+   * The organisation link lives on the USER, which is the whole point: `resolveCustomerScope`
+   * reads it from the authenticated account and discards anything the request carries, so
+   * no test here can accidentally prove the scope by passing the right id.
+   */
+  async function makeCustomer(
+    email: string,
+    linkedCustomerId: string,
+    permissions: readonly PermissionKey[] = [PERMISSIONS.PORTAL_SERVICE_REQUEST_VIEW],
+  ): Promise<string> {
+    portalSequence += 1;
+    const user = await createUserWithPermissions(email, permissions);
+    await User.updateOne(
+      { _id: new Types.ObjectId(user.userId) },
+      { $set: { role: 'customer', customer: new Types.ObjectId(linkedCustomerId) } },
+    );
+    return login(user.email, user.password);
+  }
+
+  /** A request belonging to somebody else entirely. */
+  async function seedForeignRequest(): Promise<string> {
+    const created = await ServiceRequest.create({
+      requestNumber: await nextRequestNumber(),
+      customer: foreignCustomerId,
+      building: new Types.ObjectId(),
+      requestType: 'REPAIR',
+      isUrgent: false,
+      description: 'Өөр байгууллагын хүсэлт.',
+      contactName: 'Дорж',
+      contactPhone: '99887766',
+      status: 'IN_PROGRESS',
+      slaStartedAt: new Date(),
+      slaDueAt: new Date(Date.now() + 3_600_000),
+    });
+    return String(created._id);
+  }
+
+  /** Drives a request's conclusion to APPROVED through the real staff routes. */
+  async function approve(requestId: string): Promise<void> {
+    await request(app)
+      .get(`${API}/service-requests/${requestId}/report`)
+      .set('Authorization', `Bearer ${token}`);
+    await fillReport(requestId);
+    await request(app)
+      .post(`${API}/service-requests/${requestId}/report/submit`)
+      .set('Authorization', `Bearer ${token}`);
+    await request(app)
+      .post(`${API}/service-requests/${requestId}/report/approve`)
+      .set('Authorization', `Bearer ${token}`);
+  }
+
+  function readAsCustomer(requestId: string, bearer = customerToken) {
+    return request(app)
+      .get(`${API}/service-requests/${requestId}/report/customer`)
+      .set('Authorization', `Bearer ${bearer}`);
+  }
+
+  beforeEach(async () => {
+    const foreign = await Customer.create({ code: 'FGN', name: 'Өөр байгууллага ХХК' });
+    foreignCustomerId = foreign._id;
+    customerToken = await makeCustomer('portal.reader@test.mn', fixture.customerId);
+  });
+
+  it('serves an approved conclusion to the customer who raised the request', async () => {
+    const requestId = await seedRequest();
+    await approve(requestId);
+
+    const response = await readAsCustomer(requestId);
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.conclusion).toBe('Холболт сул байсныг чангаллаа.');
+    expect(response.body.data.recommendation).toBe('7 хоногийн дараа дахин шалгах.');
+    expect(response.body.data.score).toBe(78);
+    // Derived from the score against the bands in force, never sent by the caller.
+    expect(response.body.data.riskLevel).toBe('ATTENTION');
+    expect(response.body.data.approvedByName).toBeTruthy();
+    expect(response.body.data.approvedAt).toBeTruthy();
+    expect(response.body.data.beforePhotos).toHaveLength(1);
+    expect(response.body.data.afterPhotos).toHaveLength(1);
+  });
+
+  /**
+   * The response is the WHOLE contract, not a superset of it.
+   *
+   * Asserted as an exact key set rather than field by field, because the failure this
+   * guards against is a field ARRIVING: `WorkReportDto` is the technician's working
+   * document and the next internal note added to it must not reach a customer because
+   * somebody reused the staff mapper.
+   */
+  it('sends exactly the customer fields and no more', async () => {
+    const requestId = await seedRequest();
+    await approve(requestId);
+
+    const response = await readAsCustomer(requestId);
+
+    expect(Object.keys(response.body.data).sort()).toEqual(
+      [
+        'afterPhotos',
+        'approvedAt',
+        'approvedByName',
+        'beforePhotos',
+        'conclusion',
+        'recommendation',
+        'repairRequired',
+        'revisitDate',
+        'revisitRequired',
+        'riskLevel',
+        'score',
+      ].sort(),
+    );
+  });
+
+  /**
+   * The two named withheld fields, pinned individually because each leaks something
+   * different: `returnReason` is one colleague's verdict on another's work, and
+   * `createdByName` is not the author at all — `getOrCreateWorkReport` stamps whoever
+   * opened the form first, so publishing it would attribute the conclusion to the wrong
+   * person on the customer's own screen.
+   */
+  it('withholds the review conversation and the draft opener name', async () => {
+    const requestId = await seedRequest();
+    await approve(requestId);
+
+    const response = await readAsCustomer(requestId);
+
+    expect(response.body.data).not.toHaveProperty('returnReason');
+    expect(response.body.data).not.toHaveProperty('createdByName');
+    expect(response.body.data).not.toHaveProperty('createdBy');
+    expect(response.body.data).not.toHaveProperty('status');
+    expect(response.body.data).not.toHaveProperty('submittedByName');
+    expect(response.body.data).not.toHaveProperty('returnedByName');
+    expect(response.body.data).not.toHaveProperty('returnedAt');
+    expect(response.body.data).not.toHaveProperty('missing');
+    expect(response.body.data).not.toHaveProperty('isComplete');
+    expect(response.body.data).not.toHaveProperty('actionTaken');
+    expect(response.body.data).not.toHaveProperty('materials');
+    expect(response.body.data).not.toHaveProperty('objects');
+    expect(response.body.data).not.toHaveProperty('objectAssessments');
+  });
+
+  /**
+   * THE REGRESSION THAT MATTERS MOST.
+   *
+   * The trap this endpoint exists to avoid is `getOrCreateWorkReport`: had the portal key
+   * simply been added to `GET /:id/report`, every customer opening the tab on a request
+   * with no conclusion would have become the recorded author of an empty DRAFT on it.
+   */
+  it('creates nothing when the request has no conclusion', async () => {
+    const requestId = await seedRequest();
+    const before = await WorkReport.countDocuments({});
+
+    const response = await readAsCustomer(requestId);
+
+    expect(response.status).toBe(404);
+    expect(await WorkReport.countDocuments({})).toBe(before);
+    expect(
+      await WorkReport.countDocuments({ serviceRequest: new Types.ObjectId(requestId) }),
+    ).toBe(0);
+  });
+
+  /**
+   * A draft, a submission and a return are all answered as nothing at all, so a customer
+   * cannot watch the internal review of their own request progress — nor learn that a
+   * technician has written something nobody has yet stood behind.
+   */
+  it.each([
+    ['DRAFT', async (id: string) => { await fillReport(id); }],
+    [
+      'SUBMITTED',
+      async (id: string) => {
+        await fillReport(id);
+        await request(app)
+          .post(`${API}/service-requests/${id}/report/submit`)
+          .set('Authorization', `Bearer ${token}`);
+      },
+    ],
+    [
+      'RETURNED',
+      async (id: string) => {
+        await fillReport(id);
+        await request(app)
+          .post(`${API}/service-requests/${id}/report/submit`)
+          .set('Authorization', `Bearer ${token}`);
+        await request(app)
+          .post(`${API}/service-requests/${id}/report/return`)
+          .set('Authorization', `Bearer ${token}`)
+          .send({ reason: 'Зураг тодорхойгүй.' });
+      },
+    ],
+  ])('answers 404 for a %s conclusion', async (status, drive) => {
+    const requestId = await seedRequest();
+    await request(app)
+      .get(`${API}/service-requests/${requestId}/report`)
+      .set('Authorization', `Bearer ${token}`);
+    await drive(requestId);
+
+    const stored = await WorkReport.findOne({
+      serviceRequest: new Types.ObjectId(requestId),
+    }).select('status');
+    expect(stored?.status).toBe(status);
+
+    const response = await readAsCustomer(requestId);
+    expect(response.status).toBe(404);
+    // No shape at all, so nothing can be inferred from an empty object either.
+    expect(response.body.data).toBeNull();
+  });
+
+  /**
+   * Another tenant's request is MISSING, not forbidden. The predicate is in
+   * `requestIdInScope`'s query rather than a check on a loaded document, so the id never
+   * resolves at all — a "forbidden" reply would confirm it is real and turn this into a
+   * probe for other organisations' request ids.
+   */
+  it('reports another organisation request as not found', async () => {
+    const foreignRequestId = await seedForeignRequest();
+    await approve(foreignRequestId);
+
+    const response = await readAsCustomer(foreignRequestId);
+
+    expect(response.status).toBe(404);
+    expect(response.body.data).toBeNull();
+  });
+
+  /** The endpoint is staff-readable too, so an administrator can see what the portal shows. */
+  it('serves the same view to staff', async () => {
+    const requestId = await seedRequest();
+    await approve(requestId);
+
+    const response = await request(app)
+      .get(`${API}/service-requests/${requestId}/report/customer`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.data).not.toHaveProperty('returnReason');
+  });
+
+  /** A portal account without the view key is refused before any of the above is reached. */
+  it('refuses a customer holding no portal view key', async () => {
+    const requestId = await seedRequest();
+    await approve(requestId);
+    const bare = await makeCustomer('portal.bare@test.mn', fixture.customerId, [
+      PERMISSIONS.PORTAL_PROFILE_VIEW,
+    ]);
+
+    const response = await readAsCustomer(requestId, bare);
+
+    expect(response.status).toBe(403);
+  });
+
+  /** The staff routes are untouched: the conclusion still creates on first staff read. */
+  it('leaves the staff read creating a draft as before', async () => {
+    const requestId = await seedRequest();
+
+    const staffRead = await request(app)
+      .get(`${API}/service-requests/${requestId}/report`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(staffRead.status).toBe(200);
+    expect(staffRead.body.data.status).toBe('DRAFT');
+    expect(
+      await WorkReport.countDocuments({ serviceRequest: new Types.ObjectId(requestId) }),
+    ).toBe(1);
+  });
+
+  /** A customer must never reach the staff conclusion, whose DTO carries the review notes. */
+  it('does not open the staff conclusion route to a customer', async () => {
+    const requestId = await seedRequest();
+    await approve(requestId);
+
+    const response = await request(app)
+      .get(`${API}/service-requests/${requestId}/report`)
+      .set('Authorization', `Bearer ${customerToken}`);
+
+    expect(response.status).toBe(403);
+  });
+
+  // -- hasApprovedReport -----------------------------------------------------
+  //
+  // The flag the portal needs to decide whether to OFFER the conclusion at all, since a
+  // customer cannot ask for a conclusion's status.
+
+  function detail(requestId: string, bearer = customerToken) {
+    return request(app)
+      .get(`${API}/service-requests/${requestId}`)
+      .set('Authorization', `Bearer ${bearer}`);
+  }
+
+  it('flags the request only once its conclusion is approved', async () => {
+    const requestId = await seedRequest();
+
+    expect((await detail(requestId)).body.data.hasApprovedReport).toBe(false);
+
+    await request(app)
+      .get(`${API}/service-requests/${requestId}/report`)
+      .set('Authorization', `Bearer ${token}`);
+    await fillReport(requestId);
+    expect((await detail(requestId)).body.data.hasApprovedReport).toBe(false);
+
+    await request(app)
+      .post(`${API}/service-requests/${requestId}/report/submit`)
+      .set('Authorization', `Bearer ${token}`);
+    expect((await detail(requestId)).body.data.hasApprovedReport).toBe(false);
+
+    await request(app)
+      .post(`${API}/service-requests/${requestId}/report/approve`)
+      .set('Authorization', `Bearer ${token}`);
+    expect((await detail(requestId)).body.data.hasApprovedReport).toBe(true);
+  });
+
+  /**
+   * The flag is a fact about the CONCLUSION, never about the request's own status. Live
+   * data has a COMPLETED request whose conclusion never left DRAFT, which is exactly why
+   * `status === 'COMPLETED'` was not usable as a proxy.
+   */
+  it('stays false for a completed request whose conclusion is still a draft', async () => {
+    const requestId = await seedRequest();
+    await request(app)
+      .get(`${API}/service-requests/${requestId}/report`)
+      .set('Authorization', `Bearer ${token}`);
+    await ServiceRequest.updateOne(
+      { _id: new Types.ObjectId(requestId) },
+      { $set: { status: 'COMPLETED' } },
+    );
+
+    const response = await detail(requestId);
+
+    expect(response.body.data.status).toBe('COMPLETED');
+    expect(response.body.data.hasApprovedReport).toBe(false);
+    expect((await readAsCustomer(requestId)).status).toBe(404);
+  });
+
+  /** Reading the detail must not mint a conclusion either. */
+  it('does not create a conclusion while computing the flag', async () => {
+    const requestId = await seedRequest();
+    const before = await WorkReport.countDocuments({});
+
+    await detail(requestId);
+
+    expect(await WorkReport.countDocuments({})).toBe(before);
   });
 });

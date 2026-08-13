@@ -110,6 +110,44 @@ ResolvedCustomerScope _requireScope(Ref ref) {
   throw ServerFailure(unavailable.detail, code: 'CUSTOMER_SCOPE_UNAVAILABLE');
 }
 
+/// Every building the customer owns, not just the first page of them.
+///
+/// `buildingListQuerySchema` caps `limit` at 100, so no single request can be assumed
+/// to cover an organisation of any size. Both callers here sum or count over the
+/// result — the home hero prints how many buildings there are and adds up each one's
+/// `riskSummary` — and a first-page sum shown as the whole is a truncated figure with
+/// nothing on screen saying so. `PaginatedData.total` says whether one page was
+/// enough; when it was not, the remaining pages are read before anything is summed.
+///
+/// The returned page carries the server's own `total`, so a caller can still print
+/// the true count rather than the length of what it happened to receive.
+Future<PaginatedData<BuildingModel>> _allBuildings(
+  CustomerPortalRepository repository,
+  ResolvedCustomerScope scope,
+) async {
+  final PaginatedData<BuildingModel> first =
+      _unwrap(await repository.listBuildings(scope));
+  if (first.items.length >= first.total) return first;
+
+  final List<BuildingModel> all = List<BuildingModel>.of(first.items);
+  for (int page = first.page + 1; page <= first.totalPages; page++) {
+    final PaginatedData<BuildingModel> next =
+        _unwrap(await repository.listBuildings(scope, page: page));
+    // A page that came back empty means there is nothing further to read; carrying
+    // on would loop against a server that disagrees with its own `totalPages`.
+    if (next.items.isEmpty) break;
+    all.addAll(next.items);
+  }
+
+  return PaginatedData<BuildingModel>(
+    items: List<BuildingModel>.unmodifiable(all),
+    page: 1,
+    limit: first.limit,
+    total: first.total,
+    totalPages: first.totalPages,
+  );
+}
+
 // -- Buildings ---------------------------------------------------------------
 
 final FutureProvider<List<ProjectModel>> customerProjectsProvider =
@@ -126,7 +164,7 @@ final FutureProvider<List<BuildingModel>> customerBuildingsProvider =
   final CustomerPortalRepository repository =
       ref.watch(customerPortalRepositoryProvider);
   final PaginatedData<BuildingModel> page =
-      _unwrap(await repository.listBuildings(_requireScope(ref)));
+      await _allBuildings(repository, _requireScope(ref));
   return page.items;
 });
 
@@ -245,6 +283,23 @@ final FutureProviderFamily<ServiceRequestDetailModel, String>
   return _unwrap(await repository.getServiceRequest(requestId));
 });
 
+/// The technician's approved conclusion for one request, or null when there is none.
+///
+/// Deliberately NOT watched by the request detail screen unconditionally. The detail
+/// response carries `hasApprovedReport`, and the report tab reads that flag first:
+/// watching this provider is what issues the HTTP call, so a request with no approved
+/// conclusion never makes one. A null here therefore means the flag and the endpoint
+/// disagreed — a report un-approved between the two reads, or a race — and the screen
+/// shows the same not-ready state either way.
+final FutureProviderFamily<CustomerWorkReportModel?, String>
+    customerWorkReportProvider =
+    FutureProvider.family<CustomerWorkReportModel?, String>(
+        (Ref ref, String requestId) async {
+  final CustomerPortalRepository repository =
+      ref.watch(customerPortalRepositoryProvider);
+  return _unwrap(await repository.getCustomerWorkReport(requestId));
+});
+
 // -- Notifications -----------------------------------------------------------
 
 final FutureProvider<List<NotificationModel>> customerNotificationsProvider =
@@ -283,15 +338,31 @@ final FutureProviderFamily<Uint8List, String> fileBytesProvider =
 /// Every number here is a sum of values the API supplied. Nothing is estimated: the
 /// per-band device counts come from each building's `riskSummary`, which the backend
 /// computes, and the request counts come from the request list.
+///
+/// The sums run over every one of the customer's buildings, read across pages by
+/// [_allBuildings], and [buildingTotal] carries the server's own count. Before that
+/// the sums covered whatever the first page of 50 held, which past 50 buildings made
+/// the hero stair and the headline partial figures presented as complete.
 class CustomerHomeSummary {
   const CustomerHomeSummary({
     required this.buildings,
+    required this.buildingTotal,
     required this.requests,
     required this.riskCounts,
     required this.unassessedCount,
   });
 
   final List<BuildingModel> buildings;
+
+  /// How many buildings the customer has, as `GET /buildings` reported it in
+  /// `total` — not how many records happened to arrive.
+  ///
+  /// [buildings] is read across every page, so the two agree; this stays the figure
+  /// the screens print because it is the server's own count, and because a
+  /// disagreement between them is exactly the truncation this field exists to make
+  /// impossible to show silently. See [coversEveryBuilding].
+  final int buildingTotal;
+
   final List<ServiceRequestListItemModel> requests;
 
   /// Device counts per band, summed across the customer's buildings.
@@ -299,6 +370,15 @@ class CustomerHomeSummary {
   final int unassessedCount;
 
   int countOf(RiskLevel level) => riskCounts[level] ?? 0;
+
+  /// True when [riskCounts] and [unassessedCount] were summed over every building
+  /// the server says the customer has.
+  ///
+  /// False only if the server's own `total` outran what paging could fetch, and it
+  /// is the guard the band figures are drawn behind: a per-band count summed over
+  /// some of the buildings is not a smaller version of the real answer, it is a
+  /// different one, and the hero stair has no way to caveat itself.
+  bool get coversEveryBuilding => buildings.length >= buildingTotal;
 
   int get assessedTotal =>
       riskCounts.values.fold(0, (int sum, int count) => sum + count);
@@ -343,7 +423,7 @@ final FutureProvider<CustomerHomeSummary> customerHomeSummaryProvider =
   final ResolvedCustomerScope scope = _requireScope(ref);
 
   final PaginatedData<BuildingModel> buildingPage =
-      _unwrap(await repository.listBuildings(scope));
+      await _allBuildings(repository, scope);
   final PaginatedData<ServiceRequestListItemModel> requestPage =
       _unwrap(await repository.listServiceRequests(scope, limit: 100));
 
@@ -360,6 +440,7 @@ final FutureProvider<CustomerHomeSummary> customerHomeSummaryProvider =
 
   return CustomerHomeSummary(
     buildings: buildingPage.items,
+    buildingTotal: buildingPage.total,
     requests: requestPage.items,
     riskCounts: counts,
     unassessedCount: unassessed,

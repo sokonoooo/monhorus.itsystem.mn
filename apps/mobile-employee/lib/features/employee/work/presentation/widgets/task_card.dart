@@ -101,7 +101,11 @@ class TaskCard extends StatelessWidget {
               const SizedBox(width: 7),
               Expanded(
                 child: _QuantityCell(
-                  value: formatQuantity(task.remainingQuantity),
+                  // A dash, not `total - completed`. The server owns this figure and
+                  // the model no longer reconstructs it when the answer omits it.
+                  value: task.remainingQuantity == null
+                      ? kNoValue
+                      : formatQuantity(task.remainingQuantity!),
                   label: 'Үлдсэн',
                 ),
               ),
@@ -111,12 +115,18 @@ class TaskCard extends StatelessWidget {
 
           Row(
             children: <Widget>[
-              Expanded(
-                child: ProgressRail(
-                  percent: task.progressPercent,
-                  color: tone == EmployeeTokens.muted ? EmployeeTokens.line : tone,
-                ),
-              ),
+              // The rail is drawn only against a percentage the server sent. Without
+              // one it would sit empty, which reads as nought per cent on a sub-task
+              // that may be finished.
+              if (task.progressPercent case final double percent)
+                Expanded(
+                  child: ProgressRail(
+                    percent: percent,
+                    color: tone == EmployeeTokens.muted ? EmployeeTokens.line : tone,
+                  ),
+                )
+              else
+                const Spacer(),
               const SizedBox(width: 9),
               Text(
                 formatPercent(task.progressPercent),
@@ -270,7 +280,10 @@ class TaskCard extends StatelessWidget {
   String get _pillLabel {
     if (task.isDone) return 'Дууссан';
     if (task.isSkipped) return 'Хийгдээгүй';
-    if (task.progressPercent > 0) return formatPercent(task.progressPercent);
+    // Without a figure the pill cannot say the task is untouched either, so it falls
+    // through to the label the status alone supports.
+    final double? percent = task.progressPercent;
+    if (percent != null && percent > 0) return formatPercent(percent);
     return 'Шинэ';
   }
 }
@@ -323,8 +336,15 @@ class _TaskAction extends StatelessWidget {
       );
     }
 
+    // Which verb the button uses. Without a percentage it reads the recorded
+    // quantity instead, which the answer does carry — the wording is a choice
+    // between two labels, not a figure, so falling back costs nothing.
+    final double? percent = task.progressPercent;
+    final bool started =
+        percent == null ? task.completedQuantity > 0 : percent > 0;
+
     return WorkButton(
-      label: task.progressPercent > 0
+      label: started
           ? 'Гүйцэтгэл шинэчлэх'
           : 'Өнөөдрийн гүйцэтгэл оруулах',
       icon: Icons.add,

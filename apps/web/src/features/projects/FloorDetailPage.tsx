@@ -13,13 +13,14 @@ import { Alert } from '../../components/ui/Alert';
 import { Button } from '../../components/ui/Button';
 import { ColumnPicker } from '../../components/ui/ColumnPicker';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
-import { DataTable, type Column } from '../../components/ui/DataTable';
+import { DataTable, Pagination, type Column } from '../../components/ui/DataTable';
 import { Drawer } from '../../components/ui/Drawer';
 import { RiskBadge } from '../../components/ui/DomainBadges';
 import { PageHeader } from '../../components/ui/PageHeader';
 import { RowActions } from '../../components/ui/RowActions';
 import { ErrorState, Skeleton } from '../../components/ui/States';
 import { useToast } from '../../components/ui/ToastProvider';
+import { SearchField } from '../../components/ui/SearchField';
 import { FIELD_TEXTAREA, FILTER_LABEL } from '../../components/ui/control-styles';
 import { useAuth } from '../../contexts/auth-context';
 import { useTableColumns } from '../../hooks/use-table-columns';
@@ -38,6 +39,13 @@ import { FloorObjectPicker } from './FloorObjectPicker';
 import { FloorPlanPanel } from './FloorPlanPanel';
 import { ActiveBadge } from './ProjectListPage';
 
+/**
+ * Inline edit for the floor's general fields.
+ *
+ * The code is absent by design: `FLR-001` is issued by the server, and `updateFloorSchema`
+ * is `.strict()`, so sending one from here would be refused rather than ignored. The code
+ * stays on the page header and the breadcrumb, where it is read rather than typed.
+ */
 function FloorEditDrawer({
   floor,
   open,
@@ -50,7 +58,6 @@ function FloorEditDrawer({
   onSaved: () => void;
 }): ReactElement {
   const { notify } = useToast();
-  const [code, setCode] = useState(floor.code);
   const [name, setName] = useState(floor.name);
   const [floorNumber, setFloorNumber] = useState(floor.floorNumber?.toString() ?? '');
   const [areaSqm, setAreaSqm] = useState(floor.areaSqm?.toString() ?? '');
@@ -63,7 +70,6 @@ function FloorEditDrawer({
 
   useEffect(() => {
     if (!open) return;
-    setCode(floor.code);
     setName(floor.name);
     setFloorNumber(floor.floorNumber?.toString() ?? '');
     setAreaSqm(floor.areaSqm?.toString() ?? '');
@@ -79,7 +85,6 @@ function FloorEditDrawer({
     setFieldErrors({});
 
     const parsed = updateFloorSchema.safeParse({
-      code: code.trim().toUpperCase(),
       name: name.trim(),
       floorNumber: floorNumber.trim() === '' ? null : Number(floorNumber),
       areaSqm: areaSqm.trim() === '' ? null : Number(areaSqm),
@@ -135,9 +140,6 @@ function FloorEditDrawer({
       <div className="space-y-4">
         {formError && <Alert variant="error">{formError}</Alert>}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Field label="Код" required error={fieldErrors.code}>
-            <TextInput value={code} onChange={(value) => setCode(value.toUpperCase())} disabled={submitting} />
-          </Field>
           <Field label="Давхрын нэр" required error={fieldErrors.name}>
             <TextInput value={name} onChange={setName} disabled={submitting} />
           </Field>
@@ -185,6 +187,65 @@ function FloorEditDrawer({
   );
 }
 
+/** The largest page `objectListQuerySchema` will accept. Asking for more is a 400. */
+const OBJECT_PAGE_LIMIT = 100;
+
+/**
+ * A ceiling on the paging loop, not on the floor.
+ *
+ * A floor with more than this many objects is not a floor anyone is reading a plan of, and
+ * an unbounded loop against a miscounting server would spin forever. What is fetched is
+ * still stated honestly: the table and the plan show what came back.
+ */
+const MAX_OBJECT_PAGES = 20;
+
+/** Rows per page for the objects table. The plan still receives every object. */
+const OBJECT_TABLE_PAGE_SIZE = 20;
+
+/**
+ * The objects a table page should show, filtered by a search term.
+ *
+ * CLIENT-SIDE, AND HONEST ABOUT IT ONLY BECAUSE THE SET IS COMPLETE. `fetchAllFloorObjects`
+ * has already walked every page, and the plan needs all of them anyway — narrowing the fetch
+ * would drop markers from the drawing, which is the bug that page-walking exists to prevent.
+ * Searching in memory therefore covers the whole floor, not the twenty rows on screen, which
+ * is the thing that makes a client-side search misleading elsewhere.
+ */
+export function filterFloorObjects(
+  objects: readonly ObjectListItemDto[],
+  search: string,
+): ObjectListItemDto[] {
+  const needle = search.trim().toLowerCase();
+  if (!needle) return [...objects];
+  return objects.filter((object) =>
+    [object.code, object.name, object.objectType?.name]
+      .filter(Boolean)
+      .some((field) => String(field).toLowerCase().includes(needle)),
+  );
+}
+
+/**
+ * Every object on the floor, not the first hundred.
+ *
+ * The list endpoint pages and its limit is capped at 100, so a single request silently lost
+ * every marker past the first page — a floor with 120 devices drew 100 pins and gave no
+ * hint that twenty were missing. Pages are walked in order because the first response is
+ * what says how many there are.
+ */
+async function fetchAllFloorObjects(floorId: string): Promise<ObjectListItemDto[]> {
+  const items: ObjectListItemDto[] = [];
+  let page = 1;
+
+  for (;;) {
+    const result = await objectMasterService.list({ floorId, limit: OBJECT_PAGE_LIMIT, page });
+    items.push(...result.items);
+    if (result.items.length === 0 || page >= result.totalPages || page >= MAX_OBJECT_PAGES) {
+      return items;
+    }
+    page += 1;
+  }
+}
+
 /**
  * Floor detail.
  *
@@ -209,6 +270,16 @@ export function FloorDetailPage(): ReactElement {
   const [floor, setFloor] = useState<FloorDto | null>(null);
   const [plan, setPlan] = useState<FloorPlanDto | null>(null);
   const [objects, setObjects] = useState<ObjectListItemDto[]>([]);
+  // Table-only view state. The plan is always given every object, whatever the table shows.
+  const [objectSearch, setObjectSearch] = useState('');
+  const [objectPage, setObjectPage] = useState(1);
+
+  const matchedObjects = filterFloorObjects(objects, objectSearch);
+  const objectTotalPages = Math.max(1, Math.ceil(matchedObjects.length / OBJECT_TABLE_PAGE_SIZE));
+  const visibleObjects = matchedObjects.slice(
+    (objectPage - 1) * OBJECT_TABLE_PAGE_SIZE,
+    objectPage * OBJECT_TABLE_PAGE_SIZE,
+  );
   const [load, setLoad] = useState<FloorLoadSummaryDto | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -238,11 +309,11 @@ export function FloorDetailPage(): ReactElement {
       // Objects and the load roll-up need their own permission; a caller without it still
       // sees the general information and the plan.
       if (canViewObjects) {
-        const [objectPage, summary] = await Promise.all([
-          objectMasterService.list({ floorId, limit: 100 }),
+        const [allObjects, summary] = await Promise.all([
+          fetchAllFloorObjects(floorId),
           projectService.floorLoad(floorId),
         ]);
-        setObjects(objectPage.items);
+        setObjects(allObjects);
         setLoad(summary);
       }
     } catch (caught) {
@@ -594,13 +665,40 @@ export function FloorDetailPage(): ReactElement {
               </div>
             </div>
 
+            <div className="mb-3 max-w-sm">
+              <label htmlFor="floor-object-search" className={FILTER_LABEL}>
+                Хайлт
+              </label>
+              <SearchField
+                id="floor-object-search"
+                value={objectSearch}
+                onChange={(event) => {
+                  setObjectSearch(event.target.value);
+                  // A narrower result rarely has the page the reader is standing on.
+                  setObjectPage(1);
+                }}
+                placeholder="Код, нэр эсвэл төрөл"
+              />
+            </div>
+
             <DataTable
               columns={columnState.visibleColumns}
-              rows={objects}
+              rows={visibleObjects}
               rowKey={(row) => row.id}
+              numbering={{ page: objectPage, limit: OBJECT_TABLE_PAGE_SIZE }}
               onRowClick={(row) => navigate(`/floors/${floor.id}/objects/${row.id}`)}
-              emptyTitle="Объект бүртгэгдээгүй"
-              emptyDescription="Самбар, хэлхээ, тоноглолыг энэ давхарт нэмнэ үү."
+              emptyTitle={objectSearch ? 'Хайлтад тохирох объект алга' : 'Объект бүртгэгдээгүй'}
+              emptyDescription={
+                objectSearch
+                  ? 'Өөр түлхүүр үгээр хайж үзнэ үү.'
+                  : 'Самбар, хэлхээ, тоноглолыг энэ давхарт нэмнэ үү.'
+              }
+            />
+            <Pagination
+              page={objectPage}
+              totalPages={objectTotalPages}
+              total={matchedObjects.length}
+              onPageChange={setObjectPage}
             />
           </div>
         )}

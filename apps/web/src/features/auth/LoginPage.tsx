@@ -6,6 +6,7 @@ import { Button } from '../../components/ui/Button';
 import { Input } from '../../components/ui/Input';
 import { useAuth } from '../../contexts/auth-context';
 import { ApiError } from '../../lib/api-client';
+import { homePathFor, resolvePostLoginPath } from '../../lib/home-path';
 
 interface LoginLocationState {
   from?: string;
@@ -13,7 +14,7 @@ interface LoginLocationState {
 }
 
 export function LoginPage(): ReactElement {
-  const { login, isAuthenticated, initialising } = useAuth();
+  const { login, isAuthenticated, initialising, user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const state = location.state as LoginLocationState | null;
@@ -26,7 +27,7 @@ export function LoginPage(): ReactElement {
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
   if (!initialising && isAuthenticated) {
-    return <Navigate to="/dashboard" replace />;
+    return <Navigate to={homePathFor(user?.role)} replace />;
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
@@ -43,7 +44,9 @@ export function LoginPage(): ReactElement {
         return;
       }
 
-      navigate(state?.from ?? '/dashboard', { replace: true });
+      // `from` is the deep link ProtectedRoute bounced them off, and it wins — but only
+      // where they can actually land. See `resolvePostLoginPath`.
+      navigate(resolvePostLoginPath(user.role, state?.from), { replace: true });
     } catch (error) {
       if (error instanceof ApiError) {
         setFormError(error.message);

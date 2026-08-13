@@ -167,7 +167,8 @@ describe('PlannedWorkDetailPage', () => {
     vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(
       makePlannedWork({
         availableActions: [
-          { action: 'PAUSE', label: 'Түр зогсоох', requiresReason: true, targetStatus: 'PAUSED' },
+          { action: 'PAUSE', label: 'Түр зогсоох', requiresReason: true,
+            assignsCrew: false, targetStatus: 'PAUSED' },
         ],
       }),
     );
@@ -184,7 +185,8 @@ describe('PlannedWorkDetailPage', () => {
     vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(
       makePlannedWork({
         availableActions: [
-          { action: 'PAUSE', label: 'Түр зогсоох', requiresReason: true, targetStatus: 'PAUSED' },
+          { action: 'PAUSE', label: 'Түр зогсоох', requiresReason: true,
+            assignsCrew: false, targetStatus: 'PAUSED' },
         ],
       }),
     );
@@ -204,7 +206,8 @@ describe('PlannedWorkDetailPage', () => {
     vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(
       makePlannedWork({
         availableActions: [
-          { action: 'PAUSE', label: 'Түр зогсоох', requiresReason: true, targetStatus: 'PAUSED' },
+          { action: 'PAUSE', label: 'Түр зогсоох', requiresReason: true,
+            assignsCrew: false, targetStatus: 'PAUSED' },
         ],
       }),
     );
@@ -221,7 +224,8 @@ describe('PlannedWorkDetailPage', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Батлах' }));
 
     await waitFor(() => {
-      expect(transition).toHaveBeenCalledWith(WORK_ID, 'PAUSE', 'Материал хүлээгдэж байна');
+      // An empty crew: PAUSE does not assign, and only APPROVE carries one.
+      expect(transition).toHaveBeenCalledWith(WORK_ID, 'PAUSE', 'Материал хүлээгдэж байна', []);
     });
   });
 
@@ -977,6 +981,22 @@ describe('PlannedWorkDetailPage', () => {
       await screen.findByRole('heading', { name: 'Төлөвлөсөн материал' }),
     ).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Материал' })).not.toBeInTheDocument();
+  });
+
+  /**
+   * The bug `lib/duration.ts` was written to kill: the summary rendered the paused total
+   * as `Math.floor(minutes / 1440) өдөр ...`, so a 45-minute pause printed `0 өдөр 0 цаг`
+   * — a real figure turned into a confident zero.
+   */
+  it('states a sub-day pause in minutes rather than as a zero day count', async () => {
+    vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(
+      makePlannedWork({ totalPausedMinutes: 45 }),
+    );
+
+    renderDetail([PERMISSIONS.PLANNED_WORK_VIEW]);
+
+    expect(await screen.findByText('45 мин')).toBeInTheDocument();
+    expect(screen.queryByText(/0 өдөр/)).not.toBeInTheDocument();
   });
 
   it('shows an error state when the work cannot be loaded', async () => {

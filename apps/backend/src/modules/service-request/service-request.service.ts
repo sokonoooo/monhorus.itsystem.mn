@@ -31,7 +31,7 @@ import type { RequestMeta } from '../../common/utils/request-meta.util';
 import { recordAudit } from '../audit/audit.service';
 import { notify } from '../notification/notification.service';
 import { resolveAssignedWorkFilter } from '../planned-work/planned-work.scope';
-import { assertReportAllows } from './work-report.service';
+import { assertReportAllows, hasApprovedWorkReport } from './work-report.service';
 import { assertSelfProgressAllowed } from './self-progress.policy';
 import { userIdsForEmployees } from '../notification/recipient.util';
 import { Employee, type IEmployee } from '../employee/employee.model';
@@ -103,6 +103,11 @@ export function toListItemDto(
     floor: ref(request.floor as unknown as NamedRef),
     room: ref(request.room as unknown as NamedRef),
     device: ref(request.device as unknown as NamedRef),
+    // Sent on every request, null when nobody dropped a pin. Travels on the list DTO and not
+    // only the detail one so a floor-plan view can mark several requests in one read.
+    planPosition: request.planPosition
+      ? { x: request.planPosition.x, y: request.planPosition.y }
+      : null,
     requestType: request.requestType,
     isUrgent: request.isUrgent,
     status: request.status,
@@ -202,6 +207,10 @@ export async function toDetailDto(
     revisitDueAt: request.revisitDueAt ? request.revisitDueAt.toISOString() : null,
     parentRequestId: request.parentRequest ? String(request.parentRequest) : null,
     createdByName: request.createdByName,
+    // Whether `GET /:id/report/customer` will answer. Read from the conclusion rather than
+    // inferred from `status`: a request is moved to COMPLETED by a person, and the flag has
+    // to be a fact about the conclusion itself.
+    hasApprovedReport: await hasApprovedWorkReport(request._id),
     updatedAt: request.updatedAt.toISOString(),
   };
 }
@@ -364,6 +373,11 @@ export async function createServiceRequest(
     panel: input.panelId ? new Types.ObjectId(input.panelId) : null,
     circuit: input.circuitId ? new Types.ObjectId(input.circuitId) : null,
     device: input.deviceId ? new Types.ObjectId(input.deviceId) : null,
+    // The schema has already refused a pin without a floor, so what arrives here either
+    // names a drawing or is absent.
+    planPosition: input.planPosition
+      ? { x: input.planPosition.x, y: input.planPosition.y }
+      : null,
     requestType: input.requestType,
     isUrgent: input.isUrgent,
     description: input.description,

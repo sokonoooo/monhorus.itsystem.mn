@@ -12,6 +12,8 @@ import { ERROR_CODES } from '../../common/errors/error-codes';
 import type { AuthContext } from '../../common/types/express';
 import type { RequestMeta } from '../../common/utils/request-meta.util';
 import { recordAudit } from '../audit/audit.service';
+import { deleteStoredFile } from '../storage/storage.service';
+import { StoredFile } from '../storage/stored-file.model';
 import { ObjectRecord, ObjectType, type IObjectType } from './object-master.models';
 
 /**
@@ -25,6 +27,17 @@ import { ObjectRecord, ObjectType, type IObjectType } from './object-master.mode
 
 type Doc<T> = T & { _id: Types.ObjectId };
 
+/**
+ * The download path for a type's custom icon, or null.
+ *
+ * One place, so the list, the detail and the object rows cannot drift on how the url is
+ * spelled. Null is the signal to fall back to the `icon` enum — the DTO never invents a
+ * placeholder path for a type that has no custom icon.
+ */
+export function objectTypeIconUrl(iconFile: Types.ObjectId | null | undefined): string | null {
+  return iconFile ? `/api/v1/files/${String(iconFile)}` : null;
+}
+
 export function toObjectTypeDto(type: Doc<IObjectType>, objectCount: number): ObjectTypeDto {
   return {
     id: String(type._id),
@@ -36,11 +49,54 @@ export function toObjectTypeDto(type: Doc<IObjectType>, objectCount: number): Ob
     insidePanel: type.insidePanel,
     generatesConclusion: type.generatesConclusion,
     icon: type.icon,
+    iconFileId: type.iconFile ? String(type.iconFile) : null,
+    iconUrl: objectTypeIconUrl(type.iconFile),
     isActive: type.isActive,
     objectCount,
     createdAt: type.createdAt.toISOString(),
     updatedAt: type.updatedAt.toISOString(),
   };
+}
+
+/**
+ * Checks a claimed icon id and transfers the file onto the type.
+ *
+ * The upload route parks the file on the uploader, because the type it belongs to does not
+ * exist yet at that point. This is where it stops being an orphan.
+ *
+ * Only an `OBJECT_TYPE`-owned file is accepted. That is the whole check: it means an id
+ * cannot be pointed at somebody's HR document, a floor plan or a service-request photo to
+ * make a private file readable through the icon's permissions, which are broader than any
+ * of theirs. The file's contents were sanitised at upload and are not re-examined here —
+ * every `OBJECT_TYPE` file in the store went through the parser to get there.
+ */
+async function resolveIconFile(iconFileId: string): Promise<Types.ObjectId> {
+  const file = await StoredFile.findById(iconFileId);
+  if (!file || file.ownerType !== 'OBJECT_TYPE') {
+    throw AppError.badRequest(ERROR_CODES.VALIDATION_ERROR, 'Айкон файл олдсонгүй.', [
+      { field: 'iconFileId', message: 'Айконыг дахин хуулна уу.' },
+    ]);
+  }
+  return file._id as Types.ObjectId;
+}
+
+/** Transfers a resolved icon off the uploader and onto the type that now owns it. */
+async function claimIconFile(iconFile: Types.ObjectId, typeId: Types.ObjectId): Promise<void> {
+  await StoredFile.updateOne({ _id: iconFile }, { $set: { ownerId: typeId } });
+}
+
+/**
+ * Removes a replaced or cleared icon, bytes and row together.
+ *
+ * Nothing else can reference it — an icon file is claimed by exactly one type — so leaving
+ * it behind would only accumulate unreachable files in the upload directory.
+ */
+async function releaseIconFile(iconFile: Types.ObjectId | null): Promise<void> {
+  if (!iconFile) return;
+  const file = await StoredFile.findById(iconFile);
+  if (!file) return;
+  deleteStoredFile(file.storageKey);
+  await StoredFile.deleteOne({ _id: file._id });
 }
 
 /** One grouped count, so a list of N types costs one query rather than N. */
@@ -102,6 +158,10 @@ export async function createObjectType(
     );
   }
 
+  // Resolved BEFORE the type is written, so a bad id fails the request instead of leaving a
+  // registered type behind. Re-owning the file has to wait for an id, and is done below.
+  const iconFile = input.iconFileId ? await resolveIconFile(input.iconFileId) : null;
+
   const type = await ObjectType.create({
     code: input.code,
     name: input.name,
@@ -111,9 +171,12 @@ export async function createObjectType(
     insidePanel: input.insidePanel,
     generatesConclusion: input.generatesConclusion,
     icon: input.icon,
+    iconFile,
     isActive: true,
     createdBy: new Types.ObjectId(actor.userId),
   });
+
+  if (iconFile) await claimIconFile(iconFile, type._id);
 
   await recordAudit({
     entityType: 'ObjectType',
@@ -150,7 +213,29 @@ export async function updateObjectType(
   if (input.icon !== undefined) type.icon = input.icon;
   if (input.isActive !== undefined) type.isActive = input.isActive;
 
+  /**
+   * Set, replace or clear the custom icon. Three-valued: absent leaves it alone, an id
+   * replaces it, `null` clears it and the type falls back to the `icon` enum.
+   *
+   * The replaced file is deleted, not orphaned, and only AFTER the type has been saved
+   * pointing somewhere else — so a failure between the two leaves a type with an icon
+   * rather than a type pointing at bytes that are gone.
+   */
+  const replacedIcon = type.iconFile;
+  let iconChanged = false;
+
+  if (input.iconFileId !== undefined) {
+    const next = input.iconFileId ? await resolveIconFile(input.iconFileId) : null;
+    iconChanged = String(next ?? '') !== String(replacedIcon ?? '');
+    if (iconChanged) {
+      if (next) await claimIconFile(next, type._id);
+      type.iconFile = next;
+    }
+  }
+
   await type.save();
+
+  if (iconChanged) await releaseIconFile(replacedIcon);
 
   await recordAudit({
     entityType: 'ObjectType',
@@ -188,6 +273,8 @@ export async function deleteObjectType(
   }
 
   await ObjectType.deleteOne({ _id: type._id });
+  // The icon belonged to this type alone; with the type gone nothing can ever reach it.
+  await releaseIconFile(type.iconFile);
 
   await recordAudit({
     entityType: 'ObjectType',

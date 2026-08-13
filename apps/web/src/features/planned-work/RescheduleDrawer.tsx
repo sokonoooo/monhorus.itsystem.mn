@@ -7,6 +7,7 @@ import { Drawer } from '../../components/ui/Drawer';
 import { useToast } from '../../components/ui/ToastProvider';
 import { FIELD_TEXTAREA, FILTER_LABEL } from '../../components/ui/control-styles';
 import { ApiError } from '../../lib/api-client';
+import { formatMinutes } from '../../lib/duration';
 import { plannedWorkService } from '../../services/planned-work.service';
 import { Field, TextInput } from '../employees/FormControls';
 
@@ -84,8 +85,6 @@ export function RescheduleDrawer({
     }
   }
 
-  const pausedDays = Math.floor(work.totalPausedMinutes / 1440);
-
   return (
     <Drawer
       open={open}
@@ -112,8 +111,8 @@ export function RescheduleDrawer({
 
         {work.totalPausedMinutes > 0 && (
           <Alert variant="info">
-            Түр зогссон нийт хугацаа: {pausedDays} өдөр {Math.floor((work.totalPausedMinutes % 1440) / 60)}{' '}
-            цаг. Түр зогсолт хугацааг автоматаар сунгадаггүй тул шаардлагатай бол доор
+            Түр зогссон нийт хугацаа: {formatMinutes(work.totalPausedMinutes)}. Түр зогсолт
+            хугацааг автоматаар сунгадаггүй тул шаардлагатай бол доор
             шинэ огноог оруулна.
           </Alert>
         )}

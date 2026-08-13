@@ -21,6 +21,7 @@ import { useToast } from '../../components/ui/ToastProvider';
 import { useAuth } from '../../contexts/auth-context';
 import { ApiError } from '../../lib/api-client';
 import { serviceRequestService } from '../../services/service-request.service';
+import { FloorPlanPin } from '../projects/FloorPlanPin';
 
 function Row({ label, value }: { label: string; value: ReactNode }): ReactElement {
   return (
@@ -221,6 +222,16 @@ export function ServiceRequestDetailPage(): ReactElement {
             <Row label="Хэлхээ/шугам" value={request.circuit?.name} />
             <Row label="Төхөөрөмж" value={request.device?.name} />
           </Card>
+
+          {/*
+            Where on the floor, when the caller pointed at a spot. Read-only: the request is
+            a record of what was reported, and the technician reads it to find the place.
+          */}
+          {request.planPosition && request.floor && (
+            <Card title="План дээрх байрлал">
+              <FloorPlanPin floorId={request.floor.id} value={request.planPosition} />
+            </Card>
+          )}
 
           <Card title="Хүсэлтийн агуулга">
             <Row label="Холбоо барих" value={`${request.contactName} · ${request.contactPhone}`} />

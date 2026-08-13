@@ -76,6 +76,29 @@ describe('PlannedWorkListPage', () => {
     expect(within(table).getByText(/Хоцорсон/)).toBeInTheDocument();
   });
 
+  /**
+   * Row numbers only mean something if they are continuous: asked to "check work 21",
+   * a reader must find it as row 21 on page two, not as row 1 all over again.
+   */
+  it('numbers page two from 21 rather than restarting at 1', async () => {
+    vi.spyOn(plannedWorkService, 'list').mockResolvedValue({
+      ...makePage([makePlannedWorkListItem()]),
+      page: 2,
+      total: 21,
+      totalPages: 2,
+    });
+
+    renderWithAuth(<PlannedWorkListPage />, {
+      permissions: [PERMISSIONS.PLANNED_WORK_VIEW],
+      route: '/planned-work?page=2',
+    });
+
+    const table = await screen.findByRole('table');
+    expect(within(table).getByRole('columnheader', { name: '№' })).toBeInTheDocument();
+    const firstRow = within(table).getAllByRole('row')[1]!;
+    expect(within(firstRow).getAllByRole('cell')[0]).toHaveTextContent(/^21$/);
+  });
+
   it('shows an empty state', async () => {
     vi.spyOn(plannedWorkService, 'list').mockResolvedValue(makePage([]));
 

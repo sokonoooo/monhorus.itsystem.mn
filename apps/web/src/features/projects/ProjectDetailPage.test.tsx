@@ -71,6 +71,37 @@ describe('ProjectDetailPage building create', () => {
     vi.spyOn(projectService, 'listBuildings').mockResolvedValue(makePage([]));
   });
 
+  /**
+   * `BLD-001` is drawn from a per-customer counter the server holds. The pattern keeps `^`
+   * and drops `$` because `Field` appends a `*` to a required label, so a plain equality
+   * query would pass even with the field still on screen.
+   */
+  it('asks for no code when creating a building', async () => {
+    const user = userEvent.setup();
+
+    renderProject();
+    const drawer = await openBuildingDrawer(user);
+
+    expect(within(drawer).queryByLabelText(/^Код/)).toBeNull();
+  });
+
+  /** Absent, not empty: the create schema strips what it does not declare. */
+  it('sends a create payload with no code key at all', async () => {
+    const create = vi.spyOn(projectService, 'createBuilding').mockResolvedValue(makeBuilding());
+    const user = userEvent.setup();
+
+    renderProject();
+    const drawer = await openBuildingDrawer(user);
+
+    await user.type(within(drawer).getByLabelText(/^Барилгын нэр/), 'Кодгүй барилга');
+    await user.click(within(drawer).getByRole('button', { name: 'Хадгалах' }));
+
+    await waitFor(() => {
+      expect(create).toHaveBeenCalledWith(expect.not.objectContaining({ code: expect.anything() }));
+    });
+    expect('code' in create.mock.calls[0]![0]).toBe(false);
+  });
+
   it('sends the coordinates chosen on the map together with the rest of the form', async () => {
     const create = vi.spyOn(projectService, 'createBuilding').mockResolvedValue(makeBuilding());
     const user = userEvent.setup();
@@ -78,7 +109,6 @@ describe('ProjectDetailPage building create', () => {
     renderProject();
     const drawer = await openBuildingDrawer(user);
 
-    await user.type(within(drawer).getByLabelText(/^Код/), 'BLD-9');
     await user.type(within(drawer).getByLabelText(/^Барилгын нэр/), 'Шинэ корпус');
     await user.type(within(drawer).getByLabelText('Хаяг'), 'Их сургуулийн гудамж 3');
     await user.click(within(drawer).getByRole('button', { name: 'Газрын зураг дээр дарах' }));
@@ -89,7 +119,6 @@ describe('ProjectDetailPage building create', () => {
     await waitFor(() => {
       expect(create).toHaveBeenCalledWith({
         projectId: PROJECT_ID,
-        code: 'BLD-9',
         name: 'Шинэ корпус',
         address: 'Их сургуулийн гудамж 3',
         gpsLatitude: 47.9175,
@@ -106,7 +135,6 @@ describe('ProjectDetailPage building create', () => {
     renderProject();
     const drawer = await openBuildingDrawer(user);
 
-    await user.type(within(drawer).getByLabelText(/^Код/), 'BLD-8');
     await user.type(within(drawer).getByLabelText(/^Барилгын нэр/), 'Агуулах');
     await user.type(within(drawer).getByLabelText('Өргөрөг'), '48');
     await user.type(within(drawer).getByLabelText('Уртраг'), '107');
@@ -128,7 +156,6 @@ describe('ProjectDetailPage building create', () => {
     renderProject();
     const drawer = await openBuildingDrawer(user);
 
-    await user.type(within(drawer).getByLabelText(/^Код/), 'BLD-7');
     await user.type(within(drawer).getByLabelText(/^Барилгын нэр/), 'Зогсоол');
     await user.type(within(drawer).getByLabelText('Өргөрөг'), '48');
 
@@ -147,7 +174,6 @@ describe('ProjectDetailPage building create', () => {
     renderProject();
     const drawer = await openBuildingDrawer(user);
 
-    await user.type(within(drawer).getByLabelText(/^Код/), 'BLD-6');
     await user.type(within(drawer).getByLabelText(/^Барилгын нэр/), 'Дэд станц');
 
     await user.click(within(drawer).getByRole('button', { name: 'Хадгалах' }));
@@ -160,6 +186,87 @@ describe('ProjectDetailPage building create', () => {
           gpsLongitude: null,
           description: null,
         }),
+      );
+    });
+  });
+});
+
+/**
+ * The building table used to fetch one capped page of 100 and render no pager, so a
+ * project with more buildings than that simply lost the rest. It now pages like every
+ * other list, and filters on the server rather than in the browser.
+ */
+describe('ProjectDetailPage building table', () => {
+  beforeEach(() => {
+    vi.spyOn(projectService, 'getProject').mockResolvedValue(makeProject());
+  });
+
+  it('asks the server for page two and numbers its rows from 21', async () => {
+    const list = vi.spyOn(projectService, 'listBuildings').mockResolvedValue({
+      ...makePage([makeBuilding()]),
+      page: 2,
+      total: 21,
+      totalPages: 2,
+    });
+
+    renderWithAuth(<ProjectDetailPage />, {
+      permissions: [PERMISSIONS.OBJECT_VIEW, PERMISSIONS.OBJECT_MANAGE],
+      route: `/projects/${PROJECT_ID}?page=2`,
+      path: '/projects/:projectId',
+    });
+
+    const table = await screen.findByRole('table');
+    expect(list).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: PROJECT_ID, page: 2, limit: 20 }),
+    );
+    expect(within(table).getByRole('columnheader', { name: '№' })).toBeInTheDocument();
+    const firstRow = within(table).getAllByRole('row')[1]!;
+    expect(within(firstRow).getAllByRole('cell')[0]).toHaveTextContent(/^21$/);
+  });
+
+  it('fetches the next page when the pager is used', async () => {
+    const list = vi
+      .spyOn(projectService, 'listBuildings')
+      .mockImplementation(async (query) => ({
+        ...makePage([makeBuilding()]),
+        page: query?.page ?? 1,
+        total: 40,
+        totalPages: 2,
+      }));
+    const user = userEvent.setup();
+
+    renderProject();
+
+    await screen.findByRole('table');
+    await user.click(screen.getByRole('button', { name: 'Дараах' }));
+
+    await waitFor(() => {
+      expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2 }));
+    });
+  });
+
+  /** Server-side: a browser-side filter would only ever search the page on screen. */
+  it('sends the search to the service and returns to the first page', async () => {
+    const list = vi.spyOn(projectService, 'listBuildings').mockResolvedValue({
+      ...makePage([makeBuilding()]),
+      page: 2,
+      total: 21,
+      totalPages: 2,
+    });
+    const user = userEvent.setup();
+
+    renderWithAuth(<ProjectDetailPage />, {
+      permissions: [PERMISSIONS.OBJECT_VIEW, PERMISSIONS.OBJECT_MANAGE],
+      route: `/projects/${PROJECT_ID}?page=2`,
+      path: '/projects/:projectId',
+    });
+
+    await screen.findByRole('table');
+    await user.type(screen.getByLabelText('Хайлт'), 'Төв{Enter}');
+
+    await waitFor(() => {
+      expect(list).toHaveBeenLastCalledWith(
+        expect.objectContaining({ search: 'Төв', page: 1, limit: 20 }),
       );
     });
   });
