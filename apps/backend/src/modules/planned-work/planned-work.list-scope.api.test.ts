@@ -131,6 +131,19 @@ let pwMyTeam: string;
 let pwColleague: string;
 let pwNobody: string;
 
+/**
+ * Unapproved work with THIS TECHNICIAN'S NAME ON IT.
+ *
+ * [pwNobody] cannot prove the status rule on its own: it is unapproved AND unassigned, so
+ * its absence is equally well explained by the assignment predicate, and a regression that
+ * dropped the status exclusion would leave every assertion about it still passing. These
+ * three name the caller explicitly, so the ONLY thing keeping them out of the list is the
+ * status filter.
+ */
+let pwDraftMine: string;
+let pwPendingMine: string;
+let pwRejectedMine: string;
+
 /** Service request numbers, which is what the list rows are identified by below. */
 let srMine: string;
 let srMyTeam: string;
@@ -356,6 +369,31 @@ beforeAll(async () => {
   // the record the technician must not be handed, which is what the cases below assert.
   pwNobody = await createWork({});
 
+  // Named on the create body and left in DRAFT — the state a planner is in halfway through
+  // writing next month's schedule.
+  pwDraftMine = await createWork({ assignedEmployeeIds: [technicianEmployeeId] });
+
+  // PLAN and stop: submitted for approval, nobody has agreed to it yet.
+  pwPendingMine = await createWork({ assignedEmployeeIds: [technicianEmployeeId] });
+  const pending = await request(app)
+    .post(`${API}/planned-work/${pwPendingMine}/transition`)
+    .set('Authorization', `Bearer ${supervisorToken}`)
+    .send({ action: 'PLAN' });
+  expect(pending.status).toBe(200);
+
+  // Submitted and turned down. A rejected job is not work anybody is expected to do.
+  pwRejectedMine = await createWork({ assignedEmployeeIds: [technicianEmployeeId] });
+  const toReject = await request(app)
+    .post(`${API}/planned-work/${pwRejectedMine}/transition`)
+    .set('Authorization', `Bearer ${supervisorToken}`)
+    .send({ action: 'PLAN' });
+  expect(toReject.status).toBe(200);
+  const rejected = await request(app)
+    .post(`${API}/planned-work/${pwRejectedMine}/transition`)
+    .set('Authorization', `Bearer ${supervisorToken}`)
+    .send({ action: 'REJECT', reason: 'Төсөв батлагдаагүй.' });
+  expect(rejected.status).toBe(200);
+
   const mineRequest = await createRequest('Миний хүсэлт', {
     employeeIds: [technicianEmployeeId],
   });
@@ -393,6 +431,55 @@ describe('GET /planned-work is bounded by assignment', () => {
     expect(ids).toHaveLength(2);
   });
 
+  /**
+   * The employee app's list is the whole reason these cases exist.
+   *
+   * A technician opening Ажил must see the jobs they have been given and nothing else. Work
+   * that is still being drafted, still waiting on an approver, or turned down is not work
+   * they have been given — having their name written on it is a plan, not an instruction —
+   * and showing it sends somebody to a site nobody has agreed to pay for.
+   */
+  it('hides a DRAFT work even when the caller is named on it', async () => {
+    const ids = await listWorkIds(technicianToken);
+    expect(ids).not.toContain(pwDraftMine);
+  });
+
+  it('hides a PENDING_APPROVAL work even when the caller is named on it', async () => {
+    const ids = await listWorkIds(technicianToken);
+    expect(ids).not.toContain(pwPendingMine);
+  });
+
+  it('hides a REJECTED work even when the caller is named on it', async () => {
+    const ids = await listWorkIds(technicianToken);
+    expect(ids).not.toContain(pwRejectedMine);
+  });
+
+  it('still shows the approved work the caller is assigned to', async () => {
+    // The other half of the rule, and the one a too-eager filter would break: hiding
+    // everything is not the goal, and a technician with no visible jobs cannot work.
+    const ids = await listWorkIds(technicianToken);
+    expect(ids).toContain(pwMine);
+  });
+
+  it('leaves the unapproved queue fully visible to a supervisor', async () => {
+    // The exclusion is a property of the SCOPED caller's filter, not of the record, so an
+    // oversight account must still see everything it always did — this is the assertion
+    // that would fail if somebody "fixed" the employee list by filtering globally.
+    const ids = await listWorkIds(supervisorToken);
+    expect(ids).toContain(pwDraftMine);
+    expect(ids).toContain(pwPendingMine);
+    expect(ids).toContain(pwRejectedMine);
+    expect(ids).toContain(pwNobody);
+  });
+
+  it('does not let a status query parameter surface unapproved work', async () => {
+    // The client picks the status it wants to see; it must not be able to pick one the
+    // scope excludes. `status` is ANDed with the scope predicate, so asking for DRAFT as a
+    // technician is an empty list, not a bypass.
+    expect(await listWorkIds(technicianToken, '&status=DRAFT')).toHaveLength(0);
+    expect(await listWorkIds(technicianToken, '&status=PENDING_APPROVAL')).toHaveLength(0);
+  });
+
   it('counts a caller as assigned through their team alone', async () => {
     // The mate is named on no record at all. Before the server enforced this, the client
     // sent `employeeId` XOR `teamId` and the two ANDed server-side, so "mine OR my team's"
@@ -411,9 +498,19 @@ describe('GET /planned-work is bounded by assignment', () => {
   it('still shows a dispatcher every job in the company', async () => {
     const ids = await listWorkIds(dispatcherToken);
     expect(ids).toEqual(
-      expect.arrayContaining([pwMine, pwMyTeam, pwColleague, pwNobody]),
+      expect.arrayContaining([
+        pwMine,
+        pwMyTeam,
+        pwColleague,
+        pwNobody,
+        // The three unapproved ones a TECHNICIAN is refused. Oversight sees the whole
+        // board, which is the point of the exclusion being scoped rather than global.
+        pwDraftMine,
+        pwPendingMine,
+        pwRejectedMine,
+      ]),
     );
-    expect(ids).toHaveLength(4);
+    expect(ids).toHaveLength(7);
   });
 
   it('refuses to let a query parameter widen the scope', async () => {
@@ -473,9 +570,19 @@ describe('a read-oversight role sees everything and still cannot act', () => {
   it('answers FINANCE with every planned work despite having no employee card', async () => {
     const ids = await listWorkIds(financeToken);
     expect(ids).toEqual(
-      expect.arrayContaining([pwMine, pwMyTeam, pwColleague, pwNobody]),
+      expect.arrayContaining([
+        pwMine,
+        pwMyTeam,
+        pwColleague,
+        pwNobody,
+        // The three unapproved ones a TECHNICIAN is refused. Oversight sees the whole
+        // board, which is the point of the exclusion being scoped rather than global.
+        pwDraftMine,
+        pwPendingMine,
+        pwRejectedMine,
+      ]),
     );
-    expect(ids).toHaveLength(4);
+    expect(ids).toHaveLength(7);
   });
 
   it('answers FINANCE with every service request', async () => {
