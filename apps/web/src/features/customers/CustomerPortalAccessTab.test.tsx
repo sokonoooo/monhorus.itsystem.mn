@@ -24,6 +24,7 @@ function makeAccount(overrides: Partial<UserDto> = {}): UserDto {
     customerName: 'Central Tower ХХК',
     lastLoginAt: null,
     createdBy: null,
+    createdByName: 'Б. Энхтөр',
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
     ...overrides,
@@ -197,5 +198,64 @@ describe('CustomerPortalAccessTab', () => {
         expect.objectContaining({ role: 'customer', page: 1 }),
       ),
     );
+  });
+
+  /**
+   * The tab asked for a hundred accounts and rendered whatever came back, so a large
+   * organisation's accounts past the first hundred were unreachable here.
+   */
+  it('asks for one page of accounts rather than a hundred', async () => {
+    const list = vi.spyOn(userService, 'list').mockResolvedValue({
+      items: [makeAccount()],
+      page: 1,
+      limit: 20,
+      total: 1,
+      totalPages: 1,
+    });
+
+    render();
+    await screen.findByText('Болд Ганаа');
+
+    // Unfiltered, the query carries nothing but the scope and the page.
+    expect(list).toHaveBeenCalledWith({ customerId: 'c1', page: 1, limit: 20 });
+  });
+
+  it('numbers the accounts continuously across pages', async () => {
+    const user = userEvent.setup();
+    const list = vi.spyOn(userService, 'list').mockImplementation(async (query) => ({
+      items: [makeAccount({ id: `u-${query?.page ?? 1}` })],
+      page: query?.page ?? 1,
+      limit: 20,
+      total: 25,
+      totalPages: 2,
+    }));
+
+    render();
+
+    const table = await screen.findByRole('table', { name: 'Нэвтрэх эрх' });
+    expect(within(table).getByRole('columnheader', { name: '№' })).toBeInTheDocument();
+    expect(within(table).getAllByRole('cell')[0]?.textContent?.trim()).toBe('1');
+
+    await user.click(screen.getByRole('button', { name: 'Дараах' }));
+
+    // Page 2 of 20 begins at 21, and the second page is fetched rather than sliced here.
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole('table', { name: 'Нэвтрэх эрх' }))
+          .getAllByRole('cell')[0]
+          ?.textContent?.trim(),
+      ).toBe('21'),
+    );
+    expect(list).toHaveBeenLastCalledWith({ customerId: 'c1', page: 2, limit: 20 });
+  });
+
+  it('names who created each portal account', async () => {
+    mockAccounts([makeAccount({ createdByName: 'Б. Энхтөр' })]);
+
+    render();
+
+    const table = await screen.findByRole('table', { name: 'Нэвтрэх эрх' });
+    expect(within(table).getByRole('columnheader', { name: 'Үүсгэсэн' })).toBeInTheDocument();
+    expect(within(table).getByText('Б. Энхтөр')).toBeInTheDocument();
   });
 });

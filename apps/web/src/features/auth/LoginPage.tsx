@@ -1,5 +1,5 @@
 import { useState, type FormEvent, type ReactElement } from 'react';
-import { Navigate, useLocation, useNavigate } from 'react-router-dom';
+import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
 
 import { Alert } from '../../components/ui/Alert';
 import { Button } from '../../components/ui/Button';
@@ -115,12 +115,16 @@ export function LoginPage(): ReactElement {
           </form>
 
           {/*
-            V1 has no self-service recovery. Saying so here prevents support tickets
-            asking where the forgot-password link went.
+            This paragraph used to say recovery was impossible and to call an administrator.
+            It is now a link: a password can be recovered over the registered email address.
           */}
           <p className="mt-6 border-t border-slate-200 pt-4 text-center text-xs text-slate-500">
-            Нууц үгээ мартсан бол системийн администратортой холбогдоно уу. Өөрөө сэргээх
-            боломжгүй.
+            <Link
+              to="/forgot-password"
+              className="font-medium text-blue-600 hover:text-blue-700 hover:underline"
+            >
+              Нууц үгээ мартсан уу?
+            </Link>
           </p>
         </div>
       </div>

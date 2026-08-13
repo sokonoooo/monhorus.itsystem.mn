@@ -154,6 +154,13 @@ export function UsersPage(): ReactElement {
             <table className="min-w-full divide-y divide-slate-200 text-sm">
               <thead className="bg-slate-50">
                 <tr>
+                  {/* Matches the shared DataTable's № column: narrow, right-aligned and
+                      never wrapping, so a four-digit number on a later page stays on one
+                      line. This table is hand-rolled rather than a DataTable, so the
+                      column is spelled out here. */}
+                  <th className="w-12 whitespace-nowrap px-4 py-3 text-right font-semibold text-slate-700">
+                    №
+                  </th>
                   <th className="px-4 py-3 text-left font-semibold text-slate-700">Хэрэглэгч</th>
                   <th className="px-4 py-3 text-left font-semibold text-slate-700">Эрх</th>
                   <th className="px-4 py-3 text-left font-semibold text-slate-700">Байгууллага</th>
@@ -161,12 +168,18 @@ export function UsersPage(): ReactElement {
                   <th className="px-4 py-3 text-left font-semibold text-slate-700">
                     Сүүлд нэвтэрсэн
                   </th>
+                  <th className="px-4 py-3 text-left font-semibold text-slate-700">Үүсгэсэн</th>
                   <th className="px-4 py-3 text-right font-semibold text-slate-700">Үйлдэл</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {data.items.map((item) => (
+                {data.items.map((item, index) => (
                   <tr key={item.id} className="hover:bg-slate-50">
+                    {/* Continuous across pages: page 2 of 20 starts at 21, so a reader
+                        asked to check row 34 can find row 34. */}
+                    <td className="px-4 py-3 text-right tabular-nums text-slate-500">
+                      {(data.page - 1) * data.limit + index + 1}
+                    </td>
                     <td className="px-4 py-3">
                       <div className="font-medium text-slate-900">{item.fullName}</div>
                       <div className="text-slate-500">{item.email}</div>
@@ -199,6 +212,9 @@ export function UsersPage(): ReactElement {
                             timeZone: 'Asia/Ulaanbaatar',
                           })
                         : 'Нэвтрээгүй'}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className="text-slate-700">{item.createdByName ?? '-'}</span>
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex justify-end gap-2">

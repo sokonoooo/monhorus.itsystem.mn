@@ -19,6 +19,7 @@ import {
   type ResolvedCustomerScope,
 } from '../../common/security/customer-scope';
 import type { AuthContext } from '../../common/types/express';
+import { CREATOR_POPULATE, creatorName } from '../../common/utils/creator.util';
 import type { RequestMeta } from '../../common/utils/request-meta.util';
 import { recordAudit } from '../audit/audit.service';
 import { getRiskBands } from '../settings/settings.service';
@@ -69,6 +70,7 @@ export function toCustomerDto(
       : null,
     responsibleEmployeeName: employeeName(responsible),
     notes: customer.notes,
+    createdByName: creatorName(customer.createdBy),
     isActive: customer.isActive,
     ...(counts ?? {}),
   };
@@ -126,6 +128,7 @@ export async function createCustomer(
       : null,
     notes: input.notes ?? null,
     isActive: true,
+    createdBy: new Types.ObjectId(actor.userId),
   });
 
   await recordAudit({
@@ -239,6 +242,7 @@ export async function listCustomers(
   const [rows, total] = await Promise.all([
     Customer.find(filter)
       .populate({ path: 'responsibleEmployee', select: 'firstName lastName' })
+      .populate(CREATOR_POPULATE)
       .sort(sort)
       .skip(skip)
       .limit(query.limit),
@@ -294,10 +298,9 @@ export async function listCustomers(
 }
 
 export async function getCustomerById(customerId: string): Promise<CustomerDto> {
-  const customer = await Customer.findById(customerId).populate({
-    path: 'responsibleEmployee',
-    select: 'firstName lastName',
-  });
+  const customer = await Customer.findById(customerId)
+    .populate({ path: 'responsibleEmployee', select: 'firstName lastName' })
+    .populate(CREATOR_POPULATE);
   if (!customer) {
     throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Харилцагч олдсонгүй.');
   }

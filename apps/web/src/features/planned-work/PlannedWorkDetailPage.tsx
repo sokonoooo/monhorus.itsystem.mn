@@ -254,6 +254,11 @@ export function PlannedWorkDetailPage(): ReactElement {
       ),
     },
     {
+      key: 'createdBy',
+      header: 'Үүсгэсэн',
+      render: (row) => <span className="text-slate-700">{row.createdByName ?? '-'}</span>,
+    },
+    {
       key: 'actions',
       header: 'Үйлдэл',
       align: 'right',
@@ -491,6 +496,9 @@ export function PlannedWorkDetailPage(): ReactElement {
             columns={materialColumnState.visibleColumns}
             rows={work.materials}
             rowKey={(row) => row.name}
+            // NUMBERED BUT NOT PAGED: the materials travel inside the work's own detail
+            // payload, so there is no endpoint to ask for a second page of.
+            numbering
             emptyTitle="Материал бүртгэгдээгүй"
             emptyDescription="Ажилд шаардагдах материалын нэр, тоо энд харагдана."
           />

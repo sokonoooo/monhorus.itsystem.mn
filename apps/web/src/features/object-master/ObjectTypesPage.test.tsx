@@ -31,6 +31,7 @@ function makeType(overrides: Partial<ObjectTypeDto> = {}): ObjectTypeDto {
     iconUrl: null,
     isActive: true,
     objectCount: 0,
+    createdByName: 'Б. Энхтөр',
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
     ...overrides,

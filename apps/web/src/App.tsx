@@ -8,7 +8,9 @@ import { ForbiddenState } from './components/ui/States';
 import { ToastProvider } from './components/ui/ToastProvider';
 import { AuthProvider, useAuth } from './contexts/auth-context';
 import { ChangePasswordPage } from './features/auth/ChangePasswordPage';
+import { ForgotPasswordPage } from './features/auth/ForgotPasswordPage';
 import { LoginPage } from './features/auth/LoginPage';
+import { ResetPasswordPage } from './features/auth/ResetPasswordPage';
 import { AccessPage } from './features/access/AccessPage';
 import { AuditLogPage } from './features/audit/AuditLogPage';
 import { CalendarPage } from './features/calendar/CalendarPage';
@@ -31,6 +33,9 @@ import { PlannedWorkFormPage } from './features/planned-work/PlannedWorkFormPage
 import { PlannedWorkListPage } from './features/planned-work/PlannedWorkListPage';
 import { PlannedWorkReportPage } from './features/planned-work/PlannedWorkReportPage';
 import { ObjectTypesPage } from './features/object-master/ObjectTypesPage';
+import { CompaniesPage } from './features/org/CompaniesPage';
+import { DepartmentsPage } from './features/org/DepartmentsPage';
+import { PositionsPage } from './features/org/PositionsPage';
 import { BuildingDetailPage } from './features/projects/BuildingDetailPage';
 import { FloorDetailPage } from './features/projects/FloorDetailPage';
 import { ObjectDetailPage } from './features/projects/objects/ObjectDetailPage';
@@ -123,6 +128,13 @@ export default function App(): ReactElement {
         <ToastProvider>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
+          {/*
+            Password recovery, unauthenticated by necessity — the whole point is that the
+            caller cannot sign in. Both must stay outside ProtectedRoute, or the link in the
+            email bounces the reader to the login screen they cannot get past.
+          */}
+          <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+          <Route path="/reset-password/:token" element={<ResetPasswordPage />} />
 
           <Route
             path="/change-password"
@@ -446,6 +458,31 @@ export default function App(): ReactElement {
             element={
               <Page anyOf={[PERMISSIONS.PLANNED_WORK_VIEW, PERMISSIONS.SERVICE_REQUEST_VIEW]}>
                 <CalendarPage />
+              </Page>
+            }
+          />
+
+          <Route
+            path="/org/companies"
+            element={
+              <Page anyOf={[PERMISSIONS.ORG_VIEW]}>
+                <CompaniesPage />
+              </Page>
+            }
+          />
+          <Route
+            path="/org/departments"
+            element={
+              <Page anyOf={[PERMISSIONS.ORG_VIEW]}>
+                <DepartmentsPage />
+              </Page>
+            }
+          />
+          <Route
+            path="/org/positions"
+            element={
+              <Page anyOf={[PERMISSIONS.ORG_VIEW]}>
+                <PositionsPage />
               </Page>
             }
           />

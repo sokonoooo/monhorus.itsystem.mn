@@ -4,6 +4,7 @@ import { Types, type FilterQuery } from 'mongoose';
 import { AppError } from '../../common/errors/app-error';
 import { ERROR_CODES } from '../../common/errors/error-codes';
 import type { AuthContext } from '../../common/types/express';
+import { CREATOR_POPULATE } from '../../common/utils/creator.util';
 import { assertCanManageRole } from '../../middlewares/authorize.middleware';
 import { hashPassword } from '../../utils/password.util';
 import { recordAudit, type RequestMeta } from '../audit/audit.service';
@@ -493,6 +494,7 @@ export async function listUsers(query: ListUsersQuery): Promise<PaginatedData<Us
     // second round trip per row.
     User.find(filter)
       .populate(CUSTOMER_POPULATE)
+      .populate(CREATOR_POPULATE)
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(query.limit),
@@ -509,7 +511,7 @@ export async function listUsers(query: ListUsersQuery): Promise<PaginatedData<Us
 }
 
 export async function getUserById(userId: string): Promise<UserDto> {
-  const user = await User.findById(userId).populate(CUSTOMER_POPULATE);
+  const user = await User.findById(userId).populate(CUSTOMER_POPULATE).populate(CREATOR_POPULATE);
   if (!user) {
     throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Хэрэглэгч олдсонгүй.');
   }

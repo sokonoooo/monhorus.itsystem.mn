@@ -78,6 +78,41 @@ const envSchema = z.object({
    * system-access screen enforces on an admin-issued passcode.
    */
   SEED_DEV_PASSWORD: z.string().min(10).default('Monhorus.dev2026'),
+
+  /**
+   * Where a password-reset link sends the reader.
+   *
+   * The backend had no notion of the public web address before this: every other response
+   * is consumed by a client that already knows its own origin. A mailed link is the first
+   * thing the server has to address on its own, and it cannot be derived from the request —
+   * the request comes from the browser being reset, or from nothing at all. Defaulted to
+   * the dev server so a fresh checkout produces a link that works.
+   */
+  APP_WEB_BASE_URL: z.string().url().default('http://localhost:5173'),
+
+  /**
+   * How long a reset link stays usable. Long enough to find the mail, short enough that
+   * one left sitting in an inbox stops working the same day.
+   */
+  PASSWORD_RESET_TTL_MINUTES: z.coerce.number().int().positive().default(60),
+
+  /**
+   * SMTP, all optional.
+   *
+   * Optional because the mail transport degrades rather than refuses: with no SMTP_HOST the
+   * server logs the reset link instead of sending it, which keeps `npm run dev` working on
+   * a laptop with no mail server and keeps the test suite off the network. A deployment
+   * that wants real mail sets these; `mailEnabled` below is what the transport switches on.
+   */
+  SMTP_HOST: z.string().min(1).optional(),
+  SMTP_PORT: z.coerce.number().int().positive().default(587),
+  SMTP_SECURE: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  SMTP_USER: z.string().min(1).optional(),
+  SMTP_PASS: z.string().min(1).optional(),
+  MAIL_FROM: z.string().min(1).default('Monhorus <no-reply@monhorus.itsystem.mn>'),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -103,6 +138,11 @@ export const env = {
     .filter(Boolean),
   refreshTokenTtlMs: raw.REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000,
   accountLockMs: raw.ACCOUNT_LOCK_MINUTES * 60 * 1000,
+  passwordResetTtlMs: raw.PASSWORD_RESET_TTL_MINUTES * 60 * 1000,
+  // A host is the one setting that cannot be defaulted, so it is what decides whether mail
+  // is sent or logged. Credentials are separately optional: an internal relay often wants
+  // none, and demanding them would make that setup unreachable.
+  mailEnabled: Boolean(raw.SMTP_HOST),
 } as const;
 
 export type Env = typeof env;

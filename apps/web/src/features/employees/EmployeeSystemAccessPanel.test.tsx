@@ -35,6 +35,8 @@ function makeRole(overrides: Partial<RoleDto> = {}): RoleDto {
     description: null,
     permissions: [],
     isSystem: true,
+    // A seeded role has no creator, which is the case this fixture stands for.
+    createdByName: null,
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
     ...overrides,
@@ -210,6 +212,7 @@ describe('EmployeeSystemAccessPanel', () => {
         customerName: null,
         lastLoginAt: null,
         createdBy: null,
+        createdByName: 'Б. Энхтөр',
         createdAt: '2026-01-01T00:00:00.000Z',
         updatedAt: '2026-08-02T00:00:00.000Z',
       },

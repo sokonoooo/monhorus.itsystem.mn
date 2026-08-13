@@ -233,6 +233,11 @@ export function CustomerDetailPage(): ReactElement {
                   <table className="min-w-full divide-y divide-slate-200 text-sm">
                     <thead className="bg-slate-50">
                       <tr>
+                        {/* Numbered but not paged: the agreements arrive with the customer
+                            and a customer holds a handful of them. */}
+                        <th className="w-12 whitespace-nowrap px-3 py-2 text-right font-semibold text-slate-700">
+                          №
+                        </th>
                         <th className="px-3 py-2 text-left font-semibold text-slate-700">Дугаар</th>
                         <th className="px-3 py-2 text-left font-semibold text-slate-700">Хугацаа</th>
                         <th className="px-3 py-2 text-left font-semibold text-slate-700">Төрөл</th>
@@ -242,11 +247,17 @@ export function CustomerDetailPage(): ReactElement {
                           Сарын төлбөр
                         </th>
                         <th className="px-3 py-2 text-left font-semibold text-slate-700">Төлөв</th>
+                        <th className="px-3 py-2 text-left font-semibold text-slate-700">
+                          Үүсгэсэн
+                        </th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {agreements.map((agreement) => (
+                      {agreements.map((agreement, index) => (
                         <tr key={agreement.id}>
+                          <td className="px-3 py-2 text-right tabular-nums text-slate-500">
+                            {index + 1}
+                          </td>
                           <td className="px-3 py-2 font-medium">{agreement.agreementNumber}</td>
                           <td className="whitespace-nowrap px-3 py-2">
                             {agreement.startDate.slice(0, 10)} - {agreement.endDate.slice(0, 10)}
@@ -277,6 +288,9 @@ export function CustomerDetailPage(): ReactElement {
                             >
                               {SERVICE_AGREEMENT_STATUS_LABELS[agreement.status]}
                             </span>
+                          </td>
+                          <td className="px-3 py-2">
+                            <span className="text-slate-700">{agreement.createdByName ?? '-'}</span>
                           </td>
                         </tr>
                       ))}

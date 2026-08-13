@@ -46,6 +46,14 @@ export interface ProjectDto {
   riskSummary: RiskSummaryDto;
   /** Worst-case standing of the equipment beneath, recalculated on every assessment. */
   rollup: ReportRollupDto;
+  /**
+   * Who created the record, resolved to a display name.
+   *
+   * Null where it is not known: rows created before the creator was recorded, and
+   * records the system itself made. The screen renders that as a dash rather than
+   * guessing, because an absent creator is a real answer here.
+   */
+  createdByName: string | null;
   createdAt: string;
   updatedAt: string;
   /** Reasons deletion is refused. Empty means deletion is allowed. */
@@ -69,6 +77,14 @@ export interface BuildingDto {
   riskSummary: RiskSummaryDto;
   /** Worst-case standing of the equipment beneath, recalculated on every assessment. */
   rollup: ReportRollupDto;
+  /**
+   * Who created the record, resolved to a display name.
+   *
+   * Null where it is not known: rows created before the creator was recorded, and
+   * records the system itself made. The screen renders that as a dash rather than
+   * guessing, because an absent creator is a real answer here.
+   */
+  createdByName: string | null;
   createdAt: string;
   updatedAt: string;
   deleteBlockers: readonly string[];
@@ -94,6 +110,14 @@ export interface FloorDto {
   riskSummary: RiskSummaryDto;
   /** Worst-case standing of the equipment on this floor, recalculated on every assessment. */
   rollup: ReportRollupDto;
+  /**
+   * Who created the record, resolved to a display name.
+   *
+   * Null where it is not known: rows created before the creator was recorded, and
+   * records the system itself made. The screen renders that as a dash rather than
+   * guessing, because an absent creator is a real answer here.
+   */
+  createdByName: string | null;
   createdAt: string;
   updatedAt: string;
   deleteBlockers: readonly string[];

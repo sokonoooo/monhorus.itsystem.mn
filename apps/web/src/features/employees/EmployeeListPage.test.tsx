@@ -27,6 +27,7 @@ function makeRow(overrides: Partial<EmployeeListItemDto> = {}): EmployeeListItem
     employmentStartDate: '2024-01-15T00:00:00.000Z',
     hasSystemAccess: false,
     isActive: true,
+    createdByName: 'Б. Энхтөр',
     ...overrides,
   };
 }

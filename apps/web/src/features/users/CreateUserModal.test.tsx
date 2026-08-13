@@ -23,6 +23,7 @@ function makeCustomer(overrides: Partial<CustomerDto> = {}): CustomerDto {
     responsibleEmployeeName: null,
     notes: null,
     isActive: true,
+    createdByName: 'Б. Энхтөр',
     ...overrides,
   };
 }
@@ -113,6 +114,7 @@ describe('CreateUserModal customer organisation link', () => {
         customerName: 'Өөр Байгууллага ХХК',
         lastLoginAt: null,
         createdBy: null,
+        createdByName: 'Б. Энхтөр',
         createdAt: '2026-01-01T00:00:00.000Z',
         updatedAt: '2026-01-01T00:00:00.000Z',
       },

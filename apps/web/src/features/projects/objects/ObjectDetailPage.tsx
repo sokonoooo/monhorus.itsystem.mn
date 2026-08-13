@@ -192,6 +192,11 @@ export function ObjectDetailPage(): ReactElement {
       ),
     },
     { key: 'status', header: 'Төлөв', render: (row) => <ObjectStatusBadge status={row.status} /> },
+    {
+      key: 'createdBy',
+      header: 'Үүсгэсэн',
+      render: (row) => <span className="text-slate-700">{row.createdByName ?? '-'}</span>,
+    },
   ];
 
   // The two child tables share a column set but not a preference: a caller may want the
@@ -518,6 +523,12 @@ export function ObjectDetailPage(): ReactElement {
               columns={circuitColumnState.visibleColumns}
               rows={object.childCircuits}
               rowKey={(row) => row.id}
+              // NUMBERED BUT NOT PAGED, and so are the three tables below it. These rows
+              // arrive inside the object's own detail payload rather than from a list
+              // endpoint, so there is nothing to page against: a pager here could only
+              // slice an array the page already holds, and the panel's circuits are
+              // bounded by what fits in one physical enclosure.
+              numbering
               onRowClick={(row) => navigate(`${floorPath}/objects/${row.id}`)}
               emptyTitle="Хэлхээ алга"
             />
@@ -540,6 +551,7 @@ export function ObjectDetailPage(): ReactElement {
               columns={mountedColumnState.visibleColumns}
               rows={object.mountedEquipment}
               rowKey={(row) => row.id}
+              numbering
               onRowClick={(row) => navigate(`${floorPath}/objects/${row.id}`)}
               emptyTitle="Тоноглол алга"
             />
@@ -558,6 +570,7 @@ export function ObjectDetailPage(): ReactElement {
               columns={equipmentColumnState.visibleColumns}
               rows={object.childEquipment}
               rowKey={(row) => row.id}
+              numbering
               onRowClick={(row) => navigate(`${floorPath}/objects/${row.id}`)}
               emptyTitle="Тоноглол алга"
             />
@@ -574,6 +587,7 @@ export function ObjectDetailPage(): ReactElement {
             columns={assessmentColumnState.visibleColumns}
             rows={history?.assessments ?? []}
             rowKey={(row) => row.id}
+            numbering
             onRowClick={(row) => setAssessmentDetail(row)}
             emptyTitle="Үнэлгээ бүртгэгдээгүй байна."
           />

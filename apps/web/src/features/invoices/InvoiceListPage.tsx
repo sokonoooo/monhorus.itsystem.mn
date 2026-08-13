@@ -198,6 +198,11 @@ export function InvoiceListPage(): ReactElement {
         <InvoiceStatusBadge status={row.effectiveStatus} overdueDays={row.overdueDays} />
       ),
     },
+    {
+      key: 'createdBy',
+      header: 'Үүсгэсэн',
+      render: (row) => <span className="text-slate-700">{row.createdByName ?? '-'}</span>,
+    },
   ];
 
   const columnState = useTableColumns('invoices', columns);

@@ -147,6 +147,11 @@ export function CustomerPlannedWorkTab({ customerId }: { customerId: string }): 
         </span>
       ),
     },
+    {
+      key: 'createdBy',
+      header: 'Үүсгэсэн',
+      render: (row) => <span className="text-slate-700">{row.createdByName ?? '-'}</span>,
+    },
   ];
 
   const columnState = useTableColumns('customer-planned-work', columns);

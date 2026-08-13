@@ -312,3 +312,64 @@ describe('BuildingDetailPage', () => {
     expect(await screen.findByText('Хоёр дэд станцтай')).toBeInTheDocument();
   });
 });
+
+/**
+ * Floors under a building had the same `limit: 100` fetch as buildings under a project,
+ * and the same silent truncation past it. See ProjectDetailPage.test.tsx.
+ */
+describe('BuildingDetailPage floor list paging', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(projectService, 'getBuilding').mockResolvedValue(makeBuilding());
+  });
+
+  function floorPage(page: number, count: number, total: number) {
+    return {
+      items: Array.from({ length: count }, (_, offset) =>
+        makeFloor({
+          id: `f-${page}-${offset}`,
+          code: `FLR-${page}-${offset}`,
+          name: `Давхар ${page}-${offset}`,
+        }),
+      ),
+      page,
+      limit: 20,
+      total,
+      totalPages: Math.ceil(total / 20),
+    };
+  }
+
+  it('asks for one page of floors rather than a hundred', async () => {
+    const list = vi.spyOn(projectService, 'listFloors').mockResolvedValue(floorPage(1, 20, 60));
+
+    renderBuilding();
+    await screen.findByRole('table');
+
+    expect(list).toHaveBeenCalledWith({ buildingId: BUILDING_ID, page: 1, limit: 20 });
+  });
+
+  it('numbers the floors continuously across pages', async () => {
+    vi.spyOn(projectService, 'listFloors').mockResolvedValue(floorPage(2, 20, 60));
+
+    renderBuilding();
+
+    const table = await screen.findByRole('table');
+    expect(within(table).getByRole('columnheader', { name: '№' })).toBeInTheDocument();
+    // Page 2 of 20 begins at 21, not at 1.
+    expect(within(table).getAllByRole('cell')[0]?.textContent?.trim()).toBe('21');
+  });
+
+  it('asks the server for the next page when the pager is used', async () => {
+    const user = userEvent.setup();
+    const list = vi.spyOn(projectService, 'listFloors').mockResolvedValue(floorPage(1, 20, 60));
+
+    renderBuilding();
+    await screen.findByRole('table');
+
+    await user.click(screen.getByRole('button', { name: 'Дараах' }));
+
+    await waitFor(() =>
+      expect(list).toHaveBeenLastCalledWith({ buildingId: BUILDING_ID, page: 2, limit: 20 }),
+    );
+  });
+});

@@ -730,6 +730,9 @@ export function InspectionReportPage(): ReactElement {
             columns={issueColumnState.visibleColumns}
             rows={report.issues}
             rowKey={(row) => row.taskId}
+            // NUMBERED BUT NOT PAGED: this is the preview of a report exported whole, and
+            // the issues arrive inside its payload.
+            numbering
             emptyTitle="Зөрчил илрээгүй"
             emptyDescription="Хэвийн түвшнээс доош үнэлэгдсэн дэд ажил байхгүй байна."
           />

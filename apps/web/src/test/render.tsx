@@ -39,6 +39,7 @@ export function makeUser(
     customerName: null,
     lastLoginAt: null,
     createdBy: null,
+    createdByName: null,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     roleIds: ['r1'],

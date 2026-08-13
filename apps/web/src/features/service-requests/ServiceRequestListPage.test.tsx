@@ -27,6 +27,7 @@ function makeRow(overrides: Partial<ServiceRequestListItemDto> = {}): ServiceReq
     assignedEmployees: [],
     assignedTeam: null,
     createdAt: '2026-01-01T00:00:00.000Z',
+    createdByName: 'Б. Энхтөр',
     slaDueAt: '2026-01-01T06:00:00.000Z',
     slaState: 'STARTED',
     slaRemainingMinutes: 300,

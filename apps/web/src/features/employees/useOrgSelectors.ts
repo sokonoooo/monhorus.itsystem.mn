@@ -13,6 +13,16 @@ export interface OrgSelectorState {
 }
 
 /**
+ * How many options one selector may offer.
+ *
+ * The three org lists are paginated because they are management tables too, and a form
+ * dropdown wants a list rather than a page. One deliberately large page is what a `<select>`
+ * can usefully hold anyway: past a few hundred entries the control itself is the problem,
+ * and the answer then is a searchable picker rather than a second page nobody can reach.
+ */
+const OPTION_LIMIT = 200;
+
+/**
  * Dependent organisation selectors: Company -> Department -> Position / Team.
  *
  * Each level refetches when its parent changes. The caller is responsible for
@@ -34,9 +44,9 @@ export function useOrgSelectors(companyId: string, departmentId: string): OrgSel
     setLoading(true);
 
     orgService
-      .companies()
+      .companies({ limit: OPTION_LIMIT })
       .then((result) => {
-        if (!cancelled) setCompanies(result);
+        if (!cancelled) setCompanies(result.items);
       })
       .catch(() => fail('Компанийн жагсаалт ачаалж чадсангүй.'))
       .finally(() => {
@@ -57,9 +67,9 @@ export function useOrgSelectors(companyId: string, departmentId: string): OrgSel
     }
 
     orgService
-      .departments(companyId)
+      .departments({ companyId, limit: OPTION_LIMIT })
       .then((result) => {
-        if (!cancelled) setDepartments(result);
+        if (!cancelled) setDepartments(result.items);
       })
       .catch(() => fail('Албаны жагсаалт ачаалж чадсангүй.'));
 
@@ -78,12 +88,16 @@ export function useOrgSelectors(companyId: string, departmentId: string): OrgSel
     }
 
     Promise.all([
-      orgService.positions(companyId, departmentId || undefined),
+      orgService.positions({
+        companyId,
+        ...(departmentId ? { departmentId } : {}),
+        limit: OPTION_LIMIT,
+      }),
       orgService.teams(companyId, departmentId || undefined),
     ])
       .then(([positionResult, teamResult]) => {
         if (cancelled) return;
-        setPositions(positionResult);
+        setPositions(positionResult.items);
         setTeams(teamResult);
       })
       .catch(() => fail('Албан тушаал, багийн жагсаалт ачаалж чадсангүй.'));

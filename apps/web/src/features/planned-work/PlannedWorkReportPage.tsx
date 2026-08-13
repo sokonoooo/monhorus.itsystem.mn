@@ -483,6 +483,10 @@ export function PlannedWorkReportPage(): ReactElement {
             columns={taskColumnState.visibleColumns}
             rows={preview.tasks}
             rowKey={(row) => row.id}
+            // NUMBERED BUT NOT PAGED, here and in the materials table below. This screen is
+            // the preview of a report that is exported whole; splitting it into pages would
+            // put rows behind a control that the exported PDF does not have.
+            numbering
             emptyTitle="Дэд ажил байхгүй"
           />
         </div>
@@ -496,6 +500,7 @@ export function PlannedWorkReportPage(): ReactElement {
             columns={materialColumnState.visibleColumns}
             rows={preview.materials}
             rowKey={(row) => row.name}
+            numbering
             emptyTitle="Материал бүртгэгдээгүй"
           />
         </div>

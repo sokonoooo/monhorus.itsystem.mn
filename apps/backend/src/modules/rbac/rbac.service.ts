@@ -16,6 +16,7 @@ import { Types } from 'mongoose';
 import { AppError } from '../../common/errors/app-error';
 import { ERROR_CODES } from '../../common/errors/error-codes';
 import type { AuthContext } from '../../common/types/express';
+import { CREATOR_POPULATE, creatorName } from '../../common/utils/creator.util';
 import { logger } from '../../config/logger';
 import { invalidateRecipientCache } from '../notification/notification.service';
 import { User } from '../user/user.model';
@@ -31,6 +32,9 @@ export function toRoleDto(role: IRole & { _id: Types.ObjectId }, userCount?: num
     permissions: role.permissions,
     isSystem: role.isSystem,
     ...(userCount === undefined ? {} : { userCount }),
+    // Null for the seeded system roles: they are materialised by `seedRbac` on boot, so
+    // there is no person to credit.
+    createdByName: creatorName(role.createdBy),
     createdAt: role.createdAt.toISOString(),
     updatedAt: role.updatedAt.toISOString(),
   };
@@ -291,7 +295,7 @@ export function isProtectedRoleKey(key: string): boolean {
  */
 
 export async function listRoles(): Promise<RoleDto[]> {
-  const roles = await Role.find().sort({ isSystem: -1, name: 1 });
+  const roles = await Role.find().populate(CREATOR_POPULATE).sort({ isSystem: -1, name: 1 });
   const counts = await User.aggregate<{ _id: Types.ObjectId; count: number }>([
     { $unwind: '$roles' },
     { $group: { _id: '$roles', count: { $sum: 1 } } },
@@ -302,7 +306,7 @@ export async function listRoles(): Promise<RoleDto[]> {
 }
 
 export async function getRoleById(roleId: string): Promise<RoleDto> {
-  const role = await Role.findById(roleId);
+  const role = await Role.findById(roleId).populate(CREATOR_POPULATE);
   if (!role) {
     throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Role олдсонгүй.');
   }
@@ -436,7 +440,12 @@ export async function createRole(
     description: input.description ?? null,
     permissions: input.permissions,
     isSystem: false,
+    createdBy: new Types.ObjectId(actor.userId),
   });
+
+  // Resolved on the way out so the row the client inserts into the list carries the creator
+  // it was just stamped with, rather than a dash until the next refetch.
+  await role.populate(CREATOR_POPULATE);
 
   return toRoleDto(role);
 }
@@ -446,7 +455,9 @@ export async function updateRole(
   input: { name?: string; description?: string | null; permissions?: PermissionKey[] },
   actor: AuthContext,
 ): Promise<{ before: RoleDto; after: RoleDto }> {
-  const role = await Role.findById(roleId);
+  // Populated before the edit rather than after `save()`, so `before` and `after` describe
+  // the same creator instead of the audit pair disagreeing about who made the role.
+  const role = await Role.findById(roleId).populate(CREATOR_POPULATE);
   if (!role) {
     throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Role олдсонгүй.');
   }

@@ -291,6 +291,11 @@ export function EmployeeSalaryTab({ employeeId }: { employeeId: string | null })
             <table className="min-w-full divide-y divide-slate-200 text-sm">
               <thead className="bg-slate-50">
                 <tr>
+                  {/* Numbered but not paged: the salary history arrives with the employee
+                      and is short by nature — one row per revision. */}
+                  <th className="w-12 whitespace-nowrap px-3 py-2 text-right font-semibold text-slate-700">
+                    №
+                  </th>
                   <th className="px-3 py-2 text-left font-semibold text-slate-700">Эхлэх</th>
                   <th className="px-3 py-2 text-left font-semibold text-slate-700">Дуусах</th>
                   <th className="px-3 py-2 text-right font-semibold text-slate-700">Үндсэн цалин</th>
@@ -299,8 +304,11 @@ export function EmployeeSalaryTab({ employeeId }: { employeeId: string | null })
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {history.map((row) => (
+                {history.map((row, index) => (
                   <tr key={row.id}>
+                    <td className="px-3 py-2 text-right tabular-nums text-slate-500">
+                      {index + 1}
+                    </td>
                     <td className="px-3 py-2">{row.effectiveFrom.slice(0, 10)}</td>
                     <td className="px-3 py-2">{row.effectiveTo?.slice(0, 10) ?? '-'}</td>
                     <td className="px-3 py-2 text-right font-medium">
