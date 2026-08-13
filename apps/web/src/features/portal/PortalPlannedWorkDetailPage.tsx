@@ -4,7 +4,7 @@ import {
   type PlannedWorkTaskDto,
 } from '@monhorus/shared';
 import { useCallback, useEffect, useState, type ReactElement } from 'react';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 
 import { Alert } from '../../components/ui/Alert';
 import { Button } from '../../components/ui/Button';
@@ -20,6 +20,7 @@ import {
   TaskStatusBadge,
 } from '../planned-work/PlannedWorkBadges';
 import { groupTasksByFloor } from '../planned-work/PlannedWorkFloorSections';
+import { TransitionActions } from '../planned-work/TransitionActions';
 import { TaskFormDrawer } from '../planned-work/TaskFormDrawer';
 
 function formatDate(iso: string | null): string {
@@ -56,6 +57,8 @@ function Row({ label, value }: { label: string; value: string }): ReactElement {
  */
 export function PortalPlannedWorkDetailPage(): ReactElement {
   const { plannedWorkId } = useParams<{ plannedWorkId: string }>();
+  const navigate = useNavigate();
+  const detailPath = `/portal/planned-work/${plannedWorkId ?? ''}`;
 
   const { notify } = useToast();
 
@@ -105,9 +108,14 @@ export function PortalPlannedWorkDetailPage(): ReactElement {
   // freshly raised request is — must render its status, not throw on an absent array.
   const floorGroups = groupTasksByFloor(work.tasks ?? [], work.floorProgress ?? []);
 
-  // The server's rule, mirrored so the UI offers nothing it would refuse. It is mirrored,
-  // not enforced — `findRawForTaskWrite` is what actually decides.
-  const canPlan = work.lifecycleStatus === 'PENDING_APPROVAL';
+  /**
+   * Whether the request is still the customer's to shape.
+   *
+   * Mirrors `CREATOR_EDITABLE_STATUSES` server-side so the UI offers nothing that would be
+   * refused. It is mirrored, not enforced — `findRawForOwnerEdit` and `findRawForTaskWrite`
+   * are what actually decide. Submitting hands it over; a returned request comes back.
+   */
+  const canEdit = work.lifecycleStatus === 'DRAFT' || work.lifecycleStatus === 'REJECTED';
 
   async function removeTask(taskId: string): Promise<void> {
     if (!work) return;
@@ -140,9 +148,27 @@ export function PortalPlannedWorkDetailPage(): ReactElement {
 
       <div className="space-y-4">
         {/*
-          The three states a customer actually acts on. Each says who is waiting on whom,
-          rather than leaving them to infer it from a coloured chip.
+          The states a customer acts on. Each says who is waiting on whom, rather than
+          leaving them to infer it from a coloured chip.
         */}
+        {work.lifecycleStatus === 'DRAFT' && (
+          <Alert variant="info" title="Илгээгээгүй байна">
+            Энэ хүсэлт хараахан илгээгдээгүй. Мэдээллээ гүйцээж, дэд ажлуудаа оруулаад
+            «Төлөвлөх» дарж батлуулахаар илгээнэ үү.
+          </Alert>
+        )}
+
+        {/*
+          A returned request, with the objection it came back with. This is the one state
+          where the customer is the person holding things up, so the reason is shown as the
+          headline rather than buried among the facts below.
+        */}
+        {work.lifecycleStatus === 'REJECTED' && (
+          <Alert variant="error" title="Буцаагдсан — засаад дахин илгээнэ үү">
+            {work.cancelReason ?? 'Шалтгаан бүртгэгдээгүй байна.'}
+          </Alert>
+        )}
+
         {work.lifecycleStatus === 'PENDING_APPROVAL' && (
           <Alert variant="warning" title="Батлахыг хүлээж байна">
             Хүсэлт хүлээн авсан. Эрх бүхий ажилтан хянаж байна — батлагдсаны дараа гүйцэтгэх
@@ -160,6 +186,20 @@ export function PortalPlannedWorkDetailPage(): ReactElement {
           <Alert variant="success" title="Батлагдсан">
             Ажил батлагдаж, төлөвлөгөөнд орлоо.
           </Alert>
+        )}
+
+        {/*
+          The creator's own actions. «Төлөвлөх» is rendered by the SAME component the staff
+          detail uses, from the server's `availableActions` — so the customer cannot be
+          offered a transition the server would refuse, and gains any future one for free.
+        */}
+        {canEdit && (
+          <div className="flex flex-wrap items-center gap-2 rounded-xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+            <Button size="sm" variant="secondary" onClick={() => navigate(`${detailPath}/edit`)}>
+              Засах
+            </Button>
+            <TransitionActions work={work} variant="portal" onChanged={setWork} />
+          </div>
         )}
 
         <div className="rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
@@ -206,11 +246,11 @@ export function PortalPlannedWorkDetailPage(): ReactElement {
           it is, not who is doing it or what they wrote to each other on the way. The signed
           conclusion reaches them through the approved report instead.
         */}
-        {(floorGroups.length > 0 || canPlan) && (
+        {(floorGroups.length > 0 || canEdit) && (
           <div className="space-y-3">
             <div className="flex flex-wrap items-center gap-3">
               <h2 className="text-sm font-semibold text-slate-900">Ажлын задаргаа</h2>
-              {canPlan && (
+              {canEdit && (
                 <Button size="sm" className="ml-auto" onClick={() => setTaskTarget('new')}>
                   Дэд ажил нэмэх
                 </Button>
@@ -222,7 +262,7 @@ export function PortalPlannedWorkDetailPage(): ReactElement {
               It is also the state that stops the work being completed later, so it is said
               plainly rather than left as an empty panel.
             */}
-            {floorGroups.length === 0 && canPlan && (
+            {floorGroups.length === 0 && canEdit && (
               <Alert variant="info">
                 Хийгдэх ажлуудаа дэд ажил болгон задалж оруулна уу. Батлагдсаны дараа
                 задаргааг өөрчлөх боломжгүй.
@@ -266,7 +306,7 @@ export function PortalPlannedWorkDetailPage(): ReactElement {
                           totalQuantity={task.totalQuantity}
                         />
                       </div>
-                      {canPlan && (
+                      {canEdit && (
                         <div className="flex items-center gap-1">
                           <Button
                             size="sm"

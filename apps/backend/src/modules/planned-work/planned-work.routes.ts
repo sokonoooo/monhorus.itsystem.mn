@@ -164,7 +164,7 @@ plannedWorkRouter.get(
  */
 plannedWorkRouter.patch(
   '/:plannedWorkId',
-  requirePermission(PERMISSIONS.PLANNED_WORK_UPDATE),
+  requireAnyPermission(PERMISSIONS.PLANNED_WORK_UPDATE, PERMISSIONS.PORTAL_PLANNED_WORK_CREATE),
   validate({ params: workParams, body: updatePlannedWorkSchema }),
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {

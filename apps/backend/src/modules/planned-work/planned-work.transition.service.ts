@@ -4,6 +4,7 @@ import {
   PLANNED_WORK_STATUS_LABELS,
   resumeTargetStatus,
   type PlannedWorkAction,
+  type PlannedWorkActionRule,
   type PlannedWorkAvailableActionDto,
   type PlannedWorkLifecycleStatus,
   type PlannedWorkTransitionInput,
@@ -11,6 +12,10 @@ import {
 import { Types, type ClientSession, type HydratedDocument } from 'mongoose';
 
 import { AppError } from '../../common/errors/app-error';
+import {
+  assertInCustomerScope,
+  resolveCustomerScope,
+} from '../../common/security/customer-scope';
 import { ERROR_CODES } from '../../common/errors/error-codes';
 import type { AuthContext } from '../../common/types/express';
 import type { RequestMeta } from '../../common/utils/request-meta.util';
@@ -28,6 +33,7 @@ import {
   PlannedWorkTask,
   type IPlannedWork,
 } from './planned-work.models';
+import { assertEmployeesExist } from './planned-work.crew';
 import { allTasksComplete, completionBlockersOf } from './planned-work.progress.service';
 import { assertPlannedWorkAssignmentScope } from './planned-work.scope';
 
@@ -85,7 +91,7 @@ export function availableActionsFor(
   for (const action of PLANNED_WORK_ACTIONS) {
     const rule = PLANNED_WORK_ACTION_RULES[action];
     if (!rule.from.includes(work.status)) continue;
-    if (!hasPermission(actor, rule.permission)) continue;
+    if (!mayPerform(rule, actor)) continue;
     // Never offer a button the assignment-scope policy will refuse. The refusal in
     // `transitionPlannedWork` is the authority; this only keeps the client honest.
     if (!assignmentAllowed) continue;
@@ -97,10 +103,24 @@ export function availableActionsFor(
       label: rule.label,
       requiresReason: rule.requiresReason,
       targetStatus: targetStatusFor(action, work),
+      assignsCrew: rule.assignsCrew === true,
     });
   }
 
   return actions;
+}
+
+/**
+ * Whether the caller holds a key that admits this action.
+ *
+ * `customerPermission` is the portal's way in and exists only on PLAN. It is deliberately
+ * NOT enough on its own: `transitionPlannedWork` separately bounds a customer to their own
+ * record, so holding the key answers "may this caller ever submit work" and the scope check
+ * answers "is this theirs".
+ */
+function mayPerform(rule: PlannedWorkActionRule, actor: AuthContext): boolean {
+  if (hasPermission(actor, rule.permission)) return true;
+  return rule.customerPermission ? hasPermission(actor, rule.customerPermission) : false;
 }
 
 function assertTransitionAllowed(
@@ -111,7 +131,7 @@ function assertTransitionAllowed(
 ): void {
   const rule = PLANNED_WORK_ACTION_RULES[action];
 
-  if (!hasPermission(actor, rule.permission)) {
+  if (!mayPerform(rule, actor)) {
     throw AppError.forbidden(ERROR_CODES.FORBIDDEN, 'Энэ үйлдлийг хийх эрх байхгүй байна.');
   }
 
@@ -153,6 +173,39 @@ export async function transitionPlannedWork(
   assertTransitionAllowed(input.action, work, actor, reason);
 
   /**
+   * A customer may drive only their own record.
+   *
+   * This is the ONLY thing bounding them. The assignment-scope check below is a staff
+   * policy and is skipped for customers — see the note on it — so without this the portal
+   * key that lets a customer submit their own draft would let them submit anybody's.
+   * Reported as not-found for the usual reason: a forbidden on an id that exists elsewhere
+   * confirms the record is real.
+   */
+  const scope = resolveCustomerScope(actor);
+  if (scope.mode === 'CUSTOMER') assertInCustomerScope(scope, work.customer);
+
+  /**
+   * The crew, resolved before anything is written.
+   *
+   * APPROVE is the only action that assigns, and it refuses to run unstaffed: approving is
+   * agreeing to the work AND saying who does it, so there is no moment at which a work is
+   * PLANNED and nobody is on it. Doing this here rather than inside the transaction means a
+   * bad employee id fails the whole action rather than half-applying it.
+   */
+  const rule = PLANNED_WORK_ACTION_RULES[input.action];
+  let approvedCrew: Types.ObjectId[] = [];
+  if (rule.assignsCrew) {
+    if (input.assignedEmployeeIds.length === 0) {
+      throw AppError.badRequest(
+        ERROR_CODES.VALIDATION_ERROR,
+        'Батлахдаа гүйцэтгэх ажилтныг сонгоно уу.',
+        [{ field: 'assignedEmployeeIds', message: 'Дор хаяж нэг ажилтан сонгоно.' }],
+      );
+    }
+    approvedCrew = await assertEmployeesExist(input.assignedEmployeeIds);
+  }
+
+  /**
    * Assignment scope, checked AFTER the permission gate and independently of it.
    *
    * Holding the action's permission answers "may this caller ever do this"; it says nothing
@@ -161,7 +214,15 @@ export async function transitionPlannedWork(
    * closes the whole endpoint. CANCEL is keyed on `planned_work.cancel`, which is an
    * oversight permission, so a legitimate canceller is unscoped and unaffected.
    */
-  await assertPlannedWorkAssignmentScope(work._id, actor);
+  //
+  // A CUSTOMER IS BOUNDED DIFFERENTLY AND MUST SKIP IT. This policy asks which employee a
+  // job belongs to, and a portal account has no employee card, so it answers NOT_ASSIGNED
+  // for every customer and would refuse them their own request. Their bound is the tenancy
+  // check above, which is the right question for them: not "is this your job" but "is this
+  // your organisation's work".
+  if (scope.mode !== 'CUSTOMER') {
+    await assertPlannedWorkAssignmentScope(work._id, actor);
+  }
 
   const previousStatus = work.status;
   const newStatus = targetStatusFor(input.action, work);
@@ -255,13 +316,20 @@ export async function transitionPlannedWork(
         break;
       }
 
+      case 'APPROVE': {
+        // Approval and assignment are one write. The work becomes PLANNED and staffed in
+        // the same update, so no reader can observe it approved-but-unstaffed.
+        update.assignedEmployees = approvedCrew;
+        break;
+      }
+
       case 'CANCEL':
       /**
-       * REJECT shares CANCEL's bookkeeping because it shares its destination: refusing a
-       * customer's request ends the record, and the reason it ends is the thing the
-       * customer needs to read. Falling through rather than repeating the four writes keeps
-       * the two from drifting — a reason recorded on one and not the other would be a
-       * cancelled work with no explanation on somebody's portal screen.
+       * REJECT shares CANCEL's bookkeeping because both owe the reader an explanation, and
+       * `cancelReason` is where the portal already looks for one. Their destinations now
+       * differ — CANCELLED ends the record, REJECTED hands it back — but the four writes
+       * are the same, and repeating them is how a refusal with no explanation on somebody's
+       * screen gets introduced.
        */
       case 'REJECT': {
         update.cancelReason = reason;
@@ -271,8 +339,17 @@ export async function transitionPlannedWork(
         break;
       }
 
-      case 'PLAN':
+      case 'PLAN': {
+        // Re-submitting clears the previous refusal. Leaving it would show the creator a
+        // rejection notice on a work that is once again waiting to be looked at.
+        if (previousStatus === 'REJECTED') {
+          update.cancelReason = null;
+          update.cancelledBy = null;
+          update.cancelledByName = null;
+          update.cancelledAt = null;
+        }
         break;
+      }
     }
 
     await PlannedWork.updateOne({ _id: work._id }, { $set: update }, options);

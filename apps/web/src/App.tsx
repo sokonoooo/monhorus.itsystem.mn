@@ -533,6 +533,14 @@ export default function App(): ReactElement {
             }
           />
           <Route
+            path="/portal/planned-work/:plannedWorkId/edit"
+            element={
+              <PortalPage anyOf={[PERMISSIONS.PORTAL_PLANNED_WORK_CREATE]}>
+                <PlannedWorkFormPage variant="portal" />
+              </PortalPage>
+            }
+          />
+          <Route
             path="/portal/planned-work/:plannedWorkId"
             element={
               <PortalPage anyOf={[PERMISSIONS.PORTAL_PLANNED_WORK_VIEW]}>

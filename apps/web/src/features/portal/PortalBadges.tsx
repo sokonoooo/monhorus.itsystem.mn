@@ -70,6 +70,7 @@ export function PortalUrgentBadge(): ReactElement {
 const PORTAL_WORK_STATUS_STYLES: Record<PlannedWorkEffectiveStatus, string> = {
   DRAFT: GREY,
   PENDING_APPROVAL: AMBER,
+  REJECTED: RED,
   PLANNED: BLUE,
   STARTED: BLUE,
   PAUSED: AMBER,

@@ -50,13 +50,22 @@ const TECHNICIAN_KEYS: readonly PermissionKey[] = [
   PERMISSIONS.PLANNED_WORK_SUBMIT_REPORT,
 ];
 
-/** A planner: everything the technician has plus the oversight keys of a supervisor. */
+/**
+ * A planner: everything the technician has plus the oversight keys of a supervisor.
+ *
+ * `planned_work.approve` is one of those oversight keys, and it is here rather than on
+ * [TECHNICIAN_KEYS] on purpose. Approval is now the second half of reaching PLANNED, so the
+ * fixtures below need SOMEBODY who can approve — and the one caller it must never be is the
+ * technician, whose whole point in this file is being refused the supervisory actions.
+ * Granting it there to make a setup step work would delete the property under test.
+ */
 const SUPERVISOR_KEYS: readonly PermissionKey[] = [
   ...TECHNICIAN_KEYS,
   PERMISSIONS.PLANNED_WORK_CREATE,
   PERMISSIONS.PLANNED_WORK_UPDATE,
   PERMISSIONS.PLANNED_WORK_RESCHEDULE,
   PERMISSIONS.PLANNED_WORK_CANCEL,
+  PERMISSIONS.PLANNED_WORK_APPROVE,
 ];
 
 /** The other half of the 9.2 separation: reads and approves, never writes the report. */
@@ -135,6 +144,28 @@ async function transition(
     .send({ action, ...(reason ? { reason } : {}) });
 }
 
+/**
+ * Drives a DRAFT work to PLANNED, staffed with the technician. ALWAYS AS THE SUPERVISOR.
+ *
+ * REACHING PLANNED IS TWO ACTIONS NOW: PLAN parks the work in PENDING_APPROVAL, and APPROVE
+ * is what promotes it — and APPROVE refuses to run unstaffed, so it carries the crew.
+ *
+ * The bearer is the supervisor and is not a parameter, because the technician is refused
+ * `planned_work.approve` by design and that refusal is a large part of what this file
+ * asserts. If a case here ever needs the technician's work in PLANNED, the approver does the
+ * setup; handing the technician the approve key to shorten a fixture would quietly remove
+ * the separation of duties these tests exist to defend.
+ */
+async function planAndApprove(workId: string): Promise<void> {
+  expect((await transition(workId, 'PLAN', supervisorToken)).status).toBe(200);
+
+  const approved = await request(app)
+    .post(`${API}/planned-work/${workId}/transition`)
+    .set('Authorization', `Bearer ${supervisorToken}`)
+    .send({ action: 'APPROVE', assignedEmployeeIds: [technicianEmployeeId] });
+  expect(approved.status).toBe(200);
+}
+
 /** A work the technician IS assigned to, planned by the supervisor and started by them. */
 async function startedWorkForTechnician(): Promise<string> {
   const created = await request(app)
@@ -144,7 +175,7 @@ async function startedWorkForTechnician(): Promise<string> {
   expect(created.status).toBe(201);
   const workId = created.body.data.id as string;
 
-  expect((await transition(workId, 'PLAN', supervisorToken)).status).toBe(200);
+  await planAndApprove(workId);
   expect((await transition(workId, 'START', technicianToken)).status).toBe(200);
   return workId;
 }
@@ -182,7 +213,7 @@ async function completedWorkAuthoredByTechnician(): Promise<string> {
   const tasks = taskResponse.body.data.tasks as { id: string }[];
   const taskId = tasks[tasks.length - 1]!.id;
 
-  expect((await transition(workId, 'PLAN', supervisorToken)).status).toBe(200);
+  await planAndApprove(workId);
   expect((await transition(workId, 'START', technicianToken)).status).toBe(200);
 
   for (const kind of ['BEFORE', 'AFTER']) {

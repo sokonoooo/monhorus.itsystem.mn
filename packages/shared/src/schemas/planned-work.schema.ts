@@ -74,6 +74,15 @@ export const reschedulePlannedWorkSchema = z.object({
 export const plannedWorkTransitionSchema = z.object({
   action: z.enum(PLANNED_WORK_ACTIONS, { required_error: 'Үйлдэл заавал.' }),
   reason: z.string().trim().max(1000).nullish(),
+  /**
+   * The crew, supplied with APPROVE and ignored by every other action.
+   *
+   * Not required by the schema, because "required" here depends on the action and a schema
+   * that enforced it would reject a perfectly good CANCEL for lacking a crew. The rule that
+   * APPROVE needs at least one employee lives with the transition, next to the matrix flag
+   * that declares it — see `assignsCrew`.
+   */
+  assignedEmployeeIds: z.array(objectIdSchema).max(20).default([]),
 });
 
 // -- Tasks -------------------------------------------------------------------

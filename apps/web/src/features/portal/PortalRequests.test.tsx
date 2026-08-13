@@ -525,13 +525,14 @@ describe('following planned work in the portal', () => {
 });
 
 describe('the customer breaks their own request down', () => {
-  function pendingWork(overrides: Record<string, unknown> = {}) {
+  /** A freshly raised request: a DRAFT the customer has not submitted yet. */
+  function draftWork(overrides: Record<string, unknown> = {}) {
     return {
       id: 'w1',
       workNumber: 'PW-202609-0001',
       title: 'Улирлын үзлэг',
-      lifecycleStatus: 'PENDING_APPROVAL',
-      effectiveStatus: 'PENDING_APPROVAL',
+      lifecycleStatus: 'DRAFT',
+      effectiveStatus: 'DRAFT',
       building: { id: BUILDING_ID, name: 'Төв барилга' },
       project: null,
       plannedStartDate: '2026-09-01T00:00:00.000Z',
@@ -545,6 +546,7 @@ describe('the customer breaks their own request down', () => {
       tasks: [],
       floorProgress: [],
       materials: [],
+      availableActions: [],
       ...overrides,
     } as never;
   }
@@ -564,8 +566,8 @@ describe('the customer breaks their own request down', () => {
     );
   });
 
-  it('invites a pending request with no breakdown to add one', async () => {
-    vi.spyOn(portalService, 'getPlannedWork').mockResolvedValue(pendingWork());
+  it('invites a draft with no breakdown to add one', async () => {
+    vi.spyOn(portalService, 'getPlannedWork').mockResolvedValue(draftWork());
 
     openDetail();
 
@@ -577,11 +579,11 @@ describe('the customer breaks their own request down', () => {
    * The controls must vanish exactly when the server stops accepting them. Approval settles
    * the scope, so an approved request is read-only again.
    */
-  it.each(['PLANNED', 'STARTED', 'COMPLETED'] as const)(
+  it.each(['PENDING_APPROVAL', 'PLANNED', 'STARTED', 'COMPLETED'] as const)(
     'withdraws the breakdown controls once the request is %s',
     async (status) => {
       vi.spyOn(portalService, 'getPlannedWork').mockResolvedValue(
-        pendingWork({ lifecycleStatus: status, effectiveStatus: status }),
+        draftWork({ lifecycleStatus: status, effectiveStatus: status }),
       );
 
       openDetail();
@@ -594,7 +596,7 @@ describe('the customer breaks their own request down', () => {
   );
 
   it('offers no assignee control and touches no staff endpoint', async () => {
-    vi.spyOn(portalService, 'getPlannedWork').mockResolvedValue(pendingWork());
+    vi.spyOn(portalService, 'getPlannedWork').mockResolvedValue(draftWork());
     const nodes = vi.spyOn(objectService, 'children').mockResolvedValue([]);
     const roster = vi.spyOn(dispatchService, 'employeeCandidates').mockResolvedValue([]);
 
@@ -612,10 +614,10 @@ describe('the customer breaks their own request down', () => {
   });
 
   it('saves a sub-task through the portal endpoint', async () => {
-    vi.spyOn(portalService, 'getPlannedWork').mockResolvedValue(pendingWork());
+    vi.spyOn(portalService, 'getPlannedWork').mockResolvedValue(draftWork());
     const createTask = vi
       .spyOn(portalService, 'createTask')
-      .mockResolvedValue(pendingWork({ tasks: [] }));
+      .mockResolvedValue(draftWork({ tasks: [] }));
 
     const user = userEvent.setup();
     openDetail();
@@ -632,4 +634,66 @@ describe('the customer breaks their own request down', () => {
       );
     });
   });
+
+  /**
+   * Submitting is the customer's own act now. The button comes from the server's
+   * `availableActions`, not from a client-side status check, which is why the portal cannot
+   * offer a transition the server would refuse.
+   */
+  it('lets a customer submit their own draft for approval', async () => {
+    vi.spyOn(portalService, 'getPlannedWork').mockResolvedValue(
+      draftWork({
+        availableActions: [
+          {
+            action: 'PLAN',
+            label: 'Төлөвлөх',
+            requiresReason: false,
+            assignsCrew: false,
+            targetStatus: 'PENDING_APPROVAL',
+          },
+        ],
+      }),
+    );
+    const transition = vi
+      .spyOn(portalService, 'transition')
+      .mockResolvedValue(draftWork({ lifecycleStatus: 'PENDING_APPROVAL' }));
+
+    const user = userEvent.setup();
+    openDetail();
+
+    await user.click(await screen.findByRole('button', { name: 'Төлөвлөх' }));
+
+    await waitFor(() => {
+      expect(transition).toHaveBeenCalledWith('w1', 'PLAN', null);
+    });
+  });
+
+  /** The round trip: read why it came back, correct it, send it again. */
+  it('shows a returned request its reason and lets the customer act on it', async () => {
+    vi.spyOn(portalService, 'getPlannedWork').mockResolvedValue(
+      draftWork({
+        lifecycleStatus: 'REJECTED',
+        effectiveStatus: 'REJECTED',
+        cancelReason: 'Огноо тохирохгүй байна.',
+        availableActions: [
+          {
+            action: 'PLAN',
+            label: 'Төлөвлөх',
+            requiresReason: false,
+            assignsCrew: false,
+            targetStatus: 'PENDING_APPROVAL',
+          },
+        ],
+      }),
+    );
+
+    openDetail();
+
+    expect(await screen.findByText('Огноо тохирохгүй байна.')).toBeInTheDocument();
+    // Editable again, and submittable again — the same record, not a fresh one.
+    expect(screen.getByRole('button', { name: 'Засах' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Төлөвлөх' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Дэд ажил нэмэх' })).toBeInTheDocument();
+  });
 });
+

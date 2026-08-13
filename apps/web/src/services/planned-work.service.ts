@@ -75,11 +75,13 @@ export const plannedWorkService = {
     plannedWorkId: string,
     action: PlannedWorkAction,
     reason?: string | null,
+    /** Required by APPROVE and ignored by everything else — see `assignsCrew`. */
+    assignedEmployeeIds: readonly string[] = [],
   ): Promise<PlannedWorkDto> {
     return unwrap(
       await apiClient.post<ApiResponse<PlannedWorkDto>>(
         `/planned-work/${plannedWorkId}/transition`,
-        { action, reason: reason ?? null },
+        { action, reason: reason ?? null, assignedEmployeeIds: [...assignedEmployeeIds] },
       ),
     );
   },

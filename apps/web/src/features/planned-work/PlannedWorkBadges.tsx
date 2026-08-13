@@ -34,6 +34,9 @@ const WORK_STATUS_STYLES: Record<PlannedWorkEffectiveStatus, string> = {
   // over the status union, so this entry is required for the file to compile — it is the
   // only change the new status forces on any staff screen.
   PENDING_APPROVAL: YELLOW,
+  // Red, unlike DRAFT's grey: a returned work is not merely unfinished, it is waiting on
+  // somebody to act, and it is the one row in a list that should catch the eye.
+  REJECTED: RED,
   PLANNED: BLUE,
   STARTED: BLUE,
   PAUSED: YELLOW,

@@ -28,6 +28,8 @@ const OPERATOR_PERMISSIONS = [
   PERMISSIONS.PLANNED_WORK_CREATE,
   PERMISSIONS.PLANNED_WORK_UPDATE,
   PERMISSIONS.PLANNED_WORK_CHANGE_STATUS,
+  // Reaching PLANNED needs APPROVE as well as PLAN now — see `planAndApprove` below.
+  PERMISSIONS.PLANNED_WORK_APPROVE,
   PERMISSIONS.SERVICE_REQUEST_VIEW,
   PERMISSIONS.SERVICE_REQUEST_CREATE,
 ] as const;
@@ -74,6 +76,32 @@ async function createWork(
     });
   expect(response.status).toBe(201);
   return response.body.data.id as string;
+}
+
+/**
+ * Takes a DRAFT work all the way to PLANNED.
+ *
+ * REACHING PLANNED IS TWO ACTIONS NOW, not one. PLAN no longer plans anything — it parks
+ * the work in PENDING_APPROVAL — and APPROVE is what promotes it to PLANNED. APPROVE also
+ * refuses to run unstaffed, so the crew has to travel in the same call: there is no moment
+ * at which a work is PLANNED and nobody is on it.
+ */
+async function planAndApprove(
+  workId: string,
+  crewEmployeeIds: string[],
+  bearer = token,
+): Promise<void> {
+  const planned = await request(app)
+    .post(`${API}/planned-work/${workId}/transition`)
+    .set('Authorization', `Bearer ${bearer}`)
+    .send({ action: 'PLAN' });
+  expect(planned.status).toBe(200);
+
+  const approved = await request(app)
+    .post(`${API}/planned-work/${workId}/transition`)
+    .set('Authorization', `Bearer ${bearer}`)
+    .send({ action: 'APPROVE', assignedEmployeeIds: crewEmployeeIds });
+  expect(approved.status).toBe(200);
 }
 
 async function createRequest(): Promise<string> {
@@ -242,15 +270,13 @@ describe('GET /calendar', () => {
       plannedStartDate: '2020-01-05T00:00:00.000Z',
       plannedEndDate: '2020-01-20T00:00:00.000Z',
     });
-    // The work must be past DRAFT before it can read as overdue.
+    // The work must reach PLANNED before it can read as overdue: DRAFT and PENDING_APPROVAL
+    // are both outside OVERDUE_ELIGIBLE_LIFECYCLE_STATUSES, so PLAN alone is no longer enough.
     const list = await request(app)
       .get(`${API}/planned-work`)
       .set('Authorization', `Bearer ${token}`);
     const workId = list.body.data.items[0].id as string;
-    await request(app)
-      .post(`${API}/planned-work/${workId}/transition`)
-      .set('Authorization', `Bearer ${token}`)
-      .send({ action: 'PLAN' });
+    await planAndApprove(workId, [await activeEmployee('EMP-CAL-OVERDUE')]);
 
     const response = await request(app)
       .get(`${API}/calendar?from=2020-01-01T00:00:00.000Z&to=2020-01-31T00:00:00.000Z`)

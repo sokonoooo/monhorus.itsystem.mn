@@ -108,6 +108,24 @@ function transition(workId: string, body: Record<string, unknown>, bearer: strin
     .send(body);
 }
 
+/** Submits a draft for approval — the creator's own action, staff or customer. */
+function submit(workId: string, bearer: string) {
+  return transition(workId, { action: 'PLAN' }, bearer);
+}
+
+/** Approves and staffs in one call, which is the only way to reach PLANNED. */
+function approve(workId: string, bearer: string, employeeIds: string[] = [employeeId]) {
+  return transition(workId, { action: 'APPROVE', assignedEmployeeIds: employeeIds }, bearer);
+}
+
+/** A customer request all the way to PLANNED, the way the workflow intends. */
+async function raiseSubmitAndApprove(): Promise<string> {
+  const workId = await raiseAsCustomer();
+  expect((await submit(workId, portalToken)).status).toBe(200);
+  expect((await approve(workId, approverToken)).status).toBe(200);
+  return workId;
+}
+
 beforeAll(async () => {
   app = await startTestApp();
 }, 60_000);
@@ -156,11 +174,12 @@ beforeEach(async () => {
 });
 
 describe('a customer raising planned work', () => {
-  it('creates a real planned work in PENDING_APPROVAL with nobody on it', async () => {
+  it('creates a real planned work in DRAFT with nobody on it', async () => {
     const workId = await raiseAsCustomer();
 
     const work = await PlannedWork.findById(workId);
-    expect(work?.status).toBe('PENDING_APPROVAL');
+    // DRAFT, not submitted: the customer composes it first and submits when ready.
+    expect(work?.status).toBe('DRAFT');
     expect(work?.assignedEmployees).toHaveLength(0);
     expect(work?.assignedTeam).toBeNull();
     // A real PlannedWork record, with its own work number — not a service request.
@@ -215,20 +234,41 @@ describe('a customer raising planned work', () => {
     expect(detail.status).toBe(404);
   });
 
-  it('cannot drive the lifecycle itself', async () => {
+  /**
+   * Submitting is the customer's own act, and the only lifecycle action they hold. Approving
+   * their own request, or starting the work, remain somebody else's decision entirely.
+   */
+  it('submits its own request but drives no further', async () => {
     const workId = await raiseAsCustomer();
 
-    for (const action of ['APPROVE', 'START', 'PLAN']) {
-      const response = await transition(workId, { action }, portalToken);
+    expect((await submit(workId, portalToken)).status).toBe(200);
+    expect((await PlannedWork.findById(workId))?.status).toBe('PENDING_APPROVAL');
+
+    for (const action of ['APPROVE', 'START', 'REJECT']) {
+      const response = await transition(workId, { action, reason: 'Болохгүй.' }, portalToken);
       expect(response.status).toBe(403);
     }
     expect((await PlannedWork.findById(workId))?.status).toBe('PENDING_APPROVAL');
+  });
+
+  /** The portal key admits the action; it does not admit somebody else's record. */
+  it("cannot submit another organisation's draft", async () => {
+    const foreign = await request(app)
+      .post(`${API}/planned-work`)
+      .set('Authorization', `Bearer ${plannerToken}`)
+      .send(workBody(foreignBuildingId));
+    expect(foreign.status).toBe(201);
+
+    const response = await submit(foreign.body.data.id as string, portalToken);
+
+    expect(response.status).toBe(404);
   });
 });
 
 describe('approval is what makes it assignable', () => {
   it('refuses assignment while the work is pending', async () => {
     const workId = await raiseAsCustomer();
+    expect((await submit(workId, portalToken)).status).toBe(200);
 
     const response = await request(app)
       .patch(`${API}/planned-work/${workId}`)
@@ -278,36 +318,53 @@ describe('approval is what makes it assignable', () => {
     expect(response.status).toBe(201);
   });
 
-  it('approves to PLANNED and only then accepts a crew', async () => {
+  /** Approval and staffing are one event: the work reaches PLANNED already crewed. */
+  it('approves to PLANNED and assigns the chosen crew in the same act', async () => {
+    const workId = await raiseSubmitAndApprove();
+
+    const work = await PlannedWork.findById(workId);
+    expect(work?.status).toBe('PLANNED');
+    expect(work?.assignedEmployees.map(String)).toEqual([employeeId]);
+  });
+
+  /**
+   * There is no approving-without-staffing. Allowing it would reintroduce the state this
+   * whole workflow exists to remove: work agreed to, and sitting in nobody's list.
+   */
+  it('refuses to approve without naming anyone', async () => {
     const workId = await raiseAsCustomer();
+    expect((await submit(workId, portalToken)).status).toBe(200);
 
-    const approved = await transition(workId, { action: 'APPROVE' }, approverToken);
-    expect(approved.status).toBe(200);
-    expect((await PlannedWork.findById(workId))?.status).toBe('PLANNED');
+    const response = await transition(workId, { action: 'APPROVE' }, approverToken);
 
-    const assigned = await request(app)
-      .patch(`${API}/planned-work/${workId}`)
-      .set('Authorization', `Bearer ${approverToken}`)
-      .send({ assignedEmployeeIds: [employeeId] });
+    expect(response.status).toBe(400);
+    expect((await PlannedWork.findById(workId))?.status).toBe('PENDING_APPROVAL');
+  });
 
-    expect(assigned.status).toBe(200);
-    expect((await PlannedWork.findById(workId))?.assignedEmployees.map(String)).toEqual([
-      employeeId,
-    ]);
+  it('refuses to approve with an employee that does not exist', async () => {
+    const workId = await raiseAsCustomer();
+    expect((await submit(workId, portalToken)).status).toBe(200);
+
+    const response = await approve(workId, approverToken, [new Types.ObjectId().toString()]);
+
+    expect(response.status).toBe(400);
+    expect((await PlannedWork.findById(workId))?.status).toBe('PENDING_APPROVAL');
   });
 
   /** The approve key is what decides, not merely holding some planned-work permission. */
   it('refuses approval to a planner without the approve key', async () => {
     const workId = await raiseAsCustomer();
+    expect((await submit(workId, portalToken)).status).toBe(200);
 
-    const response = await transition(workId, { action: 'APPROVE' }, plannerToken);
+    const response = await approve(workId, plannerToken);
 
     expect(response.status).toBe(403);
     expect((await PlannedWork.findById(workId))?.status).toBe('PENDING_APPROVAL');
   });
 
-  it('rejects to CANCELLED with a reason the customer can read', async () => {
+  it('returns a rejected request to its creator with a readable reason', async () => {
     const workId = await raiseAsCustomer();
+    expect((await submit(workId, portalToken)).status).toBe(200);
 
     const rejected = await transition(
       workId,
@@ -317,7 +374,8 @@ describe('approval is what makes it assignable', () => {
     expect(rejected.status).toBe(200);
 
     const work = await PlannedWork.findById(workId);
-    expect(work?.status).toBe('CANCELLED');
+    // Handed back, not ended — the customer can still act on it.
+    expect(work?.status).toBe('REJECTED');
     expect(work?.cancelReason).toBe('Тухайн хугацаанд боломжгүй.');
     expect(work?.assignedEmployees).toHaveLength(0);
 
@@ -331,6 +389,7 @@ describe('approval is what makes it assignable', () => {
 
   it('requires a reason to reject', async () => {
     const workId = await raiseAsCustomer();
+    expect((await submit(workId, portalToken)).status).toBe(200);
 
     const response = await transition(workId, { action: 'REJECT' }, approverToken);
 
@@ -339,17 +398,53 @@ describe('approval is what makes it assignable', () => {
   });
 
   /**
+   * The round trip, which is the point of returning rather than cancelling: the customer
+   * reads why, fixes it, and sends the SAME record back. A cancelled work would have forced
+   * them to start again and lost the thread between the objection and the correction.
+   */
+  it('lets the creator correct a rejected request and submit it again', async () => {
+    const workId = await raiseAsCustomer();
+    expect((await submit(workId, portalToken)).status).toBe(200);
+    expect(
+      (await transition(workId, { action: 'REJECT', reason: 'Огноо тохирохгүй.' }, approverToken))
+        .status,
+    ).toBe(200);
+
+    // Editable again, because a returned work is the creator's to correct.
+    const edited = await request(app)
+      .patch(`${API}/planned-work/${workId}`)
+      .set('Authorization', `Bearer ${portalToken}`)
+      .send({ title: 'Улирлын үзлэг (засварласан)' });
+    expect(edited.status).toBe(200);
+
+    const resubmitted = await submit(workId, portalToken);
+    expect(resubmitted.status).toBe(200);
+
+    const work = await PlannedWork.findById(workId);
+    expect(work?.status).toBe('PENDING_APPROVAL');
+    expect(work?.title).toBe('Улирлын үзлэг (засварласан)');
+    // The stale refusal is cleared: it is waiting to be looked at, not refused.
+    expect(work?.cancelReason).toBeNull();
+  });
+
+  /** An approved request is settled, so its requester can no longer rewrite it. */
+  it('refuses a customer edit once the request is approved', async () => {
+    const workId = await raiseSubmitAndApprove();
+
+    const response = await request(app)
+      .patch(`${API}/planned-work/${workId}`)
+      .set('Authorization', `Bearer ${portalToken}`)
+      .send({ title: 'Дараа нь өөрчилсөн' });
+
+    expect(response.status).toBe(400);
+  });
+
+  /**
    * The end of the flow: once approved and assigned, the work reaches the employee through
-   * the EXISTING assignment-scope filter. Nothing was added for this — it is why the
-   * employee work list needed no change.
+   * the EXISTING assignment-scope filter.
    */
   it('shows the approved work to the employee it was assigned to', async () => {
-    const workId = await raiseAsCustomer();
-    await transition(workId, { action: 'APPROVE' }, approverToken);
-    await request(app)
-      .patch(`${API}/planned-work/${workId}`)
-      .set('Authorization', `Bearer ${approverToken}`)
-      .send({ assignedEmployeeIds: [employeeId] });
+    const workId = await raiseSubmitAndApprove();
 
     const technician = await createUserWithPermissions('pwtech@test.mn', [
       PERMISSIONS.PLANNED_WORK_VIEW,
@@ -369,7 +464,42 @@ describe('approval is what makes it assignable', () => {
     expect(list.body.data.items.map((item: { id: string }) => item.id)).toContain(workId);
   });
 
-  /** Before approval the same technician must not see it — there is nothing to match on. */
+  /**
+   * Before approval no employee sees it, at any pre-approval status.
+   *
+   * Asserted with a crew FORCED ON to the record behind the API's back. Nothing legitimate
+   * can produce that — the crew rules refuse it — and that is the point: if the exclusion
+   * ever regressed to relying on "pre-approval work happens to have no crew", this would
+   * catch it, where a test on a naturally crewless draft would pass either way.
+   */
+  it.each(['DRAFT', 'PENDING_APPROVAL', 'REJECTED'] as const)(
+    'keeps %s work out of every employee work list even if it carries a crew',
+    async (status) => {
+      const workId = await raiseAsCustomer();
+      await PlannedWork.updateOne(
+        { _id: new Types.ObjectId(workId) },
+        { $set: { status, assignedEmployees: [new Types.ObjectId(employeeId)] } },
+      );
+
+      const technician = await createUserWithPermissions(`pwtech-${status}@test.mn`, [
+        PERMISSIONS.PLANNED_WORK_VIEW,
+        PERMISSIONS.PLANNED_WORK_CHANGE_STATUS,
+      ]);
+      await Employee.updateOne(
+        { _id: new Types.ObjectId(employeeId) },
+        { $set: { systemUser: new Types.ObjectId(technician.userId) } },
+      );
+      const technicianToken = await login(technician.email, technician.password);
+
+      const list = await request(app)
+        .get(`${API}/planned-work`)
+        .set('Authorization', `Bearer ${technicianToken}`);
+
+      expect(list.status).toBe(200);
+      expect(list.body.data.items).toHaveLength(0);
+    },
+  );
+
   it('keeps a pending work out of every employee work list', async () => {
     await raiseAsCustomer();
 
@@ -404,7 +534,14 @@ describe('the staff path is unchanged', () => {
     expect(work?.assignedEmployees.map(String)).toEqual([employeeId]);
   });
 
-  it('still takes a staff draft straight to PLANNED with PLAN', async () => {
+  /**
+   * THIS TEST USED TO ASSERT THE OPPOSITE — that PLAN took a staff draft straight to
+   * PLANNED. It no longer does, and that is the change: staff and customers follow one
+   * workflow, so a planner's own work is reviewed on the same terms as a customer's. The
+   * test is kept, inverted, rather than deleted, because "staff can still skip approval"
+   * silently returning is exactly the regression worth catching.
+   */
+  it('sends a staff draft to approval rather than straight to PLANNED', async () => {
     const created = await request(app)
       .post(`${API}/planned-work`)
       .set('Authorization', `Bearer ${plannerToken}`)
@@ -414,7 +551,11 @@ describe('the staff path is unchanged', () => {
     const planned = await transition(workId, { action: 'PLAN' }, plannerToken);
 
     expect(planned.status).toBe(200);
-    expect((await PlannedWork.findById(workId))?.status).toBe('PLANNED');
+    expect((await PlannedWork.findById(workId))?.status).toBe('PENDING_APPROVAL');
+
+    // And the planner, holding no approve key, cannot carry it the rest of the way.
+    const selfApproved = await approve(workId, plannerToken);
+    expect(selfApproved.status).toBe(403);
   });
 });
 
@@ -452,7 +593,8 @@ describe('the customer breaks down their own request', () => {
    */
   it('refuses further sub-tasks once the request is approved', async () => {
     const workId = await raiseAsCustomer();
-    expect((await transition(workId, { action: 'APPROVE' }, approverToken)).status).toBe(200);
+    expect((await submit(workId, portalToken)).status).toBe(200);
+    expect((await approve(workId, approverToken)).status).toBe(200);
 
     const response = await addTask(workId, portalToken);
 
@@ -495,7 +637,8 @@ describe('the customer breaks down their own request', () => {
       .set('Authorization', `Bearer ${portalToken}`);
     expect(removed.status).toBe(200);
 
-    expect((await transition(workId, { action: 'APPROVE' }, approverToken)).status).toBe(200);
+    expect((await submit(workId, portalToken)).status).toBe(200);
+    expect((await approve(workId, approverToken)).status).toBe(200);
 
     const lateDelete = await request(app)
       .delete(`${API}/planned-work/${workId}/tasks/${second.body.data.tasks.at(-1).id}`)

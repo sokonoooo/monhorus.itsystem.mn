@@ -38,6 +38,7 @@ import { Team } from '../org/org.models';
 import { getRiskBands } from '../settings/settings.service';
 import { StoredFile, type IStoredFile } from '../storage/stored-file.model';
 import { deleteStoredFile } from '../storage/storage.service';
+import { assertEmployeesExist } from './planned-work.crew';
 import { plannedWorkMaterialsOf } from './planned-work.materials.service';
 import {
   PlannedWork,
@@ -170,18 +171,6 @@ async function assertFloorInBuilding(
   }
 
   return floor._id;
-}
-
-async function assertEmployeesExist(employeeIds: readonly string[]): Promise<Types.ObjectId[]> {
-  if (employeeIds.length === 0) return [];
-  const ids = employeeIds.map((id) => new Types.ObjectId(id));
-  const found = await Employee.countDocuments({ _id: { $in: ids } });
-  if (found !== ids.length) {
-    throw AppError.badRequest(ERROR_CODES.VALIDATION_ERROR, 'Ажилтан олдсонгүй.', [
-      { field: 'assignedEmployeeIds', message: 'Сонгосон ажилтан олдсонгүй.' },
-    ]);
-  }
-  return ids;
 }
 
 /**
@@ -640,7 +629,22 @@ export async function listPlannedWork(
    */
   if (scope.mode === 'STAFF') {
     const assignmentFilter = await resolveAssignedWorkFilter<IPlannedWork>(actor);
-    if (assignmentFilter) filter.$and = [assignmentFilter];
+    if (assignmentFilter) {
+      /**
+       * An employee's own list never shows work that has not been approved.
+       *
+       * A non-null assignment filter IS the definition of "this caller sees their own work
+       * rather than the company's" — anyone with an oversight key gets null here and keeps
+       * seeing everything, which is what a planner needs.
+       *
+       * Belt and braces on top of the crew rules. Nothing pre-approval is supposed to carry
+       * a crew, so in principle the assignment predicate already excludes all of this. That
+       * is an invariant maintained by several separate guards, though, and a technician
+       * being shown a draft nobody has agreed to do is not a failure worth risking on it
+       * holding everywhere. Here the exclusion is a property of the query.
+       */
+      filter.$and = [assignmentFilter, { status: { $nin: PRE_APPROVAL_STATUSES } }];
+    }
   }
 
   /**
@@ -779,7 +783,9 @@ export async function createPlannedWork(
     plannedEndDate,
     // Captured once so a later reschedule cannot erase the original commitment.
     originalPlannedEndDate: plannedEndDate,
-    status: raisedByCustomer ? 'PENDING_APPROVAL' : 'DRAFT',
+    // DRAFT whoever raised it. A customer's request is no longer submitted the instant it
+    // is created — they compose it, break it down, and submit it themselves with PLAN.
+    status: 'DRAFT',
     assignedEmployees: employeeIds,
     assignedTeam: teamId,
     createdBy: new Types.ObjectId(actor.userId),
@@ -802,13 +808,49 @@ export async function createPlannedWork(
   return getPlannedWorkById(String(work._id), actor);
 }
 
+/**
+ * The statuses whose content still belongs to whoever raised the work.
+ *
+ * A draft has never been submitted and a returned one is waiting to be corrected, so in
+ * both the creator is still composing. Everything after PENDING_APPROVAL has been agreed to
+ * by an approver, and letting the requester keep editing it would let them change what was
+ * approved after the fact.
+ */
+const CREATOR_EDITABLE_STATUSES: readonly IPlannedWork['status'][] = ['DRAFT', 'REJECTED'];
+
+/**
+ * The work an owner-side edit may target, bounded by who is asking.
+ *
+ * Staff are unaffected: `resolveCustomerScope` answers STAFF and both checks are skipped, so
+ * a planner still edits at every status `assertMutable` allows. A customer is bounded twice —
+ * to their own record, and to the statuses above — and the two fail differently on purpose,
+ * for the reasons given on `findRawForTaskWrite`.
+ */
+async function findRawForOwnerEdit(
+  plannedWorkId: string,
+  actor: AuthContext,
+): Promise<Awaited<ReturnType<typeof findRaw>>> {
+  const work = await findRaw(plannedWorkId);
+  const scope = resolveCustomerScope(actor);
+  if (scope.mode === 'CUSTOMER') {
+    assertInCustomerScope(scope, work.customer);
+    if (!CREATOR_EDITABLE_STATUSES.includes(work.status)) {
+      throw AppError.badRequest(
+        ERROR_CODES.VALIDATION_ERROR,
+        'Илгээгдсэн хүсэлтийг өөрчлөх боломжгүй.',
+      );
+    }
+  }
+  return work;
+}
+
 export async function updatePlannedWork(
   plannedWorkId: string,
   input: UpdatePlannedWorkInput,
   actor: AuthContext,
   meta: RequestMeta,
 ): Promise<PlannedWorkDto> {
-  const work = await findRaw(plannedWorkId);
+  const work = await findRawForOwnerEdit(plannedWorkId, actor);
   assertMutable(work);
 
   const before = {
@@ -857,7 +899,7 @@ export async function updatePlannedWork(
    * have staffed a job and has not is worse off than one who gets an error.
    */
   if (
-    work.status === 'PENDING_APPROVAL' &&
+    PRE_APPROVAL_STATUSES.includes(work.status) &&
     (input.assignedEmployeeIds !== undefined || input.assignedTeamId !== undefined)
   ) {
     throw AppError.badRequest(
@@ -999,8 +1041,14 @@ export async function reschedulePlannedWork(
  * a promise the system had not agreed to — a job with somebody's name on it that may still
  * be refused outright. Refused rather than ignored, for the reason the work-level rule gives.
  */
+const PRE_APPROVAL_STATUSES: readonly IPlannedWork['status'][] = [
+  'DRAFT',
+  'PENDING_APPROVAL',
+  'REJECTED',
+];
+
 function assertCrewAssignable(work: Pick<IPlannedWork, 'status'>): void {
-  if (work.status === 'PENDING_APPROVAL') {
+  if (PRE_APPROVAL_STATUSES.includes(work.status)) {
     throw AppError.badRequest(
       ERROR_CODES.VALIDATION_ERROR,
       'Батлагдаагүй ажилд хариуцагч томилох боломжгүй. Эхлээд батална уу.',
@@ -1036,10 +1084,10 @@ async function findRawForTaskWrite(
   const scope = resolveCustomerScope(actor);
   if (scope.mode === 'CUSTOMER') {
     assertInCustomerScope(scope, work.customer);
-    if (work.status !== 'PENDING_APPROVAL') {
+    if (!CREATOR_EDITABLE_STATUSES.includes(work.status)) {
       throw AppError.badRequest(
         ERROR_CODES.VALIDATION_ERROR,
-        'Батлагдсан хүсэлтийн дэд ажлыг өөрчлөх боломжгүй.',
+        'Илгээгдсэн хүсэлтийн дэд ажлыг өөрчлөх боломжгүй.',
       );
     }
   }

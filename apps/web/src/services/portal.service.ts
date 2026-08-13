@@ -13,11 +13,13 @@ import type {
   PaginatedData,
   PlannedWorkDto,
   PlannedWorkListItemDto,
+  PlannedWorkAction,
   PlannedWorkListQuery,
   ServiceRequestAttachmentDto,
   ServiceRequestDetailDto,
   ServiceRequestListItemDto,
   ServiceRequestListQuery,
+  UpdatePlannedWorkInput,
   UpdatePlannedWorkTaskInput,
 } from '@monhorus/shared';
 
@@ -49,9 +51,9 @@ function toParams(query: Record<string, unknown>): Record<string, string | numbe
  * NOTHING HERE IS DOING ANY SECURING. Each of these is bounded server-side by
  * `resolveCustomerScope`, which reads the tenant from the authenticated account and
  * discards anything the request carries; a `customerId` sent from here would be ignored,
- * which is why none is ever sent. The same is true of the approval rule: a work raised on
- * this client is forced to PENDING_APPROVAL with no crew by the server, not by the absence
- * of those fields in the payload below.
+ * which is why none is ever sent. The same is true of the workflow rules: a work raised on
+ * this client lands in DRAFT with no crew, and stays editable only until an approver acts,
+ * because the server says so — not because of what these payloads omit.
  */
 export const portalService = {
   // -- Service requests -------------------------------------------------------
@@ -140,12 +142,47 @@ export const portalService = {
    * Raise a request for scheduled maintenance.
    *
    * The same endpoint and the same shared schema staff use. What differs is decided
-   * server-side from the account: a portal caller's work is forced to PENDING_APPROVAL with
-   * an empty crew, so no crew is sent from here and sending one would change nothing.
+   * server-side from the account: the work lands in DRAFT with an empty crew, so no crew is
+   * sent from here and sending one would change nothing. It is not submitted by creating
+   * it — the customer composes it and then calls `transition` with PLAN.
    */
   async createPlannedWork(payload: CreatePlannedWorkInput): Promise<PlannedWorkDto> {
     return unwrap(
       await apiClient.post<ApiResponse<PlannedWorkDto>>('/planned-work', payload),
+    );
+  },
+
+  /** Correct a draft, or a request that came back for editing. Refused after approval. */
+  async updatePlannedWork(
+    plannedWorkId: string,
+    payload: UpdatePlannedWorkInput,
+  ): Promise<PlannedWorkDto> {
+    return unwrap(
+      await apiClient.patch<ApiResponse<PlannedWorkDto>>(
+        `/planned-work/${plannedWorkId}`,
+        payload,
+      ),
+    );
+  },
+
+  /**
+   * Submit the caller's own draft for approval.
+   *
+   * The same `/transition` route staff use. PLAN is the only action a customer's key admits
+   * — APPROVE and REJECT are keyed on `planned_work.approve`, which no customer holds, so
+   * they never appear in a customer's `availableActions` and would be refused if posted. No
+   * crew is ever sent: assigning is the approver's half of the decision.
+   */
+  async transition(
+    plannedWorkId: string,
+    action: PlannedWorkAction,
+    reason?: string | null,
+  ): Promise<PlannedWorkDto> {
+    return unwrap(
+      await apiClient.post<ApiResponse<PlannedWorkDto>>(
+        `/planned-work/${plannedWorkId}/transition`,
+        { action, reason: reason ?? null, assignedEmployeeIds: [] },
+      ),
     );
   },
 
@@ -157,9 +194,9 @@ export const portalService = {
    * header claims: the complete list of what a customer's browser asks for.
    *
    * The bound is server-side and is two rules, not one — a customer may shape only their
-   * own work, and only while it is still PENDING_APPROVAL. Approval settles the scope, so
-   * these start answering 400 the moment an approver agrees. Nothing here enforces that;
-   * the drawer merely stops offering the controls, which is a weaker thing entirely.
+   * own work, and only while it is still theirs to shape (DRAFT or REJECTED). Submitting it
+   * hands it over, so these start answering 400 the moment PLAN is called. Nothing here
+   * enforces that; the drawer merely stops offering the controls, which is weaker entirely.
    */
   async createTask(
     plannedWorkId: string,

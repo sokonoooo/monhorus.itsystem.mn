@@ -61,8 +61,12 @@ export type PlannedWorkFormVariant = 'staff' | 'portal';
  *
  * In edit mode the planned END date is deliberately not offered: extending a deadline is
  * a reschedule, which needs its own permission, a mandatory reason and an audit record,
- * and is performed from the detail screen. Edit is a staff-only mode; the portal mounts
- * this form only at its create route.
+ * and is performed from the detail screen.
+ *
+ * BOTH CONSOLES EDIT. A customer corrects their own draft here, and corrects a request that
+ * came back to them, before submitting it again. Whether this particular caller may edit
+ * this particular record is the server's decision, not this component's: a customer is
+ * refused once their request has been approved.
  */
 export function PlannedWorkFormPage({
   variant = 'staff',
@@ -71,9 +75,10 @@ export function PlannedWorkFormPage({
 } = {}): ReactElement {
   const isPortal = variant === 'portal';
   const { plannedWorkId } = useParams<{ plannedWorkId: string }>();
-  // Edit is staff-only. The portal has no edit route, and the guard is repeated here so
-  // that mounting this form at one would not silently produce a customer-facing editor.
-  const isEdit = Boolean(plannedWorkId) && !isPortal;
+  // Both consoles edit now: a customer corrects their own draft, and a returned request is
+  // corrected and submitted again. The server decides whether this particular caller may —
+  // `findRawForOwnerEdit` refuses a customer once their request has been approved.
+  const isEdit = Boolean(plannedWorkId);
   const navigate = useNavigate();
   const { notify } = useToast();
 
@@ -132,7 +137,9 @@ export function PlannedWorkFormPage({
         }
 
         if (isEdit && plannedWorkId) {
-          const work = await plannedWorkService.getById(plannedWorkId);
+          const work = isPortal
+            ? await portalService.getPlannedWork(plannedWorkId)
+            : await plannedWorkService.getById(plannedWorkId);
           if (cancelled) return;
           setCustomerId(work.customer.id);
           setProjectId(work.project?.id ?? '');
@@ -237,9 +244,13 @@ export function PlannedWorkFormPage({
 
       setSubmitting(true);
       try {
-        await plannedWorkService.update(plannedWorkId, parsed.data);
+        if (isPortal) {
+          await portalService.updatePlannedWork(plannedWorkId, parsed.data);
+        } else {
+          await plannedWorkService.update(plannedWorkId, parsed.data);
+        }
         notify('Төлөвлөгөөт ажил шинэчлэгдлээ.', 'success');
-        navigate(`/planned-work/${plannedWorkId}`);
+        navigate(`${listPath}/${plannedWorkId}`);
       } catch (caught) {
         if (caught instanceof ApiError) {
           setFormError(caught.message);
