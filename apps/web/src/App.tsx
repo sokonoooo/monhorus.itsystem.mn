@@ -4,6 +4,7 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 
 import { AppShell } from './components/layout/AppShell';
 import { PermissionGuard } from './components/PermissionGuard';
+import { ForbiddenState } from './components/ui/States';
 import { ToastProvider } from './components/ui/ToastProvider';
 import { AuthProvider, useAuth } from './contexts/auth-context';
 import { ChangePasswordPage } from './features/auth/ChangePasswordPage';
@@ -71,6 +72,43 @@ function Page({
       </AppShell>
     </ProtectedRoute>
   );
+}
+
+/**
+ * A portal page: the shell, the permission gate, and the CUSTOMER TIER.
+ *
+ * The tier check is not redundant with the permissions. SYSTEM_ADMIN is resynchronised to
+ * the entire permission catalogue on every boot and `head_admin` is an unconditional
+ * superuser, so both hold every `portal.*` key — the permission gate alone lets them
+ * straight in. That matters beyond tidiness: `resolveCustomerScope` reads the tier, so a
+ * staff caller reaching these screens gets STAFF scope, and the customer-styled request
+ * list would quietly fill with EVERY organisation's records.
+ *
+ * The refusal is the same `ForbiddenState` every other guard renders, so a staff member who
+ * follows an old link sees the app's normal "not for you" rather than a broken screen.
+ */
+function PortalPage({
+  anyOf,
+  children,
+}: {
+  anyOf: readonly (typeof PERMISSIONS)[keyof typeof PERMISSIONS][];
+  children: ReactNode;
+}): ReactElement {
+  return (
+    <ProtectedRoute>
+      <AppShell>
+        <CustomerOnly>
+          <PermissionGuard anyOf={anyOf}>{children}</PermissionGuard>
+        </CustomerOnly>
+      </AppShell>
+    </ProtectedRoute>
+  );
+}
+
+export function CustomerOnly({ children }: { children: ReactNode }): ReactElement {
+  const { user } = useAuth();
+  if (user && user.role !== 'customer') return <ForbiddenState />;
+  return <>{children}</>;
 }
 
 /** Sends a signed-in caller to the home their account actually has. */
@@ -450,89 +488,89 @@ export default function App(): ReactElement {
           <Route
             path="/portal"
             element={
-              <Page anyOf={[PERMISSIONS.PORTAL_SERVICE_REQUEST_VIEW, PERMISSIONS.PORTAL_BUILDING_VIEW]}>
+              <PortalPage anyOf={[PERMISSIONS.PORTAL_SERVICE_REQUEST_VIEW, PERMISSIONS.PORTAL_BUILDING_VIEW]}>
                 <PortalHomePage />
-              </Page>
+              </PortalPage>
             }
           />
           <Route
             path="/portal/requests"
             element={
-              <Page anyOf={[PERMISSIONS.PORTAL_SERVICE_REQUEST_VIEW]}>
+              <PortalPage anyOf={[PERMISSIONS.PORTAL_SERVICE_REQUEST_VIEW]}>
                 <PortalRequestListPage />
-              </Page>
+              </PortalPage>
             }
           />
           <Route
             path="/portal/requests/new"
             element={
-              <Page anyOf={[PERMISSIONS.PORTAL_SERVICE_REQUEST_CREATE]}>
+              <PortalPage anyOf={[PERMISSIONS.PORTAL_SERVICE_REQUEST_CREATE]}>
                 <PortalRequestCreatePage />
-              </Page>
+              </PortalPage>
             }
           />
           <Route
             path="/portal/requests/:requestId"
             element={
-              <Page anyOf={[PERMISSIONS.PORTAL_SERVICE_REQUEST_VIEW]}>
+              <PortalPage anyOf={[PERMISSIONS.PORTAL_SERVICE_REQUEST_VIEW]}>
                 <PortalRequestDetailPage />
-              </Page>
+              </PortalPage>
             }
           />
           <Route
             path="/portal/planned-work"
             element={
-              <Page anyOf={[PERMISSIONS.PORTAL_PLANNED_WORK_VIEW]}>
+              <PortalPage anyOf={[PERMISSIONS.PORTAL_PLANNED_WORK_VIEW]}>
                 <PortalPlannedWorkListPage />
-              </Page>
+              </PortalPage>
             }
           />
           <Route
             path="/portal/planned-work/new"
             element={
-              <Page anyOf={[PERMISSIONS.PORTAL_PLANNED_WORK_CREATE]}>
+              <PortalPage anyOf={[PERMISSIONS.PORTAL_PLANNED_WORK_CREATE]}>
                 <PortalPlannedWorkCreatePage />
-              </Page>
+              </PortalPage>
             }
           />
           <Route
             path="/portal/planned-work/:plannedWorkId"
             element={
-              <Page anyOf={[PERMISSIONS.PORTAL_PLANNED_WORK_VIEW]}>
+              <PortalPage anyOf={[PERMISSIONS.PORTAL_PLANNED_WORK_VIEW]}>
                 <PortalPlannedWorkDetailPage />
-              </Page>
+              </PortalPage>
             }
           />
           <Route
             path="/portal/sites"
             element={
-              <Page anyOf={[PERMISSIONS.PORTAL_BUILDING_VIEW]}>
+              <PortalPage anyOf={[PERMISSIONS.PORTAL_BUILDING_VIEW]}>
                 <PortalSitesPage />
-              </Page>
+              </PortalPage>
             }
           />
           <Route
             path="/portal/sites/:buildingId"
             element={
-              <Page anyOf={[PERMISSIONS.PORTAL_BUILDING_VIEW]}>
+              <PortalPage anyOf={[PERMISSIONS.PORTAL_BUILDING_VIEW]}>
                 <PortalSiteDetailPage />
-              </Page>
+              </PortalPage>
             }
           />
           <Route
             path="/portal/sites/:buildingId/floors/:floorId"
             element={
-              <Page anyOf={[PERMISSIONS.PORTAL_FLOOR_VIEW]}>
+              <PortalPage anyOf={[PERMISSIONS.PORTAL_FLOOR_VIEW]}>
                 <PortalFloorPage />
-              </Page>
+              </PortalPage>
             }
           />
           <Route
             path="/portal/sites/:buildingId/floors/:floorId/objects/:objectId"
             element={
-              <Page anyOf={[PERMISSIONS.PORTAL_OBJECT_VIEW]}>
+              <PortalPage anyOf={[PERMISSIONS.PORTAL_OBJECT_VIEW]}>
                 <PortalObjectDetailPage />
-              </Page>
+              </PortalPage>
             }
           />
 

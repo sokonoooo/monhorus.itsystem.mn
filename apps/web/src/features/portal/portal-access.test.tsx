@@ -2,6 +2,7 @@ import { PERMISSIONS, type PermissionKey } from '@monhorus/shared';
 import { screen, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { CustomerOnly } from '../../App';
 import { AppShell } from '../../components/layout/AppShell';
 import { PermissionGuard } from '../../components/PermissionGuard';
 import { homePathFor, resolvePostLoginPath } from '../../lib/home-path';
@@ -29,6 +30,8 @@ const CUSTOMER_PERMISSIONS: readonly PermissionKey[] = [
   PERMISSIONS.PORTAL_SERVICE_REQUEST_VIEW,
   PERMISSIONS.PORTAL_SERVICE_REQUEST_CREATE,
   PERMISSIONS.PORTAL_PROFILE_VIEW,
+  PERMISSIONS.PORTAL_PLANNED_WORK_VIEW,
+  PERMISSIONS.PORTAL_PLANNED_WORK_CREATE,
   PERMISSIONS.NOTIFICATION_VIEW,
 ];
 
@@ -105,22 +108,22 @@ describe('a CUSTOMER inside the shell', () => {
     expect(within(sidebar).getByText('Миний барилга')).toBeInTheDocument();
   });
 
+  /**
+   * Asserted on destinations rather than labels. «Төлөвлөгөөт ажил» names the staff
+   * planned-work module AND the customer's own portal entry, so a label assertion here
+   * fails on the legitimate portal entry while still passing if a real staff module leaked
+   * in under a different name. The href is what actually distinguishes them.
+   */
   it('is shown none of the staff modules', async () => {
-    renderAsCustomer(<AppShell>aguulga</AppShell>);
+    renderAsCustomer(<AppShell>агуулга</AppShell>);
 
     const sidebar = await screen.findByRole('navigation', { name: 'Үндсэн цэс' });
-    for (const label of [
-      'Хяналтын самбар',
-      'Ажилтан',
-      'Харилцагч',
-      'Төлөвлөгөөт ажил',
-      'Үйлчилгээний хүсэлт',
-      'Нэхэмжлэл ба төлбөр',
-      'Audit log',
-      'Тохиргоо',
-      'Хэрэглэгч, role, permission',
-    ]) {
-      expect(within(sidebar).queryByText(label)).not.toBeInTheDocument();
+    const destinations = within(sidebar)
+      .getAllByRole('link')
+      .map((link) => link.getAttribute('href') ?? '');
+
+    for (const href of destinations) {
+      expect(href === '/portal' || href.startsWith('/portal/')).toBe(true);
     }
   });
 
@@ -219,5 +222,95 @@ describe('the portal boundary holds against staff', () => {
     expect(within(sidebar).queryByText('Миний хүсэлт')).not.toBeInTheDocument();
     expect(within(sidebar).queryByText('Миний барилга')).not.toBeInTheDocument();
     expect(within(sidebar).getByText('Хяналтын самбар')).toBeInTheDocument();
+  });
+});
+
+/** Every sidebar destination under /portal, however it is labelled. */
+function portalLinks(sidebar: HTMLElement): string[] {
+  return within(sidebar)
+    .getAllByRole('link')
+    .map((link) => link.getAttribute('href') ?? '')
+    .filter((href) => href === '/portal' || href.startsWith('/portal/'));
+}
+
+describe('the portal stays out of the admin console', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(notificationService, 'unreadCount').mockResolvedValue({ unread: 0 });
+  });
+
+  /**
+   * THE CASE THE ORIGINAL DESIGN GOT WRONG. The portal section was gated on `portal.*`
+   * permissions alone, on the assumption that no staff account can hold one. It can:
+   * SYSTEM_ADMIN is resynchronised to the WHOLE catalogue on every boot and `head_admin` is
+   * an unconditional superuser in `resolveEffectivePermissions`. Both therefore hold every
+   * portal key, and both were shown the customer menu inside the admin console.
+   *
+   * This asserts on hrefs rather than labels deliberately — «Төлөвлөгөөт ажил» is the label
+   * of the staff planned-work entry AND the portal one, so a text assertion here passes on
+   * the staff entry and proves nothing.
+   */
+  const SUPERUSER_PERMISSIONS: readonly PermissionKey[] = [
+    ...CUSTOMER_PERMISSIONS,
+    PERMISSIONS.DASHBOARD_VIEW,
+    PERMISSIONS.PLANNED_WORK_VIEW,
+  ];
+
+  it.each(['head_admin', 'admin', 'technician'] as const)(
+    'gives a %s no portal entries even holding every portal key',
+    async (role) => {
+      renderWithAuth(<AppShell>агуулга</AppShell>, {
+        permissions: SUPERUSER_PERMISSIONS,
+        role,
+        route: '/dashboard',
+      });
+
+      const sidebar = await screen.findByRole('navigation', { name: 'Үндсэн цэс' });
+      expect(portalLinks(sidebar)).toEqual([]);
+      // Their own menu is untouched — this hides the portal, not the staff modules.
+      expect(within(sidebar).getByRole('link', { name: 'Төлөвлөгөөт ажил' })).toHaveAttribute(
+        'href',
+        '/planned-work',
+      );
+    },
+  );
+
+  /**
+   * The guard on the routes themselves, so a typed /portal URL is refused too — hiding a
+   * menu entry is not access control. `CustomerOnly` is what `PortalPage` wraps every
+   * portal route in, so this is the same code path the router takes.
+   */
+  it.each(['head_admin', 'admin', 'technician'] as const)(
+    'refuses a %s the portal routes themselves',
+    async (role) => {
+      const listRequests = vi
+        .spyOn(portalService, 'listRequests')
+        .mockResolvedValue(makePage([]));
+
+      renderWithAuth(
+        <CustomerOnly>
+          <PortalHomePage />
+        </CustomerOnly>,
+        { permissions: SUPERUSER_PERMISSIONS, role, route: '/portal' },
+      );
+
+      expect(await screen.findByText('Хандах эрхгүй')).toBeInTheDocument();
+      // Refused before the screen mounts, so no customer data is fetched.
+      expect(listRequests).not.toHaveBeenCalled();
+    },
+  );
+
+  it('still shows a customer their own portal entries', async () => {
+    vi.spyOn(portalService, 'listRequests').mockResolvedValue(makePage([]));
+
+    renderAsCustomer(<AppShell>агуулга</AppShell>);
+
+    const sidebar = await screen.findByRole('navigation', { name: 'Үндсэн цэс' });
+    expect(portalLinks(sidebar)).toEqual([
+      '/portal',
+      '/portal/requests',
+      '/portal/planned-work',
+      '/portal/sites',
+    ]);
   });
 });

@@ -85,12 +85,18 @@ export function AppShell({ children }: { children: ReactNode }): ReactElement {
   const canSee = (permissions: readonly string[]): boolean =>
     permissions.length === 0 || canAny(...(permissions as Parameters<typeof canAny>));
 
-  const visibleSections = NAVIGATION.map((section) => ({
-    ...section,
-    items: section.items.filter(
-      (item) => item.permissions.length === 0 || canAny(...item.permissions),
-    ),
-  })).filter((section) => section.items.length > 0);
+  const visibleSections = NAVIGATION
+    // Tier first, then permissions. A section may be restricted to particular account
+    // tiers — the portal is, because a superuser holds every portal key and would
+    // otherwise be shown the customer menu inside the admin console.
+    .filter((section) => !section.tiers || (user ? section.tiers.includes(user.role) : false))
+    .map((section) => ({
+      ...section,
+      items: section.items.filter(
+        (item) => item.permissions.length === 0 || canAny(...item.permissions),
+      ),
+    }))
+    .filter((section) => section.items.length > 0);
 
   const sidebarWidth = collapsed ? 'lg:w-16' : 'lg:w-64';
 

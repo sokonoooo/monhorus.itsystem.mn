@@ -1,4 +1,4 @@
-import { PERMISSIONS, type PermissionKey } from '@monhorus/shared';
+import { PERMISSIONS, type PermissionKey, type UserRole } from '@monhorus/shared';
 
 /**
  * Web Admin navigation.
@@ -48,6 +48,22 @@ export interface NavSection {
   key: string;
   label: string | null;
   items: readonly NavItem[];
+  /**
+   * Restricts a section to particular account tiers, on top of the permission filter.
+   *
+   * NEEDED BECAUSE THE PERMISSION FILTER IS NOT ENOUGH FOR THE PORTAL. The portal section
+   * was written on the assumption that no staff account can hold a `portal.*` key — true
+   * of ADMIN, MANAGEMENT, DISPATCH and TECHNICIAN, and false of the two that matter:
+   * SYSTEM_ADMIN is resynchronised to the WHOLE catalogue on every boot, and `head_admin`
+   * is an unconditional superuser in `resolveEffectivePermissions`. Both therefore hold
+   * every portal key and were shown the customer menu inside the admin console.
+   *
+   * A tier is the right question here rather than a workaround: the portal is the customer
+   * tier's surface, and `resolveCustomerScope` decides whose records a request may touch
+   * from `auth.role === 'customer'` on the server. Asking the same question in the menu
+   * keeps the two consistent.
+   */
+  tiers?: readonly UserRole[];
 }
 
 export const NAVIGATION: readonly NavSection[] = [
@@ -64,6 +80,9 @@ export const NAVIGATION: readonly NavSection[] = [
   {
     key: 'portal',
     label: null,
+    // Customer accounts only. See `tiers` above for why the permission filter alone showed
+    // this to a superuser.
+    tiers: ['customer'],
     items: [
       {
         key: 'portal-home',
