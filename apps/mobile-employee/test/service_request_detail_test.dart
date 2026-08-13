@@ -24,6 +24,7 @@ import 'package:monhorus_employee/features/employee/work/domain/repositories/wor
 import 'package:monhorus_employee/features/employee/work/presentation/providers/work_providers.dart';
 import 'package:monhorus_employee/features/employee/work/presentation/screens/service_request_detail_screen.dart';
 import 'package:monhorus_employee/features/employee/work/presentation/widgets/request_attachment_gallery.dart';
+import 'package:monhorus_employee/features/employee/work/presentation/widgets/work_ui.dart';
 
 const String kRequestId = 'r1';
 const String kFileId = 'f1';
@@ -302,8 +303,16 @@ void main() {
     // The row's own facts survive it, so the screen is not blank...
     expect(find.text('Гэрэлтүүлгийн самбар'), findsOneWidget);
     expect(find.text('Ариг Банк · Төв байр'), findsOneWidget);
-    // ...and the way into the conclusion is still there.
-    expect(find.text('Дүгнэлт бичих'), findsOneWidget);
+
+    // ...but the way into the conclusion is NOT, and this assertion was inverted when the
+    // editor became assignment- and arrival-gated. A 404 means the request is neither the
+    // caller's, nor their team's, nor in the open pool — precisely the case in which
+    // opening the editor would mint a draft attributed to them on somebody else's job —
+    // and the row it was handed carries no status, so arrival cannot be established
+    // either. Withheld, and said out loud rather than silently absent.
+    expect(find.text('Дүгнэлт бичих'), findsNothing);
+    expect(find.text('Дүгнэлт харах'), findsNothing);
+    expect(find.text('Дүгнэлт нээх боломжгүй'), findsOneWidget);
 
     expect(tester.takeException(), isNull);
   });
@@ -357,7 +366,15 @@ void main() {
     // Not a 404: the request may well still be the reader's.
     expect(find.text('Хүсэлт олдсонгүй'), findsNothing);
     expect(find.text('Гэрэлтүүлгийн самбар'), findsOneWidget);
-    expect(find.text('Дүгнэлт бичих'), findsOneWidget);
+
+    // The conclusion assertion was inverted along with the 404 case above. The record is
+    // what carries the assignment and the status, so a read that failed leaves both gates
+    // unanswerable — and the tap is a WRITE, `GET .../report` minting a draft against the
+    // caller, so an unanswerable gate has to withhold rather than assume. The failure is
+    // temporary and the pill returns with the record; the section says which of the two it
+    // is waiting on.
+    expect(find.text('Дүгнэлт бичих'), findsNothing);
+    expect(find.text('Дүгнэлт нээх боломжгүй'), findsOneWidget);
   });
 
   // -- Reporting your own progress -------------------------------------------
@@ -390,9 +407,10 @@ void main() {
     // Legal from ON_SITE, and outside the self-progress set.
     expect(find.text('Буцаасан болгох'), findsNothing);
     expect(find.text('Цуцалсан болгох'), findsNothing);
-    // In the set, and not an edge the graph has from here.
+    // In the set, and not offered by hand from here: the backend now admits
+    // ON_SITE → REPORT_SUBMITTED, but submitting the Дүгнэлт is what makes that move.
     expect(find.text('Замдаа болгох'), findsNothing);
-    expect(find.text('Тайлан илгээсэн болгох'), findsNothing);
+    expect(find.text('Дүгнэлт илгээсэн болгох'), findsNothing);
 
     expect(tester.takeException(), isNull);
   });
@@ -504,7 +522,13 @@ void main() {
 
     expect(find.text('Хүлээн авсан болгох'), findsNothing);
     expect(find.text('Энэ ажлыг эзэмшээгүй байна'), findsOneWidget);
-    expect(find.textContaining('өөртөө авна уу'), findsOneWidget);
+    // Narrowed to the progress banner's OWN sentence. The conclusion section below is
+    // gated on the same rule now and says "claim it first" in its own words, so the bare
+    // "өөртөө авна уу" this asserted on matches both banners and their two headings.
+    expect(
+      find.textContaining('Явцыг бүртгэхийн тулд эхлээд'),
+      findsOneWidget,
+    );
   });
 
   testWidgets("a colleague's request is named as theirs, not as a missing permission", (
@@ -527,6 +551,202 @@ void main() {
     expect(find.text('Гүйцэтгэж байна болгох'), findsNothing);
     expect(find.text('Танд оногдоогүй ажил'), findsOneWidget);
     expect(find.text('Төлөв өөрчлөх эрх байхгүй'), findsNothing);
+  });
+
+  // -- The way into the conclusion, which is a WRITE --------------------------
+  //
+  // "Дүгнэлт бичих" used to be an unconditional child of the list; only its LABEL moved,
+  // to "Дүгнэлт харах", for an account without `service_request.update`. Everyone else got
+  // the pill on every request they could open — a colleague's job, a job from the open
+  // pool, a job they had not set out for yet — and the tap is not a navigation. Opening
+  // the editor issues `GET /service-requests/:id/report`, which is `getOrCreate`: it MINTS
+  // a draft and attributes it to the caller. A technician who tapped it on somebody else's
+  // request became the author of a conclusion on that request.
+  //
+  // So the pill is now gated on the two facts that make the write legitimate — the job is
+  // this employee's, and they have arrived — and each refusal names itself rather than
+  // leaving a gap where a control used to be.
+
+  /// Assigned to the reader AND on site: nothing is withheld, and the label is the
+  /// authoring one because `_technician` holds `service_request.update`.
+  testWidgets('an assigned request that has been reached offers the conclusion', (
+    WidgetTester tester,
+  ) async {
+    await _pump(
+      tester,
+      read: AsyncData<ServiceRequestDetailModel?>(
+        ServiceRequestDetailModel.fromJson(
+          _detailJson(
+            status: 'ON_SITE',
+            assignedEmployees: <Map<String, dynamic>>[_me()],
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('Дүгнэлт бичих'), findsOneWidget);
+    expect(
+      tester.widget<WorkButton>(find.widgetWithText(WorkButton, 'Дүгнэлт бичих')).onPressed,
+      isNotNull,
+    );
+    // None of the three refusals is on screen with it.
+    expect(find.text('Дүгнэлт хараахан нээгдээгүй'), findsNothing);
+    expect(find.text('Эхлээд ажлыг өөртөө авна уу'), findsNothing);
+    expect(find.text('Танд оногдоогүй ажлын дүгнэлт'), findsNothing);
+  });
+
+  /// IN_PROGRESS, REPORT_SUBMITTED, VERIFICATION and COMPLETED are the states that can only
+  /// follow the arrival, so each of them is an arrival on record and each keeps the pill.
+  testWidgets('every state after the arrival keeps the conclusion open', (
+    WidgetTester tester,
+  ) async {
+    for (final String status in <String>[
+      'IN_PROGRESS',
+      'REPORT_SUBMITTED',
+      'VERIFICATION',
+      'COMPLETED',
+    ]) {
+      await _pump(
+        tester,
+        read: AsyncData<ServiceRequestDetailModel?>(
+          ServiceRequestDetailModel.fromJson(
+            _detailJson(
+              status: status,
+              assignedEmployees: <Map<String, dynamic>>[_me()],
+            ),
+          ),
+        ),
+      );
+
+      expect(find.text('Дүгнэлт бичих'), findsOneWidget, reason: status);
+      expect(find.text('Дүгнэлт хараахан нээгдээгүй'), findsNothing, reason: status);
+    }
+  });
+
+  /// THE REQUEST IS THEIRS AND THEY HAVE NOT GOT THERE YET. A conclusion is an account of a
+  /// visit, so it cannot be written before the visit — and the draft the editor mints would
+  /// be dated and attributed all the same.
+  ///
+  /// WAITING is in the list on purpose: `SERVICE_REQUEST_TRANSITIONS` allows
+  /// ON_THE_WAY → WAITING, so a paused technician may never have reached the site, and
+  /// treating "paused" as "arrived" would reopen exactly the hole this closes.
+  testWidgets('before the arrival the conclusion is withheld and says so', (
+    WidgetTester tester,
+  ) async {
+    for (final String status in <String>[
+      'ASSIGNED',
+      'ACCEPTED',
+      'ON_THE_WAY',
+      'WAITING',
+    ]) {
+      await _pump(
+        tester,
+        read: AsyncData<ServiceRequestDetailModel?>(
+          ServiceRequestDetailModel.fromJson(
+            _detailJson(
+              status: status,
+              assignedEmployees: <Map<String, dynamic>>[_me()],
+            ),
+          ),
+        ),
+      );
+
+      // Neither the write nor the read, because the read issues the same draft-creating GET.
+      expect(find.text('Дүгнэлт бичих'), findsNothing, reason: status);
+      expect(find.text('Дүгнэлт харах'), findsNothing, reason: status);
+
+      // The banner stands exactly where the pill was, so its presence is also the proof
+      // that the section was built rather than merely scrolled out of the viewport.
+      expect(find.text('Дүгнэлт хараахан нээгдээгүй'), findsOneWidget, reason: status);
+      expect(
+        find.textContaining('Очсоны дараа дүгнэлт бичих боломжтой.'),
+        findsOneWidget,
+        reason: status,
+      );
+
+      // And it is not mistaken for somebody else's job: this one IS theirs.
+      expect(find.text('Танд оногдоогүй ажлын дүгнэлт'), findsNothing, reason: status);
+    }
+  });
+
+  /// The open pool. `GET /service-requests/:id` admits it — that is what lets a technician
+  /// read a fault before deciding to take it — while every write policy refuses it, so the
+  /// notice has to say which act is missing rather than simply withholding the pill.
+  testWidgets('an unclaimed request says the job must be claimed first', (
+    WidgetTester tester,
+  ) async {
+    await _pump(
+      tester,
+      read: AsyncData<ServiceRequestDetailModel?>(
+        ServiceRequestDetailModel.fromJson(_detailJson(status: 'UNASSIGNED')),
+      ),
+    );
+
+    expect(find.text('Дүгнэлт бичих'), findsNothing);
+    expect(find.text('Дүгнэлт харах'), findsNothing);
+    expect(find.text('Эхлээд ажлыг өөртөө авна уу'), findsOneWidget);
+    expect(
+      find.textContaining('Дүгнэлт бичихийн тулд эхлээд'),
+      findsOneWidget,
+    );
+  });
+
+  /// A colleague's job, which is the case that produced an attributed draft on work the
+  /// reader had nothing to do with. ON_SITE, so it is the ASSIGNMENT being refused and not
+  /// the arrival — the notice says whose job it is rather than "not yet".
+  testWidgets("a colleague's request offers no way into its conclusion", (
+    WidgetTester tester,
+  ) async {
+    await _pump(
+      tester,
+      read: AsyncData<ServiceRequestDetailModel?>(
+        ServiceRequestDetailModel.fromJson(
+          _detailJson(
+            status: 'ON_SITE',
+            assignedEmployees: <Map<String, dynamic>>[
+              <String, dynamic>{'id': 'emp-2', 'name': 'Бат'},
+            ],
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('Дүгнэлт бичих'), findsNothing);
+    expect(find.text('Дүгнэлт харах'), findsNothing);
+    expect(find.text('Танд оногдоогүй ажлын дүгнэлт'), findsOneWidget);
+    // Not blamed on a permission, which is not what is missing.
+    expect(find.textContaining('service_request.update'), findsNothing);
+    expect(find.text('Эхлээд ажлыг өөртөө авна уу'), findsNothing);
+  });
+
+  /// A request assigned to the reader's TEAM rather than to the reader is theirs as far as
+  /// the server's scope is concerned, and the mirror must agree — an over-tight gate that
+  /// hides the pill from a whole team is the same outage as a missing button.
+  testWidgets("the team's request is the team member's to write up", (
+    WidgetTester tester,
+  ) async {
+    await _pump(
+      tester,
+      identity: const ResolvedWorkIdentity(
+        employeeId: kEmployeeId,
+        employeeCode: 'E-1',
+        fullName: 'Дорж Ganbold',
+        positionName: null,
+        teamId: 'team-1',
+        teamName: 'Цахилгааны баг',
+      ),
+      read: AsyncData<ServiceRequestDetailModel?>(
+        ServiceRequestDetailModel.fromJson(
+          _detailJson(
+            status: 'ON_SITE',
+            assignedTeam: <String, dynamic>{'id': 'team-1', 'name': 'Цахилгааны баг'},
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('Дүгнэлт бичих'), findsOneWidget);
+    expect(find.text('Танд оногдоогүй ажлын дүгнэлт'), findsNothing);
   });
 
   // -- A handed-in conclusion, which this app states and never settles --------

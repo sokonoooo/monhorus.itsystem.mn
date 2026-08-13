@@ -94,7 +94,6 @@ class ServiceRequestDetailScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final ConclusionGrants grants = ref.watch(conclusionGrantsProvider);
     final AsyncValue<ServiceRequestDetailModel?> read =
         ref.watch(serviceRequestDetailProvider(requestId));
     final ServiceRequestDetailModel? detail = read.valueOrNull;
@@ -256,38 +255,13 @@ class ServiceRequestDetailScreen extends ConsumerWidget {
 
               const SizedBox(height: 16),
               const FieldLabel('Ажлын дүгнэлт'),
-
-              if (!grants.canAuthor)
-                const NoticeBanner(
-                  margin: EdgeInsets.zero,
-                  tone: EmployeeTokens.muted,
-                  icon: Icons.lock_outline,
-                  title: 'Бичих эрх байхгүй',
-                  text: 'Танд "service_request.update" эрх байхгүй тул дүгнэлт бичих '
-                      'боломжгүй. Бичигдсэн дүгнэлтийг харах боломжтой.',
-                )
-              else
-                const NoticeBanner(
-                  margin: EdgeInsets.zero,
-                  tone: EmployeeTokens.muted,
-                  icon: Icons.info_outline,
-                  text: 'Дүгнэлтийг тоноглол тус бүрээр бичнэ. Сонгосон тоноглол бүр '
-                      '"Үзлэг ба дүгнэлт" хэсэгт тусдаа мөр болж харагдана.',
-                ),
-
-              const SizedBox(height: 12),
-              // One full-width pill per line. Never a Row child: a WorkButton has no
-              // intrinsic width and cannot lay out unconstrained.
-              WorkButton(
-                label: grants.canAuthor ? 'Дүгнэлт бичих' : 'Дүгнэлт харах',
-                onPressed: () => Navigator.of(context).push(
-                  ConclusionEditorScreen.route(
-                    requestId: requestId,
-                    requestNumber: detail?.requestNumber ?? requestNumber,
-                    buildingId: resolvedBuildingId,
-                    buildingName: resolvedBuildingName,
-                  ),
-                ),
+              _ConclusionSection(
+                requestId: requestId,
+                requestNumber: detail?.requestNumber ?? requestNumber,
+                detail: detail,
+                stillReading: read.isLoading,
+                buildingId: resolvedBuildingId,
+                buildingName: resolvedBuildingName,
               ),
 
               _ApprovalSection(detail: detail),
@@ -604,6 +578,150 @@ class _ReasonSheetState extends State<_ReasonSheet> {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// The one way into the conclusion editor, and the reason when there isn't one.
+///
+/// THE TAP IS A WRITE, whatever the label on it says. `GET /service-requests/:id/report` is
+/// `getOrCreate`: it MINTS a draft and attributes it to the caller on first read, so merely
+/// arriving at [ConclusionEditorScreen] makes the person who opened it the author of a
+/// conclusion on this job. Hiding the control is therefore the gate itself — a disabled
+/// button would be equivalent, but a control that cannot be reached at all is the only one
+/// that cannot be reached by accident. There is no read-only route that skips that GET, so
+/// the view path is gated by the same three conditions rather than being let past them;
+/// where a conclusion exists to be read — REPORT_SUBMITTED, VERIFICATION, COMPLETED — all
+/// three hold anyway.
+///
+/// THREE CONDITIONS, ALL OF WHICH MUST HOLD, and the section says which one failed rather
+/// than drawing nothing — the same doctrine as [_ProgressSection]:
+///
+///   1. The record is on screen. Assignment and arrival are both facts ABOUT the record,
+///      so without one there is nothing to check them against.
+///   2. The request is this employee's, or their team's — [resolveRequestAssignment], the
+///      same mirror the progress buttons use, not a second id comparison. Oversight and
+///      not-yet-known callers come back `unrestricted` and are not narrowed.
+///   3. The technician has ARRIVED — [ServiceRequestStatus.hasArrivedOnSite]. A conclusion
+///      is an account of a visit, and the visit has not happened yet.
+class _ConclusionSection extends ConsumerWidget {
+  const _ConclusionSection({
+    required this.requestId,
+    required this.requestNumber,
+    required this.detail,
+    required this.stillReading,
+    required this.buildingId,
+    required this.buildingName,
+  });
+
+  final String requestId;
+  final String requestNumber;
+  final ServiceRequestDetailModel? detail;
+
+  /// The detail read is in flight and has landed nothing yet.
+  final bool stillReading;
+
+  final String? buildingId;
+  final String? buildingName;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final ServiceRequestDetailModel? record = detail;
+
+    if (record == null) {
+      // The spinner above the fold is already saying this. A second sentence under the
+      // heading, while the answer is still coming, would only be the same wait twice.
+      if (stillReading) return const SizedBox.shrink();
+
+      // A 404 or a failed read, both already explained above. What is added here is the
+      // consequence: neither gate can be evaluated, so the way in is not offered.
+      return const NoticeBanner(
+        margin: EdgeInsets.zero,
+        tone: EmployeeTokens.yellow,
+        icon: Icons.lock_outline,
+        title: 'Дүгнэлт нээх боломжгүй',
+        text: 'Хүсэлтийн дэлгэрэнгүй уншигдаагүй тул энэ ажил тань эсэх, очсон эсэхийг '
+            'шалгах боломжгүй байна. Дахин ачаалж үзнэ үү.',
+      );
+    }
+
+    final PlannedWorkAssignment assignment = resolveRequestAssignment(
+      request: record,
+      identity: ref.watch(workIdentityProvider).valueOrNull,
+      grants: ref.watch(workGrantsProvider),
+    );
+
+    // The same two cases [_ProgressSection] names, worded for this section rather than
+    // repeated verbatim: both banners are on screen at once when a technician opens
+    // somebody else's job, and the same sentence printed twice under two different
+    // headings reads as a rendering fault rather than as two withheld controls.
+    if (assignment.blocksWrites) {
+      return NoticeBanner(
+        margin: EdgeInsets.zero,
+        tone: EmployeeTokens.yellow,
+        icon: Icons.person_off_outlined,
+        title: record.isUnclaimed
+            ? 'Эхлээд ажлыг өөртөө авна уу'
+            : 'Танд оногдоогүй ажлын дүгнэлт',
+        text: record.isUnclaimed
+            ? 'Энэ хүсэлт хэн нэгэнд хуваарилагдаагүй байна. Дүгнэлт бичихийн тулд '
+                'эхлээд "Нээлттэй" жагсаалтаас өөртөө авна уу.'
+            : 'Энэ хүсэлт танд ч, таны багт ч хуваарилагдаагүй тул дүгнэлтийг нь нээх '
+                'боломжгүй. Дүгнэлтийг ажлыг хариуцсан ажилтан бичнэ.',
+      );
+    }
+
+    final ServiceRequestStatus? status = record.status;
+    if (status == null || !status.hasArrivedOnSite) {
+      return NoticeBanner(
+        margin: EdgeInsets.zero,
+        tone: EmployeeTokens.muted,
+        icon: Icons.schedule_outlined,
+        title: 'Дүгнэлт хараахан нээгдээгүй',
+        text: 'Очсоны дараа дүгнэлт бичих боломжтой. Одоогийн төлөв '
+            '"${status?.label ?? kNoValue}" байна — "Ажлын явц" хэсэгт "Очсон" гэж '
+            'бүртгэсний дараа энэ хэсэг нээгдэнэ.',
+      );
+    }
+
+    final bool canAuthor = ref.watch(conclusionGrantsProvider).canAuthor;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      mainAxisSize: MainAxisSize.min,
+      children: <Widget>[
+        if (!canAuthor)
+          const NoticeBanner(
+            margin: EdgeInsets.zero,
+            tone: EmployeeTokens.muted,
+            icon: Icons.lock_outline,
+            title: 'Бичих эрх байхгүй',
+            text: 'Танд "service_request.update" эрх байхгүй тул дүгнэлт бичих '
+                'боломжгүй. Бичигдсэн дүгнэлтийг харах боломжтой.',
+          )
+        else
+          const NoticeBanner(
+            margin: EdgeInsets.zero,
+            tone: EmployeeTokens.muted,
+            icon: Icons.info_outline,
+            text: 'Дүгнэлтийг тоноглол тус бүрээр бичнэ. Сонгосон тоноглол бүр '
+                '"Үзлэг ба дүгнэлт" хэсэгт тусдаа мөр болж харагдана.',
+          ),
+        const SizedBox(height: 12),
+        // One full-width pill per line. Never a Row child: a WorkButton has no
+        // intrinsic width and cannot lay out unconstrained.
+        WorkButton(
+          label: canAuthor ? 'Дүгнэлт бичих' : 'Дүгнэлт харах',
+          onPressed: () => Navigator.of(context).push(
+            ConclusionEditorScreen.route(
+              requestId: requestId,
+              requestNumber: requestNumber,
+              buildingId: buildingId,
+              buildingName: buildingName,
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

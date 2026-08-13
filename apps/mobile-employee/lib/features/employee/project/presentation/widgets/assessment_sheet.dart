@@ -532,10 +532,18 @@ class _AssessmentSheetState extends ConsumerState<_AssessmentSheet> {
                 ],
               ),
             ),
+            // THE WAY OUT IS NEVER TAKEN AWAY, for the same reason it is not in
+            // `inspection_report_sheet.dart`: this sheet is opened with
+            // `isDismissible: false` and `enableDrag: false`, so this button is the only
+            // exit on a platform with no hardware back key. `_saving` is cleared on the
+            // failure branch alone and `_uploading` on the upload's own answer, so a
+            // request that hangs — or never returns — used to leave nothing to press.
+            // The SAVE pill is still gated on `canSave`, so this is a way out rather than
+            // a way to submit twice.
             _Footer(
               busy: _saving,
               canSave: _photos.isNotEmpty && !_busy,
-              onCancel: _busy ? null : () => Navigator.of(context).pop(),
+              onCancel: () => Navigator.of(context).pop(),
               onSave: _submit,
             ),
           ],

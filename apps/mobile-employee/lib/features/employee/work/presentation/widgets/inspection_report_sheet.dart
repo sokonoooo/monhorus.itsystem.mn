@@ -328,10 +328,25 @@ class _InspectionReportSheetState
                 ],
               ),
             ),
+            // THE WAY OUT IS NEVER TAKEN AWAY. This sheet is opened with
+            // `isDismissible: false` and `enableDrag: false` — deliberately, so a
+            // part-written report is not lost to a stray tap on the scrim — which makes
+            // this button the ONLY exit on a platform with no hardware back key. Nulling
+            // it while `_busy` therefore left a save that hung, or that never answered at
+            // all, with nothing to press: `_busy` is cleared on the failure branch and on
+            // no other, so a request that simply does not return locks the screen for as
+            // long as the app is open. That is the reported "trapped on the Planned Work
+            // page", and it is why the callback is unconditional now.
+            //
+            // Leaving mid-save is safe rather than merely permitted: the write is already
+            // with the server and is not cancelled by closing the sheet, `_save`'s
+            // `mounted` guard drops the response, and the card behind re-reads the report.
+            // The save PILL is still disabled while busy — that is what stops a second
+            // write — so this is a way out, not a way to send twice.
             SheetFooter(
               busy: _busy,
               saveLabel: 'Тайлан хадгалах',
-              onCancel: _busy ? null : () => Navigator.of(context).pop(),
+              onCancel: () => Navigator.of(context).pop(),
               onSave: _save,
             ),
           ],

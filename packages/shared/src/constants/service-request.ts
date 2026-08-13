@@ -34,7 +34,7 @@ export const SERVICE_REQUEST_STATUS_LABELS: Record<ServiceRequestStatus, string>
   ON_SITE: 'Очсон',
   IN_PROGRESS: 'Гүйцэтгэж байна',
   WAITING: 'Түр хүлээгдсэн',
-  REPORT_SUBMITTED: 'Тайлан илгээсэн',
+  REPORT_SUBMITTED: 'Дүгнэлт илгээсэн',
   VERIFICATION: 'Баталгаажуулах',
   COMPLETED: 'Дууссан',
   REVISIT_REQUIRED: 'Дахин очих',
@@ -55,10 +55,10 @@ export const SERVICE_REQUEST_TRANSITIONS: Record<
   ASSIGNED: ['ACCEPTED', 'UNASSIGNED', 'RETURNED', 'CANCELLED'],
   ACCEPTED: ['ON_THE_WAY', 'UNASSIGNED', 'RETURNED', 'CANCELLED'],
   ON_THE_WAY: ['ON_SITE', 'WAITING', 'RETURNED', 'CANCELLED'],
-  ON_SITE: ['IN_PROGRESS', 'WAITING', 'RETURNED', 'CANCELLED'],
+  ON_SITE: ['IN_PROGRESS', 'REPORT_SUBMITTED', 'WAITING', 'RETURNED', 'CANCELLED'],
   IN_PROGRESS: ['REPORT_SUBMITTED', 'WAITING', 'REVISIT_REQUIRED', 'CANCELLED'],
   WAITING: ['IN_PROGRESS', 'ON_SITE', 'RETURNED', 'CANCELLED'],
-  REPORT_SUBMITTED: ['VERIFICATION', 'RETURNED'],
+  REPORT_SUBMITTED: ['VERIFICATION', 'COMPLETED', 'RETURNED'],
   VERIFICATION: ['COMPLETED', 'RETURNED', 'REVISIT_REQUIRED'],
   COMPLETED: [],
   REVISIT_REQUIRED: ['ASSIGNED', 'UNASSIGNED', 'CANCELLED'],
@@ -119,6 +119,25 @@ export function selfProgressTransitionsFrom(
   return SERVICE_REQUEST_TRANSITIONS[from].filter(isSelfProgressStatus);
 }
 
+
+/**
+ * Statuses that can only be reached once the technician has arrived on site.
+ *
+ * WAITING IS DELIBERATELY ABSENT. The transition map admits `ON_THE_WAY -> WAITING`, so a
+ * technician can be waiting without ever having arrived — treating it as arrival would let a
+ * conclusion be written from the road, which is the thing this list exists to prevent.
+ *
+ * A status is only half the answer: a request that arrived and was later sent back to
+ * ASSIGNED has arrived even though its current status is not in this list. Callers that can
+ * see `statusHistory` should consult it as well — see `hasArrivedOnSite` on the backend.
+ */
+export const ARRIVED_STATUSES: readonly ServiceRequestStatus[] = [
+  'ON_SITE',
+  'IN_PROGRESS',
+  'REPORT_SUBMITTED',
+  'VERIFICATION',
+  'COMPLETED',
+];
 /** Transitions that require a free-text reason (requirements 8.3, 14.1, 14.4). */
 export const REASON_REQUIRED_STATUSES: readonly ServiceRequestStatus[] = [
   'WAITING',

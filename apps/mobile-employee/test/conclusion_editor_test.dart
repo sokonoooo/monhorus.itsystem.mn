@@ -20,6 +20,7 @@ import 'package:monhorus_employee/features/employee/project/domain/entities/risk
 import 'package:monhorus_employee/features/employee/project/data/models/project_models.dart';
 import 'package:monhorus_employee/features/employee/shared/service_request_models.dart';
 import 'package:monhorus_employee/features/employee/work/data/models/work_report_model.dart';
+import 'package:monhorus_employee/features/employee/work/domain/entities/work_identity.dart';
 import 'package:monhorus_employee/features/employee/work/domain/repositories/work_repository.dart';
 import 'package:monhorus_employee/features/employee/work/presentation/providers/conclusion_providers.dart';
 import 'package:monhorus_employee/features/employee/work/presentation/providers/work_providers.dart';
@@ -29,6 +30,22 @@ import 'package:monhorus_employee/features/employee/work/presentation/screens/se
 
 const String kRequestId = 'r1';
 const String kBuildingId = 'b1';
+const String kEmployeeId = 'emp-1';
+
+/// The employee card the assignment mirror compares the record against.
+///
+/// Overridden wherever the DETAIL SCREEN is built, never left to the real
+/// `GET /employees/me`: that read is what decides whether the screen believes this request
+/// is the reader's, so leaving it to fail over the network would make the presence of the
+/// conclusion pill accidental.
+const ResolvedWorkIdentity _identity = ResolvedWorkIdentity(
+  employeeId: kEmployeeId,
+  employeeCode: 'E-1',
+  fullName: 'Дорж Ganbold',
+  positionName: null,
+  teamId: null,
+  teamName: null,
+);
 
 /// A technician who may author a conclusion.
 const AppUser _author = AppUser(
@@ -104,12 +121,20 @@ Override _detailOverride([ServiceRequestDetailModel? detail]) {
       .overrideWith((Ref ref) async => detail);
 }
 
+/// ASSIGNED TO THE READER AND ON SITE, because the way into the editor is now gated on
+/// both. `GET /service-requests/:id/report` mints a draft attributed to the caller, so the
+/// pill is drawn only for the employee the job actually belongs to, and only once they have
+/// reported arriving; a record that was neither — this fixture named nobody and sat in
+/// ASSIGNED — no longer draws it at all.
 ServiceRequestDetailModel _detail() =>
     ServiceRequestDetailModel.fromJson(<String, dynamic>{
       'id': kRequestId,
       'requestNumber': 'SR-202608-0001',
       'requestType': 'REPAIR',
-      'status': 'ASSIGNED',
+      'status': 'ON_SITE',
+      'assignedEmployees': <Map<String, dynamic>>[
+        <String, dynamic>{'id': kEmployeeId, 'name': 'Дорж'},
+      ],
       'isUrgent': false,
       'description': 'Гэрэлтүүлэг унтарсан.',
       'contactName': 'Бат',
@@ -288,6 +313,7 @@ void main() {
       ProviderScope(
         overrides: <Override>[
           currentUserProvider.overrideWithValue(_author),
+          workIdentityProvider.overrideWith((Ref ref) async => _identity),
           _detailOverride(_detail()),
         ],
         child: const MaterialApp(
@@ -319,6 +345,7 @@ void main() {
       ProviderScope(
         overrides: <Override>[
           currentUserProvider.overrideWithValue(_reader),
+          workIdentityProvider.overrideWith((Ref ref) async => _identity),
           _detailOverride(_detail()),
         ],
         child: const MaterialApp(

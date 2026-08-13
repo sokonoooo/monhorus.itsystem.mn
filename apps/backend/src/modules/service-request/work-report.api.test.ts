@@ -15,6 +15,7 @@ import {
 } from '../../test/helpers';
 import { StoredFile } from '../storage/stored-file.model';
 import { Employee } from '../employee/employee.model';
+import { Notification } from '../notification/notification.model';
 import { Customer } from '../objects/object.models';
 import { User } from '../user/user.model';
 import { ServiceRequest, nextRequestNumber } from './service-request.model';
@@ -274,19 +275,34 @@ describe('Completion gate', () => {
     expect(response.body.message).toMatch(/батлаагүй/);
   });
 
+  /**
+   * APPROVAL NOW FINISHES THE REQUEST ITSELF. This used to walk the status by hand —
+   * submit, REPORT_SUBMITTED, VERIFICATION, approve, COMPLETED — and assert the last step
+   * was permitted. Approving the conclusion IS the verification, so the walk is gone and
+   * the assertion is stronger: nobody has to remember to move it.
+   */
   it('finishes a request once the conclusion is approved', async () => {
     const requestId = await seedRequest();
     await request(app).get(`${API}/service-requests/${requestId}/report`).set('Authorization', `Bearer ${token}`);
     await fillReport(requestId);
     await request(app).post(`${API}/service-requests/${requestId}/report/submit`).set('Authorization', `Bearer ${token}`);
-    await changeStatus(requestId, 'REPORT_SUBMITTED');
-    await changeStatus(requestId, 'VERIFICATION');
-    await request(app).post(`${API}/service-requests/${requestId}/report/approve`).set('Authorization', `Bearer ${token}`);
 
-    const response = await changeStatus(requestId, 'COMPLETED');
+    // Submitting the conclusion moved it on its own.
+    const submitted = await request(app)
+      .get(`${API}/service-requests/${requestId}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(submitted.body.data.status).toBe('REPORT_SUBMITTED');
 
-    expect(response.status).toBe(200);
-    expect(response.body.data.status).toBe('COMPLETED');
+    const approved = await request(app)
+      .post(`${API}/service-requests/${requestId}/report/approve`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(approved.status).toBe(200);
+
+    const finished = await request(app)
+      .get(`${API}/service-requests/${requestId}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(finished.body.data.status).toBe('COMPLETED');
+    expect(finished.body.data.completedAt).not.toBeNull();
   });
 
   /** Reviewing is a separate duty from recording, so the two carry separate permissions. */
@@ -885,16 +901,147 @@ describe('Work conclusion — boundaries', () => {
   });
 
   /**
-   * The open queue stays writable, matching the request detail read: a technician taps an
-   * unclaimed request from "Нээлттэй" and the conclusion button on that screen must work.
+   * THE OPEN QUEUE IS NO LONGER WRITABLE, and this test used to assert the opposite.
+   *
+   * Reading an unclaimed request is still fine; authoring a conclusion on one is not.
+   * Opening the editor MINTS A DRAFT attributed to the caller, so the old behaviour let any
+   * technician who tapped an unclaimed request become the author of a conclusion on work
+   * nobody had taken. The claim flow exists precisely so authorship is never ambiguous —
+   * a technician claims it, and then it is theirs to conclude.
    */
-  it('still admits an unclaimed request', async () => {
+  it('refuses a conclusion on an unclaimed request until it is claimed', async () => {
     const requestId = await seedRequest();
     const tech = await makeTechnician('queue.tech@test.mn');
 
     const opened = await getReport(requestId, tech.token);
 
-    expect(opened.status).toBe(200);
+    expect(opened.status).toBe(404);
+    // And nothing was written on the way out.
+    expect(await WorkReport.countDocuments({ serviceRequest: requestId })).toBe(0);
+  });
+
+
+  /**
+   * P0: a conclusion records what was found ON SITE, so it cannot be written from the road.
+   *
+   * Asserted against a request that has NOT arrived. `seedRequest` opens at IN_PROGRESS,
+   * which is already past arrival, so each of these walks the request back to a
+   * pre-arrival status first — otherwise the gate would never be exercised and the test
+   * would pass whether or not it existed.
+   */
+  describe('arrival gate', () => {
+    async function setStatus(requestId: string, status: string): Promise<void> {
+      await ServiceRequest.updateOne(
+        { _id: new Types.ObjectId(requestId) },
+        { $set: { status, statusHistory: [] } },
+      );
+    }
+
+    it.each(['ASSIGNED', 'ACCEPTED', 'ON_THE_WAY'])(
+      'refuses a conclusion while the request is only %s',
+      async (status) => {
+        const requestId = await seedRequest();
+        const tech = await makeTechnician(`before.${status}@test.mn`);
+        await assign(requestId, tech.employeeId);
+        await setStatus(requestId, status);
+
+        const opened = await getReport(requestId, tech.token);
+
+        expect(opened.status).toBe(400);
+        // Refused before anything was written: no draft is minted on the way out.
+        expect(await WorkReport.countDocuments({ serviceRequest: requestId })).toBe(0);
+      },
+    );
+
+    /** WAITING is reachable from ON_THE_WAY, so waiting is not the same as having arrived. */
+    it('refuses a conclusion from a technician waiting who never arrived', async () => {
+      const requestId = await seedRequest();
+      const tech = await makeTechnician('waiting.tech@test.mn');
+      await assign(requestId, tech.employeeId);
+      await setStatus(requestId, 'WAITING');
+
+      expect((await getReport(requestId, tech.token)).status).toBe(400);
+    });
+
+    it('admits a conclusion once the technician is on site', async () => {
+      const requestId = await seedRequest();
+      const tech = await makeTechnician('onsite.tech@test.mn');
+      await assign(requestId, tech.employeeId);
+      await setStatus(requestId, 'ON_SITE');
+
+      expect((await getReport(requestId, tech.token)).status).toBe(200);
+    });
+
+    /**
+     * Arrival is a thing that happened, not a status you are currently in: a request that
+     * was visited and then sent back must not lock its own conclusion away.
+     */
+    it('remembers an earlier arrival when the request has moved back', async () => {
+      const requestId = await seedRequest();
+      const tech = await makeTechnician('revisit.tech@test.mn');
+      await assign(requestId, tech.employeeId);
+      await ServiceRequest.updateOne(
+        { _id: new Types.ObjectId(requestId) },
+        {
+          $set: {
+            status: 'ASSIGNED',
+            statusHistory: [
+              {
+                _id: new Types.ObjectId(),
+                fromStatus: 'ON_THE_WAY',
+                toStatus: 'ON_SITE',
+                reason: null,
+                changedBy: null,
+                changedByName: null,
+                changedAt: new Date(),
+              },
+            ],
+          },
+        },
+      );
+
+      expect((await getReport(requestId, tech.token)).status).toBe(200);
+    });
+
+    /** The rule is about the person doing the visit; an office reviewer is not one. */
+    it('does not hold an oversight caller to the arrival rule', async () => {
+      const requestId = await seedRequest();
+      await setStatus(requestId, 'ASSIGNED');
+
+      expect((await getReport(requestId, token)).status).toBe(200);
+    });
+  });
+
+  /**
+   * P0: writing and submitting are both bounded, not just opening the editor. A client that
+   * skipped the GET must not be able to save or submit either.
+   */
+  describe('every conclusion write is bounded, not only the first', () => {
+    it('refuses save and submit on an unclaimed request', async () => {
+      const requestId = await seedRequest();
+      const tech = await makeTechnician('unclaimed.writer@test.mn');
+
+      const saved = await request(app)
+        .put(`${API}/service-requests/${requestId}/report`)
+        .set('Authorization', `Bearer ${tech.token}`)
+        .send({
+          score: 71,
+          conclusion: 'Гараар бичсэн.',
+          repairRequired: false,
+          revisitRequired: false,
+          beforePhotoIds: [],
+          afterPhotoIds: [],
+          materials: [],
+          objectIds: [],
+          objectAssessments: [],
+        });
+      expect(saved.status).toBe(404);
+
+      const submitted = await request(app)
+        .post(`${API}/service-requests/${requestId}/report/submit`)
+        .set('Authorization', `Bearer ${tech.token}`);
+      expect(submitted.status).toBe(404);
+    });
   });
 
   /** Oversight is unaffected: the reviewer never carries an employee card. */
@@ -1267,5 +1414,80 @@ describe('Work conclusion — the customer read', () => {
     await detail(requestId);
 
     expect(await WorkReport.countDocuments({})).toBe(before);
+  });
+});
+
+/**
+ * P0: the customer is told when their request is finished.
+ *
+ * Nothing told them before. `notify` could address staff by permission or employees by id,
+ * and the CUSTOMER preset holds not one staff key — so every existing notification was
+ * structurally incapable of reaching a customer inbox, however it was worded.
+ */
+describe('the customer hears that their request was resolved', () => {
+  async function makeCustomerUser(email: string): Promise<string> {
+    const user = await createUserWithPermissions(email, [PERMISSIONS.NOTIFICATION_VIEW]);
+    await User.updateOne(
+      { _id: new Types.ObjectId(user.userId) },
+      { $set: { role: 'customer', customer: fixture.customerId } },
+    );
+    return user.userId;
+  }
+
+  async function concludeAndApprove(requestId: string): Promise<void> {
+    await request(app).get(`${API}/service-requests/${requestId}/report`).set('Authorization', `Bearer ${token}`);
+    await fillReport(requestId);
+    await request(app).post(`${API}/service-requests/${requestId}/report/submit`).set('Authorization', `Bearer ${token}`);
+    await request(app).post(`${API}/service-requests/${requestId}/report/approve`).set('Authorization', `Bearer ${token}`);
+  }
+
+  it('notifies the customer, naming the request and where it was', async () => {
+    const userId = await makeCustomerUser('notified.customer@test.mn');
+    const requestId = await seedRequest();
+
+    await concludeAndApprove(requestId);
+
+    const rows = await Notification.find({ recipient: new Types.ObjectId(userId) }).lean();
+    expect(rows).toHaveLength(1);
+    const [row] = rows;
+    // Enough to identify it: the request number, and the building it was at.
+    const stored = await ServiceRequest.findById(requestId).select('requestNumber').lean();
+    expect(row!.title).toContain(stored!.requestNumber);
+    expect(row!.body).toContain('Төв');
+    // ...and a link a customer can actually open.
+    expect(row!.linkPath).toBe(`/portal/requests/${requestId}`);
+  });
+
+  /** Another organisation's portal account must not hear about this request at all. */
+  it('tells nobody outside the requesting organisation', async () => {
+    const outsiderUser = await createUserWithPermissions('outsider@test.mn', [
+      PERMISSIONS.NOTIFICATION_VIEW,
+    ]);
+    const otherCustomer = await Customer.create({ code: 'OTH', name: 'Өөр ХХК' });
+    await User.updateOne(
+      { _id: new Types.ObjectId(outsiderUser.userId) },
+      { $set: { role: 'customer', customer: otherCustomer._id } },
+    );
+    const requestId = await seedRequest();
+
+    await concludeAndApprove(requestId);
+
+    expect(
+      await Notification.countDocuments({ recipient: new Types.ObjectId(outsiderUser.userId) }),
+    ).toBe(0);
+  });
+
+  /** Submitting is not finishing: the customer hears once, at the end. */
+  it('says nothing to the customer while the conclusion is only submitted', async () => {
+    const userId = await makeCustomerUser('early.customer@test.mn');
+    const requestId = await seedRequest();
+
+    await request(app).get(`${API}/service-requests/${requestId}/report`).set('Authorization', `Bearer ${token}`);
+    await fillReport(requestId);
+    await request(app).post(`${API}/service-requests/${requestId}/report/submit`).set('Authorization', `Bearer ${token}`);
+
+    expect(
+      await Notification.countDocuments({ recipient: new Types.ObjectId(userId) }),
+    ).toBe(0);
   });
 });

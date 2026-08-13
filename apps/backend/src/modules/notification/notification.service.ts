@@ -34,6 +34,20 @@ export interface NotifyInput {
   permission?: PermissionKey;
   /** Specific people, for example the employee a job was assigned to. */
   userIds?: readonly (Types.ObjectId | string)[];
+  /**
+   * Everyone holding a portal account for this organisation.
+   *
+   * THE THIRD KIND OF RECIPIENT, and the reason it exists: the other two cannot reach a
+   * customer at all. `permission` resolves to staff keys and `head_admin`, and the CUSTOMER
+   * preset holds not one staff permission; `userIds` is only ever fed employee accounts.
+   * Requirement 14.3 names the customer as a recipient for the work-finished and
+   * conclusion-approved events, and until this existed the implementation simply did not.
+   *
+   * Addressed by organisation rather than by the person who raised the request, because the
+   * request belongs to the organisation: the colleague who reported a fault may be on leave
+   * when it is fixed, and the answer should still reach somebody.
+   */
+  customerId?: Types.ObjectId | string | null;
   /** Never notify the person who caused the event. */
   excludeUserId?: Types.ObjectId | string | null;
 }
@@ -92,6 +106,29 @@ async function recipientsByPermission(permission: PermissionKey): Promise<Types.
 }
 
 /**
+ * The active portal accounts of one organisation.
+ *
+ * Deliberately NOT cached, unlike the permission lookup: that one keys on a permission and
+ * is asked the same question constantly, whereas this is per-organisation and per-event, and
+ * a stale answer here means a customer who was just given access is not told about their own
+ * request. The query is a two-field indexed match on a small collection.
+ *
+ * Bounded to `role: 'customer'` as well as the organisation link, because a staff account
+ * may legitimately carry a customer association without being a portal user.
+ */
+async function recipientsByCustomer(
+  customerId: Types.ObjectId | string | null | undefined,
+): Promise<Types.ObjectId[]> {
+  const id = toObjectId(customerId);
+  if (!id) return [];
+
+  const users = await User.find({ status: 'active', role: 'customer', customer: id })
+    .select('_id')
+    .lean();
+  return users.map((user) => user._id);
+}
+
+/**
  * Writes one notification per recipient.
  *
  * Deliberately swallows its own failures, exactly as the audit writer does: a
@@ -110,6 +147,10 @@ export async function notify(input: NotifyInput): Promise<void> {
     for (const raw of input.userIds ?? []) {
       const id = toObjectId(raw);
       if (id) recipients.set(String(id), id);
+    }
+
+    for (const id of await recipientsByCustomer(input.customerId)) {
+      recipients.set(String(id), id);
     }
 
     const excluded = toObjectId(input.excludeUserId);

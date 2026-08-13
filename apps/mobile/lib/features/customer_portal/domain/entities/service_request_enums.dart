@@ -15,7 +15,7 @@ enum ServiceRequestStatus {
   onSite('ON_SITE', 'Очсон', AccentTone.blue),
   inProgress('IN_PROGRESS', 'Гүйцэтгэж байна', AccentTone.green),
   waiting('WAITING', 'Түр хүлээгдсэн', AccentTone.yellow),
-  reportSubmitted('REPORT_SUBMITTED', 'Тайлан илгээсэн', AccentTone.purple),
+  reportSubmitted('REPORT_SUBMITTED', 'Дүгнэлт илгээсэн', AccentTone.purple),
   verification('VERIFICATION', 'Баталгаажуулах', AccentTone.purple),
   completed('COMPLETED', 'Дууссан', AccentTone.green),
   revisitRequired('REVISIT_REQUIRED', 'Дахин очих', AccentTone.orange),

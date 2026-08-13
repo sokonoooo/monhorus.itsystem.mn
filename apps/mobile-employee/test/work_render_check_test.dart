@@ -4,6 +4,8 @@
 // dev backend, including the malformed `assignedEmployeeId` the server emits when it
 // populates the relation — that one is asserted on directly, because a regression
 // there would send a stringified Mongoose document to an endpoint expecting an id.
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -24,6 +26,7 @@ import 'package:monhorus_employee/features/employee/work/presentation/providers/
 import 'package:monhorus_employee/features/employee/work/presentation/screens/planned_work_detail_screen.dart';
 import 'package:monhorus_employee/features/employee/work/presentation/screens/service_request_detail_screen.dart';
 import 'package:monhorus_employee/features/employee/work/presentation/screens/work_tab_screen.dart';
+import 'package:monhorus_employee/features/employee/work/presentation/widgets/work_ui.dart';
 
 Map<String, dynamic> _work() => <String, dynamic>{
       'id': 'w1',
@@ -309,6 +312,20 @@ class _StubInspectionDraft extends InspectionReportNotifier {
           existingReportId: 'ir1',
         ),
       );
+}
+
+/// The same draft, with a save that NEVER ANSWERS.
+///
+/// Not a failure and not a slow success: a request that hangs. `_InspectionReportSheetState`
+/// clears `_busy` on the failure branch and on no other, so this is the state the sheet is
+/// left in when the network stalls — and the sheet is opened with `isDismissible: false`
+/// and `enableDrag: false`, which on iOS leaves the footer as the only exit there is.
+class _StubInspectionHungSave extends _StubInspectionDraft {
+  @override
+  Future<ApiResult<InspectionReportModel>> save(
+    UpdateInspectionReportRequest request,
+  ) =>
+      Completer<ApiResult<InspectionReportModel>>().future;
 }
 
 /// The seeded TECHNICIAN permission set, verbatim from `GET /auth/me` on the dev
@@ -2198,6 +2215,74 @@ void main() {
 
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+  });
+
+  /// THE TRAP, AND THE WAY OUT OF IT.
+  ///
+  /// The sheet is opened with `isDismissible: false` and `enableDrag: false` — deliberately,
+  /// so a part-written report survives a stray tap on the scrim — which makes the footer's
+  /// "Болих" the only exit on a platform with no hardware back key. It used to be nulled
+  /// for the whole of a save, and `_busy` is cleared on the failure branch and on no other,
+  /// so a save that hung or never answered left an employee with a sheet they could not
+  /// close and a screen they could not leave. That is the reported "trapped on the Planned
+  /// Work page", and this is the save that never answers.
+  testWidgets('a save that never answers still leaves a way out of the report sheet', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 1200));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: <Override>[
+          currentUserProvider.overrideWithValue(_user),
+          workIdentityProvider.overrideWith((Ref ref) async => _assignedIdentity),
+          plannedWorkDetailProvider.overrideWith(_StubDetailAwaitingReport.new),
+          inspectionReportProvider.overrideWith(_StubInspectionHungSave.new),
+        ],
+        child: const MaterialApp(
+          home: PlannedWorkDetailScreen(plannedWorkId: 'w1'),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(
+      find.text('Тайлан бичих'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Тайлан бичих'));
+    await tester.pumpAndSettle();
+    expect(find.text('Үзлэгийн тайлан бичих'), findsOneWidget);
+
+    await tester.tap(find.text('Тайлан хадгалах'));
+    // `pump`, never `pumpAndSettle`: the save pill is spinning and the request is never
+    // coming back, so a settle here would time out — which is precisely the condition the
+    // employee is in.
+    await tester.pump();
+
+    // The save is in flight and refuses a second press...
+    final WorkButton save = tester.widget<WorkButton>(
+      find.widgetWithText(WorkButton, 'Тайлан хадгалах'),
+    );
+    expect(save.busy, isTrue);
+    expect(save.onPressed, isNull);
+
+    // ...and the way out is still there and still live.
+    final WorkButton cancel = tester.widget<WorkButton>(
+      find.widgetWithText(WorkButton, 'Болих'),
+    );
+    expect(cancel.onPressed, isNotNull);
+
+    await tester.tap(find.text('Болих'));
+    await tester.pump();
+    // Long enough for the sheet's exit transition, and no settle for the same reason.
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(find.text('Үзлэгийн тайлан бичих'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 }

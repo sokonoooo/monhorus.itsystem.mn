@@ -37,7 +37,7 @@ enum NotificationEvent {
       'SERVICE_REQUEST_STATUS_CHANGED', 'Дуудлагын төлөв өөрчлөгдсөн'),
   slaNearBreach('SLA_NEAR_BREACH', 'SLA хугацаа ойртсон'),
   slaBreached('SLA_BREACHED', 'SLA хугацаа зөрчсөн'),
-  reportSubmitted('REPORT_SUBMITTED', 'Тайлан илгээсэн'),
+  reportSubmitted('REPORT_SUBMITTED', 'Дүгнэлт илгээсэн'),
   reportApproved('REPORT_APPROVED', 'Тайлан батлагдсан'),
   reportReturned('REPORT_RETURNED', 'Тайлан буцаагдсан'),
   riskAssessmentRaised('RISK_ASSESSMENT_RAISED', 'Эрсдэлтэй үнэлгээ илэрсэн'),

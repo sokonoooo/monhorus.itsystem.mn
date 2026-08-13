@@ -32,7 +32,7 @@ enum ServiceRequestStatus {
   onSite('ON_SITE', 'Очсон', SeverityBand.yellow),
   inProgress('IN_PROGRESS', 'Гүйцэтгэж байна', SeverityBand.yellow),
   waiting('WAITING', 'Түр хүлээгдсэн', SeverityBand.yellow),
-  reportSubmitted('REPORT_SUBMITTED', 'Тайлан илгээсэн', SeverityBand.neutral),
+  reportSubmitted('REPORT_SUBMITTED', 'Дүгнэлт илгээсэн', SeverityBand.neutral),
   verification('VERIFICATION', 'Баталгаажуулах', SeverityBand.neutral),
   completed('COMPLETED', 'Дууссан', SeverityBand.green),
   revisitRequired('REVISIT_REQUIRED', 'Дахин очих', SeverityBand.red),
@@ -64,6 +64,33 @@ enum ServiceRequestStatus {
       this == ServiceRequestStatus.onTheWay ||
       this == ServiceRequestStatus.onSite ||
       this == ServiceRequestStatus.inProgress;
+
+  /// Whether the technician has actually reached the site by the time a request is in
+  /// this state.
+  ///
+  /// ON_SITE is the arrival itself; the other four are the states a request can only be in
+  /// once that arrival has been reported — IN_PROGRESS, REPORT_SUBMITTED, VERIFICATION and
+  /// COMPLETED.
+  ///
+  /// WAITING IS DELIBERATELY ABSENT, and it is the reason this is a named set rather than
+  /// a position in `values`. `SERVICE_REQUEST_TRANSITIONS` allows ON_THE_WAY → WAITING, so
+  /// a technician can be paused — on a key, on a customer, on a part — without ever having
+  /// reached the site, and reading WAITING as arrival would let them write up a visit they
+  /// have not made. WAITING → ON_SITE is the edge that records the arrival afterwards.
+  ///
+  /// Everything before arrival — NEW, UNASSIGNED, ASSIGNED, ACCEPTED, ON_THE_WAY — and
+  /// every state that says nothing about it — WAITING, RETURNED, REVISIT_REQUIRED,
+  /// CANCELLED — reads false, so a control gated on this stays withheld until the arrival
+  /// is on the record.
+  bool get hasArrivedOnSite => _arrived.contains(this);
+
+  static const List<ServiceRequestStatus> _arrived = <ServiceRequestStatus>[
+    ServiceRequestStatus.onSite,
+    ServiceRequestStatus.inProgress,
+    ServiceRequestStatus.reportSubmitted,
+    ServiceRequestStatus.verification,
+    ServiceRequestStatus.completed,
+  ];
 
   /// The two statuses a request sits in while nobody is assigned to it.
   ///
@@ -127,6 +154,14 @@ enum ServiceRequestStatus {
   List<ServiceRequestStatus> get transitions =>
       _transitions[this] ?? const <ServiceRequestStatus>[];
 
+  /// The moves a person may ASK for, which is deliberately narrower than the backend's.
+  ///
+  /// `SERVICE_REQUEST_TRANSITIONS` also admits ON_SITE → REPORT_SUBMITTED and
+  /// REPORT_SUBMITTED → COMPLETED. Neither is offered here as a button, because neither is
+  /// a thing a technician should do by hand: submitting the Дүгнэлт moves the request to
+  /// «Дүгнэлт илгээсэн» on its own, and approving it completes the request. Offering the
+  /// first as a manual step would produce a refusal — the backend will not accept
+  /// REPORT_SUBMITTED with no conclusion behind it — and the second is an office act.
   static const Map<ServiceRequestStatus, List<ServiceRequestStatus>> _transitions =
       <ServiceRequestStatus, List<ServiceRequestStatus>>{
     ServiceRequestStatus.createdNew: <ServiceRequestStatus>[

@@ -1,4 +1,5 @@
 import {
+  ARRIVED_STATUSES,
   riskLevelFor,
   workReportCompleteness,
   type CustomerWorkReportDto,
@@ -28,6 +29,7 @@ import { Report } from '../report-record/report-record.model';
 import { applyReportSafely, writeReport } from '../report-record/report-record.service';
 import { getRiskBands } from '../settings/settings.service';
 import { assertReportApprovalAllowed } from './self-progress.policy';
+import { advanceOnConclusion } from './service-request.auto-status';
 import { ServiceRequest, type IServiceRequest } from './service-request.model';
 import { WorkReport, type IWorkReport } from './work-report.model';
 
@@ -238,6 +240,76 @@ async function requestIdInScope(
 }
 
 /**
+ * The request a conclusion may be WRITTEN against, bounded by who is asking and by whether
+ * they have arrived.
+ *
+ * TWO RULES, AND THEY FAIL DIFFERENTLY ON PURPOSE.
+ *
+ * Assignment first, reported as not-found. `requestIdInScope` keeps the unclaimed branch
+ * because looking at the open queue is legitimate; writing on it is not. Dropping that
+ * branch here means a technician must CLAIM a request before concluding it — the claim flow
+ * exists precisely so that authorship is never ambiguous, and the previous behaviour let any
+ * technician who scrolled past an unclaimed request become the author of a draft on it.
+ * Not-found rather than forbidden for the usual reason: a colleague's request is none of
+ * their business, including whether it exists.
+ *
+ * Arrival second, reported as a plain refusal with a reason, because by then the caller has
+ * been established as the right person and is owed an explanation. A conclusion is a record
+ * of what was found ON SITE; one written from the road is a guess. Arrival is read from the
+ * history as well as the current status, so a request that arrived and was later returned to
+ * ASSIGNED still counts as visited — `ARRIVED_STATUSES` alone cannot tell that.
+ *
+ * Oversight is unaffected: `resolveAssignedWorkFilter` answers null for a caller holding an
+ * oversight key, so an administrator is bounded by neither rule.
+ */
+async function writableRequestId(
+  requestId: string,
+  scope: ResolvedCustomerScope,
+  actor: AuthContext,
+): Promise<Types.ObjectId> {
+  const filter: FilterQuery<IServiceRequest> = {
+    _id: new Types.ObjectId(requestId),
+    ...customerScopeFilter(scope),
+  };
+
+  let assignmentBounded = false;
+  if (scope.mode === 'STAFF') {
+    const assignmentFilter = await resolveAssignedWorkFilter<IServiceRequest>(actor, {
+      includeUnclaimed: false,
+    });
+    if (assignmentFilter) {
+      filter.$and = [assignmentFilter];
+      assignmentBounded = true;
+    }
+  }
+
+  const request = await ServiceRequest.findOne(filter)
+    .select('_id status statusHistory')
+    .lean();
+  if (!request) throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Хүсэлт олдсонгүй.');
+
+  // The arrival rule is about the person doing the visit. An unscoped caller is not doing
+  // one, so holding them to it would stop an administrator correcting a record.
+  if (assignmentBounded && !hasArrivedOnSite(request)) {
+    throw AppError.badRequest(
+      ERROR_CODES.VALIDATION_ERROR,
+      'Ажлын байрлалд очсоны дараа дүгнэлт бичих боломжтой.',
+      [{ field: 'status', message: 'Эхлээд "Очсон" төлөвт шилжүүлнэ үү.' }],
+    );
+  }
+
+  return request._id;
+}
+
+/** Whether the technician has ever reached the site, by current status or by history. */
+function hasArrivedOnSite(
+  request: Pick<IServiceRequest, 'status' | 'statusHistory'>,
+): boolean {
+  if (ARRIVED_STATUSES.includes(request.status)) return true;
+  return (request.statusHistory ?? []).some((entry) => entry.toStatus === 'ON_SITE');
+}
+
+/**
  * The conclusion for a request, created empty on first read.
  *
  * A technician opens the form before there is anything to save, so the record is brought
@@ -248,7 +320,8 @@ export async function getOrCreateWorkReport(
   scope: ResolvedCustomerScope,
   actor: AuthContext,
 ): Promise<WorkReportDto> {
-  const request = { _id: await requestIdInScope(requestId, scope, actor) };
+  // Minting a draft attributes it to the caller, so this is a write, not a read.
+  const request = { _id: await writableRequestId(requestId, scope, actor) };
 
   const existing = await WorkReport.findOne({ serviceRequest: request._id })
     .populate(POPULATE)
@@ -355,7 +428,7 @@ export async function saveWorkReport(
   meta: RequestMeta,
 ): Promise<WorkReportDto> {
   const report = await WorkReport.findOne({
-    serviceRequest: await requestIdInScope(requestId, scope, actor),
+    serviceRequest: await writableRequestId(requestId, scope, actor),
   });
   if (!report) throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Дүгнэлт олдсонгүй.');
 
@@ -484,7 +557,7 @@ export async function submitWorkReport(
   meta: RequestMeta,
 ): Promise<WorkReportDto> {
   const report = await WorkReport.findOne({
-    serviceRequest: await requestIdInScope(requestId, scope, actor),
+    serviceRequest: await writableRequestId(requestId, scope, actor),
   })
     .populate(POPULATE)
     .lean<WithId<IWorkReport> | null>();
@@ -530,6 +603,11 @@ export async function submitWorkReport(
     permission: 'service_request.change_status',
     excludeUserId: actor.userId,
   });
+
+  // The request follows the conclusion. Submitting one used to leave the request wherever
+  // it was, so a technician who had finished still showed as working and somebody had to
+  // move it by hand — two records of the same fact, kept in step by memory.
+  await advanceOnConclusion(report.serviceRequest, 'REPORT_SUBMITTED', actor);
 
   return loadPopulated(report._id);
 }
@@ -712,6 +790,10 @@ export async function approveWorkReport(
     permission: 'service_request.view',
     excludeUserId: actor.userId,
   });
+
+  // Approving the conclusion is the verification, so it finishes the request — and this is
+  // where the customer is finally told, which nothing did before.
+  await advanceOnConclusion(report.serviceRequest, 'COMPLETED', actor);
 
   return loadPopulated(report._id);
 }
