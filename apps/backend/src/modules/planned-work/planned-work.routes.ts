@@ -242,7 +242,7 @@ plannedWorkRouter.post(
 
 plannedWorkRouter.post(
   '/:plannedWorkId/tasks',
-  requirePermission(PERMISSIONS.PLANNED_WORK_UPDATE),
+  requireAnyPermission(PERMISSIONS.PLANNED_WORK_UPDATE, PERMISSIONS.PORTAL_PLANNED_WORK_CREATE),
   validate({ params: workParams, body: createPlannedWorkTaskSchema }),
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
@@ -261,7 +261,7 @@ plannedWorkRouter.post(
 
 plannedWorkRouter.patch(
   '/:plannedWorkId/tasks/:taskId',
-  requirePermission(PERMISSIONS.PLANNED_WORK_UPDATE),
+  requireAnyPermission(PERMISSIONS.PLANNED_WORK_UPDATE, PERMISSIONS.PORTAL_PLANNED_WORK_CREATE),
   validate({ params: taskParams, body: updatePlannedWorkTaskSchema }),
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
@@ -302,7 +302,7 @@ plannedWorkRouter.post(
 
 plannedWorkRouter.delete(
   '/:plannedWorkId/tasks/:taskId',
-  requirePermission(PERMISSIONS.PLANNED_WORK_UPDATE),
+  requireAnyPermission(PERMISSIONS.PLANNED_WORK_UPDATE, PERMISSIONS.PORTAL_PLANNED_WORK_CREATE),
   validate({ params: taskParams }),
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {

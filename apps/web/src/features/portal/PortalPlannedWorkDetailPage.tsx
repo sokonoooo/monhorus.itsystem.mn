@@ -1,4 +1,8 @@
-import { MATERIAL_UNIT_LABELS, type PlannedWorkDto } from '@monhorus/shared';
+import {
+  MATERIAL_UNIT_LABELS,
+  type PlannedWorkDto,
+  type PlannedWorkTaskDto,
+} from '@monhorus/shared';
 import { useCallback, useEffect, useState, type ReactElement } from 'react';
 import { useParams } from 'react-router-dom';
 
@@ -6,6 +10,7 @@ import { Alert } from '../../components/ui/Alert';
 import { Button } from '../../components/ui/Button';
 import { PageHeader } from '../../components/ui/PageHeader';
 import { ErrorState, Skeleton } from '../../components/ui/States';
+import { useToast } from '../../components/ui/ToastProvider';
 import { ApiError } from '../../lib/api-client';
 import { portalService } from '../../services/portal.service';
 import {
@@ -15,6 +20,7 @@ import {
   TaskStatusBadge,
 } from '../planned-work/PlannedWorkBadges';
 import { groupTasksByFloor } from '../planned-work/PlannedWorkFloorSections';
+import { TaskFormDrawer } from '../planned-work/TaskFormDrawer';
 
 function formatDate(iso: string | null): string {
   if (!iso) return '-';
@@ -33,10 +39,15 @@ function Row({ label, value }: { label: string; value: string }): ReactElement {
 /**
  * One planned work, as its customer sees it.
  *
- * Shows where the request stands and nothing about how the company runs it. In particular
- * it does not render the crew, the sub-task breakdown, the pause history or the lifecycle
- * actions — the staff detail screen exists for that and is keyed on permissions no customer
- * holds.
+ * Shows where the request stands and nothing about how the company runs it. It renders no
+ * crew, no pause history and no lifecycle actions — the staff detail screen exists for that
+ * and is keyed on permissions no customer holds.
+ *
+ * THE SUB-TASK BREAKDOWN IS THE ONE THING THEY MAY EDIT, and only while the request is still
+ * PENDING_APPROVAL. A customer describing the work they want is the point of the request;
+ * once an approver has agreed to it the scope is settled, and the server starts refusing —
+ * so the controls below disappear at exactly the moment the API stops accepting them. The
+ * drawer is the staff `TaskFormDrawer` in its portal variant, not a second implementation.
  *
  * NOTE THE LIMIT THIS LEAVES: `GET /planned-work/:id` still SENDS the staff payload. The
  * omissions here are a presentation choice, not a boundary. Narrowing that DTO server-side
@@ -46,9 +57,14 @@ function Row({ label, value }: { label: string; value: string }): ReactElement {
 export function PortalPlannedWorkDetailPage(): ReactElement {
   const { plannedWorkId } = useParams<{ plannedWorkId: string }>();
 
+  const { notify } = useToast();
+
   const [work, setWork] = useState<PlannedWorkDto | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  /** An existing sub-task, the literal 'new', or null when the drawer is closed. */
+  const [taskTarget, setTaskTarget] = useState<PlannedWorkTaskDto | null | 'new'>(null);
+  const [removingTaskId, setRemovingTaskId] = useState<string | null>(null);
 
   const load = useCallback(async (): Promise<void> => {
     if (!plannedWorkId) return;
@@ -88,6 +104,26 @@ export function PortalPlannedWorkDetailPage(): ReactElement {
   // Defaulted rather than assumed present: a work with no sub-tasks yet — which every
   // freshly raised request is — must render its status, not throw on an absent array.
   const floorGroups = groupTasksByFloor(work.tasks ?? [], work.floorProgress ?? []);
+
+  // The server's rule, mirrored so the UI offers nothing it would refuse. It is mirrored,
+  // not enforced — `findRawForTaskWrite` is what actually decides.
+  const canPlan = work.lifecycleStatus === 'PENDING_APPROVAL';
+
+  async function removeTask(taskId: string): Promise<void> {
+    if (!work) return;
+    setRemovingTaskId(taskId);
+    try {
+      setWork(await portalService.deleteTask(work.id, taskId));
+      notify('Дэд ажил устгагдлаа.', 'success');
+    } catch (caught) {
+      notify(
+        caught instanceof ApiError ? caught.message : 'Дэд ажил устгаж чадсангүй.',
+        'error',
+      );
+    } finally {
+      setRemovingTaskId(null);
+    }
+  }
 
   return (
     <>
@@ -170,8 +206,28 @@ export function PortalPlannedWorkDetailPage(): ReactElement {
           it is, not who is doing it or what they wrote to each other on the way. The signed
           conclusion reaches them through the approved report instead.
         */}
-        {floorGroups.length > 0 && (
+        {(floorGroups.length > 0 || canPlan) && (
           <div className="space-y-3">
+            <div className="flex flex-wrap items-center gap-3">
+              <h2 className="text-sm font-semibold text-slate-900">Ажлын задаргаа</h2>
+              {canPlan && (
+                <Button size="sm" className="ml-auto" onClick={() => setTaskTarget('new')}>
+                  Дэд ажил нэмэх
+                </Button>
+              )}
+            </div>
+
+            {/*
+              A pending request with no breakdown is the normal starting state, not an error.
+              It is also the state that stops the work being completed later, so it is said
+              plainly rather than left as an empty panel.
+            */}
+            {floorGroups.length === 0 && canPlan && (
+              <Alert variant="info">
+                Хийгдэх ажлуудаа дэд ажил болгон задалж оруулна уу. Батлагдсаны дараа
+                задаргааг өөрчлөх боломжгүй.
+              </Alert>
+            )}
             {floorGroups.map((group) => (
               <div
                 key={group.key}
@@ -210,6 +266,25 @@ export function PortalPlannedWorkDetailPage(): ReactElement {
                           totalQuantity={task.totalQuantity}
                         />
                       </div>
+                      {canPlan && (
+                        <div className="flex items-center gap-1">
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => setTaskTarget(task)}
+                          >
+                            Засах
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            loading={removingTaskId === task.id}
+                            onClick={() => void removeTask(task.id)}
+                          >
+                            Устгах
+                          </Button>
+                        </div>
+                      )}
                     </li>
                   ))}
                 </ul>
@@ -220,8 +295,9 @@ export function PortalPlannedWorkDetailPage(): ReactElement {
 
         {/*
           Materials, read-only. The admin page puts an "edit" button beside this; there is
-          none here because every planned-work write is keyed on a `planned_work.*`
-          permission no customer holds, so a button would be an offer the server refuses.
+          none here because `PUT /planned-work/:id/materials` is keyed on `planned_work.update`,
+          which no customer holds. The sub-task routes above are the only planned-work writes
+          widened to a portal key, so a button here would be an offer the server refuses.
         */}
         {(work.materials ?? []).length > 0 && (
           <div className="overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-slate-200">
@@ -283,6 +359,20 @@ export function PortalPlannedWorkDetailPage(): ReactElement {
           )}
         </div>
       </div>
+
+      {/* The staff drawer in its portal variant — no assignee control, floors from `/floors`. */}
+      {taskTarget !== null && (
+        <TaskFormDrawer
+          work={work}
+          target={taskTarget}
+          variant="portal"
+          onClose={() => setTaskTarget(null)}
+          onSaved={(updated) => {
+            setWork(updated);
+            setTaskTarget(null);
+          }}
+        />
+      )}
     </>
   );
 }

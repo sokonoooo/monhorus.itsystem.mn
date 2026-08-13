@@ -523,3 +523,113 @@ describe('following planned work in the portal', () => {
     }
   });
 });
+
+describe('the customer breaks their own request down', () => {
+  function pendingWork(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'w1',
+      workNumber: 'PW-202609-0001',
+      title: 'Улирлын үзлэг',
+      lifecycleStatus: 'PENDING_APPROVAL',
+      effectiveStatus: 'PENDING_APPROVAL',
+      building: { id: BUILDING_ID, name: 'Төв барилга' },
+      project: null,
+      plannedStartDate: '2026-09-01T00:00:00.000Z',
+      plannedEndDate: '2026-09-03T00:00:00.000Z',
+      createdAt: '2026-08-20T00:00:00.000Z',
+      description: null,
+      cancelReason: null,
+      progressPercent: 0,
+      completedQuantity: 0,
+      totalQuantity: 0,
+      tasks: [],
+      floorProgress: [],
+      materials: [],
+      ...overrides,
+    } as never;
+  }
+
+  function openDetail() {
+    return renderPortal(
+      <PortalPlannedWorkDetailPage />,
+      '/portal/planned-work/w1',
+      '/portal/planned-work/:plannedWorkId',
+    );
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(portalService, 'listFloors').mockResolvedValue(
+      makePage([{ id: '507f1f77bcf86cd799439033', name: '1-р давхар' } as never]),
+    );
+  });
+
+  it('invites a pending request with no breakdown to add one', async () => {
+    vi.spyOn(portalService, 'getPlannedWork').mockResolvedValue(pendingWork());
+
+    openDetail();
+
+    expect(await screen.findByRole('button', { name: 'Дэд ажил нэмэх' })).toBeInTheDocument();
+    expect(screen.getByText(/дэд ажил болгон задалж оруулна уу/)).toBeInTheDocument();
+  });
+
+  /**
+   * The controls must vanish exactly when the server stops accepting them. Approval settles
+   * the scope, so an approved request is read-only again.
+   */
+  it.each(['PLANNED', 'STARTED', 'COMPLETED'] as const)(
+    'withdraws the breakdown controls once the request is %s',
+    async (status) => {
+      vi.spyOn(portalService, 'getPlannedWork').mockResolvedValue(
+        pendingWork({ lifecycleStatus: status, effectiveStatus: status }),
+      );
+
+      openDetail();
+
+      await screen.findByRole('heading', { name: 'Улирлын үзлэг' });
+      expect(screen.queryByRole('button', { name: 'Дэд ажил нэмэх' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Засах' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Устгах' })).not.toBeInTheDocument();
+    },
+  );
+
+  it('offers no assignee control and touches no staff endpoint', async () => {
+    vi.spyOn(portalService, 'getPlannedWork').mockResolvedValue(pendingWork());
+    const nodes = vi.spyOn(objectService, 'children').mockResolvedValue([]);
+    const roster = vi.spyOn(dispatchService, 'employeeCandidates').mockResolvedValue([]);
+
+    const user = userEvent.setup();
+    openDetail();
+
+    await user.click(await screen.findByRole('button', { name: 'Дэд ажил нэмэх' }));
+
+    await screen.findByLabelText(/^Дэд ажлын нэр/);
+    expect(screen.queryByLabelText(/^Хариуцах ажилтан/)).not.toBeInTheDocument();
+    expect(nodes).not.toHaveBeenCalled();
+    expect(roster).not.toHaveBeenCalled();
+    // The floor list comes from the portal-scoped endpoint instead.
+    expect(portalService.listFloors).toHaveBeenCalledWith(BUILDING_ID);
+  });
+
+  it('saves a sub-task through the portal endpoint', async () => {
+    vi.spyOn(portalService, 'getPlannedWork').mockResolvedValue(pendingWork());
+    const createTask = vi
+      .spyOn(portalService, 'createTask')
+      .mockResolvedValue(pendingWork({ tasks: [] }));
+
+    const user = userEvent.setup();
+    openDetail();
+
+    await user.click(await screen.findByRole('button', { name: 'Дэд ажил нэмэх' }));
+    await user.type(await screen.findByLabelText(/^Дэд ажлын нэр/), 'Гэрэлтүүлэг шалгах');
+    await user.type(screen.getByLabelText(/^Хийх тоо хэмжээ/), '6');
+    await user.click(screen.getByRole('button', { name: 'Хадгалах' }));
+
+    await waitFor(() => {
+      expect(createTask).toHaveBeenCalledWith(
+        'w1',
+        expect.objectContaining({ title: 'Гэрэлтүүлэг шалгах', totalQuantity: 6 }),
+      );
+    });
+  });
+});

@@ -2,6 +2,7 @@ import type {
   ApiResponse,
   BuildingDto,
   CreatePlannedWorkInput,
+  CreatePlannedWorkTaskInput,
   CreateServiceRequestInput,
   CustomerWorkReportDto,
   FloorDto,
@@ -17,6 +18,7 @@ import type {
   ServiceRequestDetailDto,
   ServiceRequestListItemDto,
   ServiceRequestListQuery,
+  UpdatePlannedWorkTaskInput,
 } from '@monhorus/shared';
 
 import { apiClient, unwrap } from '../lib/api-client';
@@ -144,6 +146,51 @@ export const portalService = {
   async createPlannedWork(payload: CreatePlannedWorkInput): Promise<PlannedWorkDto> {
     return unwrap(
       await apiClient.post<ApiResponse<PlannedWorkDto>>('/planned-work', payload),
+    );
+  },
+
+  /**
+   * The sub-tasks of the caller's own request.
+   *
+   * THE SAME THREE ROUTES STAFF USE, widened to accept `portal.planned_work.create`. They
+   * are listed here rather than left to `plannedWorkService` so this file stays what its
+   * header claims: the complete list of what a customer's browser asks for.
+   *
+   * The bound is server-side and is two rules, not one — a customer may shape only their
+   * own work, and only while it is still PENDING_APPROVAL. Approval settles the scope, so
+   * these start answering 400 the moment an approver agrees. Nothing here enforces that;
+   * the drawer merely stops offering the controls, which is a weaker thing entirely.
+   */
+  async createTask(
+    plannedWorkId: string,
+    payload: CreatePlannedWorkTaskInput,
+  ): Promise<PlannedWorkDto> {
+    return unwrap(
+      await apiClient.post<ApiResponse<PlannedWorkDto>>(
+        `/planned-work/${plannedWorkId}/tasks`,
+        payload,
+      ),
+    );
+  },
+
+  async updateTask(
+    plannedWorkId: string,
+    taskId: string,
+    payload: UpdatePlannedWorkTaskInput,
+  ): Promise<PlannedWorkDto> {
+    return unwrap(
+      await apiClient.patch<ApiResponse<PlannedWorkDto>>(
+        `/planned-work/${plannedWorkId}/tasks/${taskId}`,
+        payload,
+      ),
+    );
+  },
+
+  async deleteTask(plannedWorkId: string, taskId: string): Promise<PlannedWorkDto> {
+    return unwrap(
+      await apiClient.delete<ApiResponse<PlannedWorkDto>>(
+        `/planned-work/${plannedWorkId}/tasks/${taskId}`,
+      ),
     );
   },
 

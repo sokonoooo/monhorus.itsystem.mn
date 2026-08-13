@@ -22,6 +22,7 @@ import { Types, type FilterQuery, type HydratedDocument } from 'mongoose';
 
 import { AppError } from '../../common/errors/app-error';
 import {
+  assertInCustomerScope,
   customerScopeFilter,
   resolveCustomerScope,
 } from '../../common/security/customer-scope';
@@ -1010,13 +1011,48 @@ function assertCrewAssignable(work: Pick<IPlannedWork, 'status'>): void {
 
 // -- Tasks -------------------------------------------------------------------
 
+/**
+ * The work a sub-task write may target, bounded by who is asking.
+ *
+ * A customer may shape their OWN request, and only while it is still PENDING_APPROVAL. Both
+ * halves matter and they fail differently on purpose:
+ *
+ *   - Another organisation's work is reported as not-found, never forbidden, for the reason
+ *     `assertInCustomerScope` gives: "forbidden" on an id that exists elsewhere confirms the
+ *     record is real and turns this into an oracle for probing other tenants' identifiers.
+ *   - Their own work past approval is refused with an explanation, because the customer can
+ *     see it and needs to know why the drawer stopped accepting edits. Once an approver has
+ *     agreed to a request, its scope is settled; letting the requester keep adding work to
+ *     it afterwards would make the approval meaningless.
+ *
+ * Staff are unaffected — `resolveCustomerScope` answers STAFF for them and both checks are
+ * skipped, so the existing planning flow keeps working at every status `assertMutable` allows.
+ */
+async function findRawForTaskWrite(
+  plannedWorkId: string,
+  actor: AuthContext,
+): Promise<Awaited<ReturnType<typeof findRaw>>> {
+  const work = await findRaw(plannedWorkId);
+  const scope = resolveCustomerScope(actor);
+  if (scope.mode === 'CUSTOMER') {
+    assertInCustomerScope(scope, work.customer);
+    if (work.status !== 'PENDING_APPROVAL') {
+      throw AppError.badRequest(
+        ERROR_CODES.VALIDATION_ERROR,
+        'Батлагдсан хүсэлтийн дэд ажлыг өөрчлөх боломжгүй.',
+      );
+    }
+  }
+  return work;
+}
+
 export async function createTask(
   plannedWorkId: string,
   input: CreatePlannedWorkTaskInput,
   actor: AuthContext,
   meta: RequestMeta,
 ): Promise<PlannedWorkDto> {
-  const work = await findRaw(plannedWorkId);
+  const work = await findRawForTaskWrite(plannedWorkId, actor);
   assertMutable(work);
 
   const start = new Date(input.plannedStartDate);
@@ -1088,7 +1124,7 @@ export async function updateTask(
   actor: AuthContext,
   meta: RequestMeta,
 ): Promise<PlannedWorkDto> {
-  const work = await findRaw(plannedWorkId);
+  const work = await findRawForTaskWrite(plannedWorkId, actor);
   assertMutable(work);
   const task = await findTask(plannedWorkId, taskId);
 
@@ -1287,7 +1323,7 @@ export async function deleteTask(
   actor: AuthContext,
   meta: RequestMeta,
 ): Promise<PlannedWorkDto> {
-  const work = await findRaw(plannedWorkId);
+  const work = await findRawForTaskWrite(plannedWorkId, actor);
   assertMutable(work);
   const task = await findTask(plannedWorkId, taskId);
 

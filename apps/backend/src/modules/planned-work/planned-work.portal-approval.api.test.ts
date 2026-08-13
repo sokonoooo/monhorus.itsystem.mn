@@ -417,3 +417,103 @@ describe('the staff path is unchanged', () => {
     expect((await PlannedWork.findById(workId))?.status).toBe('PLANNED');
   });
 });
+
+describe('the customer breaks down their own request', () => {
+  function taskBody(overrides: Record<string, unknown> = {}) {
+    return {
+      title: 'Шатны гэрэлтүүлэг шалгах',
+      totalQuantity: 6,
+      plannedStartDate: '2026-09-01T00:00:00.000Z',
+      plannedEndDate: '2026-09-02T00:00:00.000Z',
+      ...overrides,
+    };
+  }
+
+  function addTask(workId: string, token: string, overrides: Record<string, unknown> = {}) {
+    return request(app)
+      .post(`${API}/planned-work/${workId}/tasks`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(taskBody(overrides));
+  }
+
+  it('lets a customer add sub-tasks while their request is pending', async () => {
+    const workId = await raiseAsCustomer();
+
+    const response = await addTask(workId, portalToken);
+
+    expect(response.status).toBe(201);
+    expect(response.body.data.tasks).toHaveLength(1);
+    expect(response.body.data.tasks[0].title).toBe('Шатны гэрэлтүүлэг шалгах');
+  });
+
+  /**
+   * Approval settles the scope. Letting the requester keep adding work afterwards would
+   * make the approver's agreement meaningless — they approved something smaller.
+   */
+  it('refuses further sub-tasks once the request is approved', async () => {
+    const workId = await raiseAsCustomer();
+    expect((await transition(workId, { action: 'APPROVE' }, approverToken)).status).toBe(200);
+
+    const response = await addTask(workId, portalToken);
+
+    expect(response.status).toBe(400);
+    expect((await PlannedWork.findById(workId))?.status).toBe('PLANNED');
+  });
+
+  /** Not-found rather than forbidden, so this cannot confirm another tenant's ids exist. */
+  it("cannot touch another organisation's work", async () => {
+    const foreign = await request(app)
+      .post(`${API}/planned-work`)
+      .set('Authorization', `Bearer ${plannerToken}`)
+      .send(workBody(foreignBuildingId));
+    expect(foreign.status).toBe(201);
+
+    const response = await addTask(foreign.body.data.id as string, portalToken);
+
+    expect(response.status).toBe(404);
+  });
+
+  it('cannot name an employee on its own sub-task', async () => {
+    const workId = await raiseAsCustomer();
+
+    const response = await addTask(workId, portalToken, { assignedEmployeeId: employeeId });
+
+    expect(response.status).toBe(400);
+  });
+
+  /** A customer may correct their own breakdown right up until somebody approves it. */
+  it('lets a customer delete a sub-task while pending, but not after approval', async () => {
+    const workId = await raiseAsCustomer();
+    const created = await addTask(workId, portalToken);
+    const taskId = created.body.data.tasks[0].id as string;
+
+    const second = await addTask(workId, portalToken, { title: 'Хоёр дахь' });
+    expect(second.status).toBe(201);
+
+    const removed = await request(app)
+      .delete(`${API}/planned-work/${workId}/tasks/${taskId}`)
+      .set('Authorization', `Bearer ${portalToken}`);
+    expect(removed.status).toBe(200);
+
+    expect((await transition(workId, { action: 'APPROVE' }, approverToken)).status).toBe(200);
+
+    const lateDelete = await request(app)
+      .delete(`${API}/planned-work/${workId}/tasks/${second.body.data.tasks.at(-1).id}`)
+      .set('Authorization', `Bearer ${portalToken}`);
+    expect(lateDelete.status).toBe(400);
+  });
+
+  /** Staff planning is untouched: they still shape work at any status assertMutable allows. */
+  it('leaves staff free to add sub-tasks to their own draft', async () => {
+    const draft = await request(app)
+      .post(`${API}/planned-work`)
+      .set('Authorization', `Bearer ${plannerToken}`)
+      .send(workBody(objects.buildingId));
+    expect(draft.status).toBe(201);
+    expect((await PlannedWork.findById(draft.body.data.id as string))?.status).toBe('DRAFT');
+
+    const response = await addTask(draft.body.data.id as string, approverToken);
+
+    expect(response.status).toBe(201);
+  });
+});
