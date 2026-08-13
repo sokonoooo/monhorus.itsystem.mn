@@ -16,21 +16,27 @@ import '../entities/risk_level.dart';
 /// үнэлгээ — [uploadAssessmentPhoto] and [recordAssessment] — which must be made in
 /// that order because the assessment carries the file id.
 abstract class ProjectRepository {
-  Future<ApiResult<PaginatedData<ProjectModel>>> listProjects({String? search});
+  Future<ApiResult<PaginatedData<ProjectModel>>> listProjects({String? search, int page});
 
   Future<ApiResult<ProjectModel>> getProject(String projectId);
 
-  Future<ApiResult<PaginatedData<BuildingModel>>> listProjectBuildings(String projectId);
+  Future<ApiResult<PaginatedData<BuildingModel>>> listProjectBuildings(
+    String projectId, {
+    int page,
+  });
 
   Future<ApiResult<BuildingModel>> getBuilding(String buildingId);
 
-  Future<ApiResult<PaginatedData<FloorModel>>> listFloors(String buildingId);
+  Future<ApiResult<PaginatedData<FloorModel>>> listFloors(String buildingId, {int page});
 
   Future<ApiResult<FloorModel>> getFloor(String floorId);
 
   Future<ApiResult<FloorPlanModel?>> getFloorPlan(String floorId);
 
-  Future<ApiResult<PaginatedData<ObjectListItemModel>>> listFloorObjects(String floorId);
+  Future<ApiResult<PaginatedData<ObjectListItemModel>>> listFloorObjects(
+    String floorId, {
+    int page,
+  });
 
   Future<ApiResult<ObjectDetailModel>> getObject(String objectId);
 
@@ -57,6 +63,7 @@ abstract class ProjectRepository {
   Future<ApiResult<PaginatedData<InspectionListItemModel>>> listFloorInspections(
     String floorId, {
     RiskLevel? riskLevel,
+    int page,
   });
 
   Future<ApiResult<InspectionSummaryModel>> getFloorInspectionSummary(String floorId);

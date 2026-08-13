@@ -68,12 +68,19 @@ class ProjectRemoteDataSource {
     );
   }
 
-  /// GET /projects/:projectId/buildings. The convenience child list; the backend
-  /// hardcodes page 1 with a limit of 100 there, so no paging parameters are sent.
-  Future<PaginatedData<BuildingModel>> listProjectBuildings(String projectId) {
+  /// GET /projects/:projectId/buildings.
+  ///
+  /// The route used to pin page 1 / limit 100 in backend code and validate no query at
+  /// all, so a project's 101st building was unreachable and unmentioned. It now takes the
+  /// same paging query as `GET /buildings`, which is what lets the caller walk the set.
+  Future<PaginatedData<BuildingModel>> listProjectBuildings(
+    String projectId, {
+    int page = 1,
+  }) {
     return _client.request<PaginatedData<BuildingModel>>(
       path: '/projects/$projectId/buildings',
       method: 'GET',
+      queryParameters: <String, dynamic>{'page': page},
       decoder: (Object? json) => PaginatedData<BuildingModel>.fromJson(
         json! as Map<String, dynamic>,
         BuildingModel.fromJson,

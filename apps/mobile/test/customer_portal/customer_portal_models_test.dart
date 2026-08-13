@@ -259,19 +259,16 @@ void main() {
   });
 
   group('risk bands', () {
-    test('mirror the shared RISK_BANDS boundaries', () {
-      expect(RiskLevel.fromScore(100), RiskLevel.normal);
-      expect(RiskLevel.fromScore(81), RiskLevel.normal);
-      expect(RiskLevel.fromScore(80), RiskLevel.attention);
-      expect(RiskLevel.fromScore(61), RiskLevel.attention);
-      expect(RiskLevel.fromScore(60), RiskLevel.scheduleRepair);
-      expect(RiskLevel.fromScore(41), RiskLevel.scheduleRepair);
-      expect(RiskLevel.fromScore(40), RiskLevel.critical);
-      expect(RiskLevel.fromScore(21), RiskLevel.critical);
-      expect(RiskLevel.fromScore(20), RiskLevel.outOfService);
-      expect(RiskLevel.fromScore(0), RiskLevel.outOfService);
-    });
-
+    /*
+     * The test that stood here asserted `RiskLevel.fromScore` reproduced the shared
+     * 81/61/41/21/0 boundaries. It was removed with the helper it covered, deliberately
+     * and not as collateral: those boundaries are the SHIPPED DEFAULTS, an administrator
+     * moves them in Тохиргоо, and this app cannot read `/settings`. So the test was
+     * pinning the app to a scale the server is free to change — it would have passed just
+     * as happily on an installation whose green band starts at 90, while the app called
+     * 85 "Хэвийн". `risk_level_test.dart` now asserts the opposite property: that no
+     * boundary exists here at all.
+     */
     test('an absent level stays absent rather than defaulting to a band', () {
       expect(RiskLevel.fromWire(null), isNull);
       expect(RiskLevel.fromWire('SOMETHING_NEW'), isNull);

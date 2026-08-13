@@ -690,10 +690,16 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
     ResolvedCustomerScope scope, {
     String? floorId,
     String? buildingId,
+    int page = 1,
   }) async {
     requestedCustomerIds.add(scope.customerId);
+    requestedObjectPages.add(page);
     return _result(_page(objects));
   }
+
+  /// Every page number [listObjects] was asked for, so a test can prove the floor read
+  /// walks the whole set rather than stopping at the first fixed slice.
+  final List<int> requestedObjectPages = <int>[];
 
   @override
   Future<ApiResult<ObjectDetailModel>> getObject(String objectId) async =>

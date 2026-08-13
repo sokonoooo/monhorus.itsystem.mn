@@ -42,6 +42,7 @@ abstract interface class CustomerPortalRepository {
     ResolvedCustomerScope scope, {
     String? floorId,
     String? buildingId,
+    int page,
   });
 
   Future<ApiResult<ObjectDetailModel>> getObject(String objectId);

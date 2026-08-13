@@ -52,8 +52,8 @@ class ProjectRepositoryImpl implements ProjectRepository {
   }
 
   @override
-  Future<ApiResult<PaginatedData<ProjectModel>>> listProjects({String? search}) {
-    return _guard(() => _remote.listProjects(search: search));
+  Future<ApiResult<PaginatedData<ProjectModel>>> listProjects({String? search, int page = 1}) {
+    return _guard(() => _remote.listProjects(search: search, page: page));
   }
 
   @override
@@ -62,8 +62,11 @@ class ProjectRepositoryImpl implements ProjectRepository {
   }
 
   @override
-  Future<ApiResult<PaginatedData<BuildingModel>>> listProjectBuildings(String projectId) {
-    return _guard(() => _remote.listProjectBuildings(projectId));
+  Future<ApiResult<PaginatedData<BuildingModel>>> listProjectBuildings(
+    String projectId, {
+    int page = 1,
+  }) {
+    return _guard(() => _remote.listProjectBuildings(projectId, page: page));
   }
 
   @override
@@ -72,8 +75,8 @@ class ProjectRepositoryImpl implements ProjectRepository {
   }
 
   @override
-  Future<ApiResult<PaginatedData<FloorModel>>> listFloors(String buildingId) {
-    return _guard(() => _remote.listFloors(buildingId: buildingId));
+  Future<ApiResult<PaginatedData<FloorModel>>> listFloors(String buildingId, {int page = 1}) {
+    return _guard(() => _remote.listFloors(buildingId: buildingId, page: page));
   }
 
   @override
@@ -87,8 +90,11 @@ class ProjectRepositoryImpl implements ProjectRepository {
   }
 
   @override
-  Future<ApiResult<PaginatedData<ObjectListItemModel>>> listFloorObjects(String floorId) {
-    return _guard(() => _remote.listFloorObjects(floorId: floorId));
+  Future<ApiResult<PaginatedData<ObjectListItemModel>>> listFloorObjects(
+    String floorId, {
+    int page = 1,
+  }) {
+    return _guard(() => _remote.listFloorObjects(floorId: floorId, page: page));
   }
 
   @override
@@ -130,9 +136,14 @@ class ProjectRepositoryImpl implements ProjectRepository {
   Future<ApiResult<PaginatedData<InspectionListItemModel>>> listFloorInspections(
     String floorId, {
     RiskLevel? riskLevel,
+    int page = 1,
   }) {
     return _guard(
-      () => _remote.listFloorInspections(floorId: floorId, riskLevel: riskLevel),
+      () => _remote.listFloorInspections(
+        floorId: floorId,
+        riskLevel: riskLevel,
+        page: page,
+      ),
     );
   }
 

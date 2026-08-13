@@ -12,26 +12,28 @@ import '../../../presentation/theme/employee_tokens.dart';
 /// `/settings`, which a field technician does not hold `settings.view` for. The app
 /// therefore never derives a band: every screen displays the `riskLevel` the API sent
 /// alongside the score, and no screen ever prints the scale.
+/// NO SCORE BOUNDARIES LIVE ON THIS ENUM, AND NONE MAY BE ADDED.
+///
+/// It carried `81/61/41/21/0` until they were deleted. They were the shipped defaults,
+/// an administrator moves them in Тохиргоо, and this app cannot read `/settings` — so a
+/// boundary here is a number the server can silently contradict. `risk_level_test.dart`
+/// fails the build if any reappear.
 enum RiskLevel {
-  normal('NORMAL', 'Хэвийн', 'Хэвийн', 81, 100, Tone.green),
-  attention('ATTENTION', 'Анхаарах шаардлагатай', 'Анхаарах', 61, 80, Tone.yellow),
+  normal('NORMAL', 'Хэвийн', 'Хэвийн', Tone.green),
+  attention('ATTENTION', 'Анхаарах шаардлагатай', 'Анхаарах', Tone.yellow),
   scheduleRepair(
     'SCHEDULE_REPAIR',
     'Ойрын хугацаанд засварлах',
     'Засварлах',
-    41,
-    60,
     Tone.orange,
   ),
-  critical('CRITICAL', 'Ноцтой эрсдэлтэй', 'Ноцтой', 21, 40, Tone.red),
-  outOfService('OUT_OF_SERVICE', 'Ашиглах боломжгүй', 'Боломжгүй', 0, 20, Tone.black);
+  critical('CRITICAL', 'Ноцтой эрсдэлтэй', 'Ноцтой', Tone.red),
+  outOfService('OUT_OF_SERVICE', 'Ашиглах боломжгүй', 'Боломжгүй', Tone.black);
 
   const RiskLevel(
     this.wireValue,
     this.label,
     this.shortLabel,
-    this._legacyMin,
-    this._legacyMax,
     this.tone,
   );
 
@@ -47,12 +49,6 @@ enum RiskLevel {
   /// by the glyph and the swatch, and the text says what the band *means*.
   final String shortLabel;
 
-  /// Not authoritative. See [fromScore].
-  final int _legacyMin;
-
-  /// Not authoritative. See [fromScore].
-  final int _legacyMax;
-
   /// The band's `{fg, bg, border}` triad. All five are distinct, everywhere.
   final Tone tone;
 
@@ -64,19 +60,6 @@ enum RiskLevel {
       if (level.wireValue == value) return level;
     }
     return null;
-  }
-
-  /// Legacy fallback for a payload that carried a score but no `riskLevel`.
-  ///
-  /// The thresholds baked into [_legacyMin] / [_legacyMax] are the frozen defaults in
-  /// shared; an administrator may move the boundaries in Тохиргоо and this app cannot
-  /// read `/settings` (403), so **they are not authoritative**. Nothing user-facing
-  /// may print them, and nothing may call this when the server sent a band.
-  static RiskLevel fromScore(int score) {
-    for (final RiskLevel level in RiskLevel.values) {
-      if (score >= level._legacyMin && score <= level._legacyMax) return level;
-    }
-    return RiskLevel.outOfService;
   }
 
   /// Bands that call for a technician's attention: everything below NORMAL.

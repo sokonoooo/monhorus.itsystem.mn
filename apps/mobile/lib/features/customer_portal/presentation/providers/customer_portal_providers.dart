@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/error/failure.dart';
 import '../../../../core/network/api_result.dart';
+import '../../../../core/network/paginate.dart';
 import '../../../../core/network/paginated_data.dart';
 import '../../../auth/domain/entities/app_user.dart';
 import '../../../auth/presentation/providers/auth_provider.dart';
@@ -217,8 +218,13 @@ final FutureProviderFamily<List<ObjectListItemModel>, String> floorObjectsProvid
         (Ref ref, String floorId) async {
   final CustomerPortalRepository repository =
       ref.watch(customerPortalRepositoryProvider);
-  final PaginatedData<ObjectListItemModel> page = _unwrap(
-    await repository.listObjects(_requireScope(ref), floorId: floorId),
+  // EVERY page. This list is both the floor's device list and the source of the plan's
+  // markers, so stopping at the datasource's fixed limit does not merely shorten a list —
+  // it erases equipment from the drawing, with nothing on screen to admit it.
+  final PaginatedData<ObjectListItemModel> page = await fetchAllPages(
+    (int page) async => _unwrap(
+      await repository.listObjects(_requireScope(ref), floorId: floorId, page: page),
+    ),
   );
   return page.items;
 });

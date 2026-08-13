@@ -341,18 +341,37 @@ floorRouter.get(
   },
 );
 
+/**
+ * A project's buildings.
+ *
+ * PAGED LIKE EVERY OTHER LIST. This route used to pin `page: 1, limit: 100` in code and
+ * validate no query at all, so a client could not ask for the 101st building and was not
+ * told one existed — the cap was invisible from the outside and reachable from no caller.
+ * It now takes the same `buildingListQuerySchema` as `GET /buildings`; `projectId` comes
+ * from the path and overrides anything in the query, so the route still means exactly
+ * "this project's buildings".
+ *
+ * The schema's own default limit is 20, which is smaller than the 100 this route used to
+ * force, so the limit stays explicit here to keep an existing caller that sends no query
+ * reading the same first hundred it always did.
+ */
 projectRouter.get(
   '/:projectId/buildings',
   requireAnyPermission(PERMISSIONS.OBJECT_VIEW, PERMISSIONS.PORTAL_BUILDING_VIEW),
-  validate({ params: z.object({ projectId: objectId }) }),
+  validate({
+    params: z.object({ projectId: objectId }),
+    query: buildingListQuerySchema.partial({ limit: true }),
+  }),
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
+      const query = req.query as unknown as Partial<BuildingListQueryInput>;
       ok(
         res,
         await projectService.listBuildings(
           {
-            page: 1,
-            limit: 100,
+            ...query,
+            page: query.page ?? 1,
+            limit: query.limit ?? 100,
             projectId: pathParam(req, 'projectId'),
           } as BuildingListQueryInput,
           scopeOf(req),

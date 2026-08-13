@@ -99,12 +99,14 @@ class CustomerPortalRepositoryImpl implements CustomerPortalRepository {
     ResolvedCustomerScope scope, {
     String? floorId,
     String? buildingId,
+    int page = 1,
   }) {
     return _guard(
       () => _remote.listObjects(
         scope: scope,
         floorId: floorId,
         buildingId: buildingId,
+        page: page,
       ),
     );
   }

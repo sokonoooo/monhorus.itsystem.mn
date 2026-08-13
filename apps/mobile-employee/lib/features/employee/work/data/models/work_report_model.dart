@@ -142,10 +142,11 @@ class WorkReportObjectAssessmentModel {
    * THERE IS DELIBERATELY NO `riskLevel` HERE.
    *
    * The band is a function of the score against the thresholds in force, and those live in
-   * Тохиргоо, which this app cannot read (403). `RiskLevel.fromScore` exists but its own
-   * documentation calls it non-authoritative and forbids printing it, and the assessment
-   * sheet — the app's existing precedent for entering a score — accordingly shows no band
-   * while typing and states the scale in words instead.
+   * Тохиргоо, which this app cannot read (403). There is no longer any way to derive one
+   * here either: `RiskLevel` carries no boundaries and `RiskLevel.fromScore` is deleted,
+   * because the shipped defaults it banded against were a number the server could silently
+   * contradict. The assessment sheet — the app's existing precedent for entering a score —
+   * accordingly shows no band while typing and states the scale in words instead.
    *
    * The server derives the band when it writes the ReportItem. What the editor shows
    * alongside a score is the equipment's CURRENT standing, which is authoritative because

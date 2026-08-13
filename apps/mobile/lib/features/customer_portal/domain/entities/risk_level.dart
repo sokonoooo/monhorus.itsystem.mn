@@ -10,22 +10,24 @@ import '../../presentation/theme/customer_tokens.dart';
 ///
 /// The backend is the authority: it always sends `riskLevel`, and the app never
 /// derives a band from a score when the API sent one.
+/// NO SCORE BOUNDARIES LIVE ON THIS ENUM, AND NONE MAY BE ADDED.
+///
+/// It carried `81/61/41/21/0` until they were deleted. They were the shipped defaults,
+/// an administrator moves them in Тохиргоо, and this app cannot read `/settings` — so a
+/// boundary here is a number the server can silently contradict. `risk_level_test.dart`
+/// fails the build if any reappear.
 enum RiskLevel {
-  normal('NORMAL', 'Хэвийн', 'Хэвийн', 81, 100, AccentTone.green),
-  attention(
-      'ATTENTION', 'Анхаарах шаардлагатай', 'Анхаарах', 61, 80, AccentTone.yellow),
-  scheduleRepair('SCHEDULE_REPAIR', 'Ойрын хугацаанд засварлах', 'Засварлах', 41,
-      60, AccentTone.orange),
-  critical('CRITICAL', 'Ноцтой эрсдэлтэй', 'Ноцтой', 21, 40, AccentTone.red),
-  outOfService(
-      'OUT_OF_SERVICE', 'Ашиглах боломжгүй', 'Боломжгүй', 0, 20, AccentTone.black);
+  normal('NORMAL', 'Хэвийн', 'Хэвийн', AccentTone.green),
+  attention('ATTENTION', 'Анхаарах шаардлагатай', 'Анхаарах', AccentTone.yellow),
+  scheduleRepair(
+      'SCHEDULE_REPAIR', 'Ойрын хугацаанд засварлах', 'Засварлах', AccentTone.orange),
+  critical('CRITICAL', 'Ноцтой эрсдэлтэй', 'Ноцтой', AccentTone.red),
+  outOfService('OUT_OF_SERVICE', 'Ашиглах боломжгүй', 'Боломжгүй', AccentTone.black);
 
   const RiskLevel(
     this.wireValue,
     this.label,
     this.shortLabel,
-    this.min,
-    this.max,
     this.tone,
   );
 
@@ -39,18 +41,6 @@ enum RiskLevel {
   /// colour-blind reader.
   final String shortLabel;
 
-  /// **NOT AUTHORITATIVE.** The frozen defaults from the shared package, kept
-  /// solely so [fromScore] has boundaries to fall back on for a legacy payload that
-  /// carried a score with no band.
-  ///
-  /// The live thresholds are runtime-configurable server-side (`riskBandsOf`,
-  /// `settings.ts:286`) and neither mobile role can read `GET /settings` - it
-  /// answers 403, because `SETTINGS_VIEW` is admin/management/finance only. Mobile
-  /// therefore cannot know the real boundaries, so these two numbers must never
-  /// reach the UI. Show the band name and the object's own score; never the scale.
-  final int min;
-  final int max;
-
   final AccentTone tone;
 
   /// Null-tolerant: the API sends `riskLevel: null` for a never-assessed object, and
@@ -61,16 +51,6 @@ enum RiskLevel {
       if (level.wireValue == value) return level;
     }
     return null;
-  }
-
-  /// Legacy fallback only. Mirrors `riskLevelFromScore` against the frozen defaults
-  /// in [min]/[max]; see the caveat there. Never drives the legend, and never runs
-  /// when the server sent a band.
-  static RiskLevel fromScore(int score) {
-    for (final RiskLevel level in RiskLevel.values) {
-      if (score >= level.min && score <= level.max) return level;
-    }
-    return RiskLevel.outOfService;
   }
 
   /// The band colour as a solid fill.

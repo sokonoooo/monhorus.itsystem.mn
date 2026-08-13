@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../../../../core/network/paginate.dart';
 import '../../../../../core/network/paginated_data.dart';
 
 import '../../../../../core/error/failure.dart';
@@ -147,7 +148,11 @@ final FutureProviderFamily<List<FloorModel>, String> buildingFloorsProvider =
     FutureProvider.family<List<FloorModel>, String>(
         (Ref ref, String buildingId) async {
   final ProjectRepository repository = ref.watch(projectRepositoryProvider);
-  final PaginatedData<FloorModel> page = _unwrap(await repository.listFloors(buildingId));
+  // A building's floors are a complete set, not a window: the storey list and the
+  // silhouette both mean "this building", so a missing floor is a wrong building.
+  final PaginatedData<FloorModel> page = await fetchAllPages(
+    (int page) async => _unwrap(await repository.listFloors(buildingId, page: page)),
+  );
 
   final List<FloorModel> floors = page.items.toList();
   floors.sort((FloorModel a, FloorModel b) {
@@ -181,12 +186,19 @@ final FutureProviderFamily<FloorPlanModel?, String> floorPlanProvider =
 ///
 /// An unassessed device sorts after every assessed one: it is an unknown, not a
 /// fault, and putting it at the top would read as an alarm.
+///
+/// EVERY page, not the first hundred. This read is the floor's device list AND the source
+/// of the plan's markers, so a truncated answer does not merely shorten a list — it erases
+/// equipment from the drawing, with nothing on screen to say the drawing is incomplete.
+/// The sort below is a second reason: ranking by score over a partial set puts the wrong
+/// device at the top, so the worst panel on a large floor could be the one not fetched.
 final FutureProviderFamily<List<ObjectListItemModel>, String> floorObjectsProvider =
     FutureProvider.family<List<ObjectListItemModel>, String>(
         (Ref ref, String floorId) async {
   final ProjectRepository repository = ref.watch(projectRepositoryProvider);
-  final PaginatedData<ObjectListItemModel> page =
-      _unwrap(await repository.listFloorObjects(floorId));
+  final PaginatedData<ObjectListItemModel> page = await fetchAllPages(
+    (int page) async => _unwrap(await repository.listFloorObjects(floorId, page: page)),
+  );
 
   final List<ObjectListItemModel> objects = page.items.toList();
   objects.sort((ObjectListItemModel a, ObjectListItemModel b) {
@@ -324,8 +336,18 @@ final FutureProviderFamily<List<InspectionListItemModel>, FloorReportQuery>
     FutureProvider.family<List<InspectionListItemModel>, FloorReportQuery>(
         (Ref ref, FloorReportQuery query) async {
   final ProjectRepository repository = ref.watch(projectRepositoryProvider);
-  final PaginatedData<InspectionListItemModel> page = _unwrap(
-    await repository.listFloorInspections(query.floorId, riskLevel: query.riskLevel),
+  // The datasource offered `page`/`limit` and the repository dropped them, so this was a
+  // permanent first-50. The band chips above the list are counted by `/inspections/summary`,
+  // which is NOT paginated — so a busy floor advertised "Бүгд (312)" over a list that could
+  // not physically hold more than fifty rows, and the disagreement was the only clue.
+  final PaginatedData<InspectionListItemModel> page = await fetchAllPages(
+    (int page) async => _unwrap(
+      await repository.listFloorInspections(
+        query.floorId,
+        riskLevel: query.riskLevel,
+        page: page,
+      ),
+    ),
   );
   return page.items;
 });
