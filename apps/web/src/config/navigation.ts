@@ -148,6 +148,39 @@ export const NAVIGATION: readonly NavSection[] = [
     ],
   },
   {
+    /*
+      The service provider's own structure, which is master data the whole app selects
+      from: an employee is filed under a company, a department and a position. It is
+      deliberately its own section rather than part of Удирдлага, because it is edited by
+      whoever owns the org chart and not by whoever owns access control.
+    */
+    key: 'org',
+    label: 'Байгууллагын бүтэц',
+    items: [
+      {
+        key: 'org-companies',
+        label: 'Байгууллага',
+        path: '/org/companies',
+        permissions: [PERMISSIONS.ORG_VIEW],
+        icon: 'CUSTOMER',
+      },
+      {
+        key: 'org-departments',
+        label: 'Хэлтэс',
+        path: '/org/departments',
+        permissions: [PERMISSIONS.ORG_VIEW],
+        icon: 'CATALOGUE',
+      },
+      {
+        key: 'org-positions',
+        label: 'Албан тушаал',
+        path: '/org/positions',
+        permissions: [PERMISSIONS.ORG_VIEW],
+        icon: 'EMPLOYEE',
+      },
+    ],
+  },
+  {
     key: 'administration',
     label: 'Удирдлага',
     items: [

@@ -32,6 +32,9 @@ import { PlannedWorkFormPage } from './features/planned-work/PlannedWorkFormPage
 import { PlannedWorkListPage } from './features/planned-work/PlannedWorkListPage';
 import { PlannedWorkReportPage } from './features/planned-work/PlannedWorkReportPage';
 import { ObjectTypesPage } from './features/object-master/ObjectTypesPage';
+import { CompaniesPage } from './features/org/CompaniesPage';
+import { DepartmentsPage } from './features/org/DepartmentsPage';
+import { PositionsPage } from './features/org/PositionsPage';
 import { BuildingDetailPage } from './features/projects/BuildingDetailPage';
 import { FloorDetailPage } from './features/projects/FloorDetailPage';
 import { ObjectDetailPage } from './features/projects/objects/ObjectDetailPage';
@@ -400,6 +403,31 @@ export default function App(): ReactElement {
             element={
               <Page anyOf={[PERMISSIONS.PLANNED_WORK_VIEW, PERMISSIONS.SERVICE_REQUEST_VIEW]}>
                 <CalendarPage />
+              </Page>
+            }
+          />
+
+          <Route
+            path="/org/companies"
+            element={
+              <Page anyOf={[PERMISSIONS.ORG_VIEW]}>
+                <CompaniesPage />
+              </Page>
+            }
+          />
+          <Route
+            path="/org/departments"
+            element={
+              <Page anyOf={[PERMISSIONS.ORG_VIEW]}>
+                <DepartmentsPage />
+              </Page>
+            }
+          />
+          <Route
+            path="/org/positions"
+            element={
+              <Page anyOf={[PERMISSIONS.ORG_VIEW]}>
+                <PositionsPage />
               </Page>
             }
           />

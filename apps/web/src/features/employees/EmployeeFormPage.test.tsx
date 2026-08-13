@@ -1,4 +1,4 @@
-import { PERMISSIONS } from '@monhorus/shared';
+import { PERMISSIONS, type PaginatedData } from '@monhorus/shared';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -12,12 +12,21 @@ const COMPANY = { id: '507f1f77bcf86cd799439011', code: 'MH', name: 'Монхо�
 const DEPARTMENT = { id: '507f1f77bcf86cd799439012', companyId: COMPANY.id, code: 'ELEC', name: 'Цахилгааны хэлтэс', isActive: true };
 const POSITION = { id: '507f1f77bcf86cd799439013', companyId: COMPANY.id, departmentId: DEPARTMENT.id, code: 'ENG', name: 'Инженер', isActive: true };
 
+/** The org lookups are paginated; the selectors read one page of options out of them. */
+function makePage<T>(items: T[]): PaginatedData<T> {
+  return { items, page: 1, limit: 200, total: items.length, totalPages: 1 };
+}
+
 describe('EmployeeFormPage', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    vi.spyOn(orgService, 'companies').mockResolvedValue([COMPANY]);
-    vi.spyOn(orgService, 'departments').mockResolvedValue([DEPARTMENT]);
-    vi.spyOn(orgService, 'positions').mockResolvedValue([POSITION]);
+    vi.spyOn(orgService, 'companies').mockResolvedValue(makePage([COMPANY]));
+    vi.spyOn(orgService, 'departments').mockResolvedValue(
+      makePage([{ ...DEPARTMENT, companyName: COMPANY.name }]),
+    );
+    vi.spyOn(orgService, 'positions').mockResolvedValue(
+      makePage([{ ...POSITION, companyName: COMPANY.name, departmentName: DEPARTMENT.name }]),
+    );
     vi.spyOn(orgService, 'teams').mockResolvedValue([]);
   });
 
@@ -58,7 +67,9 @@ describe('EmployeeFormPage', () => {
     await user.selectOptions(companySelect, COMPANY.id);
 
     await waitFor(() => {
-      expect(orgService.departments).toHaveBeenCalledWith(COMPANY.id);
+      expect(orgService.departments).toHaveBeenCalledWith(
+        expect.objectContaining({ companyId: COMPANY.id }),
+      );
     });
 
     const departmentSelect = screen.getByDisplayValue('Алба сонгох');
