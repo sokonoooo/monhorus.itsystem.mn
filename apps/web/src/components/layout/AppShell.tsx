@@ -2,7 +2,7 @@ import { PERMISSIONS, USER_ROLE_LABELS } from '@monhorus/shared';
 import { useEffect, useState, type ReactElement, type ReactNode } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 
-import { NAVIGATION, TOP_NAV_ITEMS } from '../../config/navigation';
+import { NAVIGATION, TOP_NAV_ITEMS, type NavSection } from '../../config/navigation';
 import { useAuth } from '../../contexts/auth-context';
 import { notificationService } from '../../services/report.service';
 import { NavGlyph } from './NavGlyph';
@@ -56,6 +56,26 @@ function useUnreadNotifications(enabled: boolean): number {
  * never sees the dispatch entry. This is presentation only; each route is
  * independently guarded and the backend re-checks every request.
  */
+/**
+ * Nav paths that another nav entry sits underneath.
+ *
+ * `NavLink` matches nested routes by default, which is what a section entry wants — staff
+ * «Төлөвлөгөөт ажил» should stay lit while you are three levels into a work. It is wrong
+ * only where one MENU ITEM is a strict prefix of another: `/portal` is the parent of
+ * `/portal/requests`, so every portal page lit two entries at once and the sidebar showed
+ * two current pages.
+ *
+ * Derived from the menu rather than hardcoded, so an entry added under an existing one
+ * cannot reintroduce this. Deep routes that are not menu entries are unaffected, which is
+ * what keeps the staff behaviour intact.
+ */
+function exactMatchPaths(sections: readonly NavSection[]): Set<string> {
+  const paths = sections.flatMap((section) => section.items.map((item) => item.path));
+  return new Set(
+    paths.filter((path) => paths.some((other) => other !== path && other.startsWith(`${path}/`))),
+  );
+}
+
 export function AppShell({ children }: { children: ReactNode }): ReactElement {
   const { user, logout, canAny } = useAuth();
   const unread = useUnreadNotifications(canAny(PERMISSIONS.NOTIFICATION_VIEW));
@@ -84,6 +104,10 @@ export function AppShell({ children }: { children: ReactNode }): ReactElement {
   /** Same any-of rule the sidebar uses, shared by the header shortcuts. */
   const canSee = (permissions: readonly string[]): boolean =>
     permissions.length === 0 || canAny(...(permissions as Parameters<typeof canAny>));
+
+  // Computed from the whole menu, not the visible slice: whether an entry is a parent is a
+  // property of the menu, and must not change because a permission hid its child.
+  const exactPaths = exactMatchPaths(NAVIGATION);
 
   const visibleSections = NAVIGATION
     // Tier first, then permissions. A section may be restricted to particular account
@@ -145,6 +169,8 @@ export function AppShell({ children }: { children: ReactNode }): ReactElement {
                   <li key={item.key}>
                     <NavLink
                       to={item.path}
+                      // Only where another entry is nested beneath this one — see above.
+                      end={exactPaths.has(item.path)}
                       title={item.label}
                       className={({ isActive }) =>
                         // The active entry is marked three ways at once: filled

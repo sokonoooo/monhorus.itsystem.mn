@@ -314,3 +314,51 @@ describe('the portal stays out of the admin console', () => {
     ]);
   });
 });
+
+describe('which sidebar entry reads as the current page', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(notificationService, 'unreadCount').mockResolvedValue({ unread: 0 });
+    vi.spyOn(portalService, 'listRequests').mockResolvedValue(makePage([]));
+  });
+
+  /** react-router marks the current entry with aria-current. */
+  async function currentEntries(route: string): Promise<string[]> {
+    renderWithAuth(<AppShell>агуулга</AppShell>, {
+      permissions: CUSTOMER_PERMISSIONS,
+      role: 'customer',
+      user: CUSTOMER_IDENTITY,
+      route,
+    });
+    const sidebar = await screen.findByRole('navigation', { name: 'Үндсэн цэс' });
+    return within(sidebar)
+      .getAllByRole('link')
+      .filter((link) => link.getAttribute('aria-current') === 'page')
+      .map((link) => link.getAttribute('href') ?? '');
+  }
+
+  /**
+   * `/portal` is a strict prefix of every other portal entry, and NavLink matches nested
+   * paths by default — so each portal page lit its own entry AND «Нүүр», and the sidebar
+   * claimed two current pages at once.
+   */
+  it.each(['/portal/requests', '/portal/planned-work', '/portal/sites'])(
+    'marks only %s, never also the portal home',
+    async (route) => {
+      expect(await currentEntries(route)).toEqual([route]);
+    },
+  );
+
+  it('marks the home entry on the portal home itself', async () => {
+    expect(await currentEntries('/portal')).toEqual(['/portal']);
+  });
+
+  /**
+   * The other half of the rule: an entry with no menu item beneath it keeps matching its
+   * own deeper routes, so a customer three levels into a building still sees which section
+   * they are in. Fixing the duplicate must not cost that.
+   */
+  it('keeps the section lit on a deeper route beneath it', async () => {
+    expect(await currentEntries('/portal/sites/b1/floors/f1')).toEqual(['/portal/sites']);
+  });
+});
