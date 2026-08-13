@@ -8,6 +8,14 @@ Deployment facts live in `DEPLOYMENT_MONHORUS_PROD.md`.
 
 ## P0 — the server is over capacity
 
+> **Update 2026-08-13: the host was given more RAM — 7.4 GB total, up from 1.6 GB.**
+> At the 2026-08-13 deploy it showed 6.1 GB available, **zero** swap in use (down from
+> 2.9 GB) and a load average of 0.00. That removes the immediate danger behind items 1
+> and 2 but does not close either: a leak that grows without bound reaches 7.4 GB as
+> surely as it reached 1.6 GB, it just takes longer, and the `MemoryMax` cap below is
+> still the only thing that would stop it taking a neighbour down. Disk is unchanged in
+> character — 4.2 GB free of 23 GB.
+
 ### 1. The SPIMEX crawler leaks and is OOM-killing other tenants
 
 Not a Monhorus bug, but it is the single biggest threat to Monhorus's uptime and it is
@@ -65,17 +73,23 @@ is the entire file corpus and it exists on exactly one disk.
 
 ## P1 — correctness and security
 
-### 5. HTTPS, which also unblocks the mobile apps and iOS
+### 5. ~~HTTPS~~ — done 2026-08-13
 
-Currently plain HTTP on `:3020`. Consequences, in order of severity:
+The A record was repointed to this host, certbot issued a certificate, and all four
+follow-on steps ran together: CORS, the web bundle's compiled-in origin, both APKs'
+`--dart-define`, and the removal of the cleartext exception. Credentials no longer cross
+the network in clear text and iOS is no longer blocked *by transport security* — though
+no iOS build has been attempted, and that needs a signing identity and an account before
+it means anything. Details in `DEPLOYMENT_MONHORUS_PROD.md` §7.
 
-- **Credentials cross the network in clear text**, including the head admin password.
-- **Release APKs cannot connect at all** on either platform without the cleartext
-  exception described in the runbook. iOS cannot be exempted for a public IP at all, so
-  **iOS is entirely blocked** until TLS exists.
+What remains from this item:
 
-Blocked only on repointing `monhorus.itsystem.mn` from `103.87.255.199` to
-`103.87.255.221`. Procedure in `DEPLOYMENT_MONHORUS_PROD.md` §7.
+- **HSTS is not set.** Deliberately: it is a commitment that is painful to walk back if
+  anything on this name ever has to serve plain HTTP. Worth adding once the migration has
+  settled, starting with a short `max-age`.
+- **`:3020` and `:3021` still serve plain HTTP** so that already-installed APKs keep
+  working. They are the remaining cleartext surface and should close once no handset
+  carries a pre-2026-08-13 build.
 
 ### 6. The backend binds `0.0.0.0:4000`, not loopback
 

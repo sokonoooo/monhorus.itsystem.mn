@@ -13,8 +13,10 @@ bootstrap script does — read `DEPLOYMENT_UBUNTU.md` first. This file does not 
 
 | Concern | Value |
 |---|---|
-| Web admin + API | `http://103.87.255.221:3020` |
-| Android APK download | `http://103.87.255.221:3021` |
+| Web admin + API | **`https://monhorus.itsystem.mn`** |
+| Android APK download | **`https://monhorus.itsystem.mn/apk/`** |
+| Legacy web + API (kept) | `http://103.87.255.221:3020` |
+| Legacy APK download (kept) | `http://103.87.255.221:3021` |
 | Backend process | `127.0.0.1:4000`, systemd unit `monhorus-api` |
 | MongoDB | `127.0.0.1:27017`, replica set `rs0`, database `monhorus` |
 | Deploy tree | `/srv/clients/monhorus` (owner `its`) |
@@ -23,8 +25,15 @@ bootstrap script does — read `DEPLOYMENT_UBUNTU.md` first. This file does not 
 | Service user | `monhorus`, `/usr/sbin/nologin` |
 | Backups target | `/var/backups/monhorus` |
 
-**There is no TLS and no domain.** `monhorus.itsystem.mn` resolves to `103.87.255.199`,
-a different server, so certbot cannot validate it from this host. See section 7.
+**TLS is live as of 2026-08-13.** The `monhorus.itsystem.mn` A record was repointed from
+`103.87.255.199` to this host, certbot issued a certificate (expires 2026-11-11, renewal
+timer installed), and `:80` now 301s to `:443`. Section 7 records the migration.
+
+**The IP-and-port sites are deliberately still running.** Every APK installed on a handset
+before 2026-08-13 has `http://103.87.255.221:3020/api/v1` compiled into it and would lose
+the API the moment `:3020` stopped answering. `CORS_ORIGINS` lists both origins for the
+same reason. Retire `:3020` and `:3021` only once no handset carries an old build —
+that is a decision about phones, not about the server.
 
 ### The host is shared
 
@@ -200,40 +209,80 @@ Two traps, both cost real time:
 
 ---
 
-## 7. Moving to HTTPS (required before the mobile apps can work)
+## 7. HTTPS — done 2026-08-13
 
-Plain HTTP is a hard blocker for the Flutter apps, not a style preference. iOS declares
+Plain HTTP was a hard blocker for the Flutter apps, not a style preference. iOS declares
 `NSAppTransportSecurity` with `NSAllowsLocalNetworking` only, which exempts RFC1918
 addresses but not a public IP. Android release builds get the platform default of
 cleartext-blocked. **A release APK pointed at `http://103.87.255.221` cannot connect on
-either platform.** The interim workaround is the network security config in section 8.
+either platform**, which is why the network security config in section 8 existed.
 
-When `monhorus.itsystem.mn` is repointed from `103.87.255.199` to `103.87.255.221`:
+The A record was repointed to this host and the migration ran in full:
 
 ```bash
 sudo certbot --nginx -d monhorus.itsystem.mn        # needs :80 reachable for HTTP-01
 ```
 
-Then, in order — all four steps, or the system half-migrates:
+All four follow-on steps were completed together — doing fewer half-migrates the system:
 
-1. `CORS_ORIGINS=https://monhorus.itsystem.mn` in `/etc/monhorus/backend.env`, restart.
-2. Rebuild the web bundle with `VITE_API_BASE_URL=https://monhorus.itsystem.mn/api/v1`.
-3. Rebuild both APKs with the matching `--dart-define` (section 8).
-4. Remove the cleartext exception from `network_security_config.xml` in both apps.
+1. `CORS_ORIGINS=https://monhorus.itsystem.mn,http://103.87.255.221:3020`. Both, not one:
+   the second keeps already-installed APKs working. Restart after editing.
+2. Web bundle rebuilt with `VITE_API_BASE_URL=https://monhorus.itsystem.mn/api/v1`.
+3. Both APKs rebuilt with the matching `--dart-define` (section 8).
+4. The cleartext exception is gone from `network_security_config.xml` in both apps. The
+   file is kept, reduced to an explicit `cleartextTrafficPermitted="false"`, because the
+   implicit default it would otherwise rely on is derived from `targetSdk` — a value both
+   modules inherit from the Flutter SDK rather than pinning, so it can move on an SDK
+   upgrade without anyone choosing to move it.
+
+**iOS is no longer blocked by transport security.** Nothing else about an iOS build has
+been attempted — no signing identity, no provisioning profile, no App Store account.
+
+### Renewal
+
+Certbot installed its own systemd timer. The renewal hook reloads nginx; nothing in this
+deployment needs to be touched. Verify with `sudo certbot renew --dry-run` if in doubt.
+The vhost file `/etc/nginx/sites-available/monhorus.itsystem.mn` is certbot-managed from
+the `listen 443` line down — the `/apk/` location was spliced in by locating the `:443`
+block's closing brace rather than by line number, precisely so a renewal rewrite cannot
+shift it onto the wrong block.
 
 ---
 
 ## 8. The Android apps
 
-Built and published 2026-08-04. Downloadable from `http://103.87.255.221:3021`.
+Rebuilt and republished **2026-08-13** against the TLS origin. Downloadable from
+`https://monhorus.itsystem.mn/apk/` (and still from `http://103.87.255.221:3021`).
 
 | | Employee | Customer |
 |---|---|---|
 | File | `monhorus-employee.apk` | `monhorus-customer.apk` |
 | applicationId | `mn.monhorus.monhorus_employee` | `mn.monhorus.monhorus_mobile` |
-| Label | Monhorus Employee | Monhorus |
-| Size | 53.4 MB | 51.9 MB |
+| Label | Monhorus Employee | Monhorus Mobile |
+| Size | 55.0 MB | 53.5 MB |
 | minSdk / target | 24 (Android 7.0) / 36 | 24 / 36 |
+| API origin | `https://monhorus.itsystem.mn/api/v1` | same |
+
+The previous build is kept beside each as `*.apk.prev`, so a bad release can be rolled
+back by renaming rather than rebuilding.
+
+### Always verify the signature, never assume it
+
+`build.gradle.kts` falls back to the **debug** key when `android/key.properties` is absent,
+so that a developer without the keystore can still run `flutter build apk --release`. That
+convenience means a release built on a machine missing the file is silently signed with
+the wrong key — and Android refuses to install an update whose signing certificate differs,
+so every user would have to uninstall first and lose their local data. The build does not
+warn. Check it explicitly:
+
+```bash
+apksigner verify --print-certs app-release.apk | grep "SHA-256"
+keytool -list -v -keystore monhorus-release.jks -alias monhorus | grep "SHA256:"
+```
+
+Both must be `01a103a7b36d89c88e131b20feda1d7983a20408b6e6c6150ead401ae1920948`
+(`CN=Monhorus, OU=IT System, O=IT System LLC, L=Ulaanbaatar, C=MN`). That fingerprint is
+the apps' identity on every handset; if it ever changes, in-place upgrades are over.
 
 Not built on this server — it has no JDK and 2.6 GB of disk. The toolchain lives on the
 workstation at `C:\dev` (Flutter 3.44.8 / Dart 3.12.2, Temurin JDK 17, Android SDK 36).
