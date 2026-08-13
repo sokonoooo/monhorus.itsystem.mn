@@ -197,6 +197,7 @@ export function PortalRequestListPage(): ReactElement {
           columns={columns}
           rows={data?.items ?? []}
           rowKey={(row) => row.id}
+          numbering={{ page, limit: PAGE_SIZE }}
           loading={loading}
           error={error}
           onRetry={() => void load()}

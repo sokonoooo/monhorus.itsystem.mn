@@ -174,6 +174,8 @@ export function PortalFloorPage(): ReactElement {
             columns={columns}
             rows={objects}
             rowKey={(row) => row.id}
+          // Numbered from 1: this table is the floor's whole equipment list, not a page of it.
+          numbering
             onRowClick={(row) =>
               navigate(`/portal/sites/${buildingId ?? ''}/floors/${floor.id}/objects/${row.id}`)
             }

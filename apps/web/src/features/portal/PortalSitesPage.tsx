@@ -70,6 +70,7 @@ export function PortalSitesPage(): ReactElement {
           columns={columns}
           rows={buildings ?? []}
           rowKey={(row) => row.id}
+          numbering
           loading={loading}
           error={error}
           onRetry={() => void load()}

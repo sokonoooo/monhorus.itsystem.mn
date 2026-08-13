@@ -754,7 +754,63 @@ describe('the portal planned-work list', () => {
 
     expect(await screen.findByRole('button', { name: /Илгээгээгүй 5 ноорог/ })).toBeInTheDocument();
     // The table itself asked only for the filtered status.
-    expect(list).toHaveBeenCalledWith(expect.objectContaining({ status: 'COMPLETED', limit: 50 }));
+    expect(list).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'COMPLETED', page: 1, limit: 20 }),
+    );
+  });
+
+  /**
+   * The list used to fetch one capped page of 50 and render no pager at all, so a customer
+   * with more work than that simply never saw the rest — and nothing on screen said so.
+   */
+  it('pages through the list rather than silently stopping at the cap', async () => {
+    const list = vi
+      .spyOn(portalService, 'listPlannedWork')
+      .mockImplementation(async (query: { limit?: number } = {}) => {
+        if (query.limit === 1) {
+          return { items: [], page: 1, limit: 1, total: 0, totalPages: 1 } as never;
+        }
+        return {
+          items: [{ id: 'w1', workNumber: 'PW-1', title: 'Нэг', effectiveStatus: 'PLANNED' }],
+          page: 1,
+          limit: 20,
+          total: 45,
+          totalPages: 3,
+        } as never;
+      });
+    const user = userEvent.setup();
+
+    renderPortal(<PortalPlannedWorkListPage />, '/portal/planned-work');
+
+    expect(await screen.findByText(/Нийт 45, хуудас 1\/3/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Дараах' }));
+
+    await waitFor(() =>
+      expect(list).toHaveBeenCalledWith(expect.objectContaining({ page: 2, limit: 20 })),
+    );
+  });
+
+  /** Continuous numbering: a reader asked to check row 21 must find it on page 2. */
+  it('numbers rows continuously across pages', async () => {
+    vi.spyOn(portalService, 'listPlannedWork').mockImplementation(
+      async (query: { limit?: number } = {}) => {
+        if (query.limit === 1) {
+          return { items: [], page: 1, limit: 1, total: 0, totalPages: 1 } as never;
+        }
+        return {
+          items: [{ id: 'w21', workNumber: 'PW-21', title: 'Хорин нэг', effectiveStatus: 'PLANNED' }],
+          page: 2,
+          limit: 20,
+          total: 45,
+          totalPages: 3,
+        } as never;
+      },
+    );
+
+    renderPortal(<PortalPlannedWorkListPage />, '/portal/planned-work?page=2');
+
+    const table = await screen.findByRole('table');
+    expect(within(table).getByText('21')).toBeInTheDocument();
   });
 
   it('filters the table by the chosen status', async () => {
@@ -767,7 +823,7 @@ describe('the portal planned-work list', () => {
 
     await waitFor(() =>
       expect(list).toHaveBeenCalledWith(
-        expect.objectContaining({ status: 'PENDING_APPROVAL', limit: 50 }),
+        expect.objectContaining({ status: 'PENDING_APPROVAL', page: 1, limit: 20 }),
       ),
     );
   });

@@ -1,6 +1,7 @@
 import {
   PERMISSIONS,
   PLANNED_WORK_STATUS_LABELS,
+  type PaginatedData,
   type PlannedWorkEffectiveStatus,
   type PlannedWorkListItemDto,
 } from '@monhorus/shared';
@@ -9,7 +10,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 
 import { Alert } from '../../components/ui/Alert';
 import { Button } from '../../components/ui/Button';
-import { DataTable, type Column } from '../../components/ui/DataTable';
+import { DataTable, Pagination, type Column } from '../../components/ui/DataTable';
 import { PageHeader } from '../../components/ui/PageHeader';
 import { useAuth } from '../../contexts/auth-context';
 import { ApiError } from '../../lib/api-client';
@@ -43,6 +44,9 @@ function formatDate(iso: string): string {
  * at the top rather than left to be spotted among finished work.
  */
 
+/** Matches the other portal list, so the two feel like one screen with two tabs. */
+const PAGE_SIZE = 20;
+
 /** The statuses offered as filters, in the order a customer meets them. */
 const FILTERS: readonly PlannedWorkEffectiveStatus[] = [
   'DRAFT',
@@ -64,7 +68,9 @@ export function PortalPlannedWorkListPage(): ReactElement {
   const [searchParams, setSearchParams] = useSearchParams();
   const status = (searchParams.get('status') ?? '') as PlannedWorkEffectiveStatus | '';
 
-  const [items, setItems] = useState<PlannedWorkListItemDto[] | null>(null);
+  const page = Math.max(1, Number(searchParams.get('page') ?? '1') || 1);
+
+  const [data, setData] = useState<PaginatedData<PlannedWorkListItemDto> | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   /** Exact counts of the work waiting on the customer, keyed by status. */
@@ -74,18 +80,19 @@ export function PortalPlannedWorkListPage(): ReactElement {
     setLoading(true);
     setError(null);
     try {
-      const result = await portalService.listPlannedWork({
-        page: 1,
-        limit: 50,
-        ...(status ? { status } : {}),
-      });
-      setItems([...result.items]);
+      setData(
+        await portalService.listPlannedWork({
+          page,
+          limit: PAGE_SIZE,
+          ...(status ? { status } : {}),
+        }),
+      );
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : 'Ажил ачаалж чадсангүй.');
     } finally {
       setLoading(false);
     }
-  }, [status]);
+  }, [page, status]);
 
   /**
    * Counted with their own requests rather than tallied from the rows above.
@@ -116,6 +123,11 @@ export function PortalPlannedWorkListPage(): ReactElement {
   useEffect(() => {
     void loadAwaiting();
   }, [loadAwaiting]);
+
+  /** Filtering restarts the paging: page 4 of one status is rarely a page of another. */
+  function applyStatus(next: PlannedWorkEffectiveStatus | ''): void {
+    setSearchParams(next ? { status: next } : {});
+  }
 
   /**
    * The staff columns, minus the people.
@@ -204,7 +216,7 @@ export function PortalPlannedWorkListPage(): ReactElement {
             {(awaiting.DRAFT ?? 0) > 0 && (
               <button
                 type="button"
-                onClick={() => setSearchParams({ status: 'DRAFT' })}
+                onClick={() => applyStatus('DRAFT')}
                 className="text-sm font-medium underline underline-offset-2"
               >
                 Илгээгээгүй {awaiting.DRAFT} ноорог
@@ -213,7 +225,7 @@ export function PortalPlannedWorkListPage(): ReactElement {
             {(awaiting.REJECTED ?? 0) > 0 && (
               <button
                 type="button"
-                onClick={() => setSearchParams({ status: 'REJECTED' })}
+                onClick={() => applyStatus('REJECTED')}
                 className="text-sm font-medium underline underline-offset-2"
               >
                 Буцаагдсан {awaiting.REJECTED} хүсэлт
@@ -225,14 +237,14 @@ export function PortalPlannedWorkListPage(): ReactElement {
 
       {/* Server-side, one status at a time — the same filter the staff list uses. */}
       <div className="flex flex-wrap gap-2">
-        <FilterChip active={status === ''} onClick={() => setSearchParams({})}>
+        <FilterChip active={status === ''} onClick={() => applyStatus('')}>
           Бүгд
         </FilterChip>
         {FILTERS.map((entry) => (
           <FilterChip
             key={entry}
             active={status === entry}
-            onClick={() => setSearchParams({ status: entry })}
+            onClick={() => applyStatus(entry)}
           >
             {PLANNED_WORK_STATUS_LABELS[entry]}
           </FilterChip>
@@ -242,8 +254,9 @@ export function PortalPlannedWorkListPage(): ReactElement {
       <div className="overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-slate-200">
         <DataTable
           columns={columns}
-          rows={items ?? []}
+          rows={data?.items ?? []}
           rowKey={(row) => row.id}
+          numbering={{ page, limit: PAGE_SIZE }}
           loading={loading}
           error={error}
           onRetry={() => void load()}
@@ -262,6 +275,18 @@ export function PortalPlannedWorkListPage(): ReactElement {
             ) : undefined
           }
         />
+        {data && data.totalPages > 1 && (
+          <Pagination
+            page={data.page}
+            totalPages={data.totalPages}
+            total={data.total}
+            onPageChange={(next) => {
+              const params = new URLSearchParams(searchParams);
+              params.set('page', String(next));
+              setSearchParams(params);
+            }}
+          />
+        )}
       </div>
     </div>
   );

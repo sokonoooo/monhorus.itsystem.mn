@@ -93,6 +93,7 @@ export function PortalSiteDetailPage(): ReactElement {
           columns={columns}
           rows={floors}
           rowKey={(row) => row.id}
+          numbering
           onRowClick={(row) => navigate(`/portal/sites/${building.id}/floors/${row.id}`)}
           emptyTitle="Давхар байхгүй"
           emptyDescription="Энэ барилгад давхар бүртгэгдээгүй байна."
