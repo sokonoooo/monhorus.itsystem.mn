@@ -18,6 +18,17 @@ Group=root
 # The leading '-' means the unit still runs when the file is absent.
 EnvironmentFile=-/etc/monhorus/backup.env
 
+# mongosh wants a home directory to keep its history and config in, and ProtectHome below
+# makes root's invisible. Without this it prints
+#   Warning: Could not access file: ENOENT ... mkdir '/root/.mongodb'
+# on STDOUT -- not stderr -- which lands in the middle of the value the pre-flight space
+# check captures from `db.stats()`. The script redirects stderr and so cannot filter it;
+# the reading comes back non-numeric and the disk estimate silently falls back to
+# "uploads only". The dump itself still works, so the only symptom is a weakened space
+# check on a disk that runs 83% full. PrivateTmp gives this its own /tmp, so the
+# directory mongosh creates here is private to the run and disappears with it.
+Environment=HOME=/tmp
+
 ExecStart=/usr/local/sbin/backup-monhorus.sh
 
 # 1.6 GB of RAM shared with four other live sites and a PostgreSQL. gzip and mongodump

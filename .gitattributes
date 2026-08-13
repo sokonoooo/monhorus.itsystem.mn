@@ -1,0 +1,28 @@
+# Line endings.
+#
+# Git stores everything here with LF, but a Windows checkout with core.autocrlf=true
+# rewrites the working tree to CRLF. That is harmless for source that only ever runs
+# through a compiler — and fatal for anything the SERVER executes directly, because the
+# deployment tarball is built from the working tree, not from the object store.
+#
+# The failure it produced, on 2026-08-13: the backup script reached the server with CRLF,
+# so the CR became part of the interpreter path in its shebang and systemd reported
+#     /usr/bin/env: 'bash\r': No such file or directory
+# with exit code 127. The unit was installed, enabled and scheduled, and would have failed
+# silently every night at 02:30 until someone needed a restore.
+#
+# Marking these `eol=lf` keeps the working tree LF on every platform, so what gets packaged
+# is what the server can run.
+
+*.sh        text eol=lf
+*.service   text eol=lf
+*.timer     text eol=lf
+*.conf      text eol=lf
+
+# Kept binary so git never touches their bytes.
+*.jks       binary
+*.keystore  binary
+*.apk       binary
+*.png       binary
+*.jpg       binary
+*.ico       binary
