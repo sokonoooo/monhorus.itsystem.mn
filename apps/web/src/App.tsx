@@ -46,7 +46,6 @@ import { SettingsPage } from './features/settings/SettingsPage';
 import { PortalFloorPage } from './features/portal/PortalFloorPage';
 import { PortalHomePage } from './features/portal/PortalHomePage';
 import { PortalObjectDetailPage } from './features/portal/PortalObjectDetailPage';
-import { PortalPlannedWorkCreatePage } from './features/portal/PortalPlannedWorkCreatePage';
 import { PortalPlannedWorkDetailPage } from './features/portal/PortalPlannedWorkDetailPage';
 import { PortalPlannedWorkListPage } from './features/portal/PortalPlannedWorkListPage';
 import { PortalRequestCreatePage } from './features/portal/PortalRequestCreatePage';
@@ -529,7 +528,7 @@ export default function App(): ReactElement {
             path="/portal/planned-work/new"
             element={
               <PortalPage anyOf={[PERMISSIONS.PORTAL_PLANNED_WORK_CREATE]}>
-                <PortalPlannedWorkCreatePage />
+                <PlannedWorkFormPage variant="portal" />
               </PortalPage>
             }
           />

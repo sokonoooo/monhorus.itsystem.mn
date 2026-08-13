@@ -4,12 +4,14 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ApiError } from '../../lib/api-client';
+import { objectService } from '../../services/object.service';
 import { portalService } from '../../services/portal.service';
+import { dispatchService } from '../../services/service-request.service';
 import { makePage, makeServiceRequest } from '../../test/fixtures';
 import { renderWithAuth } from '../../test/render';
 import { planMarkerObjects, unplacedOnPlanCount } from './PortalFloorPlan';
 import { PortalRequestCreatePage } from './PortalRequestCreatePage';
-import { PortalPlannedWorkCreatePage } from './PortalPlannedWorkCreatePage';
+import { PlannedWorkFormPage } from '../planned-work/PlannedWorkFormPage';
 import { PortalPlannedWorkDetailPage } from './PortalPlannedWorkDetailPage';
 import { PortalRequestListPage } from './PortalRequestListPage';
 
@@ -271,21 +273,46 @@ describe('raising planned work from the portal', () => {
    * on it yet" is the whole difference between this and a service request.
    */
   it('says the request waits for approval before anyone is assigned', async () => {
-    renderPortal(<PortalPlannedWorkCreatePage />, '/portal/planned-work/new');
+    renderPortal(<PlannedWorkFormPage variant="portal" />, '/portal/planned-work/new');
 
     expect(
-      await screen.findByText(/Хүсэлт илгээснээр ажил «Хүлээгдэж буй» төлөвт орно/),
+      await screen.findByText(/«Хүлээгдэж буй» төлөвтэй бүртгэгдэнэ/),
     ).toBeInTheDocument();
-    expect(screen.getByText(/Батлагдтал хэн ч томилогдохгүй/)).toBeInTheDocument();
+    expect(screen.getByText(/баталсны дараа ажилтан томилогдоно/)).toBeInTheDocument();
   });
 
   /** No crew field at all — the server forces it empty, and offering one would be a lie. */
   it('offers the customer no way to name a crew', async () => {
-    renderPortal(<PortalPlannedWorkCreatePage />, '/portal/planned-work/new');
+    renderPortal(<PlannedWorkFormPage variant="portal" />, '/portal/planned-work/new');
 
-    await screen.findByText('Ажил');
+    await screen.findByLabelText(/^Ажлын нэр/);
     expect(screen.queryByText(/Хариуцах ажилтан/)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/Баг/)).not.toBeInTheDocument();
+    // The organisation is implicit, so there is nothing to pick and no customer list to leak.
+    expect(screen.queryByLabelText(/^Харилцагч/)).not.toBeInTheDocument();
+  });
+
+  /**
+   * THE REASON THE FORM TAKES A VARIANT RATHER THAN BEING RENDERED AS-IS. The staff form
+   * fills its dropdowns from `/objects/customers`, `/objects/nodes` and
+   * `/dispatch/employee-candidates`, behind `customer.view`, `object.view` and
+   * `dispatch.view`. A customer holds none of the three, so calling them would 403 — and if
+   * they ever stopped 403-ing, the roster of every employee would be sitting in a customer's
+   * browser. The portal variant must reach none of them.
+   */
+  it('reaches none of the staff-only reference endpoints', async () => {
+    const customers = vi.spyOn(objectService, 'customers').mockResolvedValue([]);
+    const nodes = vi.spyOn(objectService, 'rootNodes').mockResolvedValue([]);
+    const children = vi.spyOn(objectService, 'children').mockResolvedValue([]);
+    const roster = vi.spyOn(dispatchService, 'employeeCandidates').mockResolvedValue([]);
+
+    renderPortal(<PlannedWorkFormPage variant="portal" />, '/portal/planned-work/new');
+
+    await screen.findByLabelText(/^Ажлын нэр/);
+    expect(customers).not.toHaveBeenCalled();
+    expect(nodes).not.toHaveBeenCalled();
+    expect(children).not.toHaveBeenCalled();
+    expect(roster).not.toHaveBeenCalled();
   });
 
   it('posts a real planned work with an empty crew', async () => {
@@ -294,12 +321,12 @@ describe('raising planned work from the portal', () => {
       .mockResolvedValue({ id: 'w1', workNumber: 'PW-202609-0001' } as never);
 
     const user = userEvent.setup();
-    renderPortal(<PortalPlannedWorkCreatePage />, '/portal/planned-work/new');
+    renderPortal(<PlannedWorkFormPage variant="portal" />, '/portal/planned-work/new');
 
     await user.selectOptions(await screen.findByLabelText(/^Барилга/), BUILDING_ID);
     await user.type(screen.getByLabelText(/^Ажлын нэр/), 'Улирлын үзлэг');
-    await user.type(screen.getByLabelText(/^Санал болгож буй эхлэх огноо/), '2026-09-01');
-    await user.type(screen.getByLabelText(/^Санал болгож буй дуусах огноо/), '2026-09-03');
+    await user.type(screen.getByLabelText(/^Эхлэх огноо/), '2026-09-01');
+    await user.type(screen.getByLabelText(/^Дуусах огноо/), '2026-09-03');
     await user.click(screen.getByRole('button', { name: 'Илгээх' }));
 
     await waitFor(() => {

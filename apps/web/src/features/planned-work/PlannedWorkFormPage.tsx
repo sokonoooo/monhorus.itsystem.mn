@@ -3,7 +3,6 @@ import {
   updatePlannedWorkSchema,
   type CustomerDto,
   type DispatchCandidateDto,
-  type ObjectNodeDto,
 } from '@monhorus/shared';
 import { useEffect, useState, type ReactElement } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
@@ -17,6 +16,7 @@ import { FIELD_TEXTAREA, FILTER_LABEL } from '../../components/ui/control-styles
 import { ApiError } from '../../lib/api-client';
 import { objectService } from '../../services/object.service';
 import { plannedWorkService } from '../../services/planned-work.service';
+import { portalService } from '../../services/portal.service';
 import { dispatchService } from '../../services/service-request.service';
 import { Field, SelectInput, TextInput } from '../employees/FormControls';
 
@@ -25,22 +25,63 @@ function toDateInput(iso: string): string {
   return iso.slice(0, 10);
 }
 
+/** A dropdown entry. Project, building and customer DTOs all reduce to this. */
+interface Choice {
+  id: string;
+  name: string;
+}
+
 /**
- * Create and edit a planned work.
+ * Which console this form is rendered in.
+ *
+ * NOT A COSMETIC FLAG. It selects the endpoints the dropdowns are filled from, and those
+ * differ because the permissions differ: the staff chain walks `/objects/customers` and
+ * `/objects/nodes` behind `customer.view` and `object.view`, neither of which a customer
+ * holds — `/objects/nodes` was deliberately closed back to the staff key. The portal reads
+ * the same places through `/projects` and `/buildings`, which accept a `portal.*` key and
+ * bound the answer to the caller's own organisation server-side.
+ */
+export type PlannedWorkFormVariant = 'staff' | 'portal';
+
+/**
+ * Create and edit a planned work — one form for both consoles.
+ *
+ * ONE COMPONENT ON PURPOSE. A customer raising planned work is filling in the same record,
+ * against the same `createPlannedWorkSchema`, posting to the same `POST /planned-work`. The
+ * portal previously had a hand-copied second form, which meant every field, every validation
+ * message and every date-format decision existed twice and could drift apart silently. What
+ * genuinely differs between the two is small and is marked `variant === 'portal'` below.
+ *
+ * The differences are all consequences of two facts, not of taste:
+ *   - A portal caller has exactly one organisation, taken from their account, so there is no
+ *     customer to pick. The server ignores any organisation the client sends.
+ *   - A portal caller may not name a crew. The server forces an empty crew on their work and
+ *     refuses assignment until it is approved, so the crew control is not merely hidden — it
+ *     would have nothing to show, since the employee roster is behind `dispatch.view`.
  *
  * In edit mode the planned END date is deliberately not offered: extending a deadline is
  * a reschedule, which needs its own permission, a mandatory reason and an audit record,
- * and is performed from the detail screen.
+ * and is performed from the detail screen. Edit is a staff-only mode; the portal mounts
+ * this form only at its create route.
  */
-export function PlannedWorkFormPage(): ReactElement {
+export function PlannedWorkFormPage({
+  variant = 'staff',
+}: {
+  variant?: PlannedWorkFormVariant;
+} = {}): ReactElement {
+  const isPortal = variant === 'portal';
   const { plannedWorkId } = useParams<{ plannedWorkId: string }>();
-  const isEdit = Boolean(plannedWorkId);
+  // Edit is staff-only. The portal has no edit route, and the guard is repeated here so
+  // that mounting this form at one would not silently produce a customer-facing editor.
+  const isEdit = Boolean(plannedWorkId) && !isPortal;
   const navigate = useNavigate();
   const { notify } = useToast();
 
+  const listPath = isPortal ? '/portal/planned-work' : '/planned-work';
+
   const [customers, setCustomers] = useState<CustomerDto[]>([]);
-  const [projects, setProjects] = useState<ObjectNodeDto[]>([]);
-  const [buildings, setBuildings] = useState<ObjectNodeDto[]>([]);
+  const [projects, setProjects] = useState<Choice[]>([]);
+  const [buildings, setBuildings] = useState<Choice[]>([]);
   const [employees, setEmployees] = useState<DispatchCandidateDto[]>([]);
 
   const [customerId, setCustomerId] = useState('');
@@ -58,6 +99,15 @@ export function PlannedWorkFormPage(): ReactElement {
   const [formError, setFormError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
+  /**
+   * Whether a location may be chosen yet.
+   *
+   * Staff must pick a customer first, because the project and building queries are keyed on
+   * one. A portal caller's organisation is implicit, so the same gate would leave their
+   * building field permanently disabled and the form impossible to submit.
+   */
+  const locationReady = isPortal || Boolean(customerId);
+
   // Reference data plus, in edit mode, the record itself.
   useEffect(() => {
     let cancelled = false;
@@ -66,15 +116,22 @@ export function PlannedWorkFormPage(): ReactElement {
       setLoading(true);
       setLoadError(null);
       try {
-        const [customerList, candidates] = await Promise.all([
-          objectService.customers(),
-          dispatchService.employeeCandidates({}).catch(() => []),
-        ]);
-        if (cancelled) return;
-        setCustomers(customerList);
-        setEmployees(candidates);
+        if (isPortal) {
+          // No customer list and no roster: one is implicit, the other is staff-only.
+          const projectList = await portalService.listProjects();
+          if (cancelled) return;
+          setProjects(projectList.items.map((item) => ({ id: item.id, name: item.name })));
+        } else {
+          const [customerList, candidates] = await Promise.all([
+            objectService.customers(),
+            dispatchService.employeeCandidates({}).catch(() => []),
+          ]);
+          if (cancelled) return;
+          setCustomers(customerList);
+          setEmployees(candidates);
+        }
 
-        if (plannedWorkId) {
+        if (isEdit && plannedWorkId) {
           const work = await plannedWorkService.getById(plannedWorkId);
           if (cancelled) return;
           setCustomerId(work.customer.id);
@@ -99,10 +156,11 @@ export function PlannedWorkFormPage(): ReactElement {
     return () => {
       cancelled = true;
     };
-  }, [plannedWorkId]);
+  }, [isEdit, isPortal, plannedWorkId]);
 
-  // Projects belong to a customer.
+  // Projects belong to a customer. The portal's own projects are loaded once, above.
   useEffect(() => {
+    if (isPortal) return undefined;
     if (!customerId) {
       setProjects([]);
       return undefined;
@@ -111,37 +169,43 @@ export function PlannedWorkFormPage(): ReactElement {
     objectService
       .rootNodes(customerId, 'PROJECT')
       .then((nodes) => {
-        if (!cancelled) setProjects(nodes);
+        if (!cancelled) setProjects(nodes.map((node) => ({ id: node.id, name: node.name })));
       })
       .catch(() => undefined);
     return () => {
       cancelled = true;
     };
-  }, [customerId]);
+  }, [customerId, isPortal]);
 
   // The project is optional. With one chosen the buildings are its children (the backend
   // enforces the same containment rule); without one, every building of the customer is
-  // offered — the same customer-plus-kind query the service-request form relies on.
+  // offered — the same customer-plus-kind query the service-request form relies on. The
+  // portal asks the same two questions of `/buildings`, which scopes them to its own org.
   useEffect(() => {
-    if (!customerId) {
+    if (!locationReady) {
       setBuildings([]);
       return undefined;
     }
     let cancelled = false;
-    const load = projectId
-      ? objectService
-          .children(projectId)
-          .then((nodes) => nodes.filter((node) => node.kind === 'BUILDING'))
-      : objectService.rootNodes(customerId, 'BUILDING');
+    const load: Promise<Choice[]> = isPortal
+      ? portalService
+          .listBuildingsIn(projectId || undefined)
+          .then((page) => page.items.map((item) => ({ id: item.id, name: item.name })))
+      : (projectId
+          ? objectService
+              .children(projectId)
+              .then((nodes) => nodes.filter((node) => node.kind === 'BUILDING'))
+          : objectService.rootNodes(customerId, 'BUILDING')
+        ).then((nodes) => nodes.map((node) => ({ id: node.id, name: node.name })));
     load
-      .then((nodes) => {
-        if (!cancelled) setBuildings(nodes);
+      .then((choices) => {
+        if (!cancelled) setBuildings(choices);
       })
       .catch(() => undefined);
     return () => {
       cancelled = true;
     };
-  }, [customerId, projectId]);
+  }, [customerId, isPortal, locationReady, projectId]);
 
   function collectIssues(issues: { path: (string | number)[]; message: string }[]): void {
     const errors: Record<string, string> = {};
@@ -189,6 +253,8 @@ export function PlannedWorkFormPage(): ReactElement {
       return;
     }
 
+    // The same schema for both consoles. A portal caller sends an empty crew because the
+    // control is not rendered; the server would force one regardless.
     const parsed = createPlannedWorkSchema.safeParse({
       projectId: projectId || null,
       buildingId,
@@ -206,9 +272,16 @@ export function PlannedWorkFormPage(): ReactElement {
 
     setSubmitting(true);
     try {
-      const created = await plannedWorkService.create(parsed.data);
-      notify('Төлөвлөгөөт ажил үүслээ. Дэд ажлуудыг нэмнэ үү.', 'success');
-      navigate(`/planned-work/${created.id}`);
+      const created = isPortal
+        ? await portalService.createPlannedWork(parsed.data)
+        : await plannedWorkService.create(parsed.data);
+      notify(
+        isPortal
+          ? 'Хүсэлт илгээгдлээ. Батлагдсаны дараа ажилтан томилогдоно.'
+          : 'Төлөвлөгөөт ажил үүслээ. Дэд ажлуудыг нэмнэ үү.',
+        'success',
+      );
+      navigate(`${listPath}/${created.id}`);
     } catch (caught) {
       if (caught instanceof ApiError) {
         setFormError(caught.message);
@@ -235,16 +308,23 @@ export function PlannedWorkFormPage(): ReactElement {
     <>
       <PageHeader
         title={isEdit ? 'Төлөвлөгөөт ажил засах' : 'Шинэ төлөвлөгөөт ажил'}
-        backTo={{ to: '/planned-work', label: 'Төлөвлөгөөт ажлын жагсаалт руу буцах' }}
+        backTo={{ to: listPath, label: 'Төлөвлөгөөт ажлын жагсаалт руу буцах' }}
         breadcrumbs={[
-          { label: 'Нүүр', to: '/dashboard' },
-          { label: 'Төлөвлөгөөт ажил', to: '/planned-work' },
+          { label: 'Нүүр', to: isPortal ? '/portal' : '/dashboard' },
+          { label: 'Төлөвлөгөөт ажил', to: listPath },
           { label: isEdit ? 'Засах' : 'Шинэ' },
         ]}
       />
 
       <div className="space-y-4 rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
         {formError && <Alert variant="error">{formError}</Alert>}
+
+        {isPortal && (
+          <Alert variant="info">
+            Илгээсэн хүсэлт «Хүлээгдэж буй» төлөвтэй бүртгэгдэнэ. Хариуцагч байгууллага
+            баталсны дараа ажилтан томилогдоно. Огноог санал болгож буй хугацаа гэж үзнэ.
+          </Alert>
+        )}
 
         {isEdit && (
           <Alert variant="info">
@@ -254,22 +334,25 @@ export function PlannedWorkFormPage(): ReactElement {
         )}
 
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-          <Field label="Харилцагч" required error={fieldErrors.customerId}>
-            <SelectInput
-              value={customerId}
-              onChange={(value) => {
-                setCustomerId(value);
-                setProjectId('');
-                setBuildingId('');
-              }}
-              placeholder="Харилцагч сонгох"
-              options={customers.map((customer) => ({
-                value: customer.id,
-                label: customer.name,
-              }))}
-              disabled={submitting || isEdit}
-            />
-          </Field>
+          {/* The organisation is implicit in the portal — it comes from the account. */}
+          {!isPortal && (
+            <Field label="Харилцагч" required error={fieldErrors.customerId}>
+              <SelectInput
+                value={customerId}
+                onChange={(value) => {
+                  setCustomerId(value);
+                  setProjectId('');
+                  setBuildingId('');
+                }}
+                placeholder="Харилцагч сонгох"
+                options={customers.map((customer) => ({
+                  value: customer.id,
+                  label: customer.name,
+                }))}
+                disabled={submitting || isEdit}
+              />
+            </Field>
+          )}
 
           <Field
             label="Төсөл"
@@ -284,7 +367,7 @@ export function PlannedWorkFormPage(): ReactElement {
               }}
               placeholder="Төсөлгүй"
               options={projects.map((project) => ({ value: project.id, label: project.name }))}
-              disabled={submitting || !customerId || isEdit}
+              disabled={submitting || !locationReady || isEdit}
             />
           </Field>
 
@@ -297,7 +380,7 @@ export function PlannedWorkFormPage(): ReactElement {
                 value: building.id,
                 label: building.name,
               }))}
-              disabled={submitting || !customerId}
+              disabled={submitting || !locationReady}
             />
           </Field>
 
@@ -340,41 +423,49 @@ export function PlannedWorkFormPage(): ReactElement {
           />
         </div>
 
-        <fieldset aria-label="Хариуцах ажилтан">
-          <p className="mb-2 text-xs font-medium text-slate-600">Хариуцах ажилтан</p>
-          <div className="grid max-h-52 grid-cols-1 gap-1 overflow-y-auto rounded-lg p-2 ring-1 ring-inset ring-slate-200 sm:grid-cols-2">
-            {employees.length === 0 && (
-              <p className="text-xs text-slate-500">Ажилтны мэдээлэл ачаалагдсангүй.</p>
-            )}
-            {employees.map((employee) => (
-              <label key={employee.id} className="flex items-center gap-2 text-sm text-slate-700">
-                <input
-                  type="checkbox"
-                  checked={assignedEmployeeIds.includes(employee.id)}
-                  onChange={(event) =>
-                    setAssignedEmployeeIds((current) =>
-                      event.target.checked
-                        ? [...current, employee.id]
-                        : current.filter((id) => id !== employee.id),
-                    )
-                  }
-                  disabled={submitting}
-                  className="h-4 w-4 rounded border-slate-300"
-                />
-                <span className="truncate">
-                  {employee.lastName} {employee.firstName}
-                </span>
-              </label>
-            ))}
-          </div>
-        </fieldset>
+        {/*
+          Staff only, and not merely hidden from customers: the roster behind this control is
+          served by `/dispatch/employee-candidates` under `dispatch.view`, so for a portal
+          caller it would render permanently empty. The server also forces an empty crew on
+          customer-raised work and refuses assignment until it is approved.
+        */}
+        {!isPortal && (
+          <fieldset aria-label="Хариуцах ажилтан">
+            <p className="mb-2 text-xs font-medium text-slate-600">Хариуцах ажилтан</p>
+            <div className="grid max-h-52 grid-cols-1 gap-1 overflow-y-auto rounded-lg p-2 ring-1 ring-inset ring-slate-200 sm:grid-cols-2">
+              {employees.length === 0 && (
+                <p className="text-xs text-slate-500">Ажилтны мэдээлэл ачаалагдсангүй.</p>
+              )}
+              {employees.map((employee) => (
+                <label key={employee.id} className="flex items-center gap-2 text-sm text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={assignedEmployeeIds.includes(employee.id)}
+                    onChange={(event) =>
+                      setAssignedEmployeeIds((current) =>
+                        event.target.checked
+                          ? [...current, employee.id]
+                          : current.filter((id) => id !== employee.id),
+                      )
+                    }
+                    disabled={submitting}
+                    className="h-4 w-4 rounded border-slate-300"
+                  />
+                  <span className="truncate">
+                    {employee.lastName} {employee.firstName}
+                  </span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
+        )}
 
         <div className="flex justify-end gap-2 border-t border-slate-200 pt-4">
-          <Button variant="secondary" onClick={() => navigate('/planned-work')} disabled={submitting}>
+          <Button variant="secondary" onClick={() => navigate(listPath)} disabled={submitting}>
             Цуцлах
           </Button>
           <Button onClick={() => void handleSubmit()} loading={submitting}>
-            Хадгалах
+            {isPortal ? 'Илгээх' : 'Хадгалах'}
           </Button>
         </div>
       </div>

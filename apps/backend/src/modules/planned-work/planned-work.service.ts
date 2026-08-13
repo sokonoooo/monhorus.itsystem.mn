@@ -984,6 +984,30 @@ export async function reschedulePlannedWork(
   return getPlannedWorkById(plannedWorkId, actor);
 }
 
+/**
+ * Refuses naming an employee on a still-unapproved work.
+ *
+ * THE SAME RULE AS THE WORK-LEVEL CREW, applied one level down. `updatePlannedWork` already
+ * refuses `assignedEmployeeIds` while PENDING_APPROVAL, but a sub-task carries its own
+ * assignee, and that path only ever checked `assertMutable` — which permits
+ * PENDING_APPROVAL. So a holder of `planned_work.update` could staff the sub-tasks of a
+ * customer request nobody had approved yet.
+ *
+ * It granted no access: `planned-work.scope.ts` reads only `assignedEmployees`/
+ * `assignedTeam`, so the named technician still saw nothing and could write nothing. It was
+ * a promise the system had not agreed to — a job with somebody's name on it that may still
+ * be refused outright. Refused rather than ignored, for the reason the work-level rule gives.
+ */
+function assertCrewAssignable(work: Pick<IPlannedWork, 'status'>): void {
+  if (work.status === 'PENDING_APPROVAL') {
+    throw AppError.badRequest(
+      ERROR_CODES.VALIDATION_ERROR,
+      'Батлагдаагүй ажилд хариуцагч томилох боломжгүй. Эхлээд батална уу.',
+      [{ field: 'assignedEmployeeId', message: 'Батлагдсаны дараа томилно.' }],
+    );
+  }
+}
+
 // -- Tasks -------------------------------------------------------------------
 
 export async function createTask(
@@ -1000,6 +1024,7 @@ export async function createTask(
   assertTaskWithinWorkWindow(work, start, end);
 
   const floorId = input.floorId ? await assertFloorInBuilding(input.floorId, work.building) : null;
+  if (input.assignedEmployeeId) assertCrewAssignable(work);
   const assignedEmployee = input.assignedEmployeeId
     ? (await assertEmployeesExist([input.assignedEmployeeId]))[0]
     : null;
@@ -1098,6 +1123,8 @@ export async function updateTask(
   }
 
   if (input.assignedEmployeeId !== undefined) {
+    // Clearing an assignee stays allowed while pending — only naming one is refused.
+    if (input.assignedEmployeeId) assertCrewAssignable(work);
     task.assignedEmployee = input.assignedEmployeeId
       ? ((await assertEmployeesExist([input.assignedEmployeeId]))[0] ?? null)
       : null;

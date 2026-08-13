@@ -239,6 +239,45 @@ describe('approval is what makes it assignable', () => {
     expect((await PlannedWork.findById(workId))?.assignedEmployees).toHaveLength(0);
   });
 
+  /**
+   * The same rule one level down. A sub-task carries its own assignee, and that path only
+   * ever checked `assertMutable` — which permits PENDING_APPROVAL — so the sub-tasks of an
+   * unapproved customer request could be staffed even though the work-level crew could not.
+   */
+  it('refuses naming an employee on a sub-task while the work is pending', async () => {
+    const workId = await raiseAsCustomer();
+
+    const response = await request(app)
+      .post(`${API}/planned-work/${workId}/tasks`)
+      .set('Authorization', `Bearer ${approverToken}`)
+      .send({
+        title: 'Шатны үзлэг',
+        totalQuantity: 4,
+        plannedStartDate: '2026-09-01T00:00:00.000Z',
+        plannedEndDate: '2026-09-02T00:00:00.000Z',
+        assignedEmployeeId: employeeId,
+      });
+
+    expect(response.status).toBe(400);
+  });
+
+  /** Scoping the job before approving it is fine — only the promise to a person is refused. */
+  it('allows an unassigned sub-task while the work is pending', async () => {
+    const workId = await raiseAsCustomer();
+
+    const response = await request(app)
+      .post(`${API}/planned-work/${workId}/tasks`)
+      .set('Authorization', `Bearer ${approverToken}`)
+      .send({
+        title: 'Шатны үзлэг',
+        totalQuantity: 4,
+        plannedStartDate: '2026-09-01T00:00:00.000Z',
+        plannedEndDate: '2026-09-02T00:00:00.000Z',
+      });
+
+    expect(response.status).toBe(201);
+  });
+
   it('approves to PLANNED and only then accepts a crew', async () => {
     const workId = await raiseAsCustomer();
 
