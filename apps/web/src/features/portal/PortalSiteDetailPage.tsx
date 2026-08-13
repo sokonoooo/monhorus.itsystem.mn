@@ -10,6 +10,7 @@ import { FILTER_BAR, FILTER_LABEL, FILTER_SEARCH_SLOT } from '../../components/u
 import { ErrorState, Skeleton } from '../../components/ui/States';
 import { ApiError } from '../../lib/api-client';
 import { portalService } from '../../services/portal.service';
+import { BuildingSilhouette } from './BuildingSilhouette';
 
 /** The same page size as the other portal lists. */
 const PAGE_SIZE = 20;
@@ -23,6 +24,30 @@ const PAGE_SIZE = 20;
  * is. Both the page and the search live in the URL, and the search is answered server-side —
  * a tall building holds far more floors than one page shows.
  */
+/** A ceiling on the paging loop, not on the building. */
+const MAX_FLOOR_PAGES = 20;
+
+/**
+ * Every floor, for the drawing.
+ *
+ * SEPARATE FROM THE TABLE'S PAGE ON PURPOSE. The table shows twenty floors at a time and
+ * may be filtered by a search; the silhouette is a picture of the whole building, and one
+ * drawn from a filtered page would be a picture of a different building. This walks the
+ * pages the way the floor screens walk theirs, for the same reason.
+ */
+async function fetchAllFloors(buildingId: string): Promise<FloorDto[]> {
+  const items: FloorDto[] = [];
+  let page = 1;
+  let totalPages = 1;
+  do {
+    const response = await portalService.listFloors(buildingId, { page, limit: 100 });
+    items.push(...response.items);
+    totalPages = response.totalPages;
+    page += 1;
+  } while (page <= totalPages && page <= MAX_FLOOR_PAGES);
+  return items;
+}
+
 export function PortalSiteDetailPage(): ReactElement {
   const { buildingId } = useParams<{ buildingId: string }>();
   const navigate = useNavigate();
@@ -36,6 +61,8 @@ export function PortalSiteDetailPage(): ReactElement {
   const [error, setError] = useState<string | null>(null);
 
   const [floors, setFloors] = useState<PaginatedData<FloorDto> | null>(null);
+  /** The whole building, for the drawing — never the table's filtered page. */
+  const [allFloors, setAllFloors] = useState<FloorDto[]>([]);
   const [floorsLoading, setFloorsLoading] = useState(true);
   const [floorsError, setFloorsError] = useState<string | null>(null);
 
@@ -85,6 +112,22 @@ export function PortalSiteDetailPage(): ReactElement {
   useEffect(() => {
     void loadBuilding();
   }, [loadBuilding]);
+
+  // The drawing's own load: it does not follow the table's page or its search.
+  useEffect(() => {
+    if (!buildingId) return undefined;
+    let cancelled = false;
+    fetchAllFloors(buildingId)
+      .then((found) => {
+        if (!cancelled) setAllFloors(found);
+      })
+      // A drawing that cannot be loaded renders its own empty state; it must never take
+      // the floor table down with it.
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [buildingId]);
 
   useEffect(() => {
     void loadFloors();
@@ -159,6 +202,14 @@ export function PortalSiteDetailPage(): ReactElement {
             placeholder="Давхрын нэр эсвэл код"
           />
         </div>
+      </div>
+
+      <div className="rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
+        <h2 className="mb-3 text-sm font-semibold text-slate-900">Барилгын харагдац</h2>
+        <BuildingSilhouette
+          floors={allFloors}
+          onSelect={(floor) => navigate(`/portal/sites/${buildingId ?? ''}/floors/${floor.id}`)}
+        />
       </div>
 
       <div className="overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-slate-200">

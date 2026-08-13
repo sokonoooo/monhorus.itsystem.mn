@@ -1,4 +1,9 @@
-import { PERMISSIONS, type ServiceRequestListItemDto } from '@monhorus/shared';
+import {
+  PERMISSIONS,
+  PLANNED_WORK_STATUS_LABELS,
+  type BuildingDto,
+  type ServiceRequestListItemDto,
+} from '@monhorus/shared';
 import { useCallback, useEffect, useState, type ReactElement } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
@@ -9,6 +14,14 @@ import { useAuth } from '../../contexts/auth-context';
 import { ApiError } from '../../lib/api-client';
 import { portalService } from '../../services/portal.service';
 import { PortalStatusBadge, PortalUrgentBadge } from './PortalBadges';
+import {
+  BarChart,
+  CHARTED_WORK_STATUSES,
+  riskHeadline,
+  riskSlices,
+  unassessedTotal,
+  workSlices,
+} from './PortalCharts';
 
 /** Statuses a customer reads as "still open". Anything else is finished or abandoned. */
 const OPEN_STATUSES = new Set([
@@ -48,6 +61,8 @@ export function PortalHomePage(): ReactElement {
 
   const [recent, setRecent] = useState<ServiceRequestListItemDto[] | null>(null);
   const [openCount, setOpenCount] = useState(0);
+  const [buildings, setBuildings] = useState<BuildingDto[] | null>(null);
+  const [workTotals, setWorkTotals] = useState<Record<string, number> | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -70,6 +85,53 @@ export function PortalHomePage(): ReactElement {
   useEffect(() => {
     void load();
   }, [load]);
+
+  /**
+   * The two charts' data.
+   *
+   * Both are counts the server already publishes. The risk bands come off each building's
+   * own `riskSummary`, summed here; the work totals are read as `total` from one-row
+   * queries per status, which is exact whatever the page size is — counting a fetched page
+   * would understate every figure the moment a customer has more work than fits on one.
+   *
+   * Neither failure takes the page down: the screen's job is the request list above, and a
+   * chart that cannot load should leave a gap, not an error.
+   */
+  useEffect(() => {
+    if (!canSeeSites) return undefined;
+    let cancelled = false;
+    portalService
+      .listBuildings({ page: 1, limit: 100 })
+      .then((page) => {
+        if (!cancelled) setBuildings([...page.items]);
+      })
+      .catch(() => {
+        if (!cancelled) setBuildings([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [canSeeSites]);
+
+  useEffect(() => {
+    if (!canRequestWork) return undefined;
+    let cancelled = false;
+    void Promise.all(
+      CHARTED_WORK_STATUSES.map(async (status) => {
+        try {
+          const page = await portalService.listPlannedWork({ page: 1, limit: 1, status });
+          return [status, page.total] as const;
+        } catch {
+          return [status, 0] as const;
+        }
+      }),
+    ).then((entries) => {
+      if (!cancelled) setWorkTotals(Object.fromEntries(entries));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [canRequestWork]);
 
   return (
     <>
@@ -128,6 +190,61 @@ export function PortalHomePage(): ReactElement {
               >
                 Харах
               </Link>
+            </div>
+          )}
+        </div>
+
+        {/*
+          The two charts, above the recent list because they answer the wider question
+          first: a customer opens this to find out whether anything needs them, and only
+          then which particular request it was.
+        */}
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+          {canSeeSites && (
+            <div className="rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
+              <h2 className="text-sm font-semibold text-slate-900">Тоноглолын эрсдэл</h2>
+              {/* Worst state first — the sentence, then the distribution behind it. */}
+              <p className="mt-1 mb-4 text-sm text-slate-600">
+                {buildings === null
+                  ? 'Ачааллаж байна…'
+                  : riskHeadline(riskSlices(buildings), unassessedTotal(buildings))}
+              </p>
+              {buildings === null ? (
+                <Skeleton className="h-32 w-full" />
+              ) : (
+                <>
+                  <BarChart
+                    slices={riskSlices(buildings)}
+                    emptyMessage="Тоноглолын үнэлгээ бүртгэгдээгүй байна."
+                  />
+                  {/*
+                    Stated, not charted — see `riskSlices`. On one scale this number buries
+                    every band a customer can act on.
+                  */}
+                  {unassessedTotal(buildings) > 0 && (
+                    <p className="mt-3 border-t border-slate-100 pt-3 text-xs text-slate-500">
+                      Үнэлгээ хийгээгүй: {unassessedTotal(buildings)} тоноглол
+                    </p>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+
+          {canRequestWork && (
+            <div className="rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
+              <h2 className="text-sm font-semibold text-slate-900">Төлөвлөгөөт ажлын төлөв</h2>
+              <p className="mt-1 mb-4 text-sm text-slate-600">
+                Танай байгууллагын ажил төлөвөөр.
+              </p>
+              {workTotals === null ? (
+                <Skeleton className="h-32 w-full" />
+              ) : (
+                <BarChart
+                  slices={workSlices(workTotals, PLANNED_WORK_STATUS_LABELS)}
+                  emptyMessage="Төлөвлөгөөт ажил бүртгэгдээгүй байна."
+                />
+              )}
             </div>
           )}
         </div>
