@@ -55,6 +55,68 @@ function Row({ label, value }: { label: string; value: string }): ReactElement {
  * would be a further backend change and is deliberately not part of this one; it is worth
  * doing before the portal carries anything more sensitive than a work's own schedule.
  */
+/**
+ * The five stages a request passes through, in order.
+ *
+ * Deliberately fewer stages than the lifecycle has. PAUSED, OVERDUE and ARCHIVED are real
+ * statuses but they are not *steps* — they say something about a stage rather than advancing
+ * past one, and putting them in a row of arrows would suggest a request travels through them.
+ * The badge and the alerts carry those; this answers only "how far along is it".
+ */
+const STAGES: readonly { key: string; label: string; reached: readonly string[] }[] = [
+  { key: 'draft', label: 'Ноорог', reached: ['DRAFT', 'REJECTED'] },
+  { key: 'pending', label: 'Хүлээгдэж буй', reached: ['PENDING_APPROVAL'] },
+  { key: 'planned', label: 'Батлагдсан', reached: ['PLANNED'] },
+  { key: 'started', label: 'Хэрэгжиж байна', reached: ['STARTED', 'PAUSED'] },
+  { key: 'done', label: 'Дууссан', reached: ['COMPLETED', 'ARCHIVED'] },
+];
+
+/**
+ * Where the request has got to.
+ *
+ * A customer's first question on opening one of these is not what its status is called, it
+ * is whether anything is expected of them. A row of stages answers that in one glance in a
+ * way a single chip cannot: it shows what has already happened and what comes next.
+ *
+ * A returned request is drawn back at the first stage, because that is exactly where it is —
+ * the work of correcting and resubmitting is all still to do.
+ */
+function StatusTrail({ status }: { status: string }): ReactElement | null {
+  // A cancelled request never reaches an end stage; the alert above already explains it, and
+  // a trail frozen mid-way would read as "still in progress".
+  if (status === 'CANCELLED') return null;
+
+  const currentIndex = STAGES.findIndex((stage) => stage.reached.includes(status));
+  const returned = status === 'REJECTED';
+
+  return (
+    <ol className="flex flex-wrap items-center gap-x-2 gap-y-2" aria-label="Явц">
+      {STAGES.map((stage, index) => {
+        const done = currentIndex >= 0 && index < currentIndex;
+        const current = index === currentIndex;
+        const tone = current
+          ? returned
+            ? 'bg-red-600 text-white ring-red-600'
+            : 'bg-blue-600 text-white ring-blue-600'
+          : done
+            ? 'bg-blue-50 text-blue-700 ring-blue-200'
+            : 'bg-white text-slate-400 ring-slate-200';
+        return (
+          <li key={stage.key} className="flex items-center gap-2">
+            <span
+              aria-current={current ? 'step' : undefined}
+              className={`rounded-full px-3 py-1 text-xs font-medium ring-1 ring-inset ${tone}`}
+            >
+              {stage.label}
+            </span>
+            {index < STAGES.length - 1 && <span className="text-slate-300">→</span>}
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
 export function PortalPlannedWorkDetailPage(): ReactElement {
   const { plannedWorkId } = useParams<{ plannedWorkId: string }>();
   const navigate = useNavigate();
@@ -147,6 +209,10 @@ export function PortalPlannedWorkDetailPage(): ReactElement {
       />
 
       <div className="space-y-4">
+        <div className="rounded-xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+          <StatusTrail status={work.lifecycleStatus} />
+        </div>
+
         {/*
           The states a customer acts on. Each says who is waiting on whom, rather than
           leaving them to infer it from a coloured chip.

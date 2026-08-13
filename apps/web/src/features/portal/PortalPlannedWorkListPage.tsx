@@ -1,10 +1,13 @@
 import {
   PERMISSIONS,
+  PLANNED_WORK_STATUS_LABELS,
+  type PlannedWorkEffectiveStatus,
   type PlannedWorkListItemDto,
 } from '@monhorus/shared';
-import { useCallback, useEffect, useState, type ReactElement } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useCallback, useEffect, useState, type ReactElement, type ReactNode } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 
+import { Alert } from '../../components/ui/Alert';
 import { Button } from '../../components/ui/Button';
 import { DataTable, type Column } from '../../components/ui/DataTable';
 import { PageHeader } from '../../components/ui/PageHeader';
@@ -31,35 +34,88 @@ function formatDate(iso: string): string {
  *
  * A SEPARATE SCREEN FROM `PlannedWorkListPage`: that one carries the assigned crew and the
  * team as columns, and its row actions drive the lifecycle. Neither is a customer's
- * business, and the row here is deliberately read-only — every write path on planned work
- * except creation is keyed on a `planned_work.*` permission no customer holds.
+ * business, and the row here is read-only — the lifecycle is driven from the detail screen.
+ *
+ * WHAT THE FILTERS ARE FOR. Since work starts as a draft and can come back rejected, this
+ * list mixes two populations that read very differently: records waiting on the COMPANY, and
+ * records waiting on the CUSTOMER. The second kind is easy to forget — a draft nobody ever
+ * submitted looks much like a job that is quietly progressing — so it is counted in a banner
+ * at the top rather than left to be spotted among finished work.
  */
+
+/** The statuses offered as filters, in the order a customer meets them. */
+const FILTERS: readonly PlannedWorkEffectiveStatus[] = [
+  'DRAFT',
+  'REJECTED',
+  'PENDING_APPROVAL',
+  'PLANNED',
+  'STARTED',
+  'COMPLETED',
+];
+
+/** The two states in which the next move is the customer's own. */
+const AWAITING_CUSTOMER: readonly PlannedWorkEffectiveStatus[] = ['DRAFT', 'REJECTED'];
 export function PortalPlannedWorkListPage(): ReactElement {
   const navigate = useNavigate();
   const { can } = useAuth();
 
   const canCreate = can(PERMISSIONS.PORTAL_PLANNED_WORK_CREATE);
 
+  const [searchParams, setSearchParams] = useSearchParams();
+  const status = (searchParams.get('status') ?? '') as PlannedWorkEffectiveStatus | '';
+
   const [items, setItems] = useState<PlannedWorkListItemDto[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  /** Exact counts of the work waiting on the customer, keyed by status. */
+  const [awaiting, setAwaiting] = useState<Record<string, number>>({});
 
   const load = useCallback(async (): Promise<void> => {
     setLoading(true);
     setError(null);
     try {
-      const result = await portalService.listPlannedWork({ page: 1, limit: 50 });
+      const result = await portalService.listPlannedWork({
+        page: 1,
+        limit: 50,
+        ...(status ? { status } : {}),
+      });
       setItems([...result.items]);
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : 'Ажил ачаалж чадсангүй.');
     } finally {
       setLoading(false);
     }
+  }, [status]);
+
+  /**
+   * Counted with their own requests rather than tallied from the rows above.
+   *
+   * The list is one capped page and may be filtered, so counting it would understate the
+   * banner exactly when there is most to miss. `total` off a one-row page is the real
+   * figure, whatever the table happens to be showing.
+   */
+  const loadAwaiting = useCallback(async (): Promise<void> => {
+    const counts = await Promise.all(
+      AWAITING_CUSTOMER.map(async (entry) => {
+        try {
+          const page = await portalService.listPlannedWork({ page: 1, limit: 1, status: entry });
+          return [entry, page.total] as const;
+        } catch {
+          // A failed count silently shows nothing; it must never break the list itself.
+          return [entry, 0] as const;
+        }
+      }),
+    );
+    setAwaiting(Object.fromEntries(counts));
   }, []);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    void loadAwaiting();
+  }, [loadAwaiting]);
 
   /**
    * The staff columns, minus the people.
@@ -125,7 +181,7 @@ export function PortalPlannedWorkListPage(): ReactElement {
   ];
 
   return (
-    <>
+    <div className="space-y-4">
       <PageHeader
         title="Төлөвлөгөөт ажил"
         description="Танай байгууллагад хийгдэх төлөвлөгөөт ажил, хүсэлтүүд."
@@ -135,6 +191,53 @@ export function PortalPlannedWorkListPage(): ReactElement {
           )
         }
       />
+
+      {/*
+        What is waiting on the customer, said once and plainly.
+        Drafts and returned requests are the two states where nothing happens until THEY act,
+        and both look unremarkable in a table of coloured chips. Each count links to its own
+        filter, so the banner is a way in rather than only a notice.
+      */}
+      {(awaiting.DRAFT ?? 0) + (awaiting.REJECTED ?? 0) > 0 && (
+        <Alert variant="warning" title="Таны хийх ажил байна">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+            {(awaiting.DRAFT ?? 0) > 0 && (
+              <button
+                type="button"
+                onClick={() => setSearchParams({ status: 'DRAFT' })}
+                className="text-sm font-medium underline underline-offset-2"
+              >
+                Илгээгээгүй {awaiting.DRAFT} ноорог
+              </button>
+            )}
+            {(awaiting.REJECTED ?? 0) > 0 && (
+              <button
+                type="button"
+                onClick={() => setSearchParams({ status: 'REJECTED' })}
+                className="text-sm font-medium underline underline-offset-2"
+              >
+                Буцаагдсан {awaiting.REJECTED} хүсэлт
+              </button>
+            )}
+          </div>
+        </Alert>
+      )}
+
+      {/* Server-side, one status at a time — the same filter the staff list uses. */}
+      <div className="flex flex-wrap gap-2">
+        <FilterChip active={status === ''} onClick={() => setSearchParams({})}>
+          Бүгд
+        </FilterChip>
+        {FILTERS.map((entry) => (
+          <FilterChip
+            key={entry}
+            active={status === entry}
+            onClick={() => setSearchParams({ status: entry })}
+          >
+            {PLANNED_WORK_STATUS_LABELS[entry]}
+          </FilterChip>
+        ))}
+      </div>
 
       <div className="overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-slate-200">
         <DataTable
@@ -146,7 +249,11 @@ export function PortalPlannedWorkListPage(): ReactElement {
           onRetry={() => void load()}
           onRowClick={(row) => navigate(`/portal/planned-work/${row.id}`)}
           emptyTitle="Ажил байхгүй"
-          emptyDescription="Танай байгууллагад төлөвлөгөөт ажил бүртгэгдээгүй байна."
+          emptyDescription={
+            status
+              ? 'Энэ төлөвт ажил алга. Өөр шүүлтүүр сонгоно уу.'
+              : 'Танай байгууллагад төлөвлөгөөт ажил бүртгэгдээгүй байна.'
+          }
           emptyAction={
             canCreate ? (
               <Button size="sm" onClick={() => navigate('/portal/planned-work/new')}>
@@ -156,6 +263,32 @@ export function PortalPlannedWorkListPage(): ReactElement {
           }
         />
       </div>
-    </>
+    </div>
+  );
+}
+
+/** A filter pill. Local because nothing else in the portal filters anything yet. */
+function FilterChip({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}): ReactElement {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={`rounded-full px-3 py-1 text-xs font-medium ring-1 ring-inset transition-colors ${
+        active
+          ? 'bg-blue-600 text-white ring-blue-600'
+          : 'bg-white text-slate-600 ring-slate-200 hover:bg-slate-50'
+      }`}
+    >
+      {children}
+    </button>
   );
 }

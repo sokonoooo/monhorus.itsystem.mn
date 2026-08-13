@@ -13,6 +13,7 @@ import { planMarkerObjects, unplacedOnPlanCount } from './PortalFloorPlan';
 import { PortalRequestCreatePage } from './PortalRequestCreatePage';
 import { PlannedWorkFormPage } from '../planned-work/PlannedWorkFormPage';
 import { PortalPlannedWorkDetailPage } from './PortalPlannedWorkDetailPage';
+import { PortalPlannedWorkListPage } from './PortalPlannedWorkListPage';
 import { PortalRequestListPage } from './PortalRequestListPage';
 
 const CUSTOMER_ID = '507f1f77bcf86cd799439011';
@@ -269,16 +270,18 @@ describe('raising planned work from the portal', () => {
   });
 
   /**
-   * The customer is told what will happen before they submit, because "you asked, nobody is
-   * on it yet" is the whole difference between this and a service request.
+   * The customer is told what saving actually does, because it does NOT submit. A form whose
+   * button says one thing and whose record does another is how a request sits unsent for a
+   * week while its author believes it is being reviewed.
    */
-  it('says the request waits for approval before anyone is assigned', async () => {
+  it('says that saving stores a draft rather than submitting it', async () => {
     renderPortal(<PlannedWorkFormPage variant="portal" />, '/portal/planned-work/new');
 
-    expect(
-      await screen.findByText(/«Хүлээгдэж буй» төлөвтэй бүртгэгдэнэ/),
-    ).toBeInTheDocument();
-    expect(screen.getByText(/баталсны дараа ажилтан томилогдоно/)).toBeInTheDocument();
+    expect(await screen.findByText(/эхлээд «Ноорог» болж хадгалагдана/)).toBeInTheDocument();
+    expect(screen.getByText(/«Төлөвлөх» дарж батлуулахаар илгээнэ үү/)).toBeInTheDocument();
+    // And the button promises only what it does.
+    expect(screen.getByRole('button', { name: 'Хадгалах' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Илгээх' })).not.toBeInTheDocument();
   });
 
   /** No crew field at all — the server forces it empty, and offering one would be a lie. */
@@ -327,7 +330,7 @@ describe('raising planned work from the portal', () => {
     await user.type(screen.getByLabelText(/^Ажлын нэр/), 'Улирлын үзлэг');
     await user.type(screen.getByLabelText(/^Эхлэх огноо/), '2026-09-01');
     await user.type(screen.getByLabelText(/^Дуусах огноо/), '2026-09-03');
-    await user.click(screen.getByRole('button', { name: 'Илгээх' }));
+    await user.click(screen.getByRole('button', { name: 'Хадгалах' }));
 
     await waitFor(() => {
       expect(create).toHaveBeenCalledWith(
@@ -697,3 +700,137 @@ describe('the customer breaks their own request down', () => {
   });
 });
 
+describe('the portal planned-work list', () => {
+  /** The list call plus the two count calls the banner makes, answered by status. */
+  function stubList(totals: Partial<Record<string, number>>, rows: unknown[] = []) {
+    return vi
+      .spyOn(portalService, 'listPlannedWork')
+      .mockImplementation(async (query: { status?: string; limit?: number } = {}) => {
+        const status = query.status;
+        if (status && query.limit === 1) {
+          return { items: [], page: 1, limit: 1, total: totals[status] ?? 0, totalPages: 1 } as never;
+        }
+        return makePage(rows as never[]) as never;
+      });
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * The point of the banner: a draft nobody submitted and a request that came back are the
+   * two states where nothing moves until the customer acts, and both are easy to lose in a
+   * table of coloured chips.
+   */
+  it('tells the customer how much is waiting on them', async () => {
+    stubList({ DRAFT: 2, REJECTED: 1 });
+
+    renderPortal(<PortalPlannedWorkListPage />, '/portal/planned-work');
+
+    expect(await screen.findByText('Таны хийх ажил байна')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Илгээгээгүй 2 ноорог/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Буцаагдсан 1 хүсэлт/ })).toBeInTheDocument();
+  });
+
+  it('says nothing when nothing is waiting on them', async () => {
+    stubList({ DRAFT: 0, REJECTED: 0 });
+
+    renderPortal(<PortalPlannedWorkListPage />, '/portal/planned-work');
+
+    await screen.findByRole('button', { name: 'Бүгд' });
+    expect(screen.queryByText('Таны хийх ажил байна')).not.toBeInTheDocument();
+  });
+
+  /**
+   * Counted with their own requests, not tallied from the rows. The list is one capped and
+   * possibly filtered page, so counting it would understate the banner exactly when there is
+   * most to miss — here the table shows nothing at all and the counts are still right.
+   */
+  it('counts what is waiting even when the table is showing something else', async () => {
+    const list = stubList({ DRAFT: 5, REJECTED: 0 });
+
+    renderPortal(<PortalPlannedWorkListPage />, '/portal/planned-work?status=COMPLETED');
+
+    expect(await screen.findByRole('button', { name: /Илгээгээгүй 5 ноорог/ })).toBeInTheDocument();
+    // The table itself asked only for the filtered status.
+    expect(list).toHaveBeenCalledWith(expect.objectContaining({ status: 'COMPLETED', limit: 50 }));
+  });
+
+  it('filters the table by the chosen status', async () => {
+    const list = stubList({ DRAFT: 0, REJECTED: 0 });
+    const user = userEvent.setup();
+
+    renderPortal(<PortalPlannedWorkListPage />, '/portal/planned-work');
+
+    await user.click(await screen.findByRole('button', { name: 'Хүлээгдэж буй' }));
+
+    await waitFor(() =>
+      expect(list).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'PENDING_APPROVAL', limit: 50 }),
+      ),
+    );
+  });
+});
+
+describe('the portal status trail', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(portalService, 'listFloors').mockResolvedValue(makePage([]));
+  });
+
+  function openWith(status: string, extra: Record<string, unknown> = {}) {
+    vi.spyOn(portalService, 'getPlannedWork').mockResolvedValue({
+      id: 'w1',
+      workNumber: 'PW-202609-0001',
+      title: 'Улирлын үзлэг',
+      lifecycleStatus: status,
+      effectiveStatus: status,
+      building: { id: BUILDING_ID, name: 'Төв барилга' },
+      project: null,
+      plannedStartDate: '2026-09-01T00:00:00.000Z',
+      plannedEndDate: '2026-09-03T00:00:00.000Z',
+      createdAt: '2026-08-20T00:00:00.000Z',
+      description: null,
+      cancelReason: null,
+      progressPercent: 0,
+      completedQuantity: 0,
+      totalQuantity: 0,
+      tasks: [],
+      floorProgress: [],
+      materials: [],
+      availableActions: [],
+      ...extra,
+    } as never);
+
+    return renderPortal(
+      <PortalPlannedWorkDetailPage />,
+      '/portal/planned-work/w1',
+      '/portal/planned-work/:plannedWorkId',
+    );
+  }
+
+  it('marks the stage the request has actually reached', async () => {
+    openWith('PENDING_APPROVAL');
+
+    const trail = await screen.findByRole('list', { name: 'Явц' });
+    expect(within(trail).getByText('Хүлээгдэж буй')).toHaveAttribute('aria-current', 'step');
+    expect(within(trail).getByText('Ноорог')).not.toHaveAttribute('aria-current');
+  });
+
+  /** A returned request is back at the beginning, because correcting it is all still to do. */
+  it('draws a returned request back at the first stage', async () => {
+    openWith('REJECTED', { cancelReason: 'Огноо тохирохгүй.' });
+
+    const trail = await screen.findByRole('list', { name: 'Явц' });
+    expect(within(trail).getByText('Ноорог')).toHaveAttribute('aria-current', 'step');
+  });
+
+  /** A cancelled request never reaches an end stage, and a frozen trail would imply it might. */
+  it('shows no trail for a cancelled request', async () => {
+    openWith('CANCELLED', { cancelReason: 'Шаардлагагүй болсон.' });
+
+    await screen.findByRole('heading', { name: 'Улирлын үзлэг' });
+    expect(screen.queryByRole('list', { name: 'Явц' })).not.toBeInTheDocument();
+  });
+});
