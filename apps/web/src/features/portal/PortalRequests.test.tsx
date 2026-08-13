@@ -923,12 +923,24 @@ describe('the portal status trail', () => {
     expect(within(trail).getByText('Ноорог')).toHaveAttribute('aria-current', 'step');
   });
 
-  /** A cancelled request never reaches an end stage, and a frozen trail would imply it might. */
-  it('shows no trail for a cancelled request', async () => {
-    openWith('CANCELLED', { cancelReason: 'Шаардлагагүй болсон.' });
+  /**
+   * A cancelled request never reaches an end stage, and a frozen trail would imply it might.
+   *
+   * The blank-card assertion is not decoration. The trail declining to render left the card
+   * it was supposed to sit in behind — an empty white box above every cancelled request,
+   * which the "no list" assertion above passes straight over. Found by looking at the
+   * running page, not by a test, which is why there is now one.
+   */
+  it('shows no trail for a cancelled request, and leaves no empty card behind', async () => {
+    const { container } = openWith('CANCELLED', { cancelReason: 'Шаардлагагүй болсон.' });
 
     await screen.findByRole('heading', { name: 'Улирлын үзлэг' });
     expect(screen.queryByRole('list', { name: 'Явц' })).not.toBeInTheDocument();
+
+    const blankCards = [...container.querySelectorAll('div.rounded-xl.bg-white')].filter(
+      (card) => (card.textContent ?? '').trim() === '',
+    );
+    expect(blankCards).toHaveLength(0);
   });
 });
 

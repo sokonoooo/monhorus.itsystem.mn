@@ -90,7 +90,8 @@ function StatusTrail({ status }: { status: string }): ReactElement | null {
   const returned = status === 'REJECTED';
 
   return (
-    <ol className="flex flex-wrap items-center gap-x-2 gap-y-2" aria-label="Явц">
+    <div className="rounded-xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
+      <ol className="flex flex-wrap items-center gap-x-2 gap-y-2" aria-label="Явц">
       {STAGES.map((stage, index) => {
         const done = currentIndex >= 0 && index < currentIndex;
         const current = index === currentIndex;
@@ -111,9 +112,10 @@ function StatusTrail({ status }: { status: string }): ReactElement | null {
             </span>
             {index < STAGES.length - 1 && <span className="text-slate-300">→</span>}
           </li>
-        );
-      })}
-    </ol>
+          );
+        })}
+      </ol>
+    </div>
   );
 }
 
@@ -209,9 +211,7 @@ export function PortalPlannedWorkDetailPage(): ReactElement {
       />
 
       <div className="space-y-4">
-        <div className="rounded-xl bg-white p-4 shadow-sm ring-1 ring-slate-200">
-          <StatusTrail status={work.lifecycleStatus} />
-        </div>
+        <StatusTrail status={work.lifecycleStatus} />
 
         {/*
           The states a customer acts on. Each says who is waiting on whom, rather than
