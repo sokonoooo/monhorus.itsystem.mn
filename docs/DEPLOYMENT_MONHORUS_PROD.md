@@ -113,6 +113,36 @@ To clear a lock without waiting: `POST /api/v1/users/:userId/reset-passcode`, or
 There is **no nginx-level `limit_req`/`limit_conn`** anywhere on this host, so the
 application is the only throttle that ever existed.
 
+### `APP_WEB_BASE_URL` must be set, and its default is a trap
+
+The password-reset release added `APP_WEB_BASE_URL`, and it **defaults to
+`http://localhost:5173`**. `auth.service.ts:334` uses it verbatim to build the link that
+goes into the reset email:
+
+```ts
+return `${env.APP_WEB_BASE_URL.replace(/\/+$/, '')}/reset-password/${token}`;
+```
+
+Nothing validates it against reality, and no other response in the system needs a public
+address, so this is the first setting the server has to know about itself rather than read
+off the request. Left at the default, every reset email a user receives points at their own
+machine and the feature is silently useless — the send succeeds, the log looks clean, and
+only the recipient ever sees the broken link.
+
+```ini
+APP_WEB_BASE_URL=https://monhorus.itsystem.mn
+PASSWORD_RESET_TTL_MINUTES=60
+```
+
+### Mail degrades instead of failing
+
+`SMTP_HOST` is what switches the transport on (`env.ts`, `mailEnabled`). With it unset the
+server **logs the reset link instead of sending it** — deliberate, so a laptop with no mail
+server still runs and the test suite stays off the network. The consequence in production is
+that password reset appears to work end to end while no mail is ever sent; the link exists
+only in the journal. Set `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`
+and `MAIL_FROM` before telling anyone the feature is live.
+
 ---
 
 ## 4. Running scripts as the service user
