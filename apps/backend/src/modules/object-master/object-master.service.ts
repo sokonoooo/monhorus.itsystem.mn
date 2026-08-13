@@ -55,6 +55,7 @@ import {
   ObjectAssessment,
   ObjectRecord,
   ObjectType,
+  applyOutOfServiceRule,
   type ILoadMeasurement,
   type IObject,
   type IObjectAssessment,
@@ -1651,10 +1652,8 @@ export async function recordAssessment(
     object.measuredLoadKw = measuredLoadKw;
   }
 
-  // Rule 17.9: a black-band object must not remain in active use.
-  if (riskLevel === 'OUT_OF_SERVICE' && object.status === 'ACTIVE') {
-    object.status = 'DECOMMISSIONED';
-  }
+  // Rule 17.9, shared with the report-approval path so both doors agree.
+  applyOutOfServiceRule(object, riskLevel);
 
   await object.save();
 

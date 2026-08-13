@@ -139,7 +139,19 @@ async function planAndApprove(workId: string): Promise<void> {
   await transition(workId, 'APPROVE', undefined, { assignedEmployeeIds: [crewEmployeeId] });
 }
 
-async function completeTask(workId: string, taskId: string, quantity = 10): Promise<void> {
+/**
+ * [score] defaults to 88 — a NORMAL band — so every existing caller is unchanged.
+ *
+ * It is a parameter at all because nothing here could previously put a sub-task in the
+ * black band: the score was pinned at 88 in this helper, which is precisely why the
+ * missing rule-17.9 branch on the approval path went unnoticed for so long.
+ */
+async function completeTask(
+  workId: string,
+  taskId: string,
+  quantity = 10,
+  score = 88,
+): Promise<void> {
   for (const kind of ['BEFORE', 'AFTER']) {
     const response = await request(app)
       .post(`${API}/planned-work/${workId}/tasks/${taskId}/photos`)
@@ -159,7 +171,7 @@ async function completeTask(workId: string, taskId: string, quantity = 10): Prom
       completedQuantity: quantity,
       note: 'Самбар хэвийн ажиллаж байна.',
       conclusion: 'Самбар цаашид ашиглахад тохиромжтой.',
-      score: 88,
+      score,
       recommendation: 'Дараагийн үзлэгийг хагас жилийн дараа хийх.',
     });
   expect(progress.status).toBe(200);
@@ -878,6 +890,68 @@ describe('canonical report write-through', () => {
     for (const nodeId of [objects.floorId, objects.buildingId, objects.projectId]) {
       expect((await ObjectNode.findById(nodeId))?.rollup?.score).toBe(88);
     }
+  });
+
+  /**
+   * Rule 17.9 through the APPROVAL door, not just the manual one.
+   *
+   * `recordAssessment` decommissioned a black-band object from the first day the manual
+   * screen existed; `applyReportToEquipment` never did. So the same score of 10 retired the
+   * panel when typed into the device screen and left it ACTIVE when it arrived on an
+   * approved report — and rule 17.17 went on counting a panel nobody may energise as
+   * available capacity.
+   */
+  it('decommissions equipment scored into the black band on approval', async () => {
+    const objectA = await seedEquipment();
+    expect((await ObjectRecord.findById(objectA))?.status).toBe('ACTIVE');
+
+    const workId = await createWork();
+    const taskId = await addTask(workId, 10, { relatedObjectIds: [objectA] });
+    await planAndApprove(workId);
+    await transition(workId, 'START');
+    // 20 is the TOP of the black band (OUT_OF_SERVICE is 0..20 by default), so this pins
+    // the boundary itself rather than a comfortable value in the middle of it.
+    await completeTask(workId, taskId, 10, 20);
+    await transition(workId, 'COMPLETE');
+    await fillReport(workId);
+    expect((await submitReport(workId)).status).toBe(200);
+
+    // Still in service while the report is only a claim: the rule fires on approval,
+    // exactly as the score itself does.
+    expect((await ObjectRecord.findById(objectA))?.status).toBe('ACTIVE');
+
+    const approved = await request(app)
+      .post(`${API}/planned-work/${workId}/report/approve`)
+      .set('Authorization', `Bearer ${approverToken}`);
+    expect(approved.status).toBe(200);
+
+    const after = await ObjectRecord.findById(objectA);
+    expect(after?.latestAssessment?.riskLevel).toBe('OUT_OF_SERVICE');
+    expect(after?.status).toBe('DECOMMISSIONED');
+  });
+
+  it('leaves equipment in service when the approved score is not black band', async () => {
+    const objectA = await seedEquipment();
+
+    const workId = await createWork();
+    const taskId = await addTask(workId, 10, { relatedObjectIds: [objectA] });
+    await planAndApprove(workId);
+    await transition(workId, 'START');
+    // 21 is the FIRST score above the black band. One point either side of this line is
+    // the whole difference between a panel that stays energised and one that must not.
+    await completeTask(workId, taskId, 10, 21);
+    await transition(workId, 'COMPLETE');
+    await fillReport(workId);
+    expect((await submitReport(workId)).status).toBe(200);
+
+    const approved = await request(app)
+      .post(`${API}/planned-work/${workId}/report/approve`)
+      .set('Authorization', `Bearer ${approverToken}`);
+    expect(approved.status).toBe(200);
+
+    const after = await ObjectRecord.findById(objectA);
+    expect(after?.latestAssessment?.riskLevel).toBe('CRITICAL');
+    expect(after?.status).toBe('ACTIVE');
   });
 
   /**

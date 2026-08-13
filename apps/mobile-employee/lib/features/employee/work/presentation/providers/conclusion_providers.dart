@@ -548,7 +548,18 @@ class ConclusionEditor extends FamilyAsyncNotifier<ConclusionEditorState, Conclu
       conclusion: now.conclusion.trim().isEmpty ? null : now.conclusion.trim(),
       recommendation:
           now.recommendation.trim().isEmpty ? null : now.recommendation.trim(),
-      actionTaken: null,
+      // Echoed back, NOT nulled. `PUT /service-requests/:id/report` is a full replace —
+      // every field it receives is assigned unconditionally — and this screen has no
+      // control for "Хийсэн ажил". Sending null therefore did not mean "leave it alone",
+      // it erased whatever the office had written from the web, on every save, invisibly.
+      // It also reached further than the one field: the server falls back to
+      // `report.actionTaken` for the per-equipment observation it writes into the report
+      // registry, so the blanking carried into each object's permanent history.
+      //
+      // `report` is re-seeded from the server's own response after every save, so this is
+      // the stored value round-tripping rather than a local guess. The day this screen
+      // grows a real editor, that field replaces this pass-through.
+      actionTaken: now.report.actionTaken,
       // Membership carries every card, including one not yet written up, so a selection
       // survives a save and can be filled in later.
       objectIds: now.drafts.map((EquipmentDraft draft) => draft.objectId).toList(),

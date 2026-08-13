@@ -292,6 +292,38 @@ objectSchema.index({ name: 'text', code: 'text' });
 
 export const ObjectRecord: Model<IObject> = model<IObject>('Object', objectSchema);
 
+/**
+ * Rule 17.9: a black-band object must not remain in active use.
+ *
+ * Lives here rather than beside either caller because BOTH assessment paths have to apply
+ * it and they cannot share a service: `object-master.service` already imports
+ * `report-record.service` for the write-through, so a helper in the former would close an
+ * import cycle. This module is the one both already depend on.
+ *
+ * Every producer of a score has to run this. The manual screen is only one of them — an
+ * approved planned-work report and an approved service-request conclusion reach equipment
+ * through `applyReportToEquipment`, and a score in the black band means the same thing
+ * whichever door it came through. The consequence is not cosmetic: rule 17.17 keeps a
+ * DECOMMISSIONED object out of the capacity figures, so an object left ACTIVE is still
+ * counted as available load.
+ *
+ * Only ACTIVE is moved. An object already INACTIVE or DECOMMISSIONED is left alone, so a
+ * re-applied report is idempotent and a manually parked object is not silently rewritten.
+ *
+ * Mutates without saving: the callers are mid-way through composing one write and save
+ * once, and a second save here would double the writes on every scored item.
+ *
+ * @returns whether the status was changed, so a caller can audit or log the transition.
+ */
+export function applyOutOfServiceRule(
+  object: Pick<IObject, 'status'>,
+  riskLevel: RiskLevel | null,
+): boolean {
+  if (riskLevel !== 'OUT_OF_SERVICE' || object.status !== 'ACTIVE') return false;
+  object.status = 'DECOMMISSIONED';
+  return true;
+}
+
 // -- Assessment history ------------------------------------------------------
 
 /**

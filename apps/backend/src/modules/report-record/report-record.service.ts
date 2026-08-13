@@ -14,7 +14,7 @@ import { Types } from 'mongoose';
 
 import { logger } from '../../config/logger';
 import { appendAssessmentHistory } from '../object-master/assessment-history.service';
-import { ObjectRecord } from '../object-master/object-master.models';
+import { ObjectRecord, applyOutOfServiceRule } from '../object-master/object-master.models';
 import { ObjectNode } from '../objects/object.models';
 import { getRiskBands } from '../settings/settings.service';
 import {
@@ -331,6 +331,21 @@ export async function applyReportToEquipment(reportId: Types.ObjectId): Promise<
       revisitRequired: object.latestAssessment?.revisitRequired ?? false,
       revisitDate: object.latestAssessment?.revisitDate ?? null,
     };
+
+    /**
+     * Rule 17.9, the same rule the manual assessment screen applies.
+     *
+     * An approved planned-work report and an approved service-request conclusion are the
+     * other two ways a score reaches equipment, and a black band means the same thing
+     * through any of them. Without this a panel scored OUT_OF_SERVICE inside a sub-task
+     * read "Ашиглах боломжгүй" on its card while its status stayed ACTIVE — so rule 17.17
+     * went on counting it as available capacity.
+     *
+     * Before the save below, so the status change rides the write that is already
+     * happening for `latestAssessment` rather than costing a second one.
+     */
+    applyOutOfServiceRule(object, item.riskLevel);
+
     await object.save();
 
     if (object.floor) touchedFloors.add(String(object.floor));

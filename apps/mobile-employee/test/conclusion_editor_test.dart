@@ -57,6 +57,7 @@ Map<String, dynamic> _report({
   int? score,
   String? conclusion,
   String? recommendation,
+  String? actionTaken,
   List<String> beforePhotoIds = const <String>[],
   List<String> afterPhotoIds = const <String>[],
   List<String> missing = const <String>[],
@@ -72,6 +73,7 @@ Map<String, dynamic> _report({
     'score': score,
     'conclusion': conclusion,
     'recommendation': recommendation,
+    'actionTaken': actionTaken,
     'beforePhotos': photos(beforePhotoIds),
     'afterPhotos': photos(afterPhotoIds),
     'objects': objects,
@@ -862,6 +864,55 @@ void main() {
 
     // Was hard-coded null, which made SCORE permanently unsatisfiable from this app.
     expect(repository.saved.single.score, 88);
+  });
+
+  /// The PUT is a full replace, so a field this screen cannot edit still has to be sent.
+  ///
+  /// "Хийсэн ажил" has no control here and was hard-coded null in the payload, so every
+  /// save from the phone erased whatever the office had typed on the web — silently, since
+  /// the technician never sees the field. It reached further than the one column too: the
+  /// server falls back to `report.actionTaken` for the per-equipment observation it writes
+  /// into the report registry, so the blanking carried into each object's history.
+  test('a field this screen cannot edit survives a save instead of being erased', () async {
+    final _ReportRepository repository = _ReportRepository(
+      initial: _report(actionTaken: 'Хуучин автоматыг сольсон.'),
+    );
+    final ProviderContainer container = ProviderContainer(
+      overrides: <Override>[
+        currentUserProvider.overrideWithValue(_author),
+        workRepositoryProvider.overrideWithValue(repository),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    const ConclusionRef ref = (requestId: kRequestId, buildingId: kBuildingId);
+    await container.read(conclusionEditorProvider(ref).future);
+    final ConclusionEditor editor = container.read(conclusionEditorProvider(ref).notifier);
+
+    // A perfectly ordinary edit to a field this screen DOES own.
+    editor.setConclusion('Шалгаж дуусав.');
+    await editor.save();
+
+    final SaveWorkReportRequest payload = repository.saved.single;
+    expect(payload.conclusion, 'Шалгаж дуусав.');
+    expect(payload.actionTaken, 'Хуучин автоматыг сольсон.');
+  });
+
+  test('a report with no action taken still sends none rather than inventing one', () async {
+    final _ReportRepository repository = _ReportRepository(initial: _report());
+    final ProviderContainer container = ProviderContainer(
+      overrides: <Override>[
+        currentUserProvider.overrideWithValue(_author),
+        workRepositoryProvider.overrideWithValue(repository),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    const ConclusionRef ref = (requestId: kRequestId, buildingId: kBuildingId);
+    await container.read(conclusionEditorProvider(ref).future);
+    await container.read(conclusionEditorProvider(ref).notifier).save();
+
+    expect(repository.saved.single.actionTaken, isNull);
   });
 
   test('visit photographs are held and sent as the visit\'s, not an object\'s', () async {
