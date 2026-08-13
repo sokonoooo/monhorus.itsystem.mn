@@ -13,13 +13,14 @@ import { Alert } from '../../components/ui/Alert';
 import { Button } from '../../components/ui/Button';
 import { ColumnPicker } from '../../components/ui/ColumnPicker';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
-import { DataTable, type Column } from '../../components/ui/DataTable';
+import { DataTable, Pagination, type Column } from '../../components/ui/DataTable';
 import { Drawer } from '../../components/ui/Drawer';
 import { RiskBadge } from '../../components/ui/DomainBadges';
 import { PageHeader } from '../../components/ui/PageHeader';
 import { RowActions } from '../../components/ui/RowActions';
 import { ErrorState, Skeleton } from '../../components/ui/States';
 import { useToast } from '../../components/ui/ToastProvider';
+import { SearchField } from '../../components/ui/SearchField';
 import { FIELD_TEXTAREA, FILTER_LABEL } from '../../components/ui/control-styles';
 import { useAuth } from '../../contexts/auth-context';
 import { useTableColumns } from '../../hooks/use-table-columns';
@@ -198,6 +199,31 @@ const OBJECT_PAGE_LIMIT = 100;
  */
 const MAX_OBJECT_PAGES = 20;
 
+/** Rows per page for the objects table. The plan still receives every object. */
+const OBJECT_TABLE_PAGE_SIZE = 20;
+
+/**
+ * The objects a table page should show, filtered by a search term.
+ *
+ * CLIENT-SIDE, AND HONEST ABOUT IT ONLY BECAUSE THE SET IS COMPLETE. `fetchAllFloorObjects`
+ * has already walked every page, and the plan needs all of them anyway — narrowing the fetch
+ * would drop markers from the drawing, which is the bug that page-walking exists to prevent.
+ * Searching in memory therefore covers the whole floor, not the twenty rows on screen, which
+ * is the thing that makes a client-side search misleading elsewhere.
+ */
+export function filterFloorObjects(
+  objects: readonly ObjectListItemDto[],
+  search: string,
+): ObjectListItemDto[] {
+  const needle = search.trim().toLowerCase();
+  if (!needle) return [...objects];
+  return objects.filter((object) =>
+    [object.code, object.name, object.objectType?.name]
+      .filter(Boolean)
+      .some((field) => String(field).toLowerCase().includes(needle)),
+  );
+}
+
 /**
  * Every object on the floor, not the first hundred.
  *
@@ -244,6 +270,16 @@ export function FloorDetailPage(): ReactElement {
   const [floor, setFloor] = useState<FloorDto | null>(null);
   const [plan, setPlan] = useState<FloorPlanDto | null>(null);
   const [objects, setObjects] = useState<ObjectListItemDto[]>([]);
+  // Table-only view state. The plan is always given every object, whatever the table shows.
+  const [objectSearch, setObjectSearch] = useState('');
+  const [objectPage, setObjectPage] = useState(1);
+
+  const matchedObjects = filterFloorObjects(objects, objectSearch);
+  const objectTotalPages = Math.max(1, Math.ceil(matchedObjects.length / OBJECT_TABLE_PAGE_SIZE));
+  const visibleObjects = matchedObjects.slice(
+    (objectPage - 1) * OBJECT_TABLE_PAGE_SIZE,
+    objectPage * OBJECT_TABLE_PAGE_SIZE,
+  );
   const [load, setLoad] = useState<FloorLoadSummaryDto | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -629,13 +665,40 @@ export function FloorDetailPage(): ReactElement {
               </div>
             </div>
 
+            <div className="mb-3 max-w-sm">
+              <label htmlFor="floor-object-search" className={FILTER_LABEL}>
+                Хайлт
+              </label>
+              <SearchField
+                id="floor-object-search"
+                value={objectSearch}
+                onChange={(event) => {
+                  setObjectSearch(event.target.value);
+                  // A narrower result rarely has the page the reader is standing on.
+                  setObjectPage(1);
+                }}
+                placeholder="Код, нэр эсвэл төрөл"
+              />
+            </div>
+
             <DataTable
               columns={columnState.visibleColumns}
-              rows={objects}
+              rows={visibleObjects}
               rowKey={(row) => row.id}
+              numbering={{ page: objectPage, limit: OBJECT_TABLE_PAGE_SIZE }}
               onRowClick={(row) => navigate(`/floors/${floor.id}/objects/${row.id}`)}
-              emptyTitle="Объект бүртгэгдээгүй"
-              emptyDescription="Самбар, хэлхээ, тоноглолыг энэ давхарт нэмнэ үү."
+              emptyTitle={objectSearch ? 'Хайлтад тохирох объект алга' : 'Объект бүртгэгдээгүй'}
+              emptyDescription={
+                objectSearch
+                  ? 'Өөр түлхүүр үгээр хайж үзнэ үү.'
+                  : 'Самбар, хэлхээ, тоноглолыг энэ давхарт нэмнэ үү.'
+              }
+            />
+            <Pagination
+              page={objectPage}
+              totalPages={objectTotalPages}
+              total={matchedObjects.length}
+              onPageChange={setObjectPage}
             />
           </div>
         )}

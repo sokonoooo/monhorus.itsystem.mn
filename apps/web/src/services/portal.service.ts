@@ -35,6 +35,19 @@ function toParams(query: Record<string, unknown>): Record<string, string | numbe
 }
 
 /**
+ * What a portal list may ask for.
+ *
+ * DELIBERATELY NARROWER than the shared `BuildingListQuery`/`FloorListQuery`. Those carry
+ * `customerId`, and this file's whole claim is that no `customerId` is ever sent from a
+ * customer's browser — a parameter that cannot be named cannot be sent by accident.
+ */
+export interface PortalListQuery {
+  page?: number;
+  limit?: number;
+  search?: string;
+}
+
+/**
  * Everything the customer portal calls, in one place.
  *
  * A SEPARATE CLIENT rather than methods bolted onto the staff services, for two reasons.
@@ -233,10 +246,20 @@ export const portalService = {
 
   // -- Sites ------------------------------------------------------------------
 
-  async listBuildings(): Promise<PaginatedData<BuildingDto>> {
+  /**
+   * The customer's own buildings, one page at a time.
+   *
+   * `search` is passed to the server rather than applied to the answer, because the answer
+   * is one page: filtering it here would search the page the customer happens to be on and
+   * silently miss every match on the others. `buildingListQuerySchema` already accepts both,
+   * so this is the existing endpoint being asked properly, not a widened one.
+   *
+   * The defaults are the pre-paging behaviour, for the callers that want the whole list.
+   */
+  async listBuildings(query: PortalListQuery = {}): Promise<PaginatedData<BuildingDto>> {
     return unwrap(
       await apiClient.get<ApiResponse<PaginatedData<BuildingDto>>>('/buildings', {
-        params: { page: 1, limit: 100 },
+        params: toParams({ page: 1, limit: 100, ...query }),
       }),
     );
   },
@@ -245,10 +268,20 @@ export const portalService = {
     return unwrap(await apiClient.get<ApiResponse<BuildingDto>>(`/buildings/${buildingId}`));
   },
 
-  async listFloors(buildingId: string): Promise<PaginatedData<FloorDto>> {
+  /**
+   * One building's floors, paged and searched the same way and for the same reason.
+   *
+   * The building stays a positional argument because it is not a filter the caller may drop
+   * — every portal caller reads the floors OF a building — and because the form pages that
+   * only need a dropdown of floors can then keep calling this with one argument.
+   */
+  async listFloors(
+    buildingId: string,
+    query: PortalListQuery = {},
+  ): Promise<PaginatedData<FloorDto>> {
     return unwrap(
       await apiClient.get<ApiResponse<PaginatedData<FloorDto>>>('/floors', {
-        params: { buildingId, page: 1, limit: 100 },
+        params: toParams({ buildingId, page: 1, limit: 100, ...query }),
       }),
     );
   },
@@ -264,13 +297,20 @@ export const portalService = {
     );
   },
 
-  async listObjects(floorId: string): Promise<PaginatedData<ObjectListItemDto>> {
+  /**
+   * One page of a floor's equipment.
+   *
+   * Paged rather than fixed at the first hundred because the caller needs EVERY object: the
+   * floor plan draws a marker per object, so a request that stopped at the cap would lose
+   * pins off the drawing and say nothing about it. `PortalFloorPage` walks the pages.
+   *
+   * 100 is the cap `objectListQuerySchema` enforces, not a preference. Asking for more is a
+   * 400, which surfaced as "the floor page is broken" rather than as anything about paging.
+   */
+  async listObjects(floorId: string, page = 1): Promise<PaginatedData<ObjectListItemDto>> {
     return unwrap(
       await apiClient.get<ApiResponse<PaginatedData<ObjectListItemDto>>>('/objects-master', {
-        // 100 is the cap `objectListQuerySchema` enforces, not a preference. Asking for more
-        // is a 400, which surfaced as "the floor page is broken" rather than as anything
-        // about paging.
-        params: { floorId, page: 1, limit: 100 },
+        params: { floorId, page, limit: 100 },
       }),
     );
   },

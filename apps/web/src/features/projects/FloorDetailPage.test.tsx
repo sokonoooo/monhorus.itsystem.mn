@@ -15,7 +15,7 @@ import {
   makePage,
 } from '../../test/fixtures';
 import { renderWithAuth } from '../../test/render';
-import { FloorDetailPage } from './FloorDetailPage';
+import { FloorDetailPage, filterFloorObjects } from './FloorDetailPage';
 
 const FLOOR_ID = '507f1f77bcf86cd799439121';
 
@@ -249,8 +249,15 @@ describe('FloorDetailPage', () => {
 
     renderFloor([PERMISSIONS.OBJECT_VIEW, PERMISSIONS.OBJECT_MASTER_VIEW]);
 
-    // The row that only exists on the second page.
-    expect(await screen.findByText('Тоноглол 2-49')).toBeInTheDocument();
+    /*
+      The second page's rows are proven to have ARRIVED rather than to be on screen. The
+      table now pages at 20, so row 150 is not rendered — but the pager's total counts the
+      whole fetched set, so it still fails if the walk stops at the first hundred. The plan,
+      which is the reason the walk exists, is given all 150 either way.
+    */
+    // A longer wait than the default: this resolves only after BOTH pages have been
+    // fetched in sequence, which is marginal against 1s on a loaded machine.
+    expect(await screen.findByText(/Нийт 150/, undefined, { timeout: 5000 })).toBeInTheDocument();
     expect(list).toHaveBeenCalledWith({ floorId: FLOOR_ID, limit: 100, page: 1 });
     expect(list).toHaveBeenCalledWith({ floorId: FLOOR_ID, limit: 100, page: 2 });
     // And it stops when the pages run out rather than asking forever.
@@ -432,5 +439,34 @@ describe('FloorDetailPage', () => {
     renderFloor([PERMISSIONS.OBJECT_VIEW]);
 
     expect(await screen.findByText('Давхар олдсонгүй.')).toBeInTheDocument();
+  });
+});
+
+describe('searching the floor objects table', () => {
+  const rows = [
+    { id: '1', code: 'PNL-001', name: 'Гол самбар', objectType: { name: 'Самбар' } },
+    { id: '2', code: 'LGT-014', name: 'Коридор гэрэл', objectType: { name: 'Гэрэлтүүлэг' } },
+    { id: '3', code: 'LGT-015', name: 'Шатны гэрэл', objectType: { name: 'Гэрэлтүүлэг' } },
+  ] as never[];
+
+  it('matches on code, name and type', () => {
+    expect(filterFloorObjects(rows, 'pnl').map((row) => row.id)).toEqual(['1']);
+    expect(filterFloorObjects(rows, 'шатны').map((row) => row.id)).toEqual(['3']);
+    expect(filterFloorObjects(rows, 'гэрэлтүүлэг').map((row) => row.id)).toEqual(['2', '3']);
+  });
+
+  it('returns everything for a blank search rather than nothing', () => {
+    expect(filterFloorObjects(rows, '')).toHaveLength(3);
+    expect(filterFloorObjects(rows, '   ')).toHaveLength(3);
+  });
+
+  /**
+   * Searching in memory is only defensible because the fetch already walked every page for
+   * the plan. If that ever narrowed, this search would quietly cover one page instead of the
+   * floor — so the completeness of the input is the thing worth stating.
+   */
+  it('is case-insensitive and searches the whole set it is given', () => {
+    expect(filterFloorObjects(rows, 'LGT')).toHaveLength(2);
+    expect(filterFloorObjects(rows, 'lgt')).toHaveLength(2);
   });
 });

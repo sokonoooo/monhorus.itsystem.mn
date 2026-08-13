@@ -4,18 +4,21 @@ import {
   updateBuildingSchema,
   type BuildingDto,
   type FloorDto,
+  type FloorListQuery,
+  type PaginatedData,
 } from '@monhorus/shared';
-import { useCallback, useEffect, useState, type ReactElement } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
 import { Alert } from '../../components/ui/Alert';
 import { Button } from '../../components/ui/Button';
 import { ColumnPicker } from '../../components/ui/ColumnPicker';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
-import { DataTable, type Column } from '../../components/ui/DataTable';
+import { DataTable, Pagination, type Column } from '../../components/ui/DataTable';
 import { Drawer } from '../../components/ui/Drawer';
 import { MapPicker } from '../../components/ui/MapPicker';
 import { PageHeader } from '../../components/ui/PageHeader';
+import { SearchField } from '../../components/ui/SearchField';
 import { ErrorState, Skeleton } from '../../components/ui/States';
 import { useToast } from '../../components/ui/ToastProvider';
 import { FIELD_TEXTAREA, FILTER_LABEL } from '../../components/ui/control-styles';
@@ -318,25 +321,39 @@ export function BuildingDetailPage(): ReactElement {
 
   const canManage = can(PERMISSIONS.OBJECT_MANAGE);
 
+  // The floor table's page and search live in the URL, the same as the project list: this
+  // route reads nothing else from the query string, so there is nothing to clash with, and
+  // a link to page 2 of a tower's floors stays a link.
+  const [searchParams, setSearchParams] = useSearchParams();
+
   const [building, setBuilding] = useState<BuildingDto | null>(null);
-  const [floors, setFloors] = useState<FloorDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [editOpen, setEditOpen] = useState(false);
   const [floorOpen, setFloorOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
 
-  const load = useCallback(async (): Promise<void> => {
+  const [floors, setFloors] = useState<PaginatedData<FloorDto> | null>(null);
+  const [floorsLoading, setFloorsLoading] = useState(true);
+  const [floorsError, setFloorsError] = useState<string | null>(null);
+  const [searchDraft, setSearchDraft] = useState(() => searchParams.get('search') ?? '');
+
+  const floorQuery = useMemo<FloorListQuery>(() => {
+    const page = Number.parseInt(searchParams.get('page') ?? '1', 10);
+    return {
+      ...(buildingId ? { buildingId } : {}),
+      page: Number.isFinite(page) && page > 0 ? page : 1,
+      limit: 20,
+      ...(searchParams.get('search') ? { search: searchParams.get('search')! } : {}),
+    };
+  }, [buildingId, searchParams]);
+
+  const loadBuilding = useCallback(async (): Promise<void> => {
     if (!buildingId) return;
     setLoading(true);
     setError(null);
     try {
-      const [detail, floorPage] = await Promise.all([
-        projectService.getBuilding(buildingId),
-        projectService.listFloors({ buildingId, limit: 100 }),
-      ]);
-      setBuilding(detail);
-      setFloors(floorPage.items);
+      setBuilding(await projectService.getBuilding(buildingId));
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : 'Барилга ачаалж чадсангүй.');
     } finally {
@@ -344,9 +361,50 @@ export function BuildingDetailPage(): ReactElement {
     }
   }, [buildingId]);
 
+  // The list is fetched apart from the detail so that turning a page or typing a search
+  // reloads the table alone, rather than throwing the whole page back to its skeleton.
+  const requestIdRef = useRef(0);
+  const queryKey = JSON.stringify(floorQuery);
+
+  const loadFloors = useCallback(async (): Promise<void> => {
+    if (!buildingId) return;
+    const requestId = ++requestIdRef.current;
+    setFloorsLoading(true);
+    setFloorsError(null);
+    try {
+      const result = await projectService.listFloors(JSON.parse(queryKey) as FloorListQuery);
+      if (requestId !== requestIdRef.current) return;
+      setFloors(result);
+    } catch (caught) {
+      if (requestId !== requestIdRef.current) return;
+      setFloorsError(caught instanceof ApiError ? caught.message : 'Давхар ачаалж чадсангүй.');
+    } finally {
+      if (requestId === requestIdRef.current) setFloorsLoading(false);
+    }
+  }, [buildingId, queryKey]);
+
   useEffect(() => {
-    void load();
-  }, [load]);
+    void loadBuilding();
+  }, [loadBuilding]);
+
+  useEffect(() => {
+    void loadFloors();
+  }, [loadFloors]);
+
+  /** Editing the building or adding a floor changes both the detail and the list. */
+  const load = useCallback(async (): Promise<void> => {
+    await Promise.all([loadBuilding(), loadFloors()]);
+  }, [loadBuilding, loadFloors]);
+
+  function updateParam(key: string, value: string): void {
+    const next = new URLSearchParams(searchParams);
+    if (value) next.set(key, value);
+    else next.delete(key);
+    // Any filter change starts again at the first page; row 21 of the old result is
+    // not row 21 of the new one.
+    if (key !== 'page') next.delete('page');
+    setSearchParams(next);
+  }
 
   async function handleDelete(): Promise<void> {
     if (!building) return;
@@ -504,6 +562,23 @@ export function BuildingDetailPage(): ReactElement {
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-5 py-3">
             <h2 className="text-sm font-semibold text-slate-900">Давхар</h2>
             <div className="flex items-center gap-2">
+              <div className="w-52">
+                {/* Labelled for a screen reader only: the heading beside it already says
+                    which table this searches. */}
+                <label htmlFor="bld-floor-search" className="sr-only">
+                  Хайлт
+                </label>
+                <SearchField
+                  id="bld-floor-search"
+                  value={searchDraft}
+                  onChange={(event) => setSearchDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') updateParam('search', searchDraft.trim());
+                  }}
+                  onBlur={() => updateParam('search', searchDraft.trim())}
+                  placeholder="Нэр эсвэл код"
+                />
+              </div>
               <ColumnPicker controller={columnState} />
               {canManage && building.isActive && (
                 <Button variant="secondary" size="sm" onClick={() => setFloorOpen(true)}>
@@ -514,12 +589,30 @@ export function BuildingDetailPage(): ReactElement {
           </div>
           <DataTable
             columns={columnState.visibleColumns}
-            rows={floors}
+            rows={floors?.items ?? []}
             rowKey={(row) => row.id}
+            // Numbered off the response rather than the query, so a request in flight can
+            // never number the rows on screen against the page they did not come from.
+            numbering={{ page: floors?.page ?? 1, limit: floors?.limit ?? 20 }}
+            loading={floorsLoading}
+            error={floorsError}
+            onRetry={() => void loadFloors()}
             onRowClick={(row) => navigate(`/floors/${row.id}`)}
             emptyTitle="Давхар бүртгэгдээгүй"
-            emptyDescription="План зураг болон объект нэмэхийн тулд давхар бүртгэнэ үү."
+            emptyDescription={
+              searchParams.get('search')
+                ? 'Хайлтад тохирох давхар алга.'
+                : 'План зураг болон объект нэмэхийн тулд давхар бүртгэнэ үү.'
+            }
           />
+          {floors && (
+            <Pagination
+              page={floors.page}
+              totalPages={floors.totalPages}
+              total={floors.total}
+              onPageChange={(page) => updateParam('page', String(page))}
+            />
+          )}
         </div>
 
         {/* The reasons deletion is blocked close the page: they explain an action that is

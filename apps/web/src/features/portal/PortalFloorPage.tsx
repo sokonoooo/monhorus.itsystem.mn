@@ -8,11 +8,14 @@ import { useCallback, useEffect, useState, type ReactElement } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 
 import { Button } from '../../components/ui/Button';
-import { DataTable, type Column } from '../../components/ui/DataTable';
+import { DataTable, Pagination, type Column } from '../../components/ui/DataTable';
 import { PageHeader } from '../../components/ui/PageHeader';
+import { SearchField } from '../../components/ui/SearchField';
 import { EmptyState, ErrorState, Skeleton } from '../../components/ui/States';
+import { FILTER_LABEL } from '../../components/ui/control-styles';
 import { ApiError } from '../../lib/api-client';
 import { portalService } from '../../services/portal.service';
+import { filterFloorObjects } from '../projects/FloorDetailPage';
 import { PortalFloorPlan, unplacedOnPlanCount } from './PortalFloorPlan';
 
 /**
@@ -22,6 +25,36 @@ import { PortalFloorPlan, unplacedOnPlanCount } from './PortalFloorPlan';
  * without a drawing is a normal state, not a failure, and the equipment list is useful on
  * its own. A failed plan read therefore does not take the page down.
  */
+/** Rows per page for the equipment table. The plan is still given every object. */
+const OBJECT_TABLE_PAGE_SIZE = 20;
+
+/**
+ * A ceiling on the paging loop, not on the floor. An unbounded loop against a miscounting
+ * server would spin forever; what came back is what the table and the plan show.
+ */
+const MAX_OBJECT_PAGES = 20;
+
+/**
+ * Every object on the floor, not the first hundred.
+ *
+ * The list endpoint caps a page at 100, so a single request lost every marker past the
+ * first page — a floor with 120 devices drew 100 pins and gave no hint that twenty were
+ * missing. The staff floor screen already walks the pages for exactly this reason; this is
+ * the portal doing the same rather than trusting a floor to stay small.
+ */
+async function fetchAllFloorObjects(floorId: string): Promise<ObjectListItemDto[]> {
+  const items: ObjectListItemDto[] = [];
+  let page = 1;
+  let totalPages = 1;
+  do {
+    const response = await portalService.listObjects(floorId, page);
+    items.push(...response.items);
+    totalPages = response.totalPages;
+    page += 1;
+  } while (page <= totalPages && page <= MAX_OBJECT_PAGES);
+  return items;
+}
+
 export function PortalFloorPage(): ReactElement {
   const { buildingId, floorId } = useParams<{ buildingId: string; floorId: string }>();
   const navigate = useNavigate();
@@ -29,6 +62,18 @@ export function PortalFloorPage(): ReactElement {
   const [floor, setFloor] = useState<FloorDto | null>(null);
   const [plan, setPlan] = useState<FloorPlanDto | null>(null);
   const [objects, setObjects] = useState<ObjectListItemDto[]>([]);
+  // Table-only view state. The plan and the unplaced count always see every object.
+  const [objectSearch, setObjectSearch] = useState('');
+  const [objectPage, setObjectPage] = useState(1);
+
+  // The same filter the staff floor screen uses, imported rather than copied so the two
+  // cannot answer differently for the same search term.
+  const matchedObjects = filterFloorObjects(objects, objectSearch);
+  const objectTotalPages = Math.max(1, Math.ceil(matchedObjects.length / OBJECT_TABLE_PAGE_SIZE));
+  const visibleObjects = matchedObjects.slice(
+    (objectPage - 1) * OBJECT_TABLE_PAGE_SIZE,
+    objectPage * OBJECT_TABLE_PAGE_SIZE,
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [planError, setPlanError] = useState<string | null>(null);
@@ -40,12 +85,12 @@ export function PortalFloorPage(): ReactElement {
     setPlanError(null);
 
     try {
-      const [record, objectPage] = await Promise.all([
+      const [record, allObjects] = await Promise.all([
         portalService.getFloor(floorId),
-        portalService.listObjects(floorId),
+        fetchAllFloorObjects(floorId),
       ]);
       setFloor(record);
-      setObjects([...objectPage.items]);
+      setObjects(allObjects);
 
       try {
         setPlan(await portalService.getFloorPlan(floorId));
@@ -170,18 +215,42 @@ export function PortalFloorPage(): ReactElement {
           <div className="border-b border-slate-200 px-5 py-3">
             <h2 className="text-sm font-semibold text-slate-900">Тоноглол</h2>
           </div>
+          <div className="border-b border-slate-200 px-5 py-3">
+            <label htmlFor="portal-floor-search" className={FILTER_LABEL}>
+              Хайлт
+            </label>
+            <SearchField
+              id="portal-floor-search"
+              value={objectSearch}
+              onChange={(event) => {
+                setObjectSearch(event.target.value);
+                // A narrower result rarely has the page the reader is standing on.
+                setObjectPage(1);
+              }}
+              placeholder="Код, нэр эсвэл төрөл"
+            />
+          </div>
           <DataTable
             columns={columns}
-            rows={objects}
+            rows={visibleObjects}
             rowKey={(row) => row.id}
-          // Numbered from 1: this table is the floor's whole equipment list, not a page of it.
-          numbering
+            numbering={{ page: objectPage, limit: OBJECT_TABLE_PAGE_SIZE }}
             onRowClick={(row) =>
               navigate(`/portal/sites/${buildingId ?? ''}/floors/${floor.id}/objects/${row.id}`)
             }
-            emptyTitle="Тоноглол байхгүй"
-            emptyDescription="Энэ давхарт тоноглол бүртгэгдээгүй байна."
+            emptyTitle={objectSearch ? 'Хайлтад тохирох тоноглол алга' : 'Тоноглол байхгүй'}
+            emptyDescription={
+              objectSearch
+                ? 'Өөр түлхүүр үгээр хайж үзнэ үү.'
+                : 'Энэ давхарт тоноглол бүртгэгдээгүй байна.'
+            }
             ariaLabel="Тоноглол"
+          />
+          <Pagination
+            page={objectPage}
+            totalPages={objectTotalPages}
+            total={matchedObjects.length}
+            onPageChange={setObjectPage}
           />
         </div>
       </div>

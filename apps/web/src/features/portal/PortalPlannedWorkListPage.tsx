@@ -1,17 +1,20 @@
 import {
   PERMISSIONS,
+  PLANNED_WORK_EFFECTIVE_STATUSES,
   PLANNED_WORK_STATUS_LABELS,
   type PaginatedData,
   type PlannedWorkEffectiveStatus,
   type PlannedWorkListItemDto,
 } from '@monhorus/shared';
-import { useCallback, useEffect, useState, type ReactElement, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, type ReactElement } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
 import { Alert } from '../../components/ui/Alert';
 import { Button } from '../../components/ui/Button';
 import { DataTable, Pagination, type Column } from '../../components/ui/DataTable';
 import { PageHeader } from '../../components/ui/PageHeader';
+import { SearchField } from '../../components/ui/SearchField';
+import { FILTER_BAR, FILTER_LABEL, FILTER_SELECT } from '../../components/ui/control-styles';
 import { useAuth } from '../../contexts/auth-context';
 import { ApiError } from '../../lib/api-client';
 import { portalService } from '../../services/portal.service';
@@ -47,18 +50,9 @@ function formatDate(iso: string): string {
 /** Matches the other portal list, so the two feel like one screen with two tabs. */
 const PAGE_SIZE = 20;
 
-/** The statuses offered as filters, in the order a customer meets them. */
-const FILTERS: readonly PlannedWorkEffectiveStatus[] = [
-  'DRAFT',
-  'REJECTED',
-  'PENDING_APPROVAL',
-  'PLANNED',
-  'STARTED',
-  'COMPLETED',
-];
-
 /** The two states in which the next move is the customer's own. */
 const AWAITING_CUSTOMER: readonly PlannedWorkEffectiveStatus[] = ['DRAFT', 'REJECTED'];
+
 export function PortalPlannedWorkListPage(): ReactElement {
   const navigate = useNavigate();
   const { can } = useAuth();
@@ -69,6 +63,8 @@ export function PortalPlannedWorkListPage(): ReactElement {
   const status = (searchParams.get('status') ?? '') as PlannedWorkEffectiveStatus | '';
 
   const page = Math.max(1, Number(searchParams.get('page') ?? '1') || 1);
+  const search = searchParams.get('search') ?? '';
+  const [searchDraft, setSearchDraft] = useState(() => searchParams.get('search') ?? '');
 
   const [data, setData] = useState<PaginatedData<PlannedWorkListItemDto> | null>(null);
   const [loading, setLoading] = useState(true);
@@ -84,6 +80,7 @@ export function PortalPlannedWorkListPage(): ReactElement {
         await portalService.listPlannedWork({
           page,
           limit: PAGE_SIZE,
+          ...(search ? { search } : {}),
           ...(status ? { status } : {}),
         }),
       );
@@ -92,7 +89,7 @@ export function PortalPlannedWorkListPage(): ReactElement {
     } finally {
       setLoading(false);
     }
-  }, [page, status]);
+  }, [page, search, status]);
 
   /**
    * Counted with their own requests rather than tallied from the rows above.
@@ -124,9 +121,13 @@ export function PortalPlannedWorkListPage(): ReactElement {
     void loadAwaiting();
   }, [loadAwaiting]);
 
-  /** Filtering restarts the paging: page 4 of one status is rarely a page of another. */
-  function applyStatus(next: PlannedWorkEffectiveStatus | ''): void {
-    setSearchParams(next ? { status: next } : {});
+  /** Changing anything but the page returns to page 1 — page 4 of a narrower result is often empty. */
+  function updateParam(key: string, value: string): void {
+    const next = new URLSearchParams(searchParams);
+    if (value) next.set(key, value);
+    else next.delete(key);
+    if (key !== 'page') next.delete('page');
+    setSearchParams(next);
   }
 
   /**
@@ -216,7 +217,7 @@ export function PortalPlannedWorkListPage(): ReactElement {
             {(awaiting.DRAFT ?? 0) > 0 && (
               <button
                 type="button"
-                onClick={() => applyStatus('DRAFT')}
+                onClick={() => updateParam('status', 'DRAFT')}
                 className="text-sm font-medium underline underline-offset-2"
               >
                 Илгээгээгүй {awaiting.DRAFT} ноорог
@@ -225,7 +226,7 @@ export function PortalPlannedWorkListPage(): ReactElement {
             {(awaiting.REJECTED ?? 0) > 0 && (
               <button
                 type="button"
-                onClick={() => applyStatus('REJECTED')}
+                onClick={() => updateParam('status', 'REJECTED')}
                 className="text-sm font-medium underline underline-offset-2"
               >
                 Буцаагдсан {awaiting.REJECTED} хүсэлт
@@ -235,20 +236,41 @@ export function PortalPlannedWorkListPage(): ReactElement {
         </Alert>
       )}
 
-      {/* Server-side, one status at a time — the same filter the staff list uses. */}
-      <div className="flex flex-wrap gap-2">
-        <FilterChip active={status === ''} onClick={() => applyStatus('')}>
-          Бүгд
-        </FilterChip>
-        {FILTERS.map((entry) => (
-          <FilterChip
-            key={entry}
-            active={status === entry}
-            onClick={() => applyStatus(entry)}
+      <div className={FILTER_BAR}>
+        <div className="min-w-[200px] flex-1">
+          <label htmlFor="portal-pw-search" className={FILTER_LABEL}>
+            Хайлт
+          </label>
+          <SearchField
+            id="portal-pw-search"
+            value={searchDraft}
+            onChange={(event) => setSearchDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') updateParam('search', searchDraft.trim());
+            }}
+            onBlur={() => updateParam('search', searchDraft.trim())}
+            placeholder="Ажлын дугаар эсвэл нэр"
+          />
+        </div>
+
+        <div>
+          <label htmlFor="portal-pw-status" className={FILTER_LABEL}>
+            Төлөв
+          </label>
+          <select
+            id="portal-pw-status"
+            value={status}
+            onChange={(event) => updateParam('status', event.target.value)}
+            className={FILTER_SELECT}
           >
-            {PLANNED_WORK_STATUS_LABELS[entry]}
-          </FilterChip>
-        ))}
+            <option value="">Бүх төлөв</option>
+            {PLANNED_WORK_EFFECTIVE_STATUSES.map((entry) => (
+              <option key={entry} value={entry}>
+                {PLANNED_WORK_STATUS_LABELS[entry]}
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
 
       <div className="overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-slate-200">
@@ -289,31 +311,5 @@ export function PortalPlannedWorkListPage(): ReactElement {
         )}
       </div>
     </div>
-  );
-}
-
-/** A filter pill. Local because nothing else in the portal filters anything yet. */
-function FilterChip({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  children: ReactNode;
-}): ReactElement {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-pressed={active}
-      className={`rounded-full px-3 py-1 text-xs font-medium ring-1 ring-inset transition-colors ${
-        active
-          ? 'bg-blue-600 text-white ring-blue-600'
-          : 'bg-white text-slate-600 ring-slate-200 hover:bg-slate-50'
-      }`}
-    >
-      {children}
-    </button>
   );
 }

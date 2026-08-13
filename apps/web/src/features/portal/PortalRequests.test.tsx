@@ -7,14 +7,23 @@ import { ApiError } from '../../lib/api-client';
 import { objectService } from '../../services/object.service';
 import { portalService } from '../../services/portal.service';
 import { dispatchService } from '../../services/service-request.service';
-import { makePage, makeServiceRequest } from '../../test/fixtures';
+import {
+  makeBuilding,
+  makeFloor,
+  makeObjectListItem,
+  makePage,
+  makeServiceRequest,
+} from '../../test/fixtures';
 import { renderWithAuth } from '../../test/render';
 import { planMarkerObjects, unplacedOnPlanCount } from './PortalFloorPlan';
 import { PortalRequestCreatePage } from './PortalRequestCreatePage';
 import { PlannedWorkFormPage } from '../planned-work/PlannedWorkFormPage';
 import { PortalPlannedWorkDetailPage } from './PortalPlannedWorkDetailPage';
+import { PortalFloorPage } from './PortalFloorPage';
 import { PortalPlannedWorkListPage } from './PortalPlannedWorkListPage';
 import { PortalRequestListPage } from './PortalRequestListPage';
+import { PortalSiteDetailPage } from './PortalSiteDetailPage';
+import { PortalSitesPage } from './PortalSitesPage';
 
 const CUSTOMER_ID = '507f1f77bcf86cd799439011';
 const BUILDING_ID = '507f1f77bcf86cd799439021';
@@ -738,7 +747,7 @@ describe('the portal planned-work list', () => {
 
     renderPortal(<PortalPlannedWorkListPage />, '/portal/planned-work');
 
-    await screen.findByRole('button', { name: 'Бүгд' });
+    await screen.findByLabelText('Төлөв');
     expect(screen.queryByText('Таны хийх ажил байна')).not.toBeInTheDocument();
   });
 
@@ -819,11 +828,43 @@ describe('the portal planned-work list', () => {
 
     renderPortal(<PortalPlannedWorkListPage />, '/portal/planned-work');
 
-    await user.click(await screen.findByRole('button', { name: 'Хүлээгдэж буй' }));
+    await user.selectOptions(await screen.findByLabelText('Төлөв'), 'PENDING_APPROVAL');
 
     await waitFor(() =>
       expect(list).toHaveBeenCalledWith(
         expect.objectContaining({ status: 'PENDING_APPROVAL', page: 1, limit: 20 }),
+      ),
+    );
+  });
+
+  /** Chips offered one axis and no search at all; searching goes to the server, not the page. */
+  it('sends a typed search to the server', async () => {
+    const list = stubList({ DRAFT: 0, REJECTED: 0 });
+    const user = userEvent.setup();
+
+    renderPortal(<PortalPlannedWorkListPage />, '/portal/planned-work');
+
+    await user.type(await screen.findByLabelText('Хайлт'), 'PW-2026{Enter}');
+
+    await waitFor(() =>
+      expect(list).toHaveBeenCalledWith(
+        expect.objectContaining({ search: 'PW-2026', page: 1, limit: 20 }),
+      ),
+    );
+  });
+
+  /** Narrowing from page 3 must not leave the reader on a page the result no longer has. */
+  it('returns to the first page when the filter changes', async () => {
+    const list = stubList({ DRAFT: 0, REJECTED: 0 });
+    const user = userEvent.setup();
+
+    renderPortal(<PortalPlannedWorkListPage />, '/portal/planned-work?page=3');
+
+    await user.selectOptions(await screen.findByLabelText('Төлөв'), 'COMPLETED');
+
+    await waitFor(() =>
+      expect(list).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'COMPLETED', page: 1 }),
       ),
     );
   });
@@ -888,5 +929,244 @@ describe('the portal status trail', () => {
 
     await screen.findByRole('heading', { name: 'Улирлын үзлэг' });
     expect(screen.queryByRole('list', { name: 'Явц' })).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * The two site tables used to fetch one capped page and render no pager, so a customer with
+ * more buildings — or a tower with more floors — than the cap simply never saw the rest, and
+ * nothing on screen said so. Both now page, and both search server-side.
+ */
+describe('the customer site lists', () => {
+  /** One page of a longer list, as the server answers it. */
+  function serverPage<T>(items: T[], page: number, total: number) {
+    return {
+      items,
+      page,
+      limit: 20,
+      total,
+      totalPages: Math.ceil(total / 20),
+    } as never;
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('pages through the buildings rather than silently stopping at the cap', async () => {
+    const list = vi
+      .spyOn(portalService, 'listBuildings')
+      .mockResolvedValue(serverPage([makeBuilding()], 1, 45));
+    const user = userEvent.setup();
+
+    renderPortal(<PortalSitesPage />, '/portal/sites');
+
+    expect(await screen.findByText(/Нийт 45, хуудас 1\/3/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Дараах' }));
+
+    await waitFor(() =>
+      expect(list).toHaveBeenCalledWith(expect.objectContaining({ page: 2, limit: 20 })),
+    );
+  });
+
+  /** Continuous numbering: a reader asked to check row 21 must find it on page 2. */
+  it('numbers the buildings continuously across pages', async () => {
+    vi.spyOn(portalService, 'listBuildings').mockResolvedValue(
+      serverPage([makeBuilding()], 2, 45),
+    );
+
+    renderPortal(<PortalSitesPage />, '/portal/sites?page=2');
+
+    const table = await screen.findByRole('table');
+    expect(within(table).getByText('21')).toBeInTheDocument();
+  });
+
+  /**
+   * Server-side, and starting again from page 1. Filtering the page in hand would search
+   * only the twenty rows on screen, and keeping the old page would land the search on a
+   * page a shorter result set does not have.
+   */
+  it('sends the building search to the server and restarts the paging', async () => {
+    const list = vi
+      .spyOn(portalService, 'listBuildings')
+      .mockResolvedValue(serverPage([makeBuilding()], 3, 45));
+    const user = userEvent.setup();
+
+    renderPortal(<PortalSitesPage />, '/portal/sites?page=3');
+
+    await screen.findByRole('table');
+    await user.type(screen.getByLabelText('Хайлт'), 'Төв{Enter}');
+
+    await waitFor(() =>
+      expect(list).toHaveBeenCalledWith({ page: 1, limit: 20, search: 'Төв' }),
+    );
+  });
+
+  it('pages through the floors of one building', async () => {
+    vi.spyOn(portalService, 'getBuilding').mockResolvedValue(makeBuilding({ id: BUILDING_ID }));
+    const list = vi
+      .spyOn(portalService, 'listFloors')
+      .mockResolvedValue(serverPage([makeFloor()], 1, 45));
+    const user = userEvent.setup();
+
+    renderPortal(
+      <PortalSiteDetailPage />,
+      `/portal/sites/${BUILDING_ID}`,
+      '/portal/sites/:buildingId',
+    );
+
+    expect(await screen.findByText(/Нийт 45, хуудас 1\/3/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Дараах' }));
+
+    await waitFor(() =>
+      expect(list).toHaveBeenCalledWith(
+        BUILDING_ID,
+        expect.objectContaining({ page: 2, limit: 20 }),
+      ),
+    );
+  });
+
+  it('sends the floor search to the server and restarts the paging', async () => {
+    vi.spyOn(portalService, 'getBuilding').mockResolvedValue(makeBuilding({ id: BUILDING_ID }));
+    const list = vi
+      .spyOn(portalService, 'listFloors')
+      .mockResolvedValue(serverPage([makeFloor()], 2, 45));
+    const user = userEvent.setup();
+
+    renderPortal(
+      <PortalSiteDetailPage />,
+      `/portal/sites/${BUILDING_ID}?page=2`,
+      '/portal/sites/:buildingId',
+    );
+
+    await screen.findByRole('table');
+    await user.type(screen.getByLabelText('Хайлт'), '2 давхар{Enter}');
+
+    await waitFor(() =>
+      expect(list).toHaveBeenCalledWith(BUILDING_ID, {
+        page: 1,
+        limit: 20,
+        search: '2 давхар',
+      }),
+    );
+  });
+
+  /** Turning a page must not blank out the heading that says which building this is. */
+  it('keeps the building heading while a floor page loads', async () => {
+    vi.spyOn(portalService, 'getBuilding').mockResolvedValue(
+      makeBuilding({ id: BUILDING_ID, name: 'Төв барилга' }),
+    );
+    vi.spyOn(portalService, 'listFloors').mockResolvedValue(serverPage([makeFloor()], 1, 45));
+    const user = userEvent.setup();
+
+    renderPortal(
+      <PortalSiteDetailPage />,
+      `/portal/sites/${BUILDING_ID}`,
+      '/portal/sites/:buildingId',
+    );
+
+    await screen.findByText(/Нийт 45, хуудас 1\/3/);
+    await user.click(screen.getByRole('button', { name: 'Дараах' }));
+
+    expect(screen.getByRole('heading', { name: 'Төв барилга' })).toBeInTheDocument();
+  });
+});
+
+describe('the portal floor equipment table', () => {
+  const FLOOR_ID = '507f1f77bcf86cd799439033';
+
+  function page(index: number, count: number, totalPages: number, total: number) {
+    return {
+      items: Array.from({ length: count }, (_, offset) =>
+        makeObjectListItem({
+          id: `o-${index}-${offset}`,
+          code: `EQ-${index}-${offset}`,
+          name: `Тоноглол ${index}-${offset}`,
+        }),
+      ),
+      page: index,
+      limit: 100,
+      total,
+      totalPages,
+    };
+  }
+
+  function openFloor() {
+    return renderPortal(
+      <PortalFloorPage />,
+      `/portal/sites/${BUILDING_ID}/floors/${FLOOR_ID}`,
+      '/portal/sites/:buildingId/floors/:floorId',
+    );
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(portalService, 'getFloor').mockResolvedValue({
+      id: FLOOR_ID,
+      name: '1-р давхар',
+      buildingId: BUILDING_ID,
+      customerId: 'c1',
+    } as never);
+    vi.spyOn(portalService, 'getFloorPlan').mockResolvedValue(null);
+  });
+
+  /**
+   * The plan draws one marker per object, so a fetch that stopped at the endpoint's 100-row
+   * cap would lose pins off the drawing and say nothing about it — the same bug the staff
+   * floor screen already walks pages to avoid.
+   */
+  it('walks every page of equipment rather than stopping at the cap', async () => {
+    const list = vi
+      .spyOn(portalService, 'listObjects')
+      .mockImplementation(async (_floorId: string, p = 1) =>
+        (p === 1 ? page(1, 100, 2, 150) : page(2, 50, 2, 150)) as never,
+      );
+
+    openFloor();
+
+    expect(await screen.findByText(/Нийт 150/, undefined, { timeout: 5000 })).toBeInTheDocument();
+    expect(list).toHaveBeenCalledWith(FLOOR_ID, 1);
+    expect(list).toHaveBeenCalledWith(FLOOR_ID, 2);
+  });
+
+  it('pages the table and numbers it continuously', async () => {
+    vi.spyOn(portalService, 'listObjects').mockResolvedValue(page(1, 45, 1, 45) as never);
+    const user = userEvent.setup();
+
+    openFloor();
+
+    const table = await screen.findByRole('table', { name: 'Тоноглол' });
+    expect(within(table).getByText('1')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Дараах' }));
+
+    await waitFor(() =>
+      expect(within(screen.getByRole('table', { name: 'Тоноглол' })).getByText('21')).toBeInTheDocument(),
+    );
+  });
+
+  /** In-memory search is honest here only because every page has already been fetched. */
+  it('searches the whole floor, not the page on screen', async () => {
+    vi.spyOn(portalService, 'listObjects').mockResolvedValue(
+      {
+        items: [
+          makeObjectListItem({ id: 'a', code: 'PNL-001', name: 'Гол самбар' }),
+          makeObjectListItem({ id: 'b', code: 'LGT-014', name: 'Коридор гэрэл' }),
+        ],
+        page: 1,
+        limit: 100,
+        total: 2,
+        totalPages: 1,
+      } as never,
+    );
+    const user = userEvent.setup();
+
+    openFloor();
+
+    await user.type(await screen.findByLabelText('Хайлт'), 'LGT');
+
+    const table = screen.getByRole('table', { name: 'Тоноглол' });
+    await waitFor(() => expect(within(table).getByText('LGT-014')).toBeInTheDocument());
+    expect(within(table).queryByText('PNL-001')).not.toBeInTheDocument();
   });
 });

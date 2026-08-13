@@ -1,35 +1,61 @@
-import type { BuildingDto, FloorDto } from '@monhorus/shared';
+import type { BuildingDto, FloorDto, PaginatedData } from '@monhorus/shared';
 import { useCallback, useEffect, useState, type ReactElement } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
 import { Button } from '../../components/ui/Button';
-import { DataTable, type Column } from '../../components/ui/DataTable';
+import { DataTable, Pagination, type Column } from '../../components/ui/DataTable';
 import { PageHeader } from '../../components/ui/PageHeader';
+import { SearchField } from '../../components/ui/SearchField';
+import { FILTER_BAR, FILTER_LABEL, FILTER_SEARCH_SLOT } from '../../components/ui/control-styles';
 import { ErrorState, Skeleton } from '../../components/ui/States';
 import { ApiError } from '../../lib/api-client';
 import { portalService } from '../../services/portal.service';
 
-/** One building: its floors, each a way into the drawing. */
+/** The same page size as the other portal lists. */
+const PAGE_SIZE = 20;
+
+/**
+ * One building: its floors, each a way into the drawing.
+ *
+ * The two reads are kept apart on purpose. The building is what the whole screen is about,
+ * so failing to load it is a page-level error; the floors are a paged, searchable list, so
+ * turning a page must not blank out the heading and breadcrumbs that say where the reader
+ * is. Both the page and the search live in the URL, and the search is answered server-side —
+ * a tall building holds far more floors than one page shows.
+ */
 export function PortalSiteDetailPage(): ReactElement {
   const { buildingId } = useParams<{ buildingId: string }>();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const page = Math.max(1, Number(searchParams.get('page') ?? '1') || 1);
+  const search = searchParams.get('search') ?? '';
 
   const [building, setBuilding] = useState<BuildingDto | null>(null);
-  const [floors, setFloors] = useState<FloorDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async (): Promise<void> => {
+  const [floors, setFloors] = useState<PaginatedData<FloorDto> | null>(null);
+  const [floorsLoading, setFloorsLoading] = useState(true);
+  const [floorsError, setFloorsError] = useState<string | null>(null);
+
+  const [searchDraft, setSearchDraft] = useState(search);
+
+  function updateParam(key: string, value: string): void {
+    const next = new URLSearchParams(searchParams);
+    if (value) next.set(key, value);
+    else next.delete(key);
+    // A narrower search invalidates the cursor; page 4 of a shorter list reads as "empty".
+    if (key !== 'page') next.delete('page');
+    setSearchParams(next);
+  }
+
+  const loadBuilding = useCallback(async (): Promise<void> => {
     if (!buildingId) return;
     setLoading(true);
     setError(null);
     try {
-      const [record, floorPage] = await Promise.all([
-        portalService.getBuilding(buildingId),
-        portalService.listFloors(buildingId),
-      ]);
-      setBuilding(record);
-      setFloors([...floorPage.items]);
+      setBuilding(await portalService.getBuilding(buildingId));
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : 'Барилга ачаалж чадсангүй.');
     } finally {
@@ -37,9 +63,32 @@ export function PortalSiteDetailPage(): ReactElement {
     }
   }, [buildingId]);
 
+  const loadFloors = useCallback(async (): Promise<void> => {
+    if (!buildingId) return;
+    setFloorsLoading(true);
+    setFloorsError(null);
+    try {
+      setFloors(
+        await portalService.listFloors(buildingId, {
+          page,
+          limit: PAGE_SIZE,
+          ...(search ? { search } : {}),
+        }),
+      );
+    } catch (caught) {
+      setFloorsError(caught instanceof ApiError ? caught.message : 'Давхар ачаалж чадсангүй.');
+    } finally {
+      setFloorsLoading(false);
+    }
+  }, [buildingId, page, search]);
+
   useEffect(() => {
-    void load();
-  }, [load]);
+    void loadBuilding();
+  }, [loadBuilding]);
+
+  useEffect(() => {
+    void loadFloors();
+  }, [loadFloors]);
 
   if (loading) {
     return (
@@ -54,7 +103,16 @@ export function PortalSiteDetailPage(): ReactElement {
     return (
       <ErrorState
         description={error ?? 'Барилга олдсонгүй.'}
-        action={<Button onClick={() => void load()}>Дахин оролдох</Button>}
+        action={
+          <Button
+            onClick={() => {
+              void loadBuilding();
+              void loadFloors();
+            }}
+          >
+            Дахин оролдох
+          </Button>
+        }
       />
     );
   }
@@ -85,20 +143,53 @@ export function PortalSiteDetailPage(): ReactElement {
         ]}
       />
 
+      <div className={FILTER_BAR}>
+        <div className={FILTER_SEARCH_SLOT}>
+          <label htmlFor="portal-floor-search" className={FILTER_LABEL}>
+            Хайлт
+          </label>
+          <SearchField
+            id="portal-floor-search"
+            value={searchDraft}
+            onChange={(event) => setSearchDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') updateParam('search', searchDraft.trim());
+            }}
+            onBlur={() => updateParam('search', searchDraft.trim())}
+            placeholder="Давхрын нэр эсвэл код"
+          />
+        </div>
+      </div>
+
       <div className="overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-slate-200">
         <div className="border-b border-slate-200 px-5 py-3">
           <h2 className="text-sm font-semibold text-slate-900">Давхар</h2>
         </div>
         <DataTable
           columns={columns}
-          rows={floors}
+          rows={floors?.items ?? []}
           rowKey={(row) => row.id}
-          numbering
+          numbering={{ page, limit: PAGE_SIZE }}
+          loading={floorsLoading}
+          error={floorsError}
+          onRetry={() => void loadFloors()}
           onRowClick={(row) => navigate(`/portal/sites/${building.id}/floors/${row.id}`)}
           emptyTitle="Давхар байхгүй"
-          emptyDescription="Энэ барилгад давхар бүртгэгдээгүй байна."
+          emptyDescription={
+            search
+              ? 'Хайлтад тохирох давхар олдсонгүй.'
+              : 'Энэ барилгад давхар бүртгэгдээгүй байна.'
+          }
           ariaLabel="Давхар"
         />
+        {floors && (
+          <Pagination
+            page={floors.page}
+            totalPages={floors.totalPages}
+            total={floors.total}
+            onPageChange={(next) => updateParam('page', String(next))}
+          />
+        )}
       </div>
     </>
   );
