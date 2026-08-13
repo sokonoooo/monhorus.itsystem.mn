@@ -496,9 +496,19 @@ async function loadDetail(
   const [materials, reportState, assignmentAllowed] = await Promise.all([
     plannedWorkMaterialsOf(work),
     loadReportState(work),
-    // Resolved once here so the action list a technician is shown matches what the write
-    // endpoints will actually accept. Reading the record stays unscoped.
-    isWithinAssignmentScope(work._id, actor),
+    /**
+     * Resolved once here so the action list a technician is shown matches what the write
+     * endpoints will actually accept. Reading the record stays unscoped.
+     *
+     * SKIPPED FOR A CUSTOMER, exactly as `transitionPlannedWork` skips it. This asks which
+     * employee a job belongs to, and a portal account has no employee card, so it answers
+     * NOT_ASSIGNED for every customer — which made `availableActionsFor` drop every action
+     * and left a customer looking at their own draft with no way to submit it. Their bound
+     * is tenancy, and the scoped read above has already applied it.
+     */
+    resolveCustomerScope(actor).mode === 'CUSTOMER'
+      ? Promise.resolve(true)
+      : isWithinAssignmentScope(work._id, actor),
   ]);
 
   const blockers = completionBlockersOf(tasks);

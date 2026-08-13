@@ -660,3 +660,77 @@ describe('the customer breaks down their own request', () => {
     expect(response.status).toBe(201);
   });
 });
+
+describe('what the portal is offered on its own request', () => {
+  /**
+   * THE BUG THIS EXISTS FOR. `availableActionsFor` drops every action when assignment scope
+   * says no, and assignment scope asks which EMPLOYEE a job belongs to — so it answered
+   * NOT_ASSIGNED for every customer and left them looking at their own draft with no way to
+   * submit it. The write path had already been excused from that check; the read path that
+   * decides which buttons to draw had not.
+   */
+  it('offers the customer Төлөвлөх on its own draft', async () => {
+    const workId = await raiseAsCustomer();
+
+    const detail = await request(app)
+      .get(`${API}/planned-work/${workId}`)
+      .set('Authorization', `Bearer ${portalToken}`);
+
+    expect(detail.status).toBe(200);
+    const actions = (detail.body.data.availableActions as { action: string }[]).map(
+      (entry) => entry.action,
+    );
+    expect(actions).toContain('PLAN');
+  });
+
+  /** ...and nothing an approver alone may do. */
+  it('offers the customer no approval actions', async () => {
+    const workId = await raiseAsCustomer();
+    expect((await submit(workId, portalToken)).status).toBe(200);
+
+    const detail = await request(app)
+      .get(`${API}/planned-work/${workId}`)
+      .set('Authorization', `Bearer ${portalToken}`);
+
+    const actions = (detail.body.data.availableActions as { action: string }[]).map(
+      (entry) => entry.action,
+    );
+    expect(actions).not.toContain('APPROVE');
+    expect(actions).not.toContain('REJECT');
+  });
+
+  /** A returned request is submittable again, which is the whole point of returning it. */
+  it('offers Төлөвлөх again once the request has been returned', async () => {
+    const workId = await raiseAsCustomer();
+    expect((await submit(workId, portalToken)).status).toBe(200);
+    expect(
+      (await transition(workId, { action: 'REJECT', reason: 'Огноо тохирохгүй.' }, approverToken))
+        .status,
+    ).toBe(200);
+
+    const detail = await request(app)
+      .get(`${API}/planned-work/${workId}`)
+      .set('Authorization', `Bearer ${portalToken}`);
+
+    const actions = (detail.body.data.availableActions as { action: string }[]).map(
+      (entry) => entry.action,
+    );
+    expect(actions).toContain('PLAN');
+  });
+
+  /** The approver's side of the same read: they get the decision, marked as needing a crew. */
+  it('offers the approver APPROVE, flagged as assigning a crew', async () => {
+    const workId = await raiseAsCustomer();
+    expect((await submit(workId, portalToken)).status).toBe(200);
+
+    const detail = await request(app)
+      .get(`${API}/planned-work/${workId}`)
+      .set('Authorization', `Bearer ${approverToken}`);
+
+    const approveAction = (
+      detail.body.data.availableActions as { action: string; assignsCrew: boolean }[]
+    ).find((entry) => entry.action === 'APPROVE');
+    expect(approveAction).toBeDefined();
+    expect(approveAction?.assignsCrew).toBe(true);
+  });
+});
