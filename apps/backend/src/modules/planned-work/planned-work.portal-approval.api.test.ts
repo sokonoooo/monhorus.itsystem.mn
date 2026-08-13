@@ -18,7 +18,7 @@ import {
 import { Employee } from '../employee/employee.model';
 import { Customer, ObjectNode } from '../objects/object.models';
 import { User } from '../user/user.model';
-import { PlannedWork } from './planned-work.models';
+import { PlannedWork, PlannedWorkReport } from './planned-work.models';
 
 /**
  * THE CUSTOMER-RAISED PLANNED WORK FLOW.
@@ -232,6 +232,75 @@ describe('a customer raising planned work', () => {
       .get(`${API}/planned-work/${String(foreign._id)}`)
       .set('Authorization', `Bearer ${portalToken}`);
     expect(detail.status).toBe(404);
+  });
+
+  /**
+   * `visibleToCustomer` was a flag, not a filter.
+   *
+   * It rode along beside the very content it described, so a customer reading their own
+   * work received the unfinished conclusion, the internal `returnReason` — a manager's
+   * written criticism of a technician's write-up — and the name of everyone who authored,
+   * submitted, returned and approved it. Only the portal's JSX declined to paint it, and
+   * `curl` was never bound by that. `assertReportVisibleToCustomer` existed for exactly
+   * this rule and had zero callers.
+   */
+  it('receives no report at all while it is unapproved', async () => {
+    const workId = await raiseSubmitAndApprove();
+
+    await PlannedWorkReport.create({
+      plannedWork: new Types.ObjectId(workId),
+      status: 'RETURNED',
+      conclusion: 'ДОТООД: дуусаагүй ноорог дүгнэлт',
+      recommendation: 'ДОТООД: зөвлөмж',
+      returnReason: 'ДОТООД: буцаасан шалтгаан',
+      createdByName: 'Техникч Дорж',
+      returnedByName: 'Менежер Ганаа',
+    });
+
+    const detail = await request(app)
+      .get(`${API}/planned-work/${workId}`)
+      .set('Authorization', `Bearer ${portalToken}`);
+
+    expect(detail.status).toBe(200);
+    expect(detail.body.data.report).toBeNull();
+    expect(JSON.stringify(detail.body)).not.toContain('ДОТООД');
+    expect(JSON.stringify(detail.body)).not.toContain('Менежер Ганаа');
+  });
+
+  /**
+   * The other half: an approved report IS the customer's deliverable, so the signed-off
+   * text is served — but the review trail that produced it still is not.
+   */
+  it('receives an approved report without the review trail', async () => {
+    const workId = await raiseSubmitAndApprove();
+
+    await PlannedWorkReport.create({
+      plannedWork: new Types.ObjectId(workId),
+      status: 'APPROVED',
+      conclusion: 'Ажил хийгдсэн.',
+      recommendation: 'Дараагийн үзлэг 6 сарын дараа.',
+      returnReason: 'ДОТООД: өмнө нь буцаасан шалтгаан',
+      createdByName: 'Техникч Дорж',
+      submittedByName: 'Техникч Дорж',
+      approvedByName: 'Менежер Ганаа',
+      approvedAt: new Date(),
+    });
+
+    const detail = await request(app)
+      .get(`${API}/planned-work/${workId}`)
+      .set('Authorization', `Bearer ${portalToken}`);
+
+    expect(detail.status).toBe(200);
+    expect(detail.body.data.report).not.toBeNull();
+    expect(detail.body.data.report.conclusion).toBe('Ажил хийгдсэн.');
+    expect(detail.body.data.report.visibleToCustomer).toBe(true);
+
+    // The approval signature stays; everything upstream of it does not.
+    expect(detail.body.data.report.approvedBy.name).toBe('Менежер Ганаа');
+    expect(detail.body.data.report.returnReason).toBeNull();
+    expect(detail.body.data.report.createdBy.name).toBeNull();
+    expect(detail.body.data.report.submittedBy.name).toBeNull();
+    expect(JSON.stringify(detail.body)).not.toContain('ДОТООД');
   });
 
   /**

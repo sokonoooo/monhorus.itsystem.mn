@@ -8,8 +8,13 @@ import { orgService } from '../../services/org.service';
  *
  * The org lists are paginated for their management tables; a dropdown wants every choice
  * at once, and past a few hundred entries a native select is the wrong control anyway.
+ *
+ * 100 is the ceiling `paginationQuerySchema` enforces, and `validate` rejects an over-ask
+ * rather than clamping it. See the longer note in `features/employees/useOrgSelectors.ts`:
+ * this was 200, and because both fetches here are wrapped in `.catch(() => undefined)` the
+ * resulting 400 surfaced as an empty filter rather than as an error.
  */
-const OPTION_LIMIT = 200;
+const OPTION_LIMIT = 100;
 
 /**
  * The companies a record may be filed under, and the departments of one of them.

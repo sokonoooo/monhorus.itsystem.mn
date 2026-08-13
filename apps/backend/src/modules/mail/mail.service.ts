@@ -54,9 +54,17 @@ interface NodemailerLike {
  *
  * The body is logged in full and on purpose. This adapter only ever runs where mail is not
  * configured — a developer machine or the test suite — and there the link IS the delivery
- * mechanism: without it a developer cannot complete the flow they are building. It never
- * runs in a deployment that has SMTP_HOST set, which is the only place a logged reset link
- * would be a disclosure.
+ * mechanism: without it a developer cannot complete the flow they are building.
+ *
+ * The original note here said it "never runs in a deployment that has SMTP_HOST set, which
+ * is the only place a logged reset link would be a disclosure". That had the condition
+ * backwards: the dangerous case is a deployment with SMTP_HOST *unset*, which is exactly
+ * how production stood when this was written. A password-reset body carries a live
+ * single-use token, so on that host every forgot-password request wrote an account-takeover
+ * credential into the journal — readable by anyone in `adm`/`systemd-journal`, on a machine
+ * shared with four other tenants — while the user was told an email had been sent.
+ *
+ * `refuseInProduction` below is what now makes the original sentence true.
  */
 const logTransport: MailTransport = {
   kind: 'log',
@@ -65,6 +73,27 @@ const logTransport: MailTransport = {
       { to: message.to, subject: message.subject, body: message.text },
       'Mail not configured; message written to the log instead of sent',
     );
+  },
+};
+
+/**
+ * The adapter a production deployment gets when SMTP is not configured.
+ *
+ * It fails loudly rather than degrading, because the two quiet alternatives are both worse:
+ * logging the body discloses the token, and silently discarding the message tells the user
+ * mail is on its way when nothing was sent. A caller that swallows this — `sendMail` does,
+ * deliberately, to keep `/auth/forgot-password` from becoming an account-enumeration
+ * oracle — still leaves an error in the log naming the missing configuration.
+ */
+const refuseInProduction: MailTransport = {
+  kind: 'log',
+  async send(message) {
+    logger.error(
+      { to: message.to, subject: message.subject },
+      'SMTP_HOST is not configured; refusing to log the message body in production. ' +
+        'Set SMTP_HOST/SMTP_PORT/MAIL_FROM to enable delivery.',
+    );
+    throw new Error('Mail transport is not configured.');
   },
 };
 
@@ -108,7 +137,11 @@ function createSmtpTransport(): MailTransport {
 let transport: MailTransport | null = null;
 
 export function getMailTransport(): MailTransport {
-  transport ??= env.mailEnabled ? createSmtpTransport() : logTransport;
+  transport ??= env.mailEnabled
+    ? createSmtpTransport()
+    : env.isProduction
+      ? refuseInProduction
+      : logTransport;
   return transport;
 }
 

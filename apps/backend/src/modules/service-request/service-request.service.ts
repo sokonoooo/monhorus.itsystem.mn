@@ -175,6 +175,42 @@ async function resolveAttachments(
   }));
 }
 
+/**
+ * Removes the staff-internal half of a request detail before it reaches a customer.
+ *
+ * One DTO served both audiences, so a customer received the whole operational record: who
+ * every status change was made by and the free-text reason for it, the internal
+ * SLA-extension justification, the revisit reason, the creator's name, the team leader's
+ * id, and each assigned technician's internal employee code. The web portal knew and
+ * declined to render any of it — its own comment says the screen "is a presentation choice,
+ * not a boundary" — but the customer mobile app rendered it, so the reviewer's return text
+ * and the staff roster were on a customer's phone.
+ *
+ * Narrowing here rather than in either client makes it a boundary. The progress timeline
+ * itself is kept, because a customer watching their request move NEW → ASSIGNED → DONE is
+ * the point of the screen; only the internal who and why come off it.
+ */
+function narrowDetailForCustomer(detail: ServiceRequestDetailDto): ServiceRequestDetailDto {
+  return {
+    ...detail,
+    assignedEmployees: detail.assignedEmployees.map((employee) => ({
+      ...employee,
+      // An internal payroll identifier. The name and photo stay so the customer still knows
+      // who is attending; the type requires a string, so it is blanked rather than dropped.
+      employeeCode: '',
+    })),
+    statusHistory: detail.statusHistory.map((entry) => ({
+      ...entry,
+      reason: null,
+      changedByName: null,
+    })),
+    teamLeaderEmployeeId: null,
+    slaExtensionReason: null,
+    revisitReason: null,
+    createdByName: null,
+  };
+}
+
 export async function toDetailDto(
   request: WithId<IServiceRequest>,
 ): Promise<ServiceRequestDetailDto> {
@@ -585,7 +621,8 @@ export async function getServiceRequestById(
   if (!request) {
     throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Хүсэлт олдсонгүй.');
   }
-  return await toDetailDto(request);
+  const detail = await toDetailDto(request);
+  return scope.mode === 'CUSTOMER' ? narrowDetailForCustomer(detail) : detail;
 }
 
 /**

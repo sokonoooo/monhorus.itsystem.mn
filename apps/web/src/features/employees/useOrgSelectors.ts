@@ -19,8 +19,16 @@ export interface OrgSelectorState {
  * dropdown wants a list rather than a page. One deliberately large page is what a `<select>`
  * can usefully hold anyway: past a few hundred entries the control itself is the problem,
  * and the answer then is a searchable picker rather than a second page nobody can reach.
+ *
+ * 100 is not a preference, it is the ceiling `paginationQuerySchema` enforces
+ * (`packages/shared/src/schemas/common.schema.ts`, `limit: …max(100)`), and `validate`
+ * REJECTS an over-ask rather than clamping it. This was 200, so every request these
+ * selectors made came back 400 and the Company/Department/Position dropdowns were
+ * permanently empty — on the employee form the failure was visible, on the org filters
+ * it was swallowed by a `.catch` and looked like "no companies exist". Raising this
+ * number again re-breaks the form; past 100 the answer is a searchable picker.
  */
-const OPTION_LIMIT = 200;
+const OPTION_LIMIT = 100;
 
 /**
  * Dependent organisation selectors: Company -> Department -> Position / Team.

@@ -377,22 +377,32 @@ export async function saveWorkReport(
       : riskLevelFor(input.score, await getRiskBands());
   report.conclusion = input.conclusion ?? null;
   report.recommendation = input.recommendation ?? null;
-  report.actionTaken = input.actionTaken ?? null;
-  report.repairRequired = input.repairRequired;
-  report.revisitRequired = input.revisitRequired;
-  report.revisitDate = input.revisitDate ? new Date(input.revisitDate) : null;
+  /**
+   * Absent means untouched for the five office-entered fields; see the note on
+   * `saveWorkReportSchema`. `undefined` is "the caller does not manage this", `null`/`[]`
+   * is "the caller is clearing it" — collapsing the two with `??` is what let a phone save
+   * erase a dispatcher's material list and follow-up flags.
+   */
+  if (input.actionTaken !== undefined) report.actionTaken = input.actionTaken ?? null;
+  if (input.repairRequired !== undefined) report.repairRequired = input.repairRequired;
+  if (input.revisitRequired !== undefined) report.revisitRequired = input.revisitRequired;
+  if (input.revisitDate !== undefined) {
+    report.revisitDate = input.revisitDate ? new Date(input.revisitDate) : null;
+  }
   report.set('beforePhotos', input.beforePhotoIds.map((id) => new Types.ObjectId(id)));
   report.set('afterPhotos', input.afterPhotoIds.map((id) => new Types.ObjectId(id)));
-  // Requirements 19.2: what was used on the job, typed by hand. The whole list is
-  // replaced, exactly as the photo lists are.
-  report.set(
-    'materials',
-    input.materials.map((entry) => ({
-      name: entry.name,
-      quantity: entry.quantity,
-      unit: entry.unit,
-    })),
-  );
+  // Requirements 19.2: what was used on the job, typed by hand. An explicitly sent list
+  // still replaces the whole thing, exactly as the photo lists do.
+  if (input.materials !== undefined) {
+    report.set(
+      'materials',
+      input.materials.map((entry) => ({
+        name: entry.name,
+        quantity: entry.quantity,
+        unit: entry.unit,
+      })),
+    );
+  }
 
   /**
    * The equipment link is the only bridge from a service result to the object master, so

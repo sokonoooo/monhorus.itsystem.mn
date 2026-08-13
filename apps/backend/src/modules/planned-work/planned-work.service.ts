@@ -11,6 +11,7 @@ import {
   type PlannedWorkMaterialsInput,
   type PlannedWorkPauseDto,
   type PlannedWorkPhotoDto,
+  type PlannedWorkReportDto,
   type PlannedWorkScheduleChangeDto,
   type PlannedWorkTaskDto,
   type RecordTaskProgressInput,
@@ -473,6 +474,45 @@ export function toListItemDto(
   };
 }
 
+/**
+ * Withholds an unapproved report from a customer, and the review trail from an approved one.
+ *
+ * `visibleToCustomer` was computed correctly and then acted on by nobody: the flag rode
+ * along beside the very content it described, so `GET /planned-work/:id` handed a customer
+ * the draft conclusion, the internal `returnReason` — a manager's written criticism of a
+ * technician's write-up — and the id and full name of everyone who authored, submitted,
+ * returned and approved it. Only the portal's JSX declined to paint it, which is a
+ * presentation choice rather than a boundary, and `curl` was never bound by it.
+ *
+ * `assertReportVisibleToCustomer` was written for exactly this and had zero callers. This
+ * is the same rule applied where the payload is actually built, so there is nothing left to
+ * forget to call. The sibling service-request path already gets it right by refusing
+ * server-side and composing its customer DTO field by field.
+ */
+function narrowReportForActor(
+  report: PlannedWorkReportDto | null,
+  actor: AuthContext,
+): PlannedWorkReportDto | null {
+  if (!report) return null;
+  if (resolveCustomerScope(actor).mode !== 'CUSTOMER') return report;
+
+  // Anything short of APPROVED is not the customer's to read at all.
+  if (report.status !== 'APPROVED') return null;
+
+  const empty = { id: null, name: null, at: null };
+  return {
+    ...report,
+    // The signed-off text is the deliverable; the review trail that produced it is not.
+    createdBy: empty,
+    submittedBy: empty,
+    returnedBy: empty,
+    returnReason: null,
+    submissionBlockers: [],
+    canApprove: false,
+    approvalBlockers: [],
+  };
+}
+
 async function loadDetail(
   work: Doc<IPlannedWork>,
   actor: AuthContext,
@@ -541,9 +581,12 @@ async function loadDetail(
     tasks: tasks.map((task) => toTaskDto(task, floorNames)),
     floorProgress: floorProgressOf(tasks, floorNames),
     materials,
-    report: reportState.report
-      ? toReportDto(reportState.report, actor, reportState.blockers)
-      : null,
+    report: narrowReportForActor(
+      reportState.report
+        ? toReportDto(reportState.report, actor, reportState.blockers)
+        : null,
+      actor,
+    ),
     availableActions: availableActionsFor(work, actor, blockers.length === 0, assignmentAllowed),
     completionBlockers: blockers,
   };

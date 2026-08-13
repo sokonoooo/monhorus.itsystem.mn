@@ -1,0 +1,51 @@
+[Unit]
+Description=Monhorus database and uploads backup
+Documentation=file:///srv/clients/monhorus/docs/DEPLOYMENT_MONHORUS_PROD.md
+# mongod must be up; if it is not, mongodump fails and the unit goes to failed state,
+# which is the correct outcome -- a missing backup should be visible, not silent.
+Requires=mongod.service
+After=mongod.service local-fs.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+
+# Overrides live here, not in this file, so a package update cannot revert them:
+#   BACKUP_DIR=/mnt/offhost/monhorus
+#   RETENTION_DAYS=21
+#   MIN_FREE_MB=768
+# The leading '-' means the unit still runs when the file is absent.
+EnvironmentFile=-/etc/monhorus/backup.env
+
+ExecStart=/usr/local/sbin/backup-monhorus.sh
+
+# 1.6 GB of RAM shared with four other live sites and a PostgreSQL. gzip and mongodump
+# get the leftovers, never priority -- a backup that degrades a neighbour is a bug.
+Nice=10
+IOSchedulingClass=idle
+CPUSchedulingPolicy=idle
+
+# A dump that hangs must not still be holding the disk when tomorrow's timer fires.
+TimeoutStartSec=3600
+
+# Writes only to the backup destination and reads only what it dumps. ProtectSystem is
+# deliberately not 'strict': BACKUP_DIR is operator-configurable and may be a mount that
+# strict mode would hide.
+#
+# Two of these have teeth if the setup changes:
+#   PrivateTmp    is safe only while MONGODB_URI is a TCP address (127.0.0.1:27017, as it
+#                 is here). Point it at a unix socket under /tmp and the dump cannot see it.
+#   ProtectHome   makes /home and /root invisible. A BACKUP_DIR under either will fail
+#                 with a confusing "No such file or directory" -- drop this line if you
+#                 move the destination there.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=monhorus-backup

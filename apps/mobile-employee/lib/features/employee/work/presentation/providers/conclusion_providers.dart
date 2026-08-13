@@ -548,7 +548,14 @@ class ConclusionEditor extends FamilyAsyncNotifier<ConclusionEditorState, Conclu
       conclusion: now.conclusion.trim().isEmpty ? null : now.conclusion.trim(),
       recommendation:
           now.recommendation.trim().isEmpty ? null : now.recommendation.trim(),
-      actionTaken: null,
+      // The five fields this editor draws no control for, echoed back from the loaded
+      // report rather than defaulted. The PUT replaces the record, so `null`/`false`/an
+      // absent key here is not "leave it alone" — it is "delete what the web recorded".
+      actionTaken: now.report.actionTaken,
+      materials: now.report.materials,
+      repairRequired: now.report.repairRequired,
+      revisitRequired: now.report.revisitRequired,
+      revisitDateWire: now.report.revisitDateWire,
       // Membership carries every card, including one not yet written up, so a selection
       // survives a save and can be filled in later.
       objectIds: now.drafts.map((EquipmentDraft draft) => draft.objectId).toList(),

@@ -762,6 +762,95 @@ describe('Work conclusion — boundaries', () => {
   });
 
   /**
+   * A save that does not mention the office-entered fields must not erase them.
+   *
+   * The employee mobile client omits `materials` and `revisitDate` entirely and used to
+   * hardcode both follow-up flags to false. While the schema defaulted those fields, an
+   * omission was indistinguishable from "clear", so a technician tapping Save wiped the
+   * material list a dispatcher had entered on the web (requirements 19.2), reset both
+   * flags and dropped the revisit date — silently, in one direction, with no warning on
+   * either client. The fields are now absent-means-untouched.
+   */
+  it('preserves office-entered fields when a save omits them', async () => {
+    const requestId = await seedRequest();
+    // The conclusion route is getOrCreate; the draft has to exist before it can be saved.
+    await getReport(requestId, token);
+
+    const seeded = await fillReport(requestId, {
+      actionTaken: 'Автомат таслуур сольсон.',
+      repairRequired: true,
+      revisitRequired: true,
+      revisitDate: '2026-09-01T00:00:00.000Z',
+      materials: [
+        { name: 'Автомат таслуур 16A', quantity: 2, unit: 'PIECE' },
+        { name: 'Кабель 2.5мм', quantity: 12.5, unit: 'METRE' },
+      ],
+    });
+    expect(seeded.status).toBe(200);
+
+    // A naive client: every field it manages, and none of the five it does not.
+    const naive = await request(app)
+      .put(`${API}/service-requests/${requestId}/report`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        score: 90,
+        conclusion: 'Утсаар шинэчиллээ.',
+        recommendation: 'Хэвийн.',
+        beforePhotoIds: [],
+        afterPhotoIds: [],
+      });
+
+    expect(naive.status).toBe(200);
+    expect(naive.body.data.score).toBe(90);
+
+    const after = await getReport(requestId, token);
+    expect(after.body.data.actionTaken).toBe('Автомат таслуур сольсон.');
+    expect(after.body.data.repairRequired).toBe(true);
+    expect(after.body.data.revisitRequired).toBe(true);
+    expect(after.body.data.revisitDate).toBe('2026-09-01T00:00:00.000Z');
+    expect(after.body.data.materials).toHaveLength(2);
+    expect(after.body.data.materials[0]).toMatchObject({
+      name: 'Автомат таслуур 16A',
+      quantity: 2,
+      unit: 'PIECE',
+    });
+  });
+
+  /**
+   * The other half of the same rule: absent is untouched, but an explicitly sent empty
+   * list or false still clears. Without this the fix would have made the web editor unable
+   * to remove a material it had added by mistake.
+   */
+  it('still clears office-entered fields when they are sent explicitly', async () => {
+    const requestId = await seedRequest();
+    await getReport(requestId, token)
+
+    await fillReport(requestId, {
+      repairRequired: true,
+      revisitRequired: true,
+      revisitDate: '2026-09-01T00:00:00.000Z',
+      actionTaken: 'Түр засвар.',
+      materials: [{ name: 'Гэрэл', quantity: 1, unit: 'PIECE' }],
+    });
+
+    const cleared = await fillReport(requestId, {
+      repairRequired: false,
+      revisitRequired: false,
+      revisitDate: null,
+      actionTaken: null,
+      materials: [],
+    });
+    expect(cleared.status).toBe(200);
+
+    const after = await getReport(requestId, token);
+    expect(after.body.data.repairRequired).toBe(false);
+    expect(after.body.data.revisitRequired).toBe(false);
+    expect(after.body.data.revisitDate).toBeNull();
+    expect(after.body.data.actionTaken).toBeNull();
+    expect(after.body.data.materials).toEqual([]);
+  });
+
+  /**
    * The gap this closes: the detail read was assignment-scoped and its conclusion
    * sub-route was not, so a colleague's request answered 404 while its conclusion answered
    * 200 — and because the route is `getOrCreate`, reading it MINTED a draft attributed to

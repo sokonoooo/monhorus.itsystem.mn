@@ -162,9 +162,22 @@ export const saveWorkReportSchema = z.object({
     .nullish(),
   conclusion: z.string().trim().max(4000).nullish(),
   recommendation: z.string().trim().max(4000).nullish(),
+  /**
+   * The five office-entered fields, and why these alone are absent-means-untouched.
+   *
+   * The photo and object lists below are deliberately replace-on-save working copies: the
+   * screen that sends them owns them outright. These five are different — they are filled
+   * in on the web by a dispatcher, and the employee mobile conclusion screen has no UI for
+   * them at all. While they defaulted, a phone save that simply did not mention them was
+   * indistinguishable from "clear them", so a technician tapping Save erased the material
+   * list (requirements 19.2), both follow-up flags and the revisit date.
+   *
+   * `.optional()` rather than `.default()` keeps an explicitly sent `[]`/`false`/`null`
+   * meaningful, so the web editor can still clear any of them on purpose.
+   */
   actionTaken: z.string().trim().max(2000).nullish(),
-  repairRequired: z.boolean().default(false),
-  revisitRequired: z.boolean().default(false),
+  repairRequired: z.boolean().optional(),
+  revisitRequired: z.boolean().optional(),
   revisitDate: isoDateSchema.nullish(),
   beforePhotoIds: z.array(objectIdSchema).max(20).default([]),
   afterPhotoIds: z.array(objectIdSchema).max(20).default([]),
@@ -195,7 +208,7 @@ export const saveWorkReportSchema = z.object({
       }),
     )
     .max(200)
-    .default([]),
+    .optional(),
 });
 
 export const returnWorkReportSchema = z.object({

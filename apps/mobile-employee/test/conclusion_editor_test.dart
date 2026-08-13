@@ -60,6 +60,13 @@ Map<String, dynamic> _report({
   List<String> beforePhotoIds = const <String>[],
   List<String> afterPhotoIds = const <String>[],
   List<String> missing = const <String>[],
+  String? actionTaken,
+  // The office's four fields, absent by default so every existing case still describes a
+  // report this app authored on its own.
+  List<Map<String, dynamic>>? materials,
+  bool? repairRequired,
+  bool? revisitRequired,
+  String? revisitDate,
 }) {
   List<Map<String, dynamic>> photos(List<String> ids) => ids
       .map((String id) => <String, dynamic>{'id': id, 'name': '$id.jpg'})
@@ -78,6 +85,11 @@ Map<String, dynamic> _report({
     'objectAssessments': assessments,
     'missing': missing,
     'isComplete': missing.isEmpty,
+    'actionTaken': actionTaken,
+    if (materials != null) 'materials': materials,
+    if (repairRequired != null) 'repairRequired': repairRequired,
+    if (revisitRequired != null) 'revisitRequired': revisitRequired,
+    if (revisitDate != null) 'revisitDate': revisitDate,
   };
 }
 
@@ -916,6 +928,104 @@ void main() {
     // The payload used to echo `report.beforePhotos` back, so a removal here came straight
     // back on the next read.
     expect(repository.saved.single.beforePhotoIds, <String>['old2']);
+  });
+
+  // -- The office's own fields -------------------------------------------------
+  //
+  // `materials`, `repairRequired`, `revisitRequired`, `revisitDate` and `actionTaken` are
+  // entered on the web console and this app draws no control for any of them. `PUT
+  // .../report` REPLACES the record and the schema defaults every one of them, so the
+  // payload used to erase all five — two hard-coded `false`s, a hard-coded `null` and two
+  // absent keys — the instant a technician tapped save.
+
+  test('saving from the phone relays the office fields rather than erasing them', () async {
+    final _ReportRepository repository = _ReportRepository(
+      initial: _report(
+        actionTaken: 'Автомат таслуур сольсон.',
+        materials: <Map<String, dynamic>>[
+          <String, dynamic>{'name': 'Кабель 3x2.5', 'quantity': 12.5, 'unit': 'METRE'},
+          <String, dynamic>{'name': 'Автомат таслуур', 'quantity': 2, 'unit': 'PIECE'},
+        ],
+        repairRequired: true,
+        revisitRequired: true,
+        revisitDate: '2026-09-01T00:00:00.000Z',
+      ),
+    );
+    final ProviderContainer container = ProviderContainer(
+      overrides: <Override>[
+        currentUserProvider.overrideWithValue(_author),
+        workRepositoryProvider.overrideWithValue(repository),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    const ConclusionRef ref = (requestId: kRequestId, buildingId: kBuildingId);
+    await container.read(conclusionEditorProvider(ref).future);
+    final ConclusionEditor editor = container.read(conclusionEditorProvider(ref).notifier);
+
+    // A perfectly ordinary edit on this app: the technician touches the narrative and
+    // saves. Nothing they did says anything about materials or the revisit.
+    editor.setConclusion('Ажил дууссан.');
+    await editor.save();
+
+    // Asserted on the encoded body, not on the object, because it is the JSON the server
+    // replaces the record from.
+    final Map<String, dynamic> sent = repository.saved.single.toJson();
+    expect(sent['conclusion'], 'Ажил дууссан.');
+    expect(sent['actionTaken'], 'Автомат таслуур сольсон.');
+    expect(sent['repairRequired'], isTrue);
+    expect(sent['revisitRequired'], isTrue);
+    expect(sent['revisitDate'], '2026-09-01T00:00:00.000Z');
+    expect(sent['materials'], <Map<String, dynamic>>[
+      <String, dynamic>{'name': 'Кабель 3x2.5', 'quantity': 12.5, 'unit': 'METRE'},
+      <String, dynamic>{'name': 'Автомат таслуур', 'quantity': 2, 'unit': 'PIECE'},
+    ]);
+    // A whole quantity goes back whole: `2.0` is a different body from `2`.
+    expect((sent['materials'] as List<dynamic>)[1]['quantity'], isA<int>());
+  });
+
+  test('a report with no office fields sends a payload the schema accepts', () async {
+    final _ReportRepository repository = _ReportRepository(
+      initial: <String, dynamic>{
+        ..._report(),
+        // Explicit nulls as well as absent keys, and one material row the server's own
+        // schema would refuse back (`name` min(1), `quantity` positive) alongside one
+        // whose quantity is not a number at all.
+        'repairRequired': null,
+        'revisitRequired': null,
+        'revisitDate': null,
+        'materials': <dynamic>[
+          <String, dynamic>{'name': '', 'quantity': 3, 'unit': 'PIECE'},
+          <String, dynamic>{'name': 'Гагнуурын утас', 'quantity': 0},
+          <String, dynamic>{'name': 'Тусгаарлагч тууз', 'quantity': '4'},
+          <String, dynamic>{'name': 'Сум', 'quantity': 1},
+        ],
+      },
+    );
+    final ProviderContainer container = ProviderContainer(
+      overrides: <Override>[
+        currentUserProvider.overrideWithValue(_author),
+        workRepositoryProvider.overrideWithValue(repository),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    const ConclusionRef ref = (requestId: kRequestId, buildingId: kBuildingId);
+    await container.read(conclusionEditorProvider(ref).future);
+    final ConclusionEditor editor = container.read(conclusionEditorProvider(ref).notifier);
+
+    expect(await editor.save(), isNull);
+
+    final Map<String, dynamic> sent = repository.saved.single.toJson();
+    expect(sent['repairRequired'], isFalse);
+    expect(sent['revisitRequired'], isFalse);
+    expect(sent['revisitDate'], isNull);
+    expect(sent['actionTaken'], isNull);
+    // Only the one well-formed row survives, and the unit falls back to the schema's own
+    // default rather than being dropped.
+    expect(sent['materials'], <Map<String, dynamic>>[
+      <String, dynamic>{'name': 'Сум', 'quantity': 1, 'unit': 'PIECE'},
+    ]);
   });
 
   testWidgets('both visit photo slots are drawn and labelled', (WidgetTester tester) async {

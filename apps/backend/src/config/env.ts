@@ -115,7 +115,44 @@ const envSchema = z.object({
   MAIL_FROM: z.string().min(1).default('Monhorus <no-reply@monhorus.itsystem.mn>'),
 });
 
-const parsed = envSchema.safeParse(process.env);
+/**
+ * The settings whose development defaults are silently wrong in production.
+ *
+ * `APP_WEB_BASE_URL` is the one that cannot fail visibly on its own. It is defaulted so a
+ * fresh checkout produces a working reset link, and it is the ONLY thing that decides where
+ * a mailed link points — the server cannot derive it from a request, because the request
+ * comes from the browser being reset or from nothing at all. Left unset in a deployment,
+ * every recipient is sent a link to their own machine, and nothing anywhere reports a
+ * problem: the send succeeds, the log is clean, the API returns its fixed message, and only
+ * the reader sees a dead link.
+ *
+ * Refusing to boot converts that into the loudest possible failure, at the one moment
+ * somebody is watching. It is checked here rather than at the field, because the rule
+ * depends on NODE_ENV, which is a sibling key.
+ */
+function assertProductionOverrides(value: z.infer<typeof envSchema>, ctx: z.RefinementCtx): void {
+  if (value.NODE_ENV !== 'production') return;
+
+  const webBaseUrl = value.APP_WEB_BASE_URL;
+  let host = '';
+  try {
+    host = new URL(webBaseUrl).hostname;
+  } catch {
+    // Unreachable: the field is `z.string().url()`, so it has already parsed.
+  }
+
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['APP_WEB_BASE_URL'],
+      message:
+        `must be the public address of the web app in production, not "${webBaseUrl}". ` +
+        'It is what every password-reset link points at, and a wrong value fails silently.',
+    });
+  }
+}
+
+const parsed = envSchema.superRefine(assertProductionOverrides).safeParse(process.env);
 
 if (!parsed.success) {
   const issues = parsed.error.issues

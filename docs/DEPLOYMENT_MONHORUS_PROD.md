@@ -386,7 +386,9 @@ sudo tar czf /var/backups/monhorus/uploads-$(date +%F).tar.gz -C /var/lib/monhor
 ```
 
 Restore: `mongorestore --archive=... --gzip --drop`, then untar uploads back to
-`/var/lib/monhorus`. **Nothing is scheduled yet** — see `IMPROVEMENTS.md`.
+`/var/lib/monhorus`. **These commands are now scheduled and scripted — see section 12**,
+which supersedes the manual procedure here and adds retention, a disk-space guard and a
+rehearsed restore. Run the ad-hoc commands above only for a one-off dump outside the timer.
 
 ---
 
@@ -442,3 +444,193 @@ sudo ufw delete allow 3020/tcp && sudo ufw delete allow 3021/tcp
 
 `/srv/clients/monhorus`, `/var/lib/monhorus`, the `monhorus` database and the `monhorus`
 user can then be removed independently. No other tenant is touched at any point.
+
+---
+
+## 12. Scheduled backups, and a restore that has actually been run
+
+This supersedes the "Nothing is scheduled yet" note in section 9 — those commands are now
+in `scripts/backup-monhorus.sh` and a systemd timer runs them. Section 9 remains accurate
+as the description of *what* is dumped and why both halves travel together.
+
+The audit finding this closes was not "there is no backup command". It was that nothing
+ran the command and **nobody had ever restored from one**. An untested backup is a belief,
+not a control. Rehearse the restore before you need it — the procedure at the end of this
+section takes ten minutes and does not touch production.
+
+### Install
+
+Four files, all from `scripts/` in the repository:
+
+```bash
+# On the workstation
+scp scripts/backup-monhorus.sh scripts/restore-monhorus.sh \
+    scripts/monhorus-backup.service scripts/monhorus-backup.timer \
+    its@103.87.255.221:/tmp/
+
+# On the host
+sudo install -m 0750 -o root -g root /tmp/backup-monhorus.sh  /usr/local/sbin/
+sudo install -m 0750 -o root -g root /tmp/restore-monhorus.sh /usr/local/sbin/
+sudo install -m 0644 -o root -g root /tmp/monhorus-backup.service /etc/systemd/system/
+sudo install -m 0644 -o root -g root /tmp/monhorus-backup.timer   /etc/systemd/system/
+sudo mkdir -p /var/backups/monhorus && sudo chmod 0700 /var/backups/monhorus
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now monhorus-backup.timer
+```
+
+`ExecStart` is the absolute path `/usr/local/sbin/backup-monhorus.sh`, so the units only
+work once the scripts are installed there. `0750 root:root` is deliberate — the script
+reads `/etc/monhorus/backend.env`, and nothing that is not root has any business running
+it.
+
+Enable the **timer**, never the service. The service has no `[Install]` section on
+purpose; it is a `Type=oneshot` job that exists to be triggered.
+
+### Verify the timer is armed
+
+```bash
+systemctl list-timers monhorus-backup.timer --all
+```
+
+`NEXT` must be a real date and `LEFT` must count down. A timer that is loaded but not
+enabled shows no `NEXT` — that is the failure mode to look for, because everything else
+about it looks healthy.
+
+Force one run immediately rather than waiting until 02:30, and read the result:
+
+```bash
+sudo systemctl start monhorus-backup.service     # blocks; oneshot
+systemctl status monhorus-backup.service --no-pager
+sudo journalctl -u monhorus-backup -n 40 --no-pager
+ls -lh /var/backups/monhorus/
+```
+
+A good run ends with `ok  db=… uploads=… (N files)` and the unit at
+`Active: inactive (dead)` with `status=0/SUCCESS`. Any failure exits non-zero, so
+`systemctl status` shows `failed` and the reason is the last line in the journal. The
+whole reason the script exits non-zero on a half-failure is so this stays true.
+
+### Schedule and retention
+
+| | |
+|---|---|
+| When | daily 02:30 local, plus up to 30 min of random delay |
+| Missed runs | `Persistent=true` — a run missed while the host was down fires on boot |
+| Kept | 14 days, then pruned |
+| Where | `/var/backups/monhorus`, mode 0700, archives 0600 |
+| Names | `db-<date>-<time>.archive.gz`, `uploads-<date>-<time>.tar.gz` |
+
+`RandomizedDelaySec` is not cosmetic on this box: four other sites and a PostgreSQL share
+the disk, and starting every nightly job on the same minute is how a 1.6 GB host falls
+over.
+
+Overrides go in `/etc/monhorus/backup.env` — the unit reads it, so a re-install of the
+script cannot revert them:
+
+```ini
+BACKUP_DIR=/mnt/offhost/monhorus
+RETENTION_DAYS=21
+MIN_FREE_MB=768
+```
+
+**14 days is a disk decision, not a policy decision.** The root filesystem runs 83–88%
+full. Before raising retention, measure: `du -sh /var/backups/monhorus` and
+`df -h /`. The script refuses to dump when the estimate does not fit and says so in the
+journal — `insufficient disk space … NO BACKUP WAS TAKEN` — which is the one message in
+this system that must never be ignored, because it means the retention window is quietly
+ageing out with nothing replacing it.
+
+**Everything is on one disk.** These archives protect against a bad deploy, a wrong
+`deleteMany` and a corrupted collection. They protect against nothing that destroys the
+host. Pointing `BACKUP_DIR` at an off-host mount is the single largest remaining
+improvement, and the script was written so that it is a one-line change.
+
+### Restore
+
+```bash
+sudo /usr/local/sbin/restore-monhorus.sh 2026-08-13 --confirm
+```
+
+The argument is a date, a full stamp, `latest`, or a path to either archive; the script
+finds the matching pair and refuses to proceed if one half is missing. Without
+`--confirm` it prints what it would destroy and exits 2.
+
+What it does, in order: stops `monhorus-api` → takes a `pre-restore-*.archive.gz` of the
+current database → `mongorestore --drop` → extracts the uploads → `chown -R
+monhorus:monhorus` and sets dirs `0750`, files `0640` → starts `monhorus-api`. The service
+is restarted even if the restore fails partway.
+
+Three things to know before you rely on it:
+
+- **`--drop` only drops what the archive contains.** A collection created after the
+  backup survives the restore. Usually harmless; occasionally the explanation for
+  behaviour that makes no sense afterwards.
+- **Uploads are extracted as an overlay, not a wipe.** Files added since the backup are
+  left in place rather than deleted — the safer default when the archive is the only copy
+  and the disk has no room for a second one. The script reports the count difference.
+- **`sync-indexes` is mandatory afterwards.** `config/database.ts` uses
+  `autoIndex: !isProduction`, so nothing rebuilds indexes on boot. `mongorestore`
+  restores the index set *as of the backup*, which is older than the deployed schema by
+  every release since. The gap makes queries slow, not broken, so nothing alerts you.
+  The script prints the exact commands (section 5) when it finishes.
+
+### Rehearse it — before you need it
+
+This is the part that closes the finding. It runs against production data on the
+production host and touches neither the live database nor the live uploads:
+
+```bash
+sudo mkdir -p /tmp/restore-rehearsal
+sudo /usr/local/sbin/restore-monhorus.sh latest --confirm \
+     --db monhorus_rehearsal \
+     --uploads-dir /tmp/restore-rehearsal \
+     --owner root:root \
+     --no-service --no-pre-dump
+```
+
+`--db` remaps the namespace, `--uploads-dir` redirects the files and `--no-service` leaves
+the API running. Then check what came back:
+
+```bash
+mongosh --quiet "mongodb://127.0.0.1:27017/monhorus_rehearsal?replicaSet=rs0" --eval '
+  db.getCollectionNames().forEach(c => print(c + " " + db[c].countDocuments({})))'
+find /tmp/restore-rehearsal -type f | wc -l
+```
+
+Compare the counts against the live database. When satisfied, clean up — the rehearsal
+copy is a second full set of uploads on a disk that does not have room for one:
+
+```bash
+sudo rm -rf /tmp/restore-rehearsal
+mongosh --quiet "mongodb://127.0.0.1:27017/monhorus_rehearsal?replicaSet=rs0" \
+  --eval 'db.dropDatabase()'
+```
+
+Do this after any change to the schema, the upload path or the Mongo version, and record
+the date here when you do. **The first time these scripts run must not be the day the
+database is gone.**
+
+### Verified 2026-08-13
+
+The full cycle was proven before these scripts were committed — MongoDB 8.2 single-node
+replica set, `mongodump`/`mongorestore` 100.14.0, throwaway database and uploads tree:
+backup taken, database dropped outright and the uploads directory deleted, restore run,
+and all documents, indexes and files came back — the four files byte-identical by
+`sha256`. The disk-space abort, the 14-day prune, the `--confirm` refusal and the
+namespace remap were each exercised separately.
+
+Two findings from that rehearsal are worth keeping:
+
+- Restoring into a differently-named uploads directory originally extracted over the
+  *real* one, because a tar archive carries the directory name it was made from. The
+  script now extracts with `--strip-components=1` into the target directory. This is why
+  rehearsals happen on a throwaway copy.
+- Sourcing `/etc/monhorus/backend.env` to read `MONGODB_URI` was confirmed to yield an
+  empty string when the value is unquoted, exactly as section 3 warns. Both scripts parse
+  the file with `grep` instead and never let the shell interpret the value.
+
+Not verified: the systemd units have never been loaded by a running systemd (they were
+written and syntax-checked on macOS). Run the `list-timers` and manual-start checks above
+on the host the first time, and do not assume the timer is armed until `NEXT` shows a
+date.
