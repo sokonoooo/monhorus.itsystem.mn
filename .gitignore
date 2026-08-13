@@ -46,6 +46,14 @@ apps/*/android/app/release/
 .env.*
 !.env.example
 
+# apps/web/.env.production is the exception, and is tracked. It holds no secret — Vite
+# inlines every VITE_* value into the bundle, so anything in it is public the moment the
+# site is served. It is tracked precisely because it must survive a fresh clone: the API
+# origin is baked in at BUILD time, so if that file is missing the build silently falls
+# back to http://localhost:4000/api/v1 and produces a bundle that deploys cleanly and
+# then sends every request to whoever built it.
+!apps/web/.env.production
+
 # -- Local uploads ------------------------------------------------------------
 #
 # The storage module writes attachments to disk in development. They are tenant data,
