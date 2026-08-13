@@ -1,12 +1,16 @@
 import {
   ACCOUNT_STATUS_LABELS,
   PERMISSIONS,
+  USER_ROLES,
+  USER_ROLE_LABELS,
   canManageRole,
   type AccountStatus,
   type CreateUserResponse,
+  type PaginatedData,
   type UserDto,
+  type UserRole,
 } from '@monhorus/shared';
-import { useCallback, useEffect, useState, type FormEvent, type ReactElement } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactElement } from 'react';
 
 import { Alert } from '../../components/ui/Alert';
 import { Button } from '../../components/ui/Button';
@@ -15,11 +19,15 @@ import { DataTable, Pagination, type Column } from '../../components/ui/DataTabl
 import { Input } from '../../components/ui/Input';
 import { Modal } from '../../components/ui/Modal';
 import { RowActions, type RowActionItem } from '../../components/ui/RowActions';
+import { SearchField } from '../../components/ui/SearchField';
+import { FILTER_LABEL, FILTER_SEARCH_SLOT, FILTER_SELECT } from '../../components/ui/control-styles';
 import { useToast } from '../../components/ui/ToastProvider';
 import { useAuth } from '../../contexts/auth-context';
 import { ApiError } from '../../lib/api-client';
 import { generatePasscode } from '../../lib/passcode';
 import { userService } from '../../services/user.service';
+
+const PAGE_SIZE = 20;
 
 /** The server refuses a caller acting on their own account, so the item is dead here too. */
 const SELF_TARGET_REASON = 'Өөрийн бүртгэл дээр энэ үйлдлийг хийх боломжгүй.';
@@ -85,16 +93,6 @@ function formatDate(iso: string | null): string {
 }
 
 /**
- * Portal accounts per screen.
- *
- * Most customers have a handful, so `Pagination` hides itself here more often than not —
- * it shows nothing below two pages. It is wired up anyway because the fetch it replaces
- * asked for a hundred and dropped whatever came after, which is a quiet failure rather
- * than a rare one.
- */
-const PORTAL_USER_PAGE_SIZE = 20;
-
-/**
  * The portal logins of one customer organisation.
  *
  * A customer signs in through the same endpoint as staff; what makes the account a tenant
@@ -109,10 +107,16 @@ export function CustomerPortalAccessTab({ customerId }: { customerId: string }):
   const { can, user: actor } = useAuth();
   const { notify } = useToast();
 
-  const [rows, setRows] = useState<UserDto[]>([]);
+  // Paging and filtering live in component state, NOT in the URL as they do on
+  // CustomerListPage. This is a tab inside CustomerDetailPage, which already owns the query
+  // string for tab selection; three sibling tabs each writing `page`/`search` there would
+  // overwrite one another and collide with the parent's `tab` param.
   const [page, setPage] = useState(1);
-  const [total, setTotal] = useState(0);
-  const [totalPages, setTotalPages] = useState(1);
+  const [search, setSearch] = useState('');
+  const [searchDraft, setSearchDraft] = useState('');
+  const [role, setRole] = useState<UserRole | ''>('');
+
+  const [data, setData] = useState<PaginatedData<UserDto> | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
@@ -126,29 +130,44 @@ export function CustomerPortalAccessTab({ customerId }: { customerId: string }):
   const canManage =
     can(PERMISSIONS.USER_MANAGE) && (actor ? canManageRole(actor.role, 'customer') : false);
 
+  const requestIdRef = useRef(0);
+
   const load = useCallback(async (): Promise<void> => {
+    const requestId = ++requestIdRef.current;
     setLoading(true);
     setError(null);
     try {
-      const result = await userService.list({ customerId, page, limit: PORTAL_USER_PAGE_SIZE });
-      setRows(result.items);
-      setTotal(result.total);
-      setTotalPages(result.totalPages);
+      // Search and role go to the server: only the current page is ever in hand here,
+      // so filtering client-side would filter one page out of many.
+      const result = await userService.list({
+        customerId,
+        page,
+        limit: PAGE_SIZE,
+        ...(search ? { search } : {}),
+        ...(role ? { role } : {}),
+      });
+      if (requestId !== requestIdRef.current) return;
+      setData(result);
     } catch (caught) {
+      if (requestId !== requestIdRef.current) return;
       setError(caught instanceof ApiError ? caught.message : 'Нэвтрэх эрх ачаалж чадсангүй.');
     } finally {
-      setLoading(false);
+      if (requestId === requestIdRef.current) setLoading(false);
     }
-  }, [customerId, page]);
-
-  // A page number from the previous customer is rarely valid for the next one.
-  useEffect(() => {
-    setPage(1);
-  }, [customerId]);
+  }, [customerId, page, search, role]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  /** Any narrowing returns to page 1; page 4 of the old result is empty under the new one. */
+  function commitSearch(value: string): void {
+    setSearch(value);
+    setPage(1);
+  }
+
+  const rows = data?.items ?? [];
+  const hasFilters = search !== '' || role !== '';
 
   async function runLifecycle(
     action: LifecycleAction,
@@ -261,6 +280,48 @@ export function CustomerPortalAccessTab({ customerId }: { customerId: string }):
         )}
       </div>
 
+      {/* The controls are CustomerListPage's, but without its FILTER_BAR card: this tab
+          already sits inside CustomerDetailPage's white card and a second one would nest. */}
+      <div className="flex flex-wrap items-end gap-3">
+        <div className={FILTER_SEARCH_SLOT}>
+          <label htmlFor="customer-portal-search" className={FILTER_LABEL}>
+            Хайлт
+          </label>
+          <SearchField
+            id="customer-portal-search"
+            value={searchDraft}
+            onChange={(event) => setSearchDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') commitSearch(searchDraft.trim());
+            }}
+            onBlur={() => commitSearch(searchDraft.trim())}
+            placeholder="Нэр, имэйл"
+          />
+        </div>
+
+        <div>
+          <label htmlFor="customer-portal-role" className={FILTER_LABEL}>
+            Эрх
+          </label>
+          <select
+            id="customer-portal-role"
+            value={role}
+            onChange={(event) => {
+              setRole(event.target.value as UserRole | '');
+              setPage(1);
+            }}
+            className={FILTER_SELECT}
+          >
+            <option value="">Бүх эрх</option>
+            {USER_ROLES.map((value) => (
+              <option key={value} value={value}>
+                {USER_ROLE_LABELS[value]}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
       {/* Already inside CustomerDetailPage's white card, so this takes the ring-only
           treatment the sibling tabs use rather than nesting a second white card. */}
       <div className="overflow-hidden rounded-lg ring-1 ring-slate-200">
@@ -268,15 +329,28 @@ export function CustomerPortalAccessTab({ customerId }: { customerId: string }):
           columns={columns}
           rows={rows}
           rowKey={(row) => row.id}
+          // Numbered off the response rather than the query, so a request in flight can
+          // never number the rows on screen against the page they did not come from.
+          numbering={{ page: data?.page ?? 1, limit: data?.limit ?? PAGE_SIZE }}
           loading={loading}
           error={error}
           onRetry={() => void load()}
-          numbering={{ page, limit: PORTAL_USER_PAGE_SIZE }}
           ariaLabel="Нэвтрэх эрх"
           emptyTitle="Нэвтрэх эрх байхгүй"
-          emptyDescription="Энэ харилцагчид порталд нэвтрэх бүртгэл үүсгээгүй байна."
+          emptyDescription={
+            hasFilters
+              ? 'Шүүлтүүрт тохирох бүртгэл алга.'
+              : 'Энэ харилцагчид порталд нэвтрэх бүртгэл үүсгээгүй байна.'
+          }
         />
-        <Pagination page={page} totalPages={totalPages} total={total} onPageChange={setPage} />
+        {data && (
+          <Pagination
+            page={data.page}
+            totalPages={data.totalPages}
+            total={data.total}
+            onPageChange={setPage}
+          />
+        )}
       </div>
 
       <CreatePortalAccountModal

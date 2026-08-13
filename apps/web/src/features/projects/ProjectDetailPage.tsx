@@ -2,11 +2,12 @@ import {
   PERMISSIONS,
   createBuildingSchema,
   type BuildingDto,
+  type BuildingListQuery,
   type PaginatedData,
   type ProjectDto,
 } from '@monhorus/shared';
-import { useCallback, useEffect, useState, type ReactElement } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
 import { Alert } from '../../components/ui/Alert';
 import { Button } from '../../components/ui/Button';
@@ -16,6 +17,7 @@ import { DataTable, Pagination, type Column } from '../../components/ui/DataTabl
 import { Drawer } from '../../components/ui/Drawer';
 import { MapPicker } from '../../components/ui/MapPicker';
 import { PageHeader } from '../../components/ui/PageHeader';
+import { SearchField } from '../../components/ui/SearchField';
 import { ErrorState, Skeleton } from '../../components/ui/States';
 import { useToast } from '../../components/ui/ToastProvider';
 import { FIELD_TEXTAREA, FILTER_LABEL } from '../../components/ui/control-styles';
@@ -26,15 +28,6 @@ import { projectService } from '../../services/project.service';
 import { RiskSummaryCell } from './objects/ObjectBadges';
 import { Field, TextInput } from '../employees/FormControls';
 import { ActiveBadge } from './ProjectListPage';
-
-/**
- * Buildings under a project, one screen at a time.
- *
- * The list was fetched with `limit: 100` and rendered whole, so the 101st building of a
- * large project was dropped with nothing on screen to say so. A window with a pager under
- * it states its own total instead, and grows past a hundred.
- */
-const BUILDING_PAGE_SIZE = 20;
 
 function formatDate(iso: string | null): string {
   if (!iso) return '-';
@@ -214,6 +207,11 @@ export function ProjectDetailPage(): ReactElement {
 
   const canManage = can(PERMISSIONS.OBJECT_MANAGE);
 
+  // The building table's page and search live in the URL, the same as the project list:
+  // this route reads nothing else from the query string, so there is nothing to clash with,
+  // and a link to page 3 of a long project's buildings stays a link.
+  const [searchParams, setSearchParams] = useSearchParams();
+
   const [project, setProject] = useState<ProjectDto | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -221,8 +219,19 @@ export function ProjectDetailPage(): ReactElement {
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   const [buildings, setBuildings] = useState<PaginatedData<BuildingDto> | null>(null);
-  const [buildingPage, setBuildingPage] = useState(1);
+  const [buildingsLoading, setBuildingsLoading] = useState(true);
   const [buildingsError, setBuildingsError] = useState<string | null>(null);
+  const [searchDraft, setSearchDraft] = useState(() => searchParams.get('search') ?? '');
+
+  const buildingQuery = useMemo<BuildingListQuery>(() => {
+    const page = Number.parseInt(searchParams.get('page') ?? '1', 10);
+    return {
+      ...(projectId ? { projectId } : {}),
+      page: Number.isFinite(page) && page > 0 ? page : 1,
+      limit: 20,
+      ...(searchParams.get('search') ? { search: searchParams.get('search')! } : {}),
+    };
+  }, [projectId, searchParams]);
 
   const loadProject = useCallback(async (): Promise<void> => {
     if (!projectId) return;
@@ -237,29 +246,27 @@ export function ProjectDetailPage(): ReactElement {
     }
   }, [projectId]);
 
-  /**
-   * Buildings load on their own so turning a page reloads the table and not the project:
-   * driving both from one fetch would blank the whole screen to a skeleton to change a
-   * page, and the header, dates and description above have not changed.
-   */
+  // The list is fetched apart from the detail so that turning a page or typing a search
+  // reloads the table alone, rather than throwing the whole page back to its skeleton.
+  const requestIdRef = useRef(0);
+  const queryKey = JSON.stringify(buildingQuery);
+
   const loadBuildings = useCallback(async (): Promise<void> => {
     if (!projectId) return;
-    // Cleared first, so the table shows its skeleton rather than the previous page's
-    // buildings sitting under the new page's row numbers.
-    setBuildings(null);
+    const requestId = ++requestIdRef.current;
+    setBuildingsLoading(true);
     setBuildingsError(null);
     try {
-      setBuildings(
-        await projectService.listBuildings({
-          projectId,
-          page: buildingPage,
-          limit: BUILDING_PAGE_SIZE,
-        }),
-      );
+      const result = await projectService.listBuildings(JSON.parse(queryKey) as BuildingListQuery);
+      if (requestId !== requestIdRef.current) return;
+      setBuildings(result);
     } catch (caught) {
+      if (requestId !== requestIdRef.current) return;
       setBuildingsError(caught instanceof ApiError ? caught.message : 'Барилга ачаалж чадсангүй.');
+    } finally {
+      if (requestId === requestIdRef.current) setBuildingsLoading(false);
     }
-  }, [projectId, buildingPage]);
+  }, [projectId, queryKey]);
 
   useEffect(() => {
     void loadProject();
@@ -268,6 +275,21 @@ export function ProjectDetailPage(): ReactElement {
   useEffect(() => {
     void loadBuildings();
   }, [loadBuildings]);
+
+  /** Creating a building changes both the list and the counts on the detail. */
+  const load = useCallback(async (): Promise<void> => {
+    await Promise.all([loadProject(), loadBuildings()]);
+  }, [loadProject, loadBuildings]);
+
+  function updateParam(key: string, value: string): void {
+    const next = new URLSearchParams(searchParams);
+    if (value) next.set(key, value);
+    else next.delete(key);
+    // Any filter change starts again at the first page; row 21 of the old result is
+    // not row 21 of the new one.
+    if (key !== 'page') next.delete('page');
+    setSearchParams(next);
+  }
 
   async function handleDelete(): Promise<void> {
     if (!project) return;
@@ -414,6 +436,23 @@ export function ProjectDetailPage(): ReactElement {
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-5 py-3">
             <h2 className="text-sm font-semibold text-slate-900">Барилга</h2>
             <div className="flex items-center gap-2">
+              <div className="w-52">
+                {/* Labelled for a screen reader only: the heading beside it already says
+                    which table this searches. */}
+                <label htmlFor="prj-building-search" className="sr-only">
+                  Хайлт
+                </label>
+                <SearchField
+                  id="prj-building-search"
+                  value={searchDraft}
+                  onChange={(event) => setSearchDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') updateParam('search', searchDraft.trim());
+                  }}
+                  onBlur={() => updateParam('search', searchDraft.trim())}
+                  placeholder="Нэр эсвэл код"
+                />
+              </div>
               <ColumnPicker controller={columnState} />
               {canManage && project.isActive && (
                 <Button variant="secondary" size="sm" onClick={() => setDrawerOpen(true)}>
@@ -426,23 +465,28 @@ export function ProjectDetailPage(): ReactElement {
             columns={columnState.visibleColumns}
             rows={buildings?.items ?? []}
             rowKey={(row) => row.id}
-            loading={buildings === null && buildingsError === null}
+            // Numbered off the response rather than the query, so a request in flight can
+            // never number the rows on screen against the page they did not come from.
+            numbering={{ page: buildings?.page ?? 1, limit: buildings?.limit ?? 20 }}
+            loading={buildingsLoading}
             error={buildingsError}
             onRetry={() => void loadBuildings()}
-            numbering={{
-              page: buildings?.page ?? buildingPage,
-              limit: buildings?.limit ?? BUILDING_PAGE_SIZE,
-            }}
             onRowClick={(row) => navigate(`/buildings/${row.id}`)}
             emptyTitle="Барилга бүртгэгдээгүй"
-            emptyDescription="Давхар болон объект нэмэхийн тулд эхлээд барилга бүртгэнэ үү."
+            emptyDescription={
+              searchParams.get('search')
+                ? 'Хайлтад тохирох барилга алга.'
+                : 'Давхар болон объект нэмэхийн тулд эхлээд барилга бүртгэнэ үү.'
+            }
           />
-          <Pagination
-            page={buildings?.page ?? buildingPage}
-            totalPages={buildings?.totalPages ?? 1}
-            total={buildings?.total ?? 0}
-            onPageChange={setBuildingPage}
-          />
+          {buildings && (
+            <Pagination
+              page={buildings.page}
+              totalPages={buildings.totalPages}
+              total={buildings.total}
+              onPageChange={(page) => updateParam('page', String(page))}
+            />
+          )}
         </div>
 
         {/* The reasons deletion is blocked close the page: they explain an action that is
@@ -464,9 +508,7 @@ export function ProjectDetailPage(): ReactElement {
         onClose={() => setDrawerOpen(false)}
         onSaved={() => {
           setDrawerOpen(false);
-          // Both: the table gains a row, and the project's delete blockers change with it.
-          void loadProject();
-          void loadBuildings();
+          void load();
         }}
       />
 

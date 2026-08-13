@@ -4,8 +4,9 @@ import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 
 import { AppShell } from './components/layout/AppShell';
 import { PermissionGuard } from './components/PermissionGuard';
+import { ForbiddenState } from './components/ui/States';
 import { ToastProvider } from './components/ui/ToastProvider';
-import { AuthProvider } from './contexts/auth-context';
+import { AuthProvider, useAuth } from './contexts/auth-context';
 import { ChangePasswordPage } from './features/auth/ChangePasswordPage';
 import { ForgotPasswordPage } from './features/auth/ForgotPasswordPage';
 import { LoginPage } from './features/auth/LoginPage';
@@ -47,6 +48,17 @@ import { ServiceRequestCreatePage } from './features/service-requests/ServiceReq
 import { ServiceRequestDetailPage } from './features/service-requests/ServiceRequestDetailPage';
 import { ServiceRequestListPage } from './features/service-requests/ServiceRequestListPage';
 import { SettingsPage } from './features/settings/SettingsPage';
+import { PortalFloorPage } from './features/portal/PortalFloorPage';
+import { PortalHomePage } from './features/portal/PortalHomePage';
+import { PortalObjectDetailPage } from './features/portal/PortalObjectDetailPage';
+import { PortalPlannedWorkDetailPage } from './features/portal/PortalPlannedWorkDetailPage';
+import { PortalPlannedWorkListPage } from './features/portal/PortalPlannedWorkListPage';
+import { PortalRequestCreatePage } from './features/portal/PortalRequestCreatePage';
+import { PortalRequestDetailPage } from './features/portal/PortalRequestDetailPage';
+import { PortalRequestListPage } from './features/portal/PortalRequestListPage';
+import { PortalSiteDetailPage } from './features/portal/PortalSiteDetailPage';
+import { PortalSitesPage } from './features/portal/PortalSitesPage';
+import { homePathFor } from './lib/home-path';
 import { ProtectedRoute } from './routes/ProtectedRoute';
 
 /** Authenticated page inside the shell, gated by an any-of permission list. */
@@ -64,6 +76,49 @@ function Page({
       </AppShell>
     </ProtectedRoute>
   );
+}
+
+/**
+ * A portal page: the shell, the permission gate, and the CUSTOMER TIER.
+ *
+ * The tier check is not redundant with the permissions. SYSTEM_ADMIN is resynchronised to
+ * the entire permission catalogue on every boot and `head_admin` is an unconditional
+ * superuser, so both hold every `portal.*` key — the permission gate alone lets them
+ * straight in. That matters beyond tidiness: `resolveCustomerScope` reads the tier, so a
+ * staff caller reaching these screens gets STAFF scope, and the customer-styled request
+ * list would quietly fill with EVERY organisation's records.
+ *
+ * The refusal is the same `ForbiddenState` every other guard renders, so a staff member who
+ * follows an old link sees the app's normal "not for you" rather than a broken screen.
+ */
+function PortalPage({
+  anyOf,
+  children,
+}: {
+  anyOf: readonly (typeof PERMISSIONS)[keyof typeof PERMISSIONS][];
+  children: ReactNode;
+}): ReactElement {
+  return (
+    <ProtectedRoute>
+      <AppShell>
+        <CustomerOnly>
+          <PermissionGuard anyOf={anyOf}>{children}</PermissionGuard>
+        </CustomerOnly>
+      </AppShell>
+    </ProtectedRoute>
+  );
+}
+
+export function CustomerOnly({ children }: { children: ReactNode }): ReactElement {
+  const { user } = useAuth();
+  if (user && user.role !== 'customer') return <ForbiddenState />;
+  return <>{children}</>;
+}
+
+/** Sends a signed-in caller to the home their account actually has. */
+function HomeRedirect(): ReactElement {
+  const { user } = useAuth();
+  return <Navigate to={homePathFor(user?.role)} replace />;
 }
 
 export default function App(): ReactElement {
@@ -457,7 +512,125 @@ export default function App(): ReactElement {
             }
           />
 
-          <Route path="/" element={<Navigate to="/dashboard" replace />} />
+          {/*
+            THE CUSTOMER PORTAL.
+
+            Same three layers as every staff route — ProtectedRoute, AppShell,
+            PermissionGuard — through the same `Page` helper, gated on the `portal.*` keys
+            the backend already accepts. No separate auth path, no second guard component,
+            no role branch: a customer is an ordinary authenticated caller whose permission
+            set happens to be portal keys.
+          */}
+          <Route
+            path="/portal"
+            element={
+              <PortalPage anyOf={[PERMISSIONS.PORTAL_SERVICE_REQUEST_VIEW, PERMISSIONS.PORTAL_BUILDING_VIEW]}>
+                <PortalHomePage />
+              </PortalPage>
+            }
+          />
+          <Route
+            path="/portal/requests"
+            element={
+              <PortalPage anyOf={[PERMISSIONS.PORTAL_SERVICE_REQUEST_VIEW]}>
+                <PortalRequestListPage />
+              </PortalPage>
+            }
+          />
+          <Route
+            path="/portal/requests/new"
+            element={
+              <PortalPage anyOf={[PERMISSIONS.PORTAL_SERVICE_REQUEST_CREATE]}>
+                <PortalRequestCreatePage />
+              </PortalPage>
+            }
+          />
+          <Route
+            path="/portal/requests/:requestId"
+            element={
+              <PortalPage anyOf={[PERMISSIONS.PORTAL_SERVICE_REQUEST_VIEW]}>
+                <PortalRequestDetailPage />
+              </PortalPage>
+            }
+          />
+          <Route
+            path="/portal/planned-work"
+            element={
+              <PortalPage anyOf={[PERMISSIONS.PORTAL_PLANNED_WORK_VIEW]}>
+                <PortalPlannedWorkListPage />
+              </PortalPage>
+            }
+          />
+          <Route
+            path="/portal/planned-work/new"
+            element={
+              <PortalPage anyOf={[PERMISSIONS.PORTAL_PLANNED_WORK_CREATE]}>
+                <PlannedWorkFormPage variant="portal" />
+              </PortalPage>
+            }
+          />
+          <Route
+            path="/portal/planned-work/:plannedWorkId/edit"
+            element={
+              <PortalPage anyOf={[PERMISSIONS.PORTAL_PLANNED_WORK_CREATE]}>
+                <PlannedWorkFormPage variant="portal" />
+              </PortalPage>
+            }
+          />
+          <Route
+            path="/portal/planned-work/:plannedWorkId"
+            element={
+              <PortalPage anyOf={[PERMISSIONS.PORTAL_PLANNED_WORK_VIEW]}>
+                <PortalPlannedWorkDetailPage />
+              </PortalPage>
+            }
+          />
+          <Route
+            path="/portal/sites"
+            element={
+              <PortalPage anyOf={[PERMISSIONS.PORTAL_BUILDING_VIEW]}>
+                <PortalSitesPage />
+              </PortalPage>
+            }
+          />
+          <Route
+            path="/portal/sites/:buildingId"
+            element={
+              <PortalPage anyOf={[PERMISSIONS.PORTAL_BUILDING_VIEW]}>
+                <PortalSiteDetailPage />
+              </PortalPage>
+            }
+          />
+          <Route
+            path="/portal/sites/:buildingId/floors/:floorId"
+            element={
+              <PortalPage anyOf={[PERMISSIONS.PORTAL_FLOOR_VIEW]}>
+                <PortalFloorPage />
+              </PortalPage>
+            }
+          />
+          <Route
+            path="/portal/sites/:buildingId/floors/:floorId/objects/:objectId"
+            element={
+              <PortalPage anyOf={[PERMISSIONS.PORTAL_OBJECT_VIEW]}>
+                <PortalObjectDetailPage />
+              </PortalPage>
+            }
+          />
+
+          {/*
+            Wrapped in ProtectedRoute so the session has resolved before the destination is
+            chosen: a bare `<Navigate>` would read a null user mid-restore and send every
+            customer to the staff dashboard, which they are forbidden from.
+          */}
+          <Route
+            path="/"
+            element={
+              <ProtectedRoute>
+                <HomeRedirect />
+              </ProtectedRoute>
+            }
+          />
           <Route
             path="*"
             element={

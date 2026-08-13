@@ -167,7 +167,8 @@ describe('PlannedWorkDetailPage', () => {
     vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(
       makePlannedWork({
         availableActions: [
-          { action: 'PAUSE', label: 'Түр зогсоох', requiresReason: true, targetStatus: 'PAUSED' },
+          { action: 'PAUSE', label: 'Түр зогсоох', requiresReason: true,
+            assignsCrew: false, targetStatus: 'PAUSED' },
         ],
       }),
     );
@@ -184,7 +185,8 @@ describe('PlannedWorkDetailPage', () => {
     vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(
       makePlannedWork({
         availableActions: [
-          { action: 'PAUSE', label: 'Түр зогсоох', requiresReason: true, targetStatus: 'PAUSED' },
+          { action: 'PAUSE', label: 'Түр зогсоох', requiresReason: true,
+            assignsCrew: false, targetStatus: 'PAUSED' },
         ],
       }),
     );
@@ -204,7 +206,8 @@ describe('PlannedWorkDetailPage', () => {
     vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(
       makePlannedWork({
         availableActions: [
-          { action: 'PAUSE', label: 'Түр зогсоох', requiresReason: true, targetStatus: 'PAUSED' },
+          { action: 'PAUSE', label: 'Түр зогсоох', requiresReason: true,
+            assignsCrew: false, targetStatus: 'PAUSED' },
         ],
       }),
     );
@@ -221,7 +224,8 @@ describe('PlannedWorkDetailPage', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Батлах' }));
 
     await waitFor(() => {
-      expect(transition).toHaveBeenCalledWith(WORK_ID, 'PAUSE', 'Материал хүлээгдэж байна');
+      // An empty crew: PAUSE does not assign, and only APPROVE carries one.
+      expect(transition).toHaveBeenCalledWith(WORK_ID, 'PAUSE', 'Материал хүлээгдэж байна', []);
     });
   });
 

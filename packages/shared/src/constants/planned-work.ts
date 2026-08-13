@@ -14,6 +14,26 @@ import { PERMISSIONS, type PermissionKey } from './permissions';
  */
 export const PLANNED_WORK_LIFECYCLE_STATUSES = [
   'DRAFT',
+  /**
+   * Submitted by its creator and waiting on an authorised approver.
+   *
+   * EVERY work passes through here now, whoever raised it. There is no longer a path from
+   * DRAFT to PLANNED that skips an approver: PLAN means "submit for approval" for staff and
+   * customers alike, which is what makes the two workflows genuinely the same one rather
+   * than two that happen to look alike.
+   *
+   * Nothing is assigned while a work sits here. The crew is chosen by the approver as part
+   * of APPROVE, so a work reaching PLANNED and a work having a crew are the same event.
+   */
+  'PENDING_APPROVAL',
+  /**
+   * Returned to its creator with a reason, to be corrected and submitted again.
+   *
+   * A real state rather than a bare trip back to DRAFT, because "never submitted" and
+   * "submitted and sent back" are different things to the person looking at the list, and
+   * only the second one owes them an explanation. `cancelReason` carries it.
+   */
+  'REJECTED',
   'PLANNED',
   'STARTED',
   'PAUSED',
@@ -31,6 +51,8 @@ export type PlannedWorkEffectiveStatus = (typeof PLANNED_WORK_EFFECTIVE_STATUSES
 
 export const PLANNED_WORK_STATUS_LABELS: Record<PlannedWorkEffectiveStatus, string> = {
   DRAFT: 'Төсөл',
+  PENDING_APPROVAL: 'Хүлээгдэж буй',
+  REJECTED: 'Буцаагдсан',
   PLANNED: 'Төлөвлөгдсөн',
   STARTED: 'Хэрэгжиж байна',
   PAUSED: 'Түр зогссон',
@@ -240,6 +262,8 @@ export const REPORT_SUBMITTABLE_STATUSES: readonly PlannedWorkReportStatus[] = [
  */
 export const PLANNED_WORK_ACTIONS = [
   'PLAN',
+  'APPROVE',
+  'REJECT',
   'START',
   'PAUSE',
   'RESUME',
@@ -255,15 +279,77 @@ export interface PlannedWorkActionRule {
   to: PlannedWorkLifecycleStatus | null;
   requiresReason: boolean;
   permission: PermissionKey;
+  /**
+   * A second key that also admits the action, for the portal.
+   *
+   * Only PLAN carries one. A customer submitting their own draft is doing the same thing a
+   * planner does, but `planned_work.change_status` is a staff key held by DISPATCH and
+   * TECHNICIAN, so it cannot simply be granted to them. Holding this key is not by itself
+   * enough — `transitionPlannedWork` additionally bounds a customer to their own record.
+   */
+  customerPermission?: PermissionKey;
+  /**
+   * The action assigns the crew and refuses to run without one.
+   *
+   * Only APPROVE. Approval and assignment are one decision here: the approver is agreeing
+   * to do the work AND saying who does it, so a work cannot reach PLANNED unstaffed.
+   */
+  assignsCrew?: boolean;
 }
 
 export const PLANNED_WORK_ACTION_RULES: Record<PlannedWorkAction, PlannedWorkActionRule> = {
+  /**
+   * Submit for approval — the single entry to the approval gate, for everybody.
+   *
+   * THIS USED TO GO STRAIGHT TO PLANNED. It no longer does, and that is the point of the
+   * change: staff and customers now follow one workflow, so a planner's own work is
+   * reviewed on the same terms as a customer's request. REJECTED is in the from-list
+   * because correcting a returned work and sending it back is the same act as sending it
+   * the first time, and giving it a second action would only be a second name for one.
+   */
   PLAN: {
     label: 'Төлөвлөх',
-    from: ['DRAFT'],
-    to: 'PLANNED',
+    from: ['DRAFT', 'REJECTED'],
+    to: 'PENDING_APPROVAL',
     requiresReason: false,
     permission: PERMISSIONS.PLANNED_WORK_CHANGE_STATUS,
+    customerPermission: PERMISSIONS.PORTAL_PLANNED_WORK_CREATE,
+  },
+  /**
+   * Accept the request AND staff it, in one decision.
+   *
+   * The approver names the employees as part of approving, and the action is refused
+   * without at least one. That is why PLANNED and "has a crew" are the same event: there
+   * is no window in which work is approved but nobody is on it, and therefore no approved
+   * work that quietly fails to reach anybody's list.
+   *
+   * `planned_work.approve` is a key of its own, deliberately not `change_status` — which
+   * DISPATCH and TECHNICIAN both hold — and not `approve_report`, which means "sign off a
+   * finished job's write-up". Committing the company to the work is a third thing.
+   */
+  APPROVE: {
+    label: 'Батлах',
+    from: ['PENDING_APPROVAL'],
+    to: 'PLANNED',
+    requiresReason: false,
+    permission: PERMISSIONS.PLANNED_WORK_APPROVE,
+    assignsCrew: true,
+  },
+  /**
+   * Send it back to its creator with a reason, to be corrected and submitted again.
+   *
+   * IT USED TO LAND ON CANCELLED, justified at the time by "a customer cannot edit a
+   * draft". They can now, so the reason that forced a dead end no longer holds and the
+   * work returns to a state its author can actually act on. Refusing something outright is
+   * still possible — CANCEL now reaches PENDING_APPROVAL and REJECTED — so nothing is lost
+   * by making the ordinary case a return rather than a refusal.
+   */
+  REJECT: {
+    label: 'Буцаах',
+    from: ['PENDING_APPROVAL'],
+    to: 'REJECTED',
+    requiresReason: true,
+    permission: PERMISSIONS.PLANNED_WORK_APPROVE,
   },
   START: {
     label: 'Ажил эхлүүлэх',
@@ -296,7 +382,7 @@ export const PLANNED_WORK_ACTION_RULES: Record<PlannedWorkAction, PlannedWorkAct
   },
   CANCEL: {
     label: 'Цуцлах',
-    from: ['DRAFT', 'PLANNED', 'STARTED', 'PAUSED'],
+    from: ['DRAFT', 'PENDING_APPROVAL', 'REJECTED', 'PLANNED', 'STARTED', 'PAUSED'],
     to: 'CANCELLED',
     requiresReason: true,
     permission: PERMISSIONS.PLANNED_WORK_CANCEL,

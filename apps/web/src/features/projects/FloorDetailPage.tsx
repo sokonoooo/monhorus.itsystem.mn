@@ -20,9 +20,9 @@ import { Drawer } from '../../components/ui/Drawer';
 import { RiskBadge } from '../../components/ui/DomainBadges';
 import { PageHeader } from '../../components/ui/PageHeader';
 import { RowActions } from '../../components/ui/RowActions';
-import { SearchField } from '../../components/ui/SearchField';
 import { ErrorState, Skeleton } from '../../components/ui/States';
 import { useToast } from '../../components/ui/ToastProvider';
+import { SearchField } from '../../components/ui/SearchField';
 import { FIELD_TEXTAREA, FILTER_LABEL, FILTER_SELECT } from '../../components/ui/control-styles';
 import { useAuth } from '../../contexts/auth-context';
 import { useTableColumns } from '../../hooks/use-table-columns';
@@ -201,17 +201,30 @@ const OBJECT_PAGE_LIMIT = 100;
  */
 const MAX_OBJECT_PAGES = 20;
 
-/**
- * Rows of the object table per screen.
- *
- * This pages the already-loaded list in the browser rather than asking the server for a
- * window, which is the opposite of what the list pages do — and deliberate. The plan above
- * the table needs EVERY object at once, because a marker missing from a drawing is a device
- * nobody will find, and `fetchAllFloorObjects` below exists to guarantee that. Once the
- * whole list is in hand, fetching a page of it again would be a second request for data
- * already on the client.
- */
+/** Rows per page for the objects table. The plan still receives every object. */
 const OBJECT_TABLE_PAGE_SIZE = 20;
+
+/**
+ * The objects a table page should show, filtered by a search term.
+ *
+ * CLIENT-SIDE, AND HONEST ABOUT IT ONLY BECAUSE THE SET IS COMPLETE. `fetchAllFloorObjects`
+ * has already walked every page, and the plan needs all of them anyway — narrowing the fetch
+ * would drop markers from the drawing, which is the bug that page-walking exists to prevent.
+ * Searching in memory therefore covers the whole floor, not the twenty rows on screen, which
+ * is the thing that makes a client-side search misleading elsewhere.
+ */
+export function filterFloorObjects(
+  objects: readonly ObjectListItemDto[],
+  search: string,
+): ObjectListItemDto[] {
+  const needle = search.trim().toLowerCase();
+  if (!needle) return [...objects];
+  return objects.filter((object) =>
+    [object.code, object.name, object.objectType?.name]
+      .filter(Boolean)
+      .some((field) => String(field).toLowerCase().includes(needle)),
+  );
+}
 
 /**
  * Every object on the floor, not the first hundred.
@@ -259,27 +272,20 @@ export function FloorDetailPage(): ReactElement {
   const [floor, setFloor] = useState<FloorDto | null>(null);
   const [plan, setPlan] = useState<FloorPlanDto | null>(null);
   const [objects, setObjects] = useState<ObjectListItemDto[]>([]);
-  const [load, setLoad] = useState<FloorLoadSummaryDto | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   /**
-   * The permission set arrives after the first render, which flips `canViewObjects` and
-   * refetches. Without this the whole page would drop back to a skeleton mid-flight and
-   * visibly flicker; a refetch now keeps the content on screen.
-   */
-  const hasLoadedRef = useRef(false);
-  /**
-   * Search, filters and the page live in the URL, as they do on every list page: a filtered
-   * floor is then a link somebody can send ("the decommissioned panels on level 3"), and a
-   * reload does not silently drop back to the unfiltered list.
+   * Table-only view state. The plan is always given every object, whatever the table shows.
+   *
+   * It lives in the URL, as it does on every list page: a filtered floor is then a link
+   * somebody can send ("the decommissioned panels on level 3"), and a reload does not
+   * silently drop back to the unfiltered list.
    */
   const [searchParams, setSearchParams] = useSearchParams();
   const [searchDraft, setSearchDraft] = useState(() => searchParams.get('search') ?? '');
 
-  const search = searchParams.get('search') ?? '';
+  const objectSearch = searchParams.get('search') ?? '';
   const typeFilter = searchParams.get('type') ?? '';
   const statusFilter = searchParams.get('status') ?? '';
-  const hasFilters = Boolean(search || typeFilter || statusFilter);
+  const hasFilters = Boolean(objectSearch || typeFilter || statusFilter);
 
   const parsedPage = Number.parseInt(searchParams.get('page') ?? '1', 10);
   const objectPage = Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : 1;
@@ -301,6 +307,15 @@ export function FloorDetailPage(): ReactElement {
     setSearchParams(new URLSearchParams());
   }
 
+  const [load, setLoad] = useState<FloorLoadSummaryDto | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  /**
+   * The permission set arrives after the first render, which flips `canViewObjects` and
+   * refetches. Without this the whole page would drop back to a skeleton mid-flight and
+   * visibly flicker; a refetch now keeps the content on screen.
+   */
+  const hasLoadedRef = useRef(false);
   const [editOpen, setEditOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [unlinkTarget, setUnlinkTarget] = useState<ObjectListItemDto | null>(null);
@@ -487,24 +502,24 @@ export function FloorDetailPage(): ReactElement {
    * That is what keeps the floor plan intact: `FloorPlanPanel` is handed `objects`, the
    * unfiltered list, so every marker stays drawn while the table narrows. Filtering at the
    * server would either strip markers off the drawing or force a second full fetch to put
-   * them back. The three conditions compose — each one narrows what the previous left.
+   * them back. The three conditions compose — the type and status narrow the set, and
+   * `filterFloorObjects` searches whatever they left.
    */
-  const needle = search.trim().toLowerCase();
-  const filteredObjects = objects.filter((object) => {
-    if (typeFilter && object.objectType?.id !== typeFilter) return false;
-    if (statusFilter && object.status !== statusFilter) return false;
-    if (!needle) return true;
-    return (
-      object.name.toLowerCase().includes(needle) || object.code.toLowerCase().includes(needle)
-    );
-  });
+  const matchedObjects = filterFloorObjects(
+    objects.filter((object) => {
+      if (typeFilter && object.objectType?.id !== typeFilter) return false;
+      if (statusFilter && object.status !== statusFilter) return false;
+      return true;
+    }),
+    objectSearch,
+  );
 
-  const objectTotalPages = Math.max(1, Math.ceil(filteredObjects.length / OBJECT_TABLE_PAGE_SIZE));
+  const objectTotalPages = Math.max(1, Math.ceil(matchedObjects.length / OBJECT_TABLE_PAGE_SIZE));
   // Unlinking, deleting or narrowing a filter shortens the list under the reader, and the
   // last page can stop existing while they are standing on it. Clamping here shows them the
   // new last page instead of an empty table with a page number past the end.
   const currentObjectPage = Math.min(objectPage, objectTotalPages);
-  const visibleObjects = filteredObjects.slice(
+  const visibleObjects = matchedObjects.slice(
     (currentObjectPage - 1) * OBJECT_TABLE_PAGE_SIZE,
     currentObjectPage * OBJECT_TABLE_PAGE_SIZE,
   );
@@ -744,7 +759,7 @@ export function FloorDetailPage(): ReactElement {
                     if (event.key === 'Enter') updateParam('search', searchDraft.trim());
                   }}
                   onBlur={() => updateParam('search', searchDraft.trim())}
-                  placeholder="Объектын нэр эсвэл код"
+                  placeholder="Код, нэр эсвэл төрөл"
                 />
               </div>
 
@@ -802,7 +817,7 @@ export function FloorDetailPage(): ReactElement {
               */}
               <p className="ml-auto whitespace-nowrap text-xs text-slate-600">
                 {hasFilters
-                  ? `Шүүлтүүрт тохирсон: ${filteredObjects.length} / ${objects.length}`
+                  ? `Шүүлтүүрт тохирсон: ${matchedObjects.length} / ${objects.length}`
                   : `${objects.length} объект`}
               </p>
             </div>
@@ -823,7 +838,7 @@ export function FloorDetailPage(): ReactElement {
             <Pagination
               page={currentObjectPage}
               totalPages={objectTotalPages}
-              total={filteredObjects.length}
+              total={matchedObjects.length}
               onPageChange={(next) => updateParam('page', String(next))}
             />
           </div>

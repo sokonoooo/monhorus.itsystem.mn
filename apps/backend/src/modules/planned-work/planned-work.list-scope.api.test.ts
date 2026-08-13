@@ -86,11 +86,17 @@ const FINANCE_KEYS = [
   PERMISSIONS.REPORT_VIEW,
 ] as const;
 
-/** A planner, used to create the fixture records so authorship is never under test. */
+/**
+ * A planner, used to create the fixture records so authorship is never under test.
+ *
+ * Holds `planned_work.approve` because the fixtures have to reach PLANNED, and that now
+ * takes an APPROVE on top of the PLAN — see `planAndApprove` below.
+ */
 const SUPERVISOR_KEYS = [
   ...DISPATCHER_KEYS,
   PERMISSIONS.PLANNED_WORK_CREATE,
   PERMISSIONS.PLANNED_WORK_UPDATE,
+  PERMISSIONS.PLANNED_WORK_APPROVE,
 ] as const;
 
 let app: Express;
@@ -108,6 +114,15 @@ let financeToken: string;
 
 let technicianEmployeeId: string;
 let colleagueEmployeeId: string;
+/**
+ * The supervisor's own card, used as the crew on the TEAM-assigned fixture.
+ *
+ * APPROVE will not promote a work with nobody on it, so a work whose scope is meant to come
+ * from `assignedTeam` still has to name somebody individually. It names the supervisor —
+ * who is unscoped, on no team, and asserted about nowhere — precisely so the individual
+ * branch cannot be what makes the team-mate cases below pass.
+ */
+let supervisorEmployeeId: string;
 let otherTeamId: string;
 
 /** Planned work ids, by the relationship each has to `technicianToken`. */
@@ -188,6 +203,35 @@ async function createWork(overrides: Record<string, unknown>): Promise<string> {
   return response.body.data.id as string;
 }
 
+/**
+ * Takes a freshly created work all the way to PLANNED, staffed with `crewEmployeeIds`.
+ *
+ * REACHING PLANNED IS TWO ACTIONS NOW. PLAN parks the work in PENDING_APPROVAL and APPROVE
+ * is what promotes it, so a one-step PLAN leaves the record short of PLANNED. APPROVE also
+ * refuses to run unstaffed and writes the crew itself, which is why the crew is named here
+ * rather than only in the create body.
+ *
+ * The fixtures below have to be PLANNED and not merely created, because a scoped caller's
+ * list excludes DRAFT/PENDING_APPROVAL/REJECTED outright — an unapproved work is invisible
+ * to the technician regardless of who is named on it, which would make every scope
+ * assertion here pass for the wrong reason.
+ */
+async function planAndApprove(workId: string, crewEmployeeIds: string[]): Promise<string> {
+  const planned = await request(app)
+    .post(`${API}/planned-work/${workId}/transition`)
+    .set('Authorization', `Bearer ${supervisorToken}`)
+    .send({ action: 'PLAN' });
+  expect(planned.status).toBe(200);
+
+  const approved = await request(app)
+    .post(`${API}/planned-work/${workId}/transition`)
+    .set('Authorization', `Bearer ${supervisorToken}`)
+    .send({ action: 'APPROVE', assignedEmployeeIds: crewEmployeeIds });
+  expect(approved.status).toBe(200);
+
+  return workId;
+}
+
 /** Creates a request and, when told to, assigns it. */
 async function createRequest(
   description: string,
@@ -260,6 +304,7 @@ beforeAll(async () => {
 
   const supervisor = await createStaff('lssup@test.mn', 'LS-SUP', SUPERVISOR_KEYS, null);
   supervisorToken = supervisor.token;
+  supervisorEmployeeId = supervisor.employeeId!;
 
   const dispatcher = await createStaff('lsdisp@test.mn', 'LS-DISP', DISPATCHER_KEYS, otherTeamId);
   dispatcherToken = dispatcher.token;
@@ -295,9 +340,20 @@ beforeAll(async () => {
   const finance = await createStaff('lsfin@test.mn', 'LS-FIN', FINANCE_KEYS, undefined);
   financeToken = finance.token;
 
-  pwMine = await createWork({ assignedEmployeeIds: [technicianEmployeeId] });
-  pwMyTeam = await createWork({ assignedTeamId: org.teamId });
-  pwColleague = await createWork({ assignedEmployeeIds: [colleagueEmployeeId] });
+  pwMine = await planAndApprove(
+    await createWork({ assignedEmployeeIds: [technicianEmployeeId] }),
+    [technicianEmployeeId],
+  );
+  pwMyTeam = await planAndApprove(await createWork({ assignedTeamId: org.teamId }), [
+    supervisorEmployeeId,
+  ]);
+  pwColleague = await planAndApprove(
+    await createWork({ assignedEmployeeIds: [colleagueEmployeeId] }),
+    [colleagueEmployeeId],
+  );
+  // Stays in DRAFT, and cannot be anything else: APPROVE refuses to promote a work with
+  // nobody on it, so "PLANNED and unassigned" is no longer a state that exists. It is still
+  // the record the technician must not be handed, which is what the cases below assert.
   pwNobody = await createWork({});
 
   const mineRequest = await createRequest('Миний хүсэлт', {

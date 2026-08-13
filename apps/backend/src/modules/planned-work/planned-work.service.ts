@@ -21,6 +21,11 @@ import {
 import { Types, type FilterQuery, type HydratedDocument } from 'mongoose';
 
 import { AppError } from '../../common/errors/app-error';
+import {
+  assertInCustomerScope,
+  customerScopeFilter,
+  resolveCustomerScope,
+} from '../../common/security/customer-scope';
 import { ERROR_CODES } from '../../common/errors/error-codes';
 import type { AuthContext } from '../../common/types/express';
 import { CREATOR_POPULATE, creatorName } from '../../common/utils/creator.util';
@@ -34,6 +39,7 @@ import { Team } from '../org/org.models';
 import { getRiskBands } from '../settings/settings.service';
 import { StoredFile, type IStoredFile } from '../storage/stored-file.model';
 import { deleteStoredFile } from '../storage/storage.service';
+import { assertEmployeesExist } from './planned-work.crew';
 import { plannedWorkMaterialsOf } from './planned-work.materials.service';
 import {
   PlannedWork,
@@ -166,18 +172,6 @@ async function assertFloorInBuilding(
   }
 
   return floor._id;
-}
-
-async function assertEmployeesExist(employeeIds: readonly string[]): Promise<Types.ObjectId[]> {
-  if (employeeIds.length === 0) return [];
-  const ids = employeeIds.map((id) => new Types.ObjectId(id));
-  const found = await Employee.countDocuments({ _id: { $in: ids } });
-  if (found !== ids.length) {
-    throw AppError.badRequest(ERROR_CODES.VALIDATION_ERROR, 'Ажилтан олдсонгүй.', [
-      { field: 'assignedEmployeeIds', message: 'Сонгосон ажилтан олдсонгүй.' },
-    ]);
-  }
-  return ids;
 }
 
 /**
@@ -507,9 +501,19 @@ async function loadDetail(
   const [materials, reportState, assignmentAllowed] = await Promise.all([
     plannedWorkMaterialsOf(work),
     loadReportState(work),
-    // Resolved once here so the action list a technician is shown matches what the write
-    // endpoints will actually accept. Reading the record stays unscoped.
-    isWithinAssignmentScope(work._id, actor),
+    /**
+     * Resolved once here so the action list a technician is shown matches what the write
+     * endpoints will actually accept. Reading the record stays unscoped.
+     *
+     * SKIPPED FOR A CUSTOMER, exactly as `transitionPlannedWork` skips it. This asks which
+     * employee a job belongs to, and a portal account has no employee card, so it answers
+     * NOT_ASSIGNED for every customer — which made `availableActionsFor` drop every action
+     * and left a customer looking at their own draft with no way to submit it. Their bound
+     * is tenancy, and the scoped read above has already applied it.
+     */
+    resolveCustomerScope(actor).mode === 'CUSTOMER'
+      ? Promise.resolve(true)
+      : isWithinAssignmentScope(work._id, actor),
   ]);
 
   const blockers = completionBlockersOf(tasks);
@@ -584,9 +588,20 @@ export async function getPlannedWorkById(
 ): Promise<PlannedWorkDto> {
   const now = new Date();
 
-  const assignmentFilter = await resolveAssignedWorkFilter<IPlannedWork>(actor);
-  const filter: FilterQuery<IPlannedWork> = { _id: new Types.ObjectId(plannedWorkId) };
-  if (assignmentFilter) filter.$and = [assignmentFilter];
+  const scope = resolveCustomerScope(actor);
+  const filter: FilterQuery<IPlannedWork> = {
+    _id: new Types.ObjectId(plannedWorkId),
+    // In the QUERY, not a check on the loaded document, so another organisation's work is
+    // indistinguishable from one that does not exist. Answering "forbidden" would confirm
+    // the id is real and turn this into a probe for other tenants' identifiers.
+    ...customerScopeFilter(scope),
+  };
+
+  // Skipped for a customer for the same reason the list skips it: no employee card.
+  if (scope.mode === 'STAFF') {
+    const assignmentFilter = await resolveAssignedWorkFilter<IPlannedWork>(actor);
+    if (assignmentFilter) filter.$and = [assignmentFilter];
+  }
 
   const work = await PlannedWork.findOne(filter).populate([...LIST_POPULATE]);
   if (!work) {
@@ -617,12 +632,44 @@ export async function listPlannedWork(
   actor: AuthContext,
 ): Promise<PaginatedData<PlannedWorkListItemDto>> {
   const now = new Date();
-  const filter: FilterQuery<IPlannedWork> = {};
+  const scope = resolveCustomerScope(actor);
+  const filter: FilterQuery<IPlannedWork> = { ...customerScopeFilter(scope) };
 
-  const assignmentFilter = await resolveAssignedWorkFilter<IPlannedWork>(actor);
-  if (assignmentFilter) filter.$and = [assignmentFilter];
+  /**
+   * Assignment scope is a STAFF question and is skipped for a customer.
+   *
+   * It narrows to the work an employee is on, and a portal account has no employee card —
+   * so applying it would answer the empty list for every customer. Tenancy is a customer's
+   * boundary and `customerScopeFilter` above has already applied it.
+   */
+  if (scope.mode === 'STAFF') {
+    const assignmentFilter = await resolveAssignedWorkFilter<IPlannedWork>(actor);
+    if (assignmentFilter) {
+      /**
+       * An employee's own list never shows work that has not been approved.
+       *
+       * A non-null assignment filter IS the definition of "this caller sees their own work
+       * rather than the company's" — anyone with an oversight key gets null here and keeps
+       * seeing everything, which is what a planner needs.
+       *
+       * Belt and braces on top of the crew rules. Nothing pre-approval is supposed to carry
+       * a crew, so in principle the assignment predicate already excludes all of this. That
+       * is an invariant maintained by several separate guards, though, and a technician
+       * being shown a draft nobody has agreed to do is not a failure worth risking on it
+       * holding everywhere. Here the exclusion is a property of the query.
+       */
+      filter.$and = [assignmentFilter, { status: { $nin: PRE_APPROVAL_STATUSES } }];
+    }
+  }
 
-  if (query.customerId) filter.customer = new Types.ObjectId(query.customerId);
+  /**
+   * A customer's own tenant is already pinned, so a `customerId` they send is DISCARDED
+   * rather than honoured — the same rule the service-request list follows. Trusting it
+   * would let the filter widen the very boundary it sits inside.
+   */
+  if (scope.mode === 'STAFF' && query.customerId) {
+    filter.customer = new Types.ObjectId(query.customerId);
+  }
   if (query.projectId) filter.project = new Types.ObjectId(query.projectId);
   if (query.buildingId) filter.building = new Types.ObjectId(query.buildingId);
   if (query.employeeId) filter.assignedEmployees = new Types.ObjectId(query.employeeId);
@@ -701,9 +748,42 @@ export async function createPlannedWork(
   actor: AuthContext,
   meta: RequestMeta,
 ): Promise<PlannedWorkDto> {
+  /**
+   * A CUSTOMER may raise work, and what they raise is a REQUEST rather than a plan.
+   *
+   * Decided from the authenticated account, never from the body: `resolveCustomerScope`
+   * reads the tenant off the account, so a customer cannot raise work in another
+   * organisation's name however the payload is shaped. Three things are then forced
+   * regardless of what was sent —
+   *
+   *   - the status is PENDING_APPROVAL, so it is not yet a commitment;
+   *   - the crew is empty, which is what makes "cannot be assigned before approval" true
+   *     of the DATA rather than a rule the caller is trusted to follow;
+   *   - the owner is their own organisation.
+   *
+   * Staff creation is completely unchanged and still lands in DRAFT with whatever crew the
+   * planner named.
+   */
+  const scope = resolveCustomerScope(actor);
+  const raisedByCustomer = scope.mode === 'CUSTOMER';
+
   const location = await resolveLocation(input.projectId ?? null, input.buildingId);
-  const employeeIds = await assertEmployeesExist(input.assignedEmployeeIds);
-  const teamId = input.assignedTeamId ? await assertTeamExists(input.assignedTeamId) : null;
+
+  if (raisedByCustomer && String(location.customerId) !== scope.customerId) {
+    // The location chain named somebody else's building. Reported as a validation failure
+    // rather than a 403 so it cannot be used to probe which building ids exist.
+    throw AppError.badRequest(
+      ERROR_CODES.VALIDATION_ERROR,
+      'Барилга танай байгууллагад хамаарахгүй байна.',
+      [{ field: 'buildingId', message: 'Өөр байгууллагын барилга.' }],
+    );
+  }
+
+  const employeeIds = raisedByCustomer
+    ? []
+    : await assertEmployeesExist(input.assignedEmployeeIds);
+  const teamId =
+    !raisedByCustomer && input.assignedTeamId ? await assertTeamExists(input.assignedTeamId) : null;
 
   const plannedEndDate = new Date(input.plannedEndDate);
 
@@ -718,6 +798,8 @@ export async function createPlannedWork(
     plannedEndDate,
     // Captured once so a later reschedule cannot erase the original commitment.
     originalPlannedEndDate: plannedEndDate,
+    // DRAFT whoever raised it. A customer's request is no longer submitted the instant it
+    // is created — they compose it, break it down, and submit it themselves with PLAN.
     status: 'DRAFT',
     assignedEmployees: employeeIds,
     assignedTeam: teamId,
@@ -741,13 +823,49 @@ export async function createPlannedWork(
   return getPlannedWorkById(String(work._id), actor);
 }
 
+/**
+ * The statuses whose content still belongs to whoever raised the work.
+ *
+ * A draft has never been submitted and a returned one is waiting to be corrected, so in
+ * both the creator is still composing. Everything after PENDING_APPROVAL has been agreed to
+ * by an approver, and letting the requester keep editing it would let them change what was
+ * approved after the fact.
+ */
+const CREATOR_EDITABLE_STATUSES: readonly IPlannedWork['status'][] = ['DRAFT', 'REJECTED'];
+
+/**
+ * The work an owner-side edit may target, bounded by who is asking.
+ *
+ * Staff are unaffected: `resolveCustomerScope` answers STAFF and both checks are skipped, so
+ * a planner still edits at every status `assertMutable` allows. A customer is bounded twice —
+ * to their own record, and to the statuses above — and the two fail differently on purpose,
+ * for the reasons given on `findRawForTaskWrite`.
+ */
+async function findRawForOwnerEdit(
+  plannedWorkId: string,
+  actor: AuthContext,
+): Promise<Awaited<ReturnType<typeof findRaw>>> {
+  const work = await findRaw(plannedWorkId);
+  const scope = resolveCustomerScope(actor);
+  if (scope.mode === 'CUSTOMER') {
+    assertInCustomerScope(scope, work.customer);
+    if (!CREATOR_EDITABLE_STATUSES.includes(work.status)) {
+      throw AppError.badRequest(
+        ERROR_CODES.VALIDATION_ERROR,
+        'Илгээгдсэн хүсэлтийг өөрчлөх боломжгүй.',
+      );
+    }
+  }
+  return work;
+}
+
 export async function updatePlannedWork(
   plannedWorkId: string,
   input: UpdatePlannedWorkInput,
   actor: AuthContext,
   meta: RequestMeta,
 ): Promise<PlannedWorkDto> {
-  const work = await findRaw(plannedWorkId);
+  const work = await findRawForOwnerEdit(plannedWorkId, actor);
   assertMutable(work);
 
   const before = {
@@ -785,6 +903,25 @@ export async function updatePlannedWork(
       );
     }
     work.plannedStartDate = start;
+  }
+
+  /**
+   * NOBODY IS ASSIGNED TO A WORK THAT HAS NOT BEEN APPROVED.
+   *
+   * This is the second half of the gate. Forcing an empty crew at creation stops a customer
+   * assigning; this stops anyone else doing it through the ordinary edit path while the
+   * request is still pending. Refused rather than ignored — a planner who believes they
+   * have staffed a job and has not is worse off than one who gets an error.
+   */
+  if (
+    PRE_APPROVAL_STATUSES.includes(work.status) &&
+    (input.assignedEmployeeIds !== undefined || input.assignedTeamId !== undefined)
+  ) {
+    throw AppError.badRequest(
+      ERROR_CODES.VALIDATION_ERROR,
+      'Батлагдаагүй ажилд хариуцагч томилох боломжгүй. Эхлээд батална уу.',
+      [{ field: 'assignedEmployeeIds', message: 'Батлагдсаны дараа томилно.' }],
+    );
   }
 
   if (input.assignedEmployeeIds !== undefined) {
@@ -905,7 +1042,72 @@ export async function reschedulePlannedWork(
   return getPlannedWorkById(plannedWorkId, actor);
 }
 
+/**
+ * Refuses naming an employee on a still-unapproved work.
+ *
+ * THE SAME RULE AS THE WORK-LEVEL CREW, applied one level down. `updatePlannedWork` already
+ * refuses `assignedEmployeeIds` while PENDING_APPROVAL, but a sub-task carries its own
+ * assignee, and that path only ever checked `assertMutable` — which permits
+ * PENDING_APPROVAL. So a holder of `planned_work.update` could staff the sub-tasks of a
+ * customer request nobody had approved yet.
+ *
+ * It granted no access: `planned-work.scope.ts` reads only `assignedEmployees`/
+ * `assignedTeam`, so the named technician still saw nothing and could write nothing. It was
+ * a promise the system had not agreed to — a job with somebody's name on it that may still
+ * be refused outright. Refused rather than ignored, for the reason the work-level rule gives.
+ */
+const PRE_APPROVAL_STATUSES: readonly IPlannedWork['status'][] = [
+  'DRAFT',
+  'PENDING_APPROVAL',
+  'REJECTED',
+];
+
+function assertCrewAssignable(work: Pick<IPlannedWork, 'status'>): void {
+  if (PRE_APPROVAL_STATUSES.includes(work.status)) {
+    throw AppError.badRequest(
+      ERROR_CODES.VALIDATION_ERROR,
+      'Батлагдаагүй ажилд хариуцагч томилох боломжгүй. Эхлээд батална уу.',
+      [{ field: 'assignedEmployeeId', message: 'Батлагдсаны дараа томилно.' }],
+    );
+  }
+}
+
 // -- Tasks -------------------------------------------------------------------
+
+/**
+ * The work a sub-task write may target, bounded by who is asking.
+ *
+ * A customer may shape their OWN request, and only while it is still PENDING_APPROVAL. Both
+ * halves matter and they fail differently on purpose:
+ *
+ *   - Another organisation's work is reported as not-found, never forbidden, for the reason
+ *     `assertInCustomerScope` gives: "forbidden" on an id that exists elsewhere confirms the
+ *     record is real and turns this into an oracle for probing other tenants' identifiers.
+ *   - Their own work past approval is refused with an explanation, because the customer can
+ *     see it and needs to know why the drawer stopped accepting edits. Once an approver has
+ *     agreed to a request, its scope is settled; letting the requester keep adding work to
+ *     it afterwards would make the approval meaningless.
+ *
+ * Staff are unaffected — `resolveCustomerScope` answers STAFF for them and both checks are
+ * skipped, so the existing planning flow keeps working at every status `assertMutable` allows.
+ */
+async function findRawForTaskWrite(
+  plannedWorkId: string,
+  actor: AuthContext,
+): Promise<Awaited<ReturnType<typeof findRaw>>> {
+  const work = await findRaw(plannedWorkId);
+  const scope = resolveCustomerScope(actor);
+  if (scope.mode === 'CUSTOMER') {
+    assertInCustomerScope(scope, work.customer);
+    if (!CREATOR_EDITABLE_STATUSES.includes(work.status)) {
+      throw AppError.badRequest(
+        ERROR_CODES.VALIDATION_ERROR,
+        'Илгээгдсэн хүсэлтийн дэд ажлыг өөрчлөх боломжгүй.',
+      );
+    }
+  }
+  return work;
+}
 
 export async function createTask(
   plannedWorkId: string,
@@ -913,7 +1115,7 @@ export async function createTask(
   actor: AuthContext,
   meta: RequestMeta,
 ): Promise<PlannedWorkDto> {
-  const work = await findRaw(plannedWorkId);
+  const work = await findRawForTaskWrite(plannedWorkId, actor);
   assertMutable(work);
 
   const start = new Date(input.plannedStartDate);
@@ -921,6 +1123,7 @@ export async function createTask(
   assertTaskWithinWorkWindow(work, start, end);
 
   const floorId = input.floorId ? await assertFloorInBuilding(input.floorId, work.building) : null;
+  if (input.assignedEmployeeId) assertCrewAssignable(work);
   const assignedEmployee = input.assignedEmployeeId
     ? (await assertEmployeesExist([input.assignedEmployeeId]))[0]
     : null;
@@ -985,7 +1188,7 @@ export async function updateTask(
   actor: AuthContext,
   meta: RequestMeta,
 ): Promise<PlannedWorkDto> {
-  const work = await findRaw(plannedWorkId);
+  const work = await findRawForTaskWrite(plannedWorkId, actor);
   assertMutable(work);
   const task = await findTask(plannedWorkId, taskId);
 
@@ -1020,6 +1223,8 @@ export async function updateTask(
   }
 
   if (input.assignedEmployeeId !== undefined) {
+    // Clearing an assignee stays allowed while pending — only naming one is refused.
+    if (input.assignedEmployeeId) assertCrewAssignable(work);
     task.assignedEmployee = input.assignedEmployeeId
       ? ((await assertEmployeesExist([input.assignedEmployeeId]))[0] ?? null)
       : null;
@@ -1182,7 +1387,7 @@ export async function deleteTask(
   actor: AuthContext,
   meta: RequestMeta,
 ): Promise<PlannedWorkDto> {
-  const work = await findRaw(plannedWorkId);
+  const work = await findRawForTaskWrite(plannedWorkId, actor);
   assertMutable(work);
   const task = await findTask(plannedWorkId, taskId);
 

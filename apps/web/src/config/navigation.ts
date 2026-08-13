@@ -1,4 +1,4 @@
-import { PERMISSIONS, type PermissionKey } from '@monhorus/shared';
+import { PERMISSIONS, type PermissionKey, type UserRole } from '@monhorus/shared';
 
 /**
  * Web Admin navigation.
@@ -48,9 +48,75 @@ export interface NavSection {
   key: string;
   label: string | null;
   items: readonly NavItem[];
+  /**
+   * Restricts a section to particular account tiers, on top of the permission filter.
+   *
+   * NEEDED BECAUSE THE PERMISSION FILTER IS NOT ENOUGH FOR THE PORTAL. The portal section
+   * was written on the assumption that no staff account can hold a `portal.*` key — true
+   * of ADMIN, MANAGEMENT, DISPATCH and TECHNICIAN, and false of the two that matter:
+   * SYSTEM_ADMIN is resynchronised to the WHOLE catalogue on every boot, and `head_admin`
+   * is an unconditional superuser in `resolveEffectivePermissions`. Both therefore hold
+   * every portal key and were shown the customer menu inside the admin console.
+   *
+   * A tier is the right question here rather than a workaround: the portal is the customer
+   * tier's surface, and `resolveCustomerScope` decides whose records a request may touch
+   * from `auth.role === 'customer'` on the server. Asking the same question in the menu
+   * keeps the two consistent.
+   */
+  tiers?: readonly UserRole[];
 }
 
 export const NAVIGATION: readonly NavSection[] = [
+  /**
+   * The customer portal.
+   *
+   * Keyed on `portal.*`, which no staff account can hold — the RBAC assignment chokepoint
+   * refuses a portal key on a staff tier and a staff key on a customer tier — so this
+   * section is structurally invisible to staff and the staff sections structurally
+   * invisible here. That is why both live in one list behind one permission filter rather
+   * than behind a role branch: the permission set already separates them, and a branch
+   * would be a second, weaker copy of a rule the server enforces.
+   */
+  {
+    key: 'portal',
+    label: null,
+    // Customer accounts only. See `tiers` above for why the permission filter alone showed
+    // this to a superuser.
+    tiers: ['customer'],
+    items: [
+      {
+        key: 'portal-home',
+        label: 'Нүүр',
+        path: '/portal',
+        // Both keys, because the route is an any-of on the same pair. Listing one would
+        // make the page reachable by URL and invisible in the menu to a caller holding the
+        // other — the disagreement this file exists to prevent.
+        permissions: [PERMISSIONS.PORTAL_SERVICE_REQUEST_VIEW, PERMISSIONS.PORTAL_BUILDING_VIEW],
+        icon: 'DASHBOARD',
+      },
+      {
+        key: 'portal-requests',
+        label: 'Миний хүсэлт',
+        path: '/portal/requests',
+        permissions: [PERMISSIONS.PORTAL_SERVICE_REQUEST_VIEW],
+        icon: 'SERVICE_REQUEST',
+      },
+      {
+        key: 'portal-planned-work',
+        label: 'Төлөвлөгөөт ажил',
+        path: '/portal/planned-work',
+        permissions: [PERMISSIONS.PORTAL_PLANNED_WORK_VIEW],
+        icon: 'PLANNED_WORK',
+      },
+      {
+        key: 'portal-sites',
+        label: 'Миний барилга',
+        path: '/portal/sites',
+        permissions: [PERMISSIONS.PORTAL_BUILDING_VIEW],
+        icon: 'PROJECT',
+      },
+    ],
+  },
   {
     key: 'overview',
     label: null,

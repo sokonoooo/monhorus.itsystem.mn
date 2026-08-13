@@ -153,6 +153,15 @@ export interface PlannedWorkAvailableActionDto {
   label: string;
   requiresReason: boolean;
   targetStatus: PlannedWorkLifecycleStatus;
+  /**
+   * The action must be given a crew, and the server refuses it without one.
+   *
+   * Carried on the action rather than inferred from its name for the same reason
+   * `requiresReason` is: the client builds its dialogs from this list and holds no copy of
+   * the transition matrix, so an action that starts demanding a crew gets the picker
+   * without a frontend change.
+   */
+  assignsCrew: boolean;
 }
 
 export interface PlannedWorkReportDto {

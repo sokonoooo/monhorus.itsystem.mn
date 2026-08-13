@@ -211,6 +211,81 @@ describe('BuildingDetailPage', () => {
     });
   });
 
+  /**
+   * The floor table used to fetch one capped page of 100 and render no pager, so a tower
+   * with more floors than that simply lost the rest. It now pages like every other list,
+   * and filters on the server rather than in the browser.
+   */
+  describe('floor table', () => {
+    it('asks the server for page two and numbers its rows from 21', async () => {
+      const list = vi.spyOn(projectService, 'listFloors').mockResolvedValue({
+        ...makePage([makeFloor()]),
+        page: 2,
+        total: 21,
+        totalPages: 2,
+      });
+
+      renderWithAuth(<BuildingDetailPage />, {
+        permissions: [PERMISSIONS.OBJECT_VIEW, PERMISSIONS.OBJECT_MANAGE],
+        route: `/buildings/${BUILDING_ID}?page=2`,
+        path: '/buildings/:buildingId',
+      });
+
+      const table = await screen.findByRole('table');
+      expect(list).toHaveBeenCalledWith(
+        expect.objectContaining({ buildingId: BUILDING_ID, page: 2, limit: 20 }),
+      );
+      expect(within(table).getByRole('columnheader', { name: '№' })).toBeInTheDocument();
+      const firstRow = within(table).getAllByRole('row')[1]!;
+      expect(within(firstRow).getAllByRole('cell')[0]).toHaveTextContent(/^21$/);
+    });
+
+    it('fetches the next page when the pager is used', async () => {
+      const list = vi.spyOn(projectService, 'listFloors').mockImplementation(async (query) => ({
+        ...makePage([makeFloor()]),
+        page: query?.page ?? 1,
+        total: 40,
+        totalPages: 2,
+      }));
+      const user = userEvent.setup();
+
+      renderBuilding();
+
+      await screen.findByRole('table');
+      await user.click(screen.getByRole('button', { name: 'Дараах' }));
+
+      await waitFor(() => {
+        expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2 }));
+      });
+    });
+
+    /** Server-side: a browser-side filter would only ever search the page on screen. */
+    it('sends the search to the service and returns to the first page', async () => {
+      const list = vi.spyOn(projectService, 'listFloors').mockResolvedValue({
+        ...makePage([makeFloor()]),
+        page: 2,
+        total: 21,
+        totalPages: 2,
+      });
+      const user = userEvent.setup();
+
+      renderWithAuth(<BuildingDetailPage />, {
+        permissions: [PERMISSIONS.OBJECT_VIEW, PERMISSIONS.OBJECT_MANAGE],
+        route: `/buildings/${BUILDING_ID}?page=2`,
+        path: '/buildings/:buildingId',
+      });
+
+      await screen.findByRole('table');
+      await user.type(screen.getByLabelText('Хайлт'), '2 дав{Enter}');
+
+      await waitFor(() => {
+        expect(list).toHaveBeenLastCalledWith(
+          expect.objectContaining({ search: '2 дав', page: 1, limit: 20 }),
+        );
+      });
+    });
+  });
+
   /** The reasons are read after the content they refer to, not before it. */
   it('reports why deletion is blocked in a box at the bottom of the page', async () => {
     vi.spyOn(projectService, 'getBuilding').mockResolvedValue(

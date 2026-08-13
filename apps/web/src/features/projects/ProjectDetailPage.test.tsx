@@ -191,6 +191,87 @@ describe('ProjectDetailPage building create', () => {
   });
 });
 
+/**
+ * The building table used to fetch one capped page of 100 and render no pager, so a
+ * project with more buildings than that simply lost the rest. It now pages like every
+ * other list, and filters on the server rather than in the browser.
+ */
+describe('ProjectDetailPage building table', () => {
+  beforeEach(() => {
+    vi.spyOn(projectService, 'getProject').mockResolvedValue(makeProject());
+  });
+
+  it('asks the server for page two and numbers its rows from 21', async () => {
+    const list = vi.spyOn(projectService, 'listBuildings').mockResolvedValue({
+      ...makePage([makeBuilding()]),
+      page: 2,
+      total: 21,
+      totalPages: 2,
+    });
+
+    renderWithAuth(<ProjectDetailPage />, {
+      permissions: [PERMISSIONS.OBJECT_VIEW, PERMISSIONS.OBJECT_MANAGE],
+      route: `/projects/${PROJECT_ID}?page=2`,
+      path: '/projects/:projectId',
+    });
+
+    const table = await screen.findByRole('table');
+    expect(list).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: PROJECT_ID, page: 2, limit: 20 }),
+    );
+    expect(within(table).getByRole('columnheader', { name: '№' })).toBeInTheDocument();
+    const firstRow = within(table).getAllByRole('row')[1]!;
+    expect(within(firstRow).getAllByRole('cell')[0]).toHaveTextContent(/^21$/);
+  });
+
+  it('fetches the next page when the pager is used', async () => {
+    const list = vi
+      .spyOn(projectService, 'listBuildings')
+      .mockImplementation(async (query) => ({
+        ...makePage([makeBuilding()]),
+        page: query?.page ?? 1,
+        total: 40,
+        totalPages: 2,
+      }));
+    const user = userEvent.setup();
+
+    renderProject();
+
+    await screen.findByRole('table');
+    await user.click(screen.getByRole('button', { name: 'Дараах' }));
+
+    await waitFor(() => {
+      expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2 }));
+    });
+  });
+
+  /** Server-side: a browser-side filter would only ever search the page on screen. */
+  it('sends the search to the service and returns to the first page', async () => {
+    const list = vi.spyOn(projectService, 'listBuildings').mockResolvedValue({
+      ...makePage([makeBuilding()]),
+      page: 2,
+      total: 21,
+      totalPages: 2,
+    });
+    const user = userEvent.setup();
+
+    renderWithAuth(<ProjectDetailPage />, {
+      permissions: [PERMISSIONS.OBJECT_VIEW, PERMISSIONS.OBJECT_MANAGE],
+      route: `/projects/${PROJECT_ID}?page=2`,
+      path: '/projects/:projectId',
+    });
+
+    await screen.findByRole('table');
+    await user.type(screen.getByLabelText('Хайлт'), 'Төв{Enter}');
+
+    await waitFor(() => {
+      expect(list).toHaveBeenLastCalledWith(
+        expect.objectContaining({ search: 'Төв', page: 1, limit: 20 }),
+      );
+    });
+  });
+});
+
 describe('ProjectDetailPage delete blockers', () => {
   beforeEach(() => {
     vi.spyOn(projectService, 'listBuildings').mockResolvedValue(makePage([]));

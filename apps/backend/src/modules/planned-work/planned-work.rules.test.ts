@@ -228,17 +228,53 @@ describe('task evidence', () => {
 
 describe('lifecycle transition matrix', () => {
   it('allows only the documented source statuses per action', () => {
-    expect(PLANNED_WORK_ACTION_RULES.PLAN.from).toEqual(['DRAFT']);
+    expect(PLANNED_WORK_ACTION_RULES.PLAN.from).toEqual(['DRAFT', 'REJECTED']);
+    expect(PLANNED_WORK_ACTION_RULES.APPROVE.from).toEqual(['PENDING_APPROVAL']);
+    expect(PLANNED_WORK_ACTION_RULES.REJECT.from).toEqual(['PENDING_APPROVAL']);
     expect(PLANNED_WORK_ACTION_RULES.START.from).toEqual(['PLANNED']);
     expect(PLANNED_WORK_ACTION_RULES.PAUSE.from).toEqual(['PLANNED', 'STARTED']);
     expect(PLANNED_WORK_ACTION_RULES.RESUME.from).toEqual(['PAUSED']);
     expect(PLANNED_WORK_ACTION_RULES.COMPLETE.from).toEqual(['STARTED']);
     expect(PLANNED_WORK_ACTION_RULES.CANCEL.from).toEqual([
       'DRAFT',
+      'PENDING_APPROVAL',
+      'REJECTED',
       'PLANNED',
       'STARTED',
       'PAUSED',
     ]);
+  });
+
+  /**
+   * The shape of the workflow, asserted as a chain rather than as three separate facts.
+   * Nothing reaches PLANNED without passing an approver: PLAN stops at PENDING_APPROVAL and
+   * only APPROVE goes further. A gap here would be a way to skip review entirely.
+   */
+  it('routes everything to PLANNED through an approver', () => {
+    expect(PLANNED_WORK_ACTION_RULES.PLAN.to).toBe('PENDING_APPROVAL');
+    expect(PLANNED_WORK_ACTION_RULES.APPROVE.to).toBe('PLANNED');
+
+    const toPlanned = Object.entries(PLANNED_WORK_ACTION_RULES)
+      .filter(([, rule]) => rule.to === 'PLANNED')
+      .map(([action]) => action);
+    expect(toPlanned).toEqual(['APPROVE']);
+  });
+
+  /** A refusal hands the work back to its creator; it no longer ends the record. */
+  it('returns a rejected work to its creator rather than cancelling it', () => {
+    expect(PLANNED_WORK_ACTION_RULES.REJECT.to).toBe('REJECTED');
+    expect(PLANNED_WORK_ACTION_RULES.REJECT.requiresReason).toBe(true);
+    // ...and a returned work can be sent back for approval by the same action that first
+    // submitted it, so there is no state a creator can be stranded in.
+    expect(PLANNED_WORK_ACTION_RULES.PLAN.from).toContain('REJECTED');
+  });
+
+  /** Approval and staffing are one decision — see `assignsCrew`. */
+  it('assigns the crew on approval and on no other action', () => {
+    const assigning = Object.entries(PLANNED_WORK_ACTION_RULES)
+      .filter(([, rule]) => rule.assignsCrew)
+      .map(([action]) => action);
+    expect(assigning).toEqual(['APPROVE']);
   });
 
   it('requires a reason for pausing and cancelling only', () => {
