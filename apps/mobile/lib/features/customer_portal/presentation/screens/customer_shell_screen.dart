@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../../core/push/push_messaging.dart';
 import '../../../auth/presentation/providers/auth_provider.dart';
 import '../../domain/entities/customer_scope.dart';
 import '../providers/customer_portal_providers.dart';
@@ -29,17 +30,49 @@ class CustomerShellScreen extends ConsumerStatefulWidget {
   ConsumerState<CustomerShellScreen> createState() => _CustomerShellScreenState();
 }
 
-class _CustomerShellScreenState extends ConsumerState<CustomerShellScreen> {
+class _CustomerShellScreenState extends ConsumerState<CustomerShellScreen>
+    with WidgetsBindingObserver {
   late int _index = widget.initialIndex;
 
+  VoidCallback? _stopListeningForPush;
+
+  /*
+   * The badge is fetched once and never again on its own: there is no polling here and no
+   * socket. That leaves it stale in the two cases a user actually notices - coming back to
+   * the app after a while, and a push landing while the app is open, which is precisely
+   * when the count just changed.
+   *
+   * Both are handled by re-asking the server rather than adjusting a local number.
+   */
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _stopListeningForPush = PushMessaging.onPushArrived(_refreshNotifications);
     // The login response carries no permission list, so the effective set is only
     // known after an /auth/me. Asking once here keeps the create control honest.
     Future<void>.microtask(
       () => ref.read(authControllerProvider.notifier).refreshCurrentUser(),
     );
+  }
+
+  @override
+  void dispose() {
+    _stopListeningForPush?.call();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _refreshNotifications();
+  }
+
+  void _refreshNotifications() {
+    if (!mounted) return;
+    ref
+      ..invalidate(unreadNotificationCountProvider)
+      ..invalidate(customerNotificationsProvider);
   }
 
   @override

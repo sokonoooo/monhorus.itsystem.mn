@@ -103,8 +103,15 @@ class CustomerHomeScreen extends ConsumerWidget {
             child: summaryAsync == null
                 ? const CustomerScopeUnavailableView()
                 : RefreshIndicator(
-                    onRefresh: () async =>
-                        ref.invalidate(customerHomeSummaryProvider),
+                    /*
+                     * The badge is refreshed here too. Pulling to refresh invalidated only
+                     * the summary, so the one gesture a user reaches for when a screen looks
+                     * stale was the one that left the bell untouched.
+                     */
+                    onRefresh: () async => ref
+                      ..invalidate(customerHomeSummaryProvider)
+                      ..invalidate(unreadNotificationCountProvider)
+                      ..invalidate(customerNotificationsProvider),
                     child: CustomerAsyncView<CustomerHomeSummary>(
                       value: summaryAsync,
                       onRetry: () => ref.invalidate(customerHomeSummaryProvider),

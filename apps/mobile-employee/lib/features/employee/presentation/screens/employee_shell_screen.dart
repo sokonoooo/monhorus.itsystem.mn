@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../../core/push/push_messaging.dart';
 import '../../../auth/presentation/providers/auth_provider.dart';
+import '../../home/presentation/providers/home_providers.dart';
 import '../../home/presentation/screens/home_tab_screen.dart';
 import '../../profile/presentation/screens/profile_tab_screen.dart';
 import '../../project/presentation/screens/project_tab_screen.dart';
@@ -28,8 +30,46 @@ class EmployeeShellScreen extends ConsumerStatefulWidget {
   ConsumerState<EmployeeShellScreen> createState() => _EmployeeShellScreenState();
 }
 
-class _EmployeeShellScreenState extends ConsumerState<EmployeeShellScreen> {
+class _EmployeeShellScreenState extends ConsumerState<EmployeeShellScreen>
+    with WidgetsBindingObserver {
   int _index = 0;
+
+  VoidCallback? _stopListeningForPush;
+
+  /*
+   * The badge is fetched once and never again on its own: there is no polling here and no
+   * socket. That leaves it stale in the two cases a user actually notices - coming back to
+   * the app after a while, and a push landing while the app is open, which is precisely
+   * when the count just changed.
+   *
+   * Both are handled by re-asking the server. Nothing here trusts a local number: the
+   * notification that triggered a push may not even be addressed to this reader.
+   */
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _stopListeningForPush = PushMessaging.onPushArrived(_refreshNotifications);
+  }
+
+  @override
+  void dispose() {
+    _stopListeningForPush?.call();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _refreshNotifications();
+  }
+
+  void _refreshNotifications() {
+    if (!mounted) return;
+    ref
+      ..invalidate(unreadNotificationCountProvider)
+      ..invalidate(homeNotificationsProvider);
+  }
 
   /// The four tabs, in contract order. Index here is the index in [_tabs].
   static const List<_EmployeeTab> _tabs = <_EmployeeTab>[
