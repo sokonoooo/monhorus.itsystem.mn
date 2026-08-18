@@ -118,8 +118,14 @@ key.properties
 #
 # *.p8 and serviceAccount*.json ARE secret: an APNs key signs push for every app
 # under the Apple team, and a service account can send push as the backend.
-google-services.json
-GoogleService-Info.plist
+# Globbed, not exact: downloading a second app's config gives google-services-2.json
+# and GoogleService-Info-2.plist, which exact names silently let through.
+google-services*.json
+GoogleService-Info*.plist
 *.p8
 *.p12
 serviceAccount*.json
+# The name the Firebase console actually gives the file it downloads:
+# <project>-firebase-adminsdk-<id>-<id>.json. serviceAccount*.json above only
+# catches it if somebody renames it first, and nobody does.
+*firebase-adminsdk*.json
