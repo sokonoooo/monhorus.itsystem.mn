@@ -3,8 +3,16 @@
  *
  * The event and recipient table in 14.3 is complete, so the events below are transcribed
  * from it rather than invented. What 14.3 never states is the delivery channel, and
- * section 19.2 leaves it open, so this is an in-app centre only: no email, no SMS, no
- * push. Adding a channel later means adding a transport, not rewriting these events.
+ * section 19.2 left it open.
+ *
+ * That gap is now partly closed: Android push was approved on 2026-08-18 and is delivered
+ * alongside the in-app record. iOS push was declined in the same decision — it needs a paid
+ * Apple Developer membership and a bundle identifier the customer app does not yet have —
+ * so an iPhone still sees notifications only inside the app. Email remains reserved for
+ * password reset and is not a notification channel.
+ *
+ * The prediction in the original note held: adding a channel meant adding a transport, and
+ * none of these events changed.
  */
 export const NOTIFICATION_EVENTS = [
   // Төлөвлөгөөт ажил эхлэх/дуусах дөхсөн/хэтэрсэн -> ажилтан, баг, менежер
@@ -94,8 +102,26 @@ export const NOTIFICATION_EVENT_SEVERITIES: Record<NotificationEvent, Notificati
 };
 
 /**
- * Section 19.2 leaves the delivery channel open, so nothing is sent outside the system.
- * Shown on the notification screen so the limit is stated rather than assumed.
+ * Shown on the notification screen so the delivery limit is stated rather than assumed.
+ *
+ * Kept under its original name because three clients import it. The wording changed when
+ * Android push was approved: promising "in-app only" to someone whose phone is buzzing is
+ * worse than saying nothing. It still states the two real limits — iPhone gets no push, and
+ * nothing is emailed — because both are surprises a user would otherwise discover alone.
  */
 export const NOTIFICATION_CHANNEL_UNAPPROVED_NOTE =
-  'Мэдэгдлийн хүргэх суваг (имэйл, SMS, push) батлагдаагүй тул системд дотооддоо л харагдана.';
+  'Android утсанд push мэдэгдэл очно. iPhone дээр болон имэйлээр илгээгдэхгүй — зөвхөн энэ жагсаалтад харагдана.';
+
+/**
+ * Platforms a push registration can come from.
+ *
+ * `ios` and `web` are accepted by the API but never dispatched to: only Android push was
+ * approved. They are listed so a device that registers from an unapproved platform is
+ * recorded and ignored, rather than rejected as a validation error the client cannot act
+ * on — and so that enabling iOS later is a dispatch change, not a migration.
+ */
+export const DEVICE_PLATFORMS = ['android', 'ios', 'web'] as const;
+export type DevicePlatform = (typeof DEVICE_PLATFORMS)[number];
+
+/** The platforms push is actually delivered to today. */
+export const PUSH_ENABLED_PLATFORMS: readonly DevicePlatform[] = ['android'];

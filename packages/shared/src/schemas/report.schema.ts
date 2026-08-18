@@ -11,7 +11,7 @@ import {
   DASHBOARD_WIDGETS,
   DASHBOARD_WIDGET_SIZES,
 } from '../constants/dashboard-layout';
-import { NOTIFICATION_EVENTS } from '../constants/notification';
+import { DEVICE_PLATFORMS, NOTIFICATION_EVENTS } from '../constants/notification';
 import { REPORT_EXPORT_FORMATS } from '../constants/report';
 import {
   REPORT_SOURCE_TYPES,
@@ -84,6 +84,20 @@ export const notificationListQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(100).default(25),
   unreadOnly: z.coerce.boolean().optional(),
   event: z.enum(NOTIFICATION_EVENTS).optional(),
+});
+
+/**
+ * Registering this install for push.
+ *
+ * `token` is bounded but not pattern-matched: FCM registration tokens have no published
+ * format guarantee and have changed shape before, so a regex here would reject valid
+ * devices the day Google lengthens them. The bound only stops an unbounded string from
+ * reaching the database.
+ */
+export const deviceTokenRegisterSchema = z.object({
+  token: z.string().min(10, 'Token буруу байна.').max(4096),
+  platform: z.enum(DEVICE_PLATFORMS),
+  appId: z.string().min(1).max(200).optional(),
 });
 
 export type InspectionListQueryInput = z.infer<typeof inspectionListQuerySchema>;
@@ -169,3 +183,4 @@ export const dashboardCustomWidgetSchema = z.object({
 });
 
 export type DashboardCustomWidgetInput = z.infer<typeof dashboardCustomWidgetSchema>;
+export type DeviceTokenRegisterInput = z.infer<typeof deviceTokenRegisterSchema>;

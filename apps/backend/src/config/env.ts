@@ -113,6 +113,23 @@ const envSchema = z.object({
   SMTP_USER: z.string().min(1).optional(),
   SMTP_PASS: z.string().min(1).optional(),
   MAIL_FROM: z.string().min(1).default('Monhorus <no-reply@monhorus.itsystem.mn>'),
+
+  /*
+   * Firebase Cloud Messaging, for Android push.
+   *
+   * All three are optional and all three are needed together. With FIREBASE_PROJECT_ID
+   * unset the backend records notifications exactly as it always has and dispatches no
+   * push, which is how development and the test suite run. Unlike mail there is no
+   * production refusal: the in-app notification is the record of the event, push is an
+   * extra delivery on top of it, so a deployment without credentials is degraded rather
+   * than broken and must still boot.
+   *
+   * FIREBASE_PRIVATE_KEY holds a PEM with literal \n escapes, since a real newline cannot
+   * survive a single-line env file. push.service.ts converts them back before signing.
+   */
+  FIREBASE_PROJECT_ID: z.string().min(1).optional(),
+  FIREBASE_CLIENT_EMAIL: z.string().min(1).optional(),
+  FIREBASE_PRIVATE_KEY: z.string().min(1).optional(),
 });
 
 /**
@@ -180,6 +197,10 @@ export const env = {
   // is sent or logged. Credentials are separately optional: an internal relay often wants
   // none, and demanding them would make that setup unreachable.
   mailEnabled: Boolean(raw.SMTP_HOST),
+  /* All three are required to sign and address a message, so any one missing means off. */
+  pushEnabled: Boolean(
+    raw.FIREBASE_PROJECT_ID && raw.FIREBASE_CLIENT_EMAIL && raw.FIREBASE_PRIVATE_KEY,
+  ),
 } as const;
 
 export type Env = typeof env;
