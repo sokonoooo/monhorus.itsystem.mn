@@ -158,6 +158,17 @@ export interface ObjectPhotoDto {
   uploadedAt: string;
 }
 
+/** One frozen attribute answer on a dated finding. */
+export interface ReportedAttributeDto {
+  key: string;
+  /** The attribute's name as it read when the finding was written. */
+  label: string;
+  /** The raw answer, so a machine reader never parses `display`. */
+  value: ObjectAttributeValue;
+  /** What a document prints: a SELECT's option label, Тийм/Үгүй, or the value itself. */
+  display: string;
+}
+
 /** Denormalised head of the append-only assessment history. */
 export interface LatestAssessmentDto {
   id: string;
@@ -358,6 +369,17 @@ export interface ObjectAssessmentDto {
    * pair that disagrees rather than picking a winner.
    */
   measurements: readonly LoadMeasurementDto[];
+  /**
+   * The equipment type's own attributes, FROZEN as this finding recorded them (4.1).
+   *
+   * A dated record keeps saying what was true on its date: the answers live on the object and
+   * move as it is corrected, so an entry reading them live would rewrite its own history. The
+   * label and the displayed text are frozen with the value, so a row can print itself even
+   * after the attribute is renamed or deleted.
+   *
+   * Empty for every entry written before this existed. Nothing is back-filled.
+   */
+  attributes: readonly ReportedAttributeDto[];
   repairRequired: boolean;
   revisitRequired: boolean;
   revisitDate: string | null;

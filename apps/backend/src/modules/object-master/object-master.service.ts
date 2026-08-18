@@ -1659,6 +1659,14 @@ function assessmentDto(entry: Doc<IObjectAssessment>): ObjectAssessmentDto {
     measuredLoadKw: entry.measuredLoadKw,
     // Grandfathered rows predate the field and come back with an empty list, not a null.
     measurements: (entry.measurements ?? []).map(measurementDto),
+    // Frozen when the finding was written. Empty on every entry from before this existed,
+    // and nothing is back-filled — see the note on `IObjectAssessment.attributes`.
+    attributes: (entry.attributes ?? []).map((attribute) => ({
+      key: attribute.key,
+      label: attribute.label,
+      value: attribute.value,
+      display: attribute.display,
+    })),
     repairRequired: entry.repairRequired,
     revisitRequired: entry.revisitRequired,
     revisitDate: entry.revisitDate?.toISOString() ?? null,

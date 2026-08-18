@@ -695,6 +695,33 @@ class ObjectDetailModel extends ObjectListItemModel {
 /// Recorded beside the assessment, never added to anything: `measuredLoadKw` is the
 /// only figure any roll-up sums, and an amp reading folded into it would become
 /// phantom kilowatts on a floor total.
+/// One of the equipment type's attributes, FROZEN as a finding recorded it (4.1).
+///
+/// A report is dated, so it keeps saying what was true then: the answers live on the object
+/// and move as it is corrected. The label and the printed text are frozen with the value, so
+/// a row renders even after the attribute is renamed or deleted — no lookup at all.
+class ReportedAttributeModel {
+  const ReportedAttributeModel({required this.label, required this.display});
+
+  final String label;
+
+  /// What the document prints: a SELECT's option label, Тийм/Үгүй, or the value itself.
+  final String display;
+
+  factory ReportedAttributeModel.fromJson(Map<String, dynamic> json) {
+    return ReportedAttributeModel(
+      // The server never writes a row without both halves — it captures them together — so
+      // these fall back to empty rather than being dropped, and `hasContent` is what a
+      // renderer checks before printing a line.
+      label: json['label'] as String? ?? '',
+      display: json['display'] as String? ?? '',
+    );
+  }
+
+  /// Whether this row can be printed as a labelled fact.
+  bool get hasContent => label.isNotEmpty && display.isNotEmpty;
+}
+
 class LoadMeasurementModel {
   const LoadMeasurementModel({
     required this.kind,
@@ -765,6 +792,7 @@ class ObjectAssessmentModel {
     required this.actionTaken,
     required this.measuredLoadKw,
     this.measurements = const <LoadMeasurementModel>[],
+    this.attributes = const <ReportedAttributeModel>[],
     required this.repairRequired,
     required this.revisitRequired,
     required this.revisitDate,
@@ -794,6 +822,12 @@ class ObjectAssessmentModel {
   final DateTime? revisitDate;
   final String? revisitOwnerName;
 
+  /// The equipment type's own attributes, frozen as this finding recorded them (4.1).
+  ///
+  /// Empty for every entry written before the feature existed — nothing is back-filled,
+  /// because nothing was captured at the time.
+  final List<ReportedAttributeModel> attributes;
+
   /// Where the assessment came from, when it was raised during work.
   final String? sourceLabel;
 
@@ -812,6 +846,7 @@ class ObjectAssessmentModel {
       actionTaken: json['actionTaken'] as String?,
       measuredLoadKw: parseDouble(json['measuredLoadKw']),
       measurements: LoadMeasurementModel.listFrom(json['measurements']),
+      attributes: parseList(json['attributes'], ReportedAttributeModel.fromJson),
       repairRequired: json['repairRequired'] as bool? ?? false,
       revisitRequired: json['revisitRequired'] as bool? ?? false,
       revisitDate: parseDate(json['revisitDate']),

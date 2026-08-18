@@ -776,6 +776,103 @@ describe('section 4.1 attributes answered on the Үнэлгээ бүртгэх r
   });
 });
 
+describe('section 4.1 attributes frozen onto a dated finding', () => {
+  /**
+   * A report keeps saying what was true on its date.
+   *
+   * The answers live on the equipment and move as it is corrected, so a finding that read
+   * them live would silently rewrite its own history and two printouts of the same document
+   * could disagree. The label is frozen with the value for the same reason: an administrator
+   * may rename or delete the attribute afterwards, and the row must still print itself.
+   */
+  async function uploadPhoto(): Promise<string> {
+    const response = await request(app)
+      .post(`${API}/files/object-assessment-photos`)
+      .set('Authorization', `Bearer ${token}`)
+      .attach('file', Buffer.from('evidence-bytes'), {
+        filename: 'evidence.png',
+        contentType: 'image/png',
+      });
+    return response.body.data.id as string;
+  }
+
+  async function assess(objectId: string, body: Record<string, unknown> = {}) {
+    return request(app)
+      .post(`${API}/objects-master/${objectId}/assessments`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ newScore: 95, photoIds: [await uploadPhoto()], ...body });
+  }
+
+  async function history(objectId: string) {
+    return request(app)
+      .get(`${API}/objects-master/${objectId}/history`)
+      .set('Authorization', `Bearer ${token}`);
+  }
+
+  it('freezes the answers, so a later correction does not rewrite an old finding', async () => {
+    const typeId = await createBreakerType();
+    const created = await createObject({
+      objectTypeId: typeId,
+      attributeValues: { fuse: 'NOT_FUSED', separator: 'WITH' },
+    });
+    const objectId = created.body.data.id as string;
+
+    await assess(objectId);
+
+    // The breaker is refitted, and the equipment now reads Хайлмалтай.
+    const edited = await request(app)
+      .patch(`${API}/objects-master/${objectId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ attributeValues: { fuse: 'FUSED', separator: 'WITH' } });
+    expect(edited.status).toBe(200);
+    expect(edited.body.data.attributeValues.fuse).toBe('FUSED');
+
+    // The finding still says what was true when it was written.
+    const entries = (await history(objectId)).body.data.assessments;
+    const frozen = entries[0].attributes as { key: string; display: string }[];
+    expect(frozen.find((a) => a.key === 'fuse')?.display).toBe('Хайлмалгүй');
+  });
+
+  it('keeps the label, so a renamed or deleted attribute still prints', async () => {
+    const typeId = await createBreakerType();
+    const created = await createObject({
+      objectTypeId: typeId,
+      attributeValues: { fuse: 'FUSED', separator: 'WITH' },
+    });
+    const objectId = created.body.data.id as string;
+
+    await assess(objectId);
+    // The administrator removes the attribute entirely.
+    await patchType(typeId, { attributes: [SEPARATOR] });
+
+    const entries = (await history(objectId)).body.data.assessments;
+    const frozen = entries[0].attributes as { key: string; label: string; display: string }[];
+    // Nothing to look up any more, and the row still renders itself in full.
+    expect(frozen.find((a) => a.key === 'fuse')).toMatchObject({
+      label: 'Хайлмал хамгаалалт',
+      display: 'Хайлмалтай',
+    });
+  });
+
+  it('captures only answered attributes, so a blank is not a finding', async () => {
+    // A row reading "Хайлмал: —" on a signed document would suggest somebody looked.
+    const typeId = await createBreakerType();
+    const object = await ObjectRecord.create({
+      code: 'MCB-40',
+      name: 'Хуучин таслуур',
+      category: 'EQUIPMENT',
+      objectType: new Types.ObjectId(typeId),
+      customer: new Types.ObjectId(customerId),
+      status: 'ACTIVE',
+    });
+
+    await assess(String(object._id));
+
+    const entries = (await history(String(object._id))).body.data.assessments;
+    expect(entries[0].attributes).toEqual([]);
+  });
+});
+
 describe('permissions', () => {
   it('refuses an attribute change without object_type.manage', async () => {
     const typeId = await createBreakerType();

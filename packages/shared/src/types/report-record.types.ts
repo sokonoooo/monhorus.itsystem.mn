@@ -1,3 +1,4 @@
+import type { ObjectAttributeValue } from '../constants/object-type-attribute';
 import type {
   ReportSourceType,
   ReportStatus,
@@ -21,6 +22,28 @@ export interface ReportAttachmentDto {
  * the narrative and approval live on the report, the per-object finding lives here, and the
  * object's history is assembled by reading items rather than duplicated reports.
  */
+/**
+ * One of the equipment type's own attributes, FROZEN as the report recorded it (4.1).
+ *
+ * A report is a dated record, so it must keep saying what was true on its date. The answers
+ * themselves live on the equipment and move as it is corrected — a breaker refitted in June
+ * reads Хайлмалтай from then on — so a report that read them live would silently rewrite its
+ * own history, and two printouts of the same document would disagree.
+ *
+ * THE LABEL IS FROZEN TOO, NOT JUST THE VALUE. An administrator may delete or rename an
+ * attribute afterwards; without the label the March report holds the key `fuse` and nothing
+ * that can render it. A snapshot has to be able to print itself with no lookup at all.
+ */
+export interface ReportItemAttributeDto {
+  key: string;
+  /** The attribute's name as it read when the report was written. */
+  label: string;
+  /** The raw answer, so a machine reader never has to parse `display`. */
+  value: ObjectAttributeValue;
+  /** What the document prints: a SELECT's option label, Тийм/Үгүй, or the value itself. */
+  display: string;
+}
+
 export interface ReportItemDto {
   id: string;
   reportId: string;
@@ -38,6 +61,14 @@ export interface ReportItemDto {
   recommendation: string | null;
   /** Measured load for this piece of equipment, when the visit took one. */
   measuredLoadKw: number | null;
+  /**
+   * The equipment type's own attributes as this report recorded them, in display order.
+   *
+   * Empty for a report written before the feature existed, and for equipment whose type
+   * declares nothing — nothing is back-filled, because nothing was captured at the time and
+   * inventing it would put words in a signed document.
+   */
+  attributes: readonly ReportItemAttributeDto[];
   evidenceAttachments: readonly ReportAttachmentDto[];
 
   /** Set on a consolidated report's items: where the finding was carried from. */

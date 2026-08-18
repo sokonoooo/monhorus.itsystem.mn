@@ -1,4 +1,4 @@
-import type { RiskLevel } from '@monhorus/shared';
+import { formatAttributeValue, type ObjectAttributeValue, type RiskLevel } from '@monhorus/shared';
 import type { HydratedDocument, Types } from 'mongoose';
 
 import {
@@ -6,6 +6,8 @@ import {
   type ILoadMeasurement,
   type IObjectAssessment,
 } from './object-master.models';
+import { ObjectRecord } from './object-master.models';
+import { toObjectTypeAttributeDtos } from './object-type.service';
 
 /**
  * THE writer of the append-only assessment history.
@@ -93,6 +95,38 @@ export interface AppendAssessmentHistoryInput {
  * A row is never updated in place, because it cannot be: the model blocks every update and
  * delete hook (rule 17.15). Correction is append, which is what an audit record wants.
  */
+/**
+ * The equipment type's attributes as they stand, resolved for freezing onto a finding.
+ *
+ * Only ANSWERED attributes are captured: a blank is not a finding, and a row reading
+ * "Хайлмал: —" on a signed document would suggest somebody looked and found nothing.
+ *
+ * Returns nothing at all when the equipment has gone or its type declares none, so an entry
+ * for such a piece of kit reads exactly as entries did before this existed.
+ */
+async function snapshotAttributes(
+  objectId: Types.ObjectId,
+): Promise<{ key: string; label: string; value: ObjectAttributeValue; display: string }[]> {
+  const object = await ObjectRecord.findById(objectId)
+    .select('attributeValues objectType')
+    .populate({ path: 'objectType', select: 'attributes' });
+  if (!object) return [];
+
+  const type = object.objectType as unknown as { attributes?: unknown } | null;
+  const defs = toObjectTypeAttributeDtos(
+    type && typeof type === 'object' && 'attributes' in type
+      ? (type.attributes as never)
+      : undefined,
+  );
+  const values = object.attributeValues ?? {};
+
+  return defs.flatMap((def) => {
+    const display = formatAttributeValue(def, values[def.key]);
+    if (display === null) return [];
+    return [{ key: def.key, label: def.label, value: values[def.key]!, display }];
+  });
+}
+
 export async function appendAssessmentHistory(
   input: AppendAssessmentHistoryInput,
 ): Promise<HydratedDocument<IObjectAssessment>> {
@@ -120,6 +154,15 @@ export async function appendAssessmentHistory(
     actionTaken: input.actionTaken ?? null,
     measuredLoadKw: input.measuredLoadKw ?? null,
     measurements: input.measurements ?? [],
+    /**
+     * The equipment type's attributes, frozen as of this finding (4.1).
+     *
+     * Read here rather than accepted from the caller: every producer — the manual assessment,
+     * the work report, the planned work — would otherwise have to remember to pass them, and
+     * one that forgot would write a finding that silently claims nothing was recorded. This
+     * is the single writer of the history, so this is the one place it can be guaranteed.
+     */
+    attributes: await snapshotAttributes(input.object),
     repairRequired: input.repairRequired ?? false,
     revisitRequired: input.revisitRequired ?? false,
     revisitDate: input.revisitDate ?? null,

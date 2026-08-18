@@ -467,6 +467,21 @@ export interface IObjectAssessment {
   measuredLoadKw: number | null;
   /** Amps, volts and kW as read on site. Empty when only the kW box was filled in. */
   measurements: ILoadMeasurement[];
+  /**
+   * The equipment type's own attributes, FROZEN as this assessment recorded them (4.1).
+   *
+   * This collection is append-only and every entry is a dated finding, so it is exactly the
+   * right home for a snapshot: the answers themselves live on the object and move as it is
+   * corrected, and an entry that read them live would silently rewrite its own history.
+   *
+   * The LABEL and the DISPLAYED text are frozen alongside the raw value, so an entry can
+   * print itself with no lookup — an administrator may rename or delete the attribute
+   * afterwards and this row must still be able to say what it recorded.
+   *
+   * Empty for every entry written before this existed. Nothing is back-filled: nothing was
+   * captured at the time, and inventing it would put words in a signed record.
+   */
+  attributes: IReportedAttribute[];
   repairRequired: boolean;
   revisitRequired: boolean;
   revisitDate: Date | null;
@@ -489,6 +504,26 @@ export interface IObjectAssessment {
   createdAt: Date;
 }
 
+/** One frozen attribute answer on a dated finding. See `IObjectAssessment.attributes`. */
+export interface IReportedAttribute {
+  key: string;
+  label: string;
+  value: ObjectAttributeValue;
+  display: string;
+}
+
+const reportedAttributeSchema = new Schema<IReportedAttribute>(
+  {
+    key: { type: String, required: true },
+    label: { type: String, required: true },
+    // `Mixed`: an attribute holds a string, a number or a boolean, and the type that decided
+    // which is itself editable afterwards.
+    value: { type: Schema.Types.Mixed, required: true },
+    display: { type: String, required: true },
+  },
+  { _id: false },
+);
+
 const objectAssessmentSchema = new Schema<IObjectAssessment>(
   {
     object: { type: Schema.Types.ObjectId, ref: 'Object', required: true, index: true },
@@ -506,6 +541,7 @@ const objectAssessmentSchema = new Schema<IObjectAssessment>(
     actionTaken: { type: String, default: null, maxlength: 2000 },
     measuredLoadKw: { type: Number, default: null, min: 0 },
     measurements: { type: [loadMeasurementSubSchema], default: [] },
+    attributes: { type: [reportedAttributeSchema], default: [] },
     repairRequired: { type: Boolean, default: false },
     revisitRequired: { type: Boolean, default: false },
     revisitDate: { type: Date, default: null },
