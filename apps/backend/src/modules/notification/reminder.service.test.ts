@@ -5,6 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   createObjectFixture,
+  type ObjectFixture,
   createUserWithPermissions,
   resetDomainCollections,
   startTestApp,
@@ -21,8 +22,15 @@ const DAY = 24 * HOUR;
 
 let app: Express;
 
-async function makePlannedWork(overrides: Record<string, unknown>): Promise<string> {
-  const fixture = await createObjectFixture();
+/*
+ * `createObjectFixture` seeds a customer with a fixed code, so calling it twice in one test
+ * collides on the unique index. Cases that need two kinds of record share one fixture.
+ */
+async function makePlannedWork(
+  overrides: Record<string, unknown>,
+  existing?: ObjectFixture,
+): Promise<string> {
+  const fixture = existing ?? (await createObjectFixture());
   const start = new Date(Date.now() - 7 * DAY);
   const work = await PlannedWork.create({
     workNumber: `PW-${Math.random().toString(36).slice(2, 8).toUpperCase()}`,
@@ -39,8 +47,11 @@ async function makePlannedWork(overrides: Record<string, unknown>): Promise<stri
   return String(work._id);
 }
 
-async function makeInvoice(overrides: Record<string, unknown>): Promise<string> {
-  const fixture = await createObjectFixture();
+async function makeInvoice(
+  overrides: Record<string, unknown>,
+  existing?: ObjectFixture,
+): Promise<string> {
+  const fixture = existing ?? (await createObjectFixture());
   const invoice = await Invoice.create({
     invoiceNumber: `INV-${Math.random().toString(36).slice(2, 8).toUpperCase()}`,
     customer: new Types.ObjectId(fixture.customerId),
@@ -307,12 +318,16 @@ describe('Reminder sweep', () => {
   });
 
   it('reports every category in one pass', async () => {
-    await makePlannedWork({
-      plannedEndDate: new Date(Date.now() - 2 * DAY),
-      originalPlannedEndDate: new Date(Date.now() - 2 * DAY),
-      overdueAt: new Date(Date.now() - 2 * DAY),
-    });
-    await makeInvoice({ dueDate: new Date(Date.now() - 3 * DAY) });
+    const shared = await createObjectFixture();
+    await makePlannedWork(
+      {
+        plannedEndDate: new Date(Date.now() - 2 * DAY),
+        originalPlannedEndDate: new Date(Date.now() - 2 * DAY),
+        overdueAt: new Date(Date.now() - 2 * DAY),
+      },
+      shared,
+    );
+    await makeInvoice({ dueDate: new Date(Date.now() - 3 * DAY) }, shared);
 
     const result = await runReminderSweep();
 
