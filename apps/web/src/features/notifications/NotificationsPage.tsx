@@ -15,6 +15,7 @@ import { PageHeader } from '../../components/ui/PageHeader';
 import { EmptyState, ErrorState, Skeleton } from '../../components/ui/States';
 import { useToast } from '../../components/ui/ToastProvider';
 import { ApiError } from '../../lib/api-client';
+import { publishUnreadCountChanged } from '../../lib/unread-notifications';
 import { notificationService } from '../../services/report.service';
 
 function formatDateTime(iso: string): string {
@@ -103,6 +104,8 @@ export function NotificationsPage(): ReactElement {
     try {
       const result = await notificationService.markAllRead();
       notify(`${result.updated} мэдэгдэл уншсан болголоо.`, 'success');
+      // Announced after the server confirms, so the bell refetches a count that is real.
+      publishUnreadCountChanged();
       await load();
     } catch (caught) {
       notify(caught instanceof ApiError ? caught.message : 'Гүйцэтгэж чадсангүй.', 'error');
@@ -117,6 +120,7 @@ export function NotificationsPage(): ReactElement {
     if (row.readAt === null) {
       try {
         await notificationService.markRead(row.id);
+        publishUnreadCountChanged();
       } catch {
         // Intentionally ignored: the link still works and the row can be marked later.
       }

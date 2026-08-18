@@ -4,6 +4,7 @@ import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 
 import { NAVIGATION, TOP_NAV_ITEMS, type NavSection } from '../../config/navigation';
 import { useAuth } from '../../contexts/auth-context';
+import { onUnreadCountChanged } from '../../lib/unread-notifications';
 import { notificationService } from '../../services/report.service';
 import { NavGlyph } from './NavGlyph';
 import { Button } from '../ui/Button';
@@ -40,9 +41,18 @@ function useUnreadNotifications(enabled: boolean): number {
 
     read();
     const timer = window.setInterval(read, UNREAD_POLL_MS);
+
+    /*
+     * The poll is the floor, not the only trigger. Marking notifications read elsewhere in
+     * the app announces itself, and the badge re-asks immediately rather than sitting on a
+     * stale number for up to a minute while the list beside it shows nothing unread.
+     */
+    const unsubscribe = onUnreadCountChanged(read);
+
     return () => {
       cancelled = true;
       window.clearInterval(timer);
+      unsubscribe();
     };
   }, [enabled]);
 
