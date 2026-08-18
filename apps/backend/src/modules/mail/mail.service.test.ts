@@ -96,7 +96,29 @@ describe('mail transport selection', () => {
 
     expect(errored).toHaveLength(0);
     expect(logged).toHaveLength(1);
-    expect(logged[0]).toMatchObject({ body: message.text });
+    expect(logged[0]).toMatchObject({ mailBody: message.text });
+  });
+
+  /**
+   * The key matters, not just the value. `config/logger.ts` redacts `body` and `*.body` with
+   * no environment condition, so logging the message under `body` — as this adapter did —
+   * produced `[REDACTED]` on a developer machine and left the flow uncompletable. The
+   * redaction rule is a deliberate backstop and stays; this transport just has to keep out of
+   * its way. A future rename back to `body` would silently break local development again,
+   * with a passing suite unless something pins the key.
+   */
+  it('logs under a key the global redaction does not censor', async () => {
+    const { module, logged } = await loadMailService({ mailEnabled: false, isProduction: false });
+
+    await module.getMailTransport().send(message);
+
+    const redacted = new Set(['body', 'password', 'newPassword', 'refreshToken', 'accessToken']);
+    const carrier = Object.keys(logged[0] as Record<string, unknown>).find(
+      (key) => (logged[0] as Record<string, unknown>)[key] === message.text,
+    );
+
+    expect(carrier).toBeDefined();
+    expect(redacted.has(carrier as string)).toBe(false);
   });
 
   it('uses SMTP whenever a host is configured, in production or not', async () => {
