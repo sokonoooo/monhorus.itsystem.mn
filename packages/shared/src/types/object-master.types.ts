@@ -54,6 +54,20 @@ export interface ObjectTypeDto {
   /** Section 4.1: тухайн төхөөрөмж дээр үзлэгийн дүгнэлт бүртгэх боломж. */
   generatesConclusion: boolean;
   /**
+   * Whether a service call may be raised against equipment of this type.
+   *
+   * The call form lists only the types marked here, and the backend refuses a call naming
+   * any other - the filter is a convenience, not the rule.
+   */
+  canCreateCall: boolean;
+  /**
+   * The SLA window in hours for calls of this type, or null when `canCreateCall` is false.
+   *
+   * Non-null exactly when calls are allowed. This is what sets the deadline on a new call,
+   * in place of the global urgent/standard hours.
+   */
+  callSlaHours: number | null;
+  /**
    * The built-in glyph, and the FALLBACK whenever `iconUrl` is null.
    *
    * Still required, still unchanged: every type registered before custom icons existed

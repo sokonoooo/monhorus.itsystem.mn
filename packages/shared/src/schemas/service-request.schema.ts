@@ -42,6 +42,13 @@ export const createServiceRequestSchema = z
      */
     planPosition: planPositionSchema.nullish(),
     requestType: z.enum(SERVICE_REQUEST_TYPES, { required_error: 'Хүсэлтийн төрөл заавал.' }),
+  /**
+   * The equipment type the call is about. Required, and its `callSlaHours` is what sets the
+   * deadline - so a call with no type would be a call with no agreed window, which is the
+   * thing this field exists to prevent. The backend additionally refuses any type whose
+   * `canCreateCall` is false; the form filtering the list is a convenience, not the rule.
+   */
+  objectTypeId: objectIdSchema,
     isUrgent: z.boolean().default(false),
     description: z
       .string()

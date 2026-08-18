@@ -40,6 +40,8 @@ export interface IServiceRequest {
   planPosition: PlanPositionDto | null;
 
   requestType: ServiceRequestType;
+  /** The equipment type the call is about, or null for calls raised before types had SLAs. */
+  objectType: Types.ObjectId | null;
   isUrgent: boolean;
   description: string;
   contactName: string;
@@ -141,6 +143,20 @@ const serviceRequestSchema = new Schema<IServiceRequest>(
     planPosition: { type: planPositionSchema, default: null },
 
     requestType: { type: String, enum: SERVICE_REQUEST_TYPES, required: true, index: true },
+    /*
+     * The equipment type this call is about, and where its SLA window came from.
+     *
+     * Nullable, not required: every request created before equipment types carried an SLA
+     * has none, and backfilling one would be inventing a fact about work already done.
+     * New calls are required to name one by the create schema, so null means "historic",
+     * never "the caller skipped it".
+     *
+     * Recorded on the request rather than looked up through the location tree because the
+     * two do not meet - a request points at ObjectNode (building/floor/panel), while an
+     * ObjectType hangs off ObjectRecord - and because the window must stay the one that was
+     * agreed when the call was raised, not whatever the catalogue says later.
+     */
+    objectType: { type: Schema.Types.ObjectId, ref: 'ObjectType', default: null, index: true },
     isUrgent: { type: Boolean, default: false, index: true },
     description: { type: String, required: true, trim: true, maxlength: 4000 },
     contactName: { type: String, required: true, trim: true, maxlength: 200 },

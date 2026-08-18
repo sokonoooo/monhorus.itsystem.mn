@@ -9,6 +9,7 @@ import {
   resetDomainCollections,
   startTestApp,
   stopTestApp,
+  createCallableObjectType,
 } from '../../test/helpers';
 import { AuditLog } from '../audit/audit-log.model';
 import { Setting } from './setting.model';
@@ -18,6 +19,7 @@ const API = '/api/v1';
 
 let app: Express;
 let adminToken: string;
+let callableTypeId: string;
 let readerToken: string;
 
 async function login(email: string, password: string): Promise<string> {
@@ -45,6 +47,8 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await resetDomainCollections();
+  // After the reset: object types are domain data and are wiped with everything else.
+  callableTypeId = await createCallableObjectType();
   // The service caches the resolved map, and resetDomainCollections wipes the overrides
   // behind its back, so the cache has to be dropped between tests.
   invalidateSettingsCache();
@@ -284,7 +288,18 @@ describe('DELETE /settings/:key', () => {
 });
 
 describe('settings actually drive behaviour', () => {
-  it('changes the SLA deadline a new request receives', async () => {
+  /**
+   * Rewritten when equipment types gained their own SLA windows.
+   *
+   * This used to assert that `sla.urgent_hours` set the deadline on a new request. It no
+   * longer can: every call names an equipment type, and that type's hours win outright.
+   * The global urgent/standard hours now apply only to calls raised before types carried
+   * hours - which is to say, only on the extension path for historic work.
+   *
+   * Kept, inverted, rather than deleted: the setting still exists and somebody will
+   * reasonably assume it governs new calls. This is where they find out it does not.
+   */
+  it('does not override the equipment window for a new request', async () => {
     const objects = await createObjectFixture();
 
     await patchSettings({ [SETTING_KEYS.SLA_URGENT_HOURS]: 2 });
@@ -296,6 +311,7 @@ describe('settings actually drive behaviour', () => {
         customerId: objects.customerId,
         buildingId: objects.buildingId,
         requestType: 'URGENT_CALL',
+        objectTypeId: callableTypeId,
         isUrgent: true,
         description: 'Гэрэлтүүлэг ажиллахгүй байна',
         contactName: 'Бат',
@@ -309,9 +325,9 @@ describe('settings actually drive behaviour', () => {
     const dueAt = Date.parse(created.body.data.slaDueAt);
     const windowHours = (dueAt - createdAt) / 3_600_000;
 
-    // Two hours, not the compiled-in six.
-    expect(windowHours).toBeGreaterThan(1.9);
-    expect(windowHours).toBeLessThan(2.1);
+    // The equipment type's 24, not the 2 just configured and not the compiled-in 6.
+    expect(windowHours).toBeGreaterThan(23.9);
+    expect(windowHours).toBeLessThan(24.1);
   });
 
   it('publishes a change immediately rather than after the cache expires', async () => {

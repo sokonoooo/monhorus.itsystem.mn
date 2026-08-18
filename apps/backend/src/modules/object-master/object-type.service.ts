@@ -78,6 +78,8 @@ export function toObjectTypeDto(type: Doc<IObjectType>, objectCount: number): Ob
     showOnPlan: type.showOnPlan,
     insidePanel: type.insidePanel,
     generatesConclusion: type.generatesConclusion,
+    canCreateCall: type.canCreateCall,
+    callSlaHours: type.callSlaHours ?? null,
     icon: type.icon,
     iconFileId: type.iconFile ? String(type.iconFile) : null,
     iconUrl: objectTypeIconUrl(type.iconFile),
@@ -181,6 +183,26 @@ export async function getObjectTypeById(objectTypeId: string): Promise<ObjectTyp
   return toObjectTypeDto(type, counts.get(String(type._id)) ?? 0);
 }
 
+/**
+ * A type may be called about only when it says how long the call has.
+ *
+ * The pair is meaningless apart: calls enabled with no window would silently fall back to
+ * the global urgent/standard hours, which is exactly the behaviour this feature replaces -
+ * and it would do so invisibly, one type at a time.
+ *
+ * Lives here rather than in the zod schema because the update path must judge the MERGED
+ * document. A PATCH carries only what changed, so `{canCreateCall: true}` alone looks
+ * complete to a schema while leaving the stored hours null.
+ */
+function assertCallSettingsCoherent(canCreateCall: boolean, callSlaHours: number | null): void {
+  if (canCreateCall && (callSlaHours === null || callSlaHours === undefined)) {
+    throw AppError.badRequest(
+      ERROR_CODES.VALIDATION_ERROR,
+      'Дуудлага үүсгэх боломжтой төрөлд SLA хугацааг заавал тохируулна.',
+    );
+  }
+}
+
 export async function createObjectType(
   input: CreateObjectTypeInput,
   actor: AuthContext,
@@ -194,6 +216,8 @@ export async function createObjectType(
     );
   }
 
+  assertCallSettingsCoherent(input.canCreateCall, input.callSlaHours ?? null);
+
   // Resolved BEFORE the type is written, so a bad id fails the request instead of leaving a
   // registered type behind. Re-owning the file has to wait for an id, and is done below.
   const iconFile = input.iconFileId ? await resolveIconFile(input.iconFileId) : null;
@@ -206,6 +230,8 @@ export async function createObjectType(
     showOnPlan: input.showOnPlan,
     insidePanel: input.insidePanel,
     generatesConclusion: input.generatesConclusion,
+    canCreateCall: input.canCreateCall,
+    callSlaHours: input.canCreateCall ? (input.callSlaHours ?? null) : null,
     icon: input.icon,
     iconFile,
     attributes: input.attributes,
@@ -255,6 +281,18 @@ export async function updateObjectType(
   if (input.showOnPlan !== undefined) type.showOnPlan = input.showOnPlan;
   if (input.insidePanel !== undefined) type.insidePanel = input.insidePanel;
   if (input.generatesConclusion !== undefined) type.generatesConclusion = input.generatesConclusion;
+  if (input.canCreateCall !== undefined) type.canCreateCall = input.canCreateCall;
+  if (input.callSlaHours !== undefined) type.callSlaHours = input.callSlaHours ?? null;
+  /*
+   * Checked on the MERGED document, not on the patch. A patch that only sets
+   * canCreateCall=true must be refused when the stored hours are null, and a patch that only
+   * clears the hours must be refused while calls remain enabled - neither is visible looking
+   * at the incoming fields alone.
+   */
+  assertCallSettingsCoherent(type.canCreateCall, type.callSlaHours);
+  // Hours are meaningless once calls are off, and keeping a stale figure invites somebody to
+  // re-enable calls later and inherit a window nobody chose.
+  if (!type.canCreateCall) type.callSlaHours = null;
   if (input.icon !== undefined) type.icon = input.icon;
   if (input.isActive !== undefined) type.isActive = input.isActive;
   /**

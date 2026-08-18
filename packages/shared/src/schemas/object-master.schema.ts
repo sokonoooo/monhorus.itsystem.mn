@@ -158,6 +158,23 @@ export const createObjectTypeSchema = z.object({
    * working unchanged.
    */
   attributes: objectTypeAttributesSchema.default([]),
+  /**
+   * Whether a service call may be raised against equipment of this type.
+   *
+   * The catalogue holds structural types nobody calls about (a cable run, a circuit) next to
+   * the ones people do (a light, a socket). Rather than infer that from `category`, which
+   * means something else, an administrator states it per type, and the call form shows only
+   * what is marked here.
+   */
+  canCreateCall: z.boolean().default(false),
+  /**
+   * The SLA window, in hours, for a call raised against this type. Required exactly when
+   * `canCreateCall` is true - see the refinement below - and meaningless otherwise.
+   *
+   * Bounded at 720 hours to match `sla.urgent_hours` and `sla.standard_hours`, so the three
+   * places that express an SLA window agree on what is a plausible one.
+   */
+  callSlaHours: z.number().int().positive().max(720).nullish(),
 });
 
 export const updateObjectTypeSchema = z
@@ -183,6 +200,8 @@ export const updateObjectTypeSchema = z
      * edit here changes what is asked for next time and never destroys what was recorded.
      */
     attributes: objectTypeAttributesSchema.optional(),
+    canCreateCall: z.boolean().optional(),
+    callSlaHours: z.number().int().positive().max(720).nullish(),
   })
   // Category and code are omitted on purpose: changing either would silently invalidate
   // every object already using the type.

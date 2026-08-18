@@ -12,6 +12,7 @@ import {
   stopTestApp,
   type ObjectFixture,
   type OrgFixture,
+  createCallableObjectType,
 } from '../../test/helpers';
 import { Employee } from '../employee/employee.model';
 
@@ -52,6 +53,7 @@ let app: Express;
 let org: OrgFixture;
 let objects: ObjectFixture;
 let token: string;
+let callableTypeId: string;
 
 async function login(email: string, password: string): Promise<string> {
   const response = await request(app).post(`${API}/auth/login`).send({ email, password });
@@ -112,6 +114,7 @@ async function createRequest(): Promise<string> {
       customerId: objects.customerId,
       buildingId: objects.buildingId,
       requestType: 'URGENT_CALL',
+      objectTypeId: callableTypeId,
       isUrgent: true,
       description: 'Гэрэлтүүлэг ажиллахгүй байна',
       contactName: 'Бат',
@@ -180,6 +183,8 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await resetDomainCollections();
+  // After the reset: object types are domain data and are wiped with everything else.
+  callableTypeId = await createCallableObjectType();
   org = await createOrgFixture();
   objects = await createObjectFixture();
   const user = await createUserWithPermissions('cal@test.mn', OPERATOR_PERMISSIONS);

@@ -12,6 +12,7 @@ import {
   stopTestApp,
   type ObjectFixture,
   type OrgFixture,
+  createCallableObjectType,
 } from '../../test/helpers';
 import { Employee } from '../employee/employee.model';
 import { Team } from '../org/org.models';
@@ -104,6 +105,7 @@ let org: OrgFixture;
 let objects: ObjectFixture;
 
 let supervisorToken: string;
+let callableTypeId: string;
 let dispatcherToken: string;
 let technicianToken: string;
 let fieldTechnicianToken: string;
@@ -244,6 +246,7 @@ async function createRequest(
       customerId: objects.customerId,
       buildingId: objects.buildingId,
       requestType: 'STANDARD_CALL',
+      objectTypeId: callableTypeId,
       isUrgent: false,
       description,
       contactName: 'Б. Болд',
@@ -290,6 +293,9 @@ async function listRequestNumbers(bearer: string, query = ''): Promise<string[]>
 beforeAll(async () => {
   app = await startTestApp();
   await resetDomainCollections();
+  // After the reset, and after startTestApp connected: object types are domain data and
+  // are wiped by the reset like everything else.
+  callableTypeId = await createCallableObjectType();
 
   org = await createOrgFixture();
   objects = await createObjectFixture();

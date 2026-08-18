@@ -91,6 +91,24 @@ export interface IObjectType {
    * the one existing PATCH rather than growing four endpoints.
    */
   attributes: IObjectTypeAttribute[];
+  /**
+   * Whether a service call may be raised against equipment of this type.
+   *
+   * The catalogue mixes structural types nobody phones about - a circuit, a cable run -
+   * with the ones people do. Which is which is a business decision, not something that can
+   * be read off `category`, so an administrator states it per type.
+   */
+  canCreateCall: boolean;
+  /**
+   * The SLA window in hours for a call of this type, or null when calls are not allowed.
+   *
+   * This replaces the global urgent/standard window for calls that name a type: a light is
+   * given a day, an automatic socket six hours, and the urgency flag no longer moves the
+   * deadline. Enforced non-null whenever `canCreateCall` is true - see
+   * `assertCallSettingsCoherent` in object-type.service.ts, which checks the MERGED result
+   * so a patch cannot switch calls on while leaving the hours behind.
+   */
+  callSlaHours: number | null;
   isActive: boolean;
   createdBy: Types.ObjectId | null;
   createdAt: Date;
@@ -134,6 +152,13 @@ const objectTypeSchema = new Schema<IObjectType>(
     // path is absent on every type registered before attributes existed, and an absent path
     // with a default reads back as the default. No migration, and no row is rewritten.
     attributes: { type: [objectTypeAttributeSchema], default: [] },
+    /*
+     * Defaults to false: a catalogue written before calls had types should not silently
+     * become callable, and an administrator turning it on is also the moment they are made
+     * to supply the hours.
+     */
+    canCreateCall: { type: Boolean, default: false, index: true },
+    callSlaHours: { type: Number, default: null, min: 1, max: 720 },
     isActive: { type: Boolean, default: true, index: true },
     createdBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
   },

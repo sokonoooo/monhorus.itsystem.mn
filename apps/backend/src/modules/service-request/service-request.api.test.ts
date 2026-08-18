@@ -13,6 +13,7 @@ import {
   stopTestApp,
   type OrgFixture,
   type TestUser,
+  createCallableObjectType,
 } from '../../test/helpers';
 import { AuditLog } from '../audit/audit-log.model';
 import { Employee } from '../employee/employee.model';
@@ -28,6 +29,7 @@ let token: string;
 let customerId: string;
 let projectId: string;
 let buildingId: string;
+let callableTypeId: string;
 let floorId: string;
 let foreignCustomerId: string;
 let foreignProjectId: string;
@@ -109,6 +111,8 @@ async function seedHierarchy(): Promise<void> {
   });
 
   customerId = String(customer._id);
+  // Calls take their SLA window from the equipment type, so every request needs one.
+  callableTypeId = await createCallableObjectType();
   projectId = String(project._id);
   buildingId = String(building._id);
   floorId = String(floor._id);
@@ -150,6 +154,7 @@ function validRequest(overrides: Record<string, unknown> = {}): Record<string, u
     customerId,
     buildingId,
     requestType: 'URGENT_CALL',
+    objectTypeId: callableTypeId,
     isUrgent: true,
     description: 'Самбар дээр богино холболт илэрсэн',
     contactName: 'Б. Болд',
@@ -175,7 +180,7 @@ beforeEach(async () => {
 });
 
 describe('service request creation', () => {
-  it('creates a request and sets a six hour SLA for an urgent call', async () => {
+  it('takes the SLA window from the equipment type, not from urgency', async () => {
     const response = await request(app)
       .post(`${API}/service-requests`)
       .set('Authorization', `Bearer ${token}`)
@@ -187,7 +192,12 @@ describe('service request creation', () => {
 
     const started = new Date(response.body.data.slaStartedAt).getTime();
     const due = new Date(response.body.data.slaDueAt).getTime();
-    expect(Math.round((due - started) / (60 * 60 * 1000))).toBe(6);
+    /*
+     * 24, not the global urgent 6. The call names an equipment type worth a day, and the
+     * urgent flag no longer moves the deadline - it orders the queue instead. The request
+     * IS urgent here, which is what makes the number meaningful.
+     */
+    expect(Math.round((due - started) / (60 * 60 * 1000))).toBe(24);
   });
 
   it('sets a twenty four hour SLA for a standard call', async () => {

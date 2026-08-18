@@ -11,6 +11,7 @@ import {
   resetDomainCollections,
   startTestApp,
   stopTestApp,
+  createCallableObjectType,
 } from '../../test/helpers';
 import { hashPassword } from '../../utils/password.util';
 import { Employee } from '../employee/employee.model';
@@ -58,6 +59,7 @@ const PORTAL = [
 
 let app: Express;
 let token: string;
+let callableTypeId: string;
 
 async function login(email: string, password: string): Promise<string> {
   const response = await request(app).post(`${API}/auth/login`).send({ email, password });
@@ -281,6 +283,8 @@ let customerToken: string;
 
 beforeEach(async () => {
   await resetDomainCollections();
+  // After the reset: object types are domain data and are wiped with everything else.
+  callableTypeId = await createCallableObjectType();
   const staff = await createUserWithPermissions('files-staff@test.mn', OBJECT_STAFF);
   token = await login(staff.email, staff.password);
 
@@ -510,6 +514,7 @@ describe('POST /files/service-request-attachments', () => {
     customerId: tenantA.customerId,
     buildingId: tenantA.buildingId,
     requestType: 'STANDARD_CALL',
+    objectTypeId: callableTypeId,
     isUrgent: false,
     description: 'Коридорын гэрэл анивчиж байна.',
     contactName: 'Д. Оюунчимэг',

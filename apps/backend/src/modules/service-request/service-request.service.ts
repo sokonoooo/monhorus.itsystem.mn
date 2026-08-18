@@ -31,6 +31,7 @@ import { creatorName } from '../../common/utils/creator.util';
 import type { RequestMeta } from '../../common/utils/request-meta.util';
 import { recordAudit } from '../audit/audit.service';
 import { notify } from '../notification/notification.service';
+import { ObjectType } from '../object-master/object-master.models';
 import { resolveAssignedWorkFilter } from '../planned-work/planned-work.scope';
 import { assertReportAllows, hasApprovedWorkReport } from './work-report.service';
 import { assertSelfProgressAllowed } from './self-progress.policy';
@@ -384,6 +385,61 @@ async function assertAttachmentsBelongToActor(
   }
 }
 
+/**
+ * Resolves the equipment type a call names, refusing anything that may not be called about.
+ *
+ * Enforced here rather than trusted from the form. The call screens list only types with
+ * `canCreateCall`, but a filtered list is a convenience for the person using it, not a
+ * constraint on what can be sent - and this decides an SLA window, so it has to hold against
+ * a request that never went near the form.
+ *
+ * An inactive type is refused for the same reason: retiring a type from the catalogue should
+ * stop new calls arriving against it, without touching the calls already raised.
+ *
+ * `callSlaHours` is asserted non-null rather than defaulted. A callable type without hours
+ * should be impossible - the write path refuses it - so if one exists the honest response is
+ * to refuse the call rather than silently invent a window nobody agreed.
+ */
+/**
+ * The SLA window an existing request's equipment type carries, or null.
+ *
+ * Deliberately tolerant where `assertCallableEquipmentType` is strict. That guard runs when
+ * a call is raised and decides whether it may exist at all; this runs against calls that
+ * already exist, where the type may since have been retired or had calls switched off.
+ * Refusing an extension because of a later catalogue edit would punish the wrong person, so
+ * a missing or hours-less type simply falls back to the global window.
+ */
+async function equipmentSlaHoursFor(objectTypeId: Types.ObjectId | null): Promise<number | null> {
+  if (!objectTypeId) return null;
+  const type = await ObjectType.findById(objectTypeId).select('callSlaHours').lean();
+  return type?.callSlaHours ?? null;
+}
+
+async function assertCallableEquipmentType(
+  objectTypeId: string,
+): Promise<{ _id: Types.ObjectId; callSlaHours: number }> {
+  const type = await ObjectType.findById(objectTypeId)
+    .select('_id name canCreateCall callSlaHours isActive')
+    .lean();
+
+  if (!type || !type.isActive) {
+    throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Тоног төхөөрөмжийн төрөл олдсонгүй.');
+  }
+  if (!type.canCreateCall) {
+    throw AppError.badRequest(
+      ERROR_CODES.VALIDATION_ERROR,
+      `"${type.name}" төрөлд дуудлага үүсгэх боломжгүй.`,
+    );
+  }
+  if (type.callSlaHours === null || type.callSlaHours === undefined) {
+    throw AppError.badRequest(
+      ERROR_CODES.VALIDATION_ERROR,
+      `"${type.name}" төрлийн SLA хугацаа тохируулаагүй байна.`,
+    );
+  }
+  return { _id: type._id, callSlaHours: type.callSlaHours };
+}
+
 export async function createServiceRequest(
   input: CreateServiceRequestInput,
   scope: ResolvedCustomerScope,
@@ -397,8 +453,21 @@ export async function createServiceRequest(
   await validateLocationChain(input, ownerCustomerId);
   await assertAttachmentsBelongToActor(input.attachmentIds, actor);
 
+  const callableType = await assertCallableEquipmentType(input.objectTypeId);
+
   const now = new Date();
-  const slaDueAt = computeSlaDueAt(now, input.isUrgent, 0, await getSlaConfig());
+  /*
+   * The window comes from the equipment type, not from the urgency flag. `callSlaHours` is
+   * non-null for any type that reached this line, because a type may only be called about
+   * when it carries one.
+   */
+  const slaDueAt = computeSlaDueAt(
+    now,
+    input.isUrgent,
+    0,
+    await getSlaConfig(),
+    callableType.callSlaHours,
+  );
 
   const request = await ServiceRequest.create({
     requestNumber: await nextRequestNumber(now),
@@ -417,6 +486,7 @@ export async function createServiceRequest(
       ? { x: input.planPosition.x, y: input.planPosition.y }
       : null,
     requestType: input.requestType,
+    objectType: callableType._id,
     isUrgent: input.isUrgent,
     description: input.description,
     contactName: input.contactName,
@@ -848,11 +918,20 @@ export async function extendSla(
 
   const previousDueAt = request.slaDueAt;
   request.slaExtendedMinutes += input.additionalMinutes;
+  /*
+   * The equipment window is re-read and re-applied, not left out.
+   *
+   * This recomputes from `slaStartedAt` rather than adding to the current deadline, so
+   * whatever window it is given IS the window. Omitting the equipment hours here would
+   * quietly rebase a 24-hour call onto the global urgent six - an extension that SHORTENS
+   * the deadline by sixteen hours while reporting that it granted two more.
+   */
   request.slaDueAt = computeSlaDueAt(
     request.slaStartedAt,
     request.isUrgent,
     request.slaExtendedMinutes,
     await getSlaConfig(),
+    await equipmentSlaHoursFor(request.objectType),
   );
   request.slaExtensionReason = input.reason;
   await request.save();

@@ -22,7 +22,24 @@ export function defaultSlaConfig(): SlaConfig {
   return slaConfigOf(defaultSettings());
 }
 
-export function slaWindowHours(isUrgent: boolean, config: SlaConfig = defaultSlaConfig()): number {
+/**
+ * The window a call gets, in hours.
+ *
+ * `equipmentSlaHours` is the equipment type's own figure and wins outright when present: a
+ * light is a day, an automatic socket six hours, and urgency does NOT shorten either. That
+ * is the rule as specified - the urgent flag orders the queue, it does not move the
+ * deadline - and it is why `isUrgent` is consulted only in its absence.
+ *
+ * The absence case is not a fallback for new work. Every new call names an equipment type,
+ * so a null here means a call raised before types carried hours, and those keep the
+ * urgent/standard window they were created under.
+ */
+export function slaWindowHours(
+  isUrgent: boolean,
+  config: SlaConfig = defaultSlaConfig(),
+  equipmentSlaHours: number | null = null,
+): number {
+  if (equipmentSlaHours !== null) return equipmentSlaHours;
   return isUrgent ? config.urgentHours : config.standardHours;
 }
 
@@ -31,8 +48,9 @@ export function computeSlaDueAt(
   isUrgent: boolean,
   extensionMinutes = 0,
   config: SlaConfig = defaultSlaConfig(),
+  equipmentSlaHours: number | null = null,
 ): Date {
-  const windowMs = slaWindowHours(isUrgent, config) * 60 * 60 * 1000;
+  const windowMs = slaWindowHours(isUrgent, config, equipmentSlaHours) * 60 * 60 * 1000;
   return new Date(startedAt.getTime() + windowMs + extensionMinutes * 60 * 1000);
 }
 

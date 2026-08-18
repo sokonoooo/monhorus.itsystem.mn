@@ -12,6 +12,7 @@ import {
   startTestApp,
   stopTestApp,
   type ObjectFixture,
+  createCallableObjectType,
 } from '../../test/helpers';
 import { StoredFile } from '../storage/stored-file.model';
 import { Employee } from '../employee/employee.model';
@@ -32,6 +33,7 @@ const API = '/api/v1';
 
 let app: Express;
 let token: string;
+let callableTypeId: string;
 let fixture: ObjectFixture;
 
 async function login(email: string, password: string): Promise<string> {
@@ -47,6 +49,7 @@ async function seedRequest(): Promise<string> {
     building: fixture.buildingId,
     floor: fixture.floorId,
     requestType: 'REPAIR',
+    objectTypeId: callableTypeId,
     isUrgent: false,
     description: 'Гэрэл асахгүй байна.',
     contactName: 'Бат',
@@ -109,6 +112,8 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await resetDomainCollections();
+  // After the reset: object types are domain data and are wiped with everything else.
+  callableTypeId = await createCallableObjectType();
   const superUser = await createSuperUser();
   token = await login(superUser.email, superUser.password);
   fixture = await createObjectFixture();
