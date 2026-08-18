@@ -8,6 +8,22 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+/*
+ * Firebase, applied only when its configuration is actually present.
+ *
+ * google-services.json is gitignored — it is regenerated per environment — so a fresh
+ * checkout does not have one. Applying the plugin unconditionally would fail the build for
+ * every developer with the message "File google-services.json is missing", turning an
+ * optional feature into a prerequisite for compiling at all.
+ *
+ * With the file absent the app builds and runs exactly as before; Firebase.initializeApp
+ * fails at runtime, PushMessaging catches it, and notifications stay in-app. Drop the file
+ * in and push starts working with no code change.
+ */
+if (file("google-services.json").exists()) {
+    apply(plugin = "com.google.gms.google-services")
+}
+
 // Release signing material, kept out of the repository. See android/key.properties.example.
 // When the file is absent the release build falls back to the debug key, so a developer
 // without the keystore can still run `flutter build apk --release` locally.

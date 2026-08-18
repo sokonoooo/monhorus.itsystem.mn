@@ -38,13 +38,20 @@ describe('NotificationsPage', () => {
     expect(screen.getByText(/Нэхэмжлэл илгээгдсэн/)).toBeInTheDocument();
   });
 
-  /** Section 19.2 leaves the delivery channel open, so the limit is stated on screen. */
-  it('says nothing is delivered outside the system', async () => {
+  /**
+   * The delivery limits are stated on screen rather than left for a user to discover.
+   *
+   * The claim changed when Android push was approved: promising "in-app only" to somebody
+   * whose phone is buzzing is worse than saying nothing. What still needs saying is the two
+   * real limits — an iPhone gets no push, and nothing is emailed.
+   */
+  it('states which channels do and do not deliver', async () => {
     vi.spyOn(notificationService, 'list').mockResolvedValue(makePage([]));
 
     renderWithAuth(<NotificationsPage />, { permissions: [PERMISSIONS.NOTIFICATION_VIEW] });
 
-    expect(await screen.findByText(/имэйл, SMS, push/)).toBeInTheDocument();
+    expect(await screen.findByText(/Android/)).toBeInTheDocument();
+    expect(screen.getByText(/iPhone/)).toBeInTheDocument();
   });
 
   it('marks a notification read when it is opened', async () => {

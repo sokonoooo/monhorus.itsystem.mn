@@ -50,6 +50,9 @@ dependencies:
   # URL: the icon route wants the bearer header like every other stored file, so it goes
   # through the same authenticated fetch the plan image does.
   flutter_svg: ^2.3.0
+  firebase_core: ^4.13.0
+  firebase_messaging: ^16.5.0
+  flutter_local_notifications: ^22.3.0
 
 dev_dependencies:
   flutter_test:

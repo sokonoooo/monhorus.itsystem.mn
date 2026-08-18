@@ -107,7 +107,7 @@ class CustomerProfileScreen extends ConsumerWidget {
               icon: Icons.notifications_none,
             ),
             title: 'Мэдэгдэл',
-            subtitle: 'Эрсдэл, хүсэлтийн төлөв. Зөвхөн апп дотор хүргэгдэнэ.',
+            subtitle: 'Эрсдэл, хүсэлтийн төлөв. Android утсанд push мэдэгдэл очно.',
             trailing: const Icon(
               Icons.chevron_right,
               size: 18,
