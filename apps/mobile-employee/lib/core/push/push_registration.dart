@@ -19,7 +19,7 @@ class PushRegistration {
 
   /// The application identifier, so the backend can tell an employee install from a
   /// customer one when both belong to the same person.
-  static const String appId = 'mn.monhorus.monhorus_employee';
+  static const String appId = 'mn.itsystem.monhorusEmployee';
 
   Future<void> register({required String token}) async {
     try {

@@ -3,6 +3,14 @@ import java.util.Properties
 
 plugins {
     id("com.android.application")
+    /*
+     * Restored 2026-08-18. This module was missing the Kotlin plugin while still using its
+     * `kotlin { compilerOptions { ... } }` extension further down, so every Android build of
+     * the customer app failed at script compilation with "Unresolved reference
+     * 'compilerOptions'" - it could not be built at all. The comment below already said the
+     * Kotlin plugin was expected here.
+     */
+    id("kotlin-android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
@@ -39,15 +47,37 @@ android {
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
+        /*
+         * Required by flutter_local_notifications, which uses java.time APIs that do not
+         * exist below API 26. Without this the build fails outright with "Dependency
+         * ':flutter_local_notifications' requires core library desugaring to be enabled".
+         *
+         * minSdk here is 24, so this is not optional: desugaring is what lets those APIs
+         * run on the older devices this app still supports.
+         */
+        isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
 
     defaultConfig {
-        // An app's permanent identity on Android. Changing it after release makes a
-        // different app that installs alongside the old one instead of updating it, so
-        // the template's com.example default was corrected before any rollout.
-        applicationId = "mn.monhorus.monhorus_mobile"
+        /*
+         * Renamed from mn.monhorus.* to mn.itsystem.* on 2026-08-18, to match the Android
+         * apps registered in Firebase project monhorus-78b1c and to use reverse-DNS of a
+         * domain the project actually owns (itsystem.mn).
+         *
+         * This is a BREAKING change for anyone who already has the app. Android identifies
+         * an app by this string, so the renamed build does not update the installed one --
+         * it installs alongside it. Every existing user must uninstall the old app and
+         * install the new one, losing on-device data. Accepted deliberately when the
+         * rename was chosen over re-registering the Firebase apps.
+         *
+         * `namespace` above is deliberately NOT renamed. It sets the package for the
+         * generated R and BuildConfig classes, and AndroidManifest resolves ".MainActivity"
+         * against it, so changing it would also mean relocating the Kotlin sources. The
+         * google-services plugin matches on applicationId, so this is what had to move.
+         */
+        applicationId = "mn.itsystem.monhorus"
         // Pinned, not inherited from flutter.minSdkVersion: android:networkSecurityConfig
         // is ignored below API 24, and that attribute is the only reason a release build
         // can reach the plaintext API host at all.
@@ -88,4 +118,10 @@ kotlin {
 
 flutter {
     source = "../.."
+}
+
+dependencies {
+    // Pairs with isCoreLibraryDesugaringEnabled above; flutter_local_notifications
+    // documents 2.1.4 as its floor.
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 }
