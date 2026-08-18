@@ -68,6 +68,17 @@ export interface IInvoice {
 
   sentAt: Date | null;
 
+  /**
+   * The `dueDate` each payment reminder has already been sent for.
+   *
+   * Staked against the due date so that editing it re-arms both reminders, and so an
+   * invoice cannot be reminded about twice for the same deadline. Overdue fires once on
+   * first breach rather than daily: an unpaid invoice stays overdue for weeks, and a
+   * notification repeated every morning is one people learn to dismiss without reading.
+   */
+  dueSoonNotifiedFor: Date | null;
+  overdueNotifiedFor: Date | null;
+
   paidAt: Date | null;
   paymentMethod: PaymentMethod | null;
   paymentReference: string | null;
@@ -135,6 +146,8 @@ const invoiceSchema = new Schema<IInvoice>(
     statusHistory: { type: [statusHistorySchema], default: [] },
 
     sentAt: { type: Date, default: null },
+    dueSoonNotifiedFor: { type: Date, default: null },
+    overdueNotifiedFor: { type: Date, default: null },
 
     paidAt: { type: Date, default: null },
     paymentMethod: { type: String, enum: [...PAYMENT_METHODS, null], default: null },

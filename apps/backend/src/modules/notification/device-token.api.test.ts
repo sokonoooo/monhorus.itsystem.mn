@@ -135,7 +135,7 @@ describe('Device token API', () => {
 
     const rows = await DeviceToken.find({ token: 'token-shared-dddddd' }).lean();
     expect(rows).toHaveLength(1);
-    expect(String(rows[0].user)).toBe(second.userId);
+    expect(String(rows[0]?.user)).toBe(second.userId);
   });
 
   it('deactivates a device on unregister', async () => {
@@ -218,7 +218,10 @@ describe('Device token API', () => {
         'push-tablet-bbbbb',
       ]);
       // The tap target travels as data so the app can route without a lookup.
-      expect(capture.sent[0].data).toMatchObject({ event: 'INVOICE_ISSUED', linkPath: '/invoices/1' });
+      expect(capture.sent[0]?.data).toMatchObject({
+        event: 'INVOICE_ISSUED',
+        linkPath: '/invoices/1',
+      });
     });
 
     it('does not push to a device that was unregistered', async () => {

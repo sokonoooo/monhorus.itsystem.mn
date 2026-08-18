@@ -115,6 +115,16 @@ export interface IPlannedWork {
   overdueAt: Date | null;
   /** Set by the notification pipeline; kept so a breach is announced only once. */
   overdueNotificationSentAt: Date | null;
+
+  /**
+   * The `plannedEndDate` a due-soon warning has already been sent for.
+   *
+   * A date rather than a boolean, for the same reason `unclaimedNotifiedFor` is: equal
+   * means this deadline has been warned about, different or null means it has not. A
+   * rescheduled work therefore re-arms itself, and no separate clear step is needed on the
+   * reschedule path — which is the step somebody would forget.
+   */
+  dueSoonNotifiedFor: Date | null;
   /** True when the work completed after its deadline. Preserved in reporting. */
   completedLate: boolean;
   /** Minutes between plannedEndDate and actualEndDate when completedLate. */
@@ -175,6 +185,7 @@ const plannedWorkSchema = new Schema<IPlannedWork>(
 
     overdueAt: { type: Date, default: null, index: true },
     overdueNotificationSentAt: { type: Date, default: null },
+    dueSoonNotifiedFor: { type: Date, default: null },
     completedLate: { type: Boolean, default: false },
     delayMinutes: { type: Number, default: null },
 
