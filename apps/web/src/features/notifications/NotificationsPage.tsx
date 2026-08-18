@@ -59,18 +59,34 @@ export function NotificationsPage(): ReactElement {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [marking, setMarking] = useState(false);
+  const [unread, setUnread] = useState(0);
 
   const load = useCallback(async (): Promise<void> => {
     setLoading(true);
     setError(null);
     try {
-      setData(
-        await notificationService.list({
+      /*
+       * The count comes from the server, not from the rows on screen.
+       *
+       * It used to be derived as `data.items.filter(unread).length`, which counts one page.
+       * On page 2 of a list whose unread items are all on page 1 that yields 0, and "mark all
+       * read" — an action over the whole inbox — disables itself while the inbox is not empty.
+       * The same arithmetic also disagreed with the header badge, which has always polled
+       * /unread-count, so the two numbers on one screen could differ.
+       *
+       * Both requests are issued together: the count is part of loading the page, not a
+       * follow-up to it.
+       */
+      const [listed, counted] = await Promise.all([
+        notificationService.list({
           page,
           limit: NOTIFICATION_PAGE_SIZE,
           ...(unreadOnly ? { unreadOnly: true } : {}),
         }),
-      );
+        notificationService.unreadCount(),
+      ]);
+      setData(listed);
+      setUnread(counted.unread);
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : 'Мэдэгдэл ачаалж чадсангүй.');
     } finally {
@@ -108,8 +124,6 @@ export function NotificationsPage(): ReactElement {
     if (row.linkPath) navigate(row.linkPath);
     else await load();
   }
-
-  const unread = data?.items.filter((row) => row.readAt === null).length ?? 0;
 
   return (
     <>

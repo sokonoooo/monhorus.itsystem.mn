@@ -65,12 +65,20 @@ interface NodemailerLike {
  * shared with four other tenants — while the user was told an email had been sent.
  *
  * `refuseInProduction` below is what now makes the original sentence true.
+ *
+ * The body goes out under `mailBody`, not `body`. `config/logger.ts` redacts `body` and
+ * `*.body` unconditionally, so the key this adapter used to log under was replaced by
+ * `[REDACTED]` before it ever reached the terminal — the one line written to hand the
+ * developer a working link handed them nothing. Renaming the key restores that, and leaves
+ * the redaction rule untouched for the accidental-logging case it was actually written for.
+ * Selection below guarantees this adapter cannot run in production, so `mailBody` has no
+ * deployment in which it could leak.
  */
 const logTransport: MailTransport = {
   kind: 'log',
   async send(message) {
     logger.info(
-      { to: message.to, subject: message.subject, body: message.text },
+      { to: message.to, subject: message.subject, mailBody: message.text },
       'Mail not configured; message written to the log instead of sent',
     );
   },

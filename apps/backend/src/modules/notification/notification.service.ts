@@ -14,6 +14,7 @@ import type { AuthContext } from '../../common/types/express';
 import { logger } from '../../config/logger';
 import { Role } from '../rbac/role.model';
 import { User } from '../user/user.model';
+import { dispatchPush } from './device-token.service';
 import { Notification, type INotification } from './notification.model';
 
 type WithId<T> = T & { _id: Types.ObjectId };
@@ -172,6 +173,21 @@ export async function notify(input: NotifyInput): Promise<void> {
         readAt: null,
       })),
     );
+
+    /*
+     * Push goes out only after the rows are safely written.
+     *
+     * The in-app notification is the record of the event; the push is a nudge towards it.
+     * Sending first would allow a phone to buzz about something the database never got, and
+     * tapping it would open an empty inbox. dispatchPush never throws, so this cannot
+     * undo the write above.
+     */
+    await dispatchPush([...recipients.values()], {
+      title: input.title,
+      body: input.body ?? null,
+      event: input.event,
+      linkPath: input.linkPath ?? null,
+    });
   } catch (error) {
     logger.error({ err: error, event: input.event }, 'Failed to write notifications');
   }

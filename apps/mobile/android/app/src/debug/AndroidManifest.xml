@@ -7,8 +7,12 @@
     <uses-permission android:name="android.permission.INTERNET"/>
 
     <!-- The dev backend is served over plain HTTP (see AppConfig: http://10.0.2.2:4000
-         on the emulator, or this machine's LAN address via --dart-define on a real
-         handset), and cleartext traffic has been blocked by default since targetSdk 28.
+         on the emulator, or this machine's LAN address passed with a dart-define on a
+         real handset), and cleartext traffic is blocked by default since targetSdk 28.
+
+         NOTE: do not write the dart-define flag with its two leading dashes here. A
+         double hyphen is illegal inside an XML comment, and the manifest merger fails
+         with a bare "Error parsing AndroidManifest.xml" that names no cause.
          Without this the Android build cannot reach the API at all: every request fails
          as a connection error, which the app surfaces as a lost connection on a login
          that could never have succeeded.

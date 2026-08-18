@@ -1,6 +1,8 @@
 import {
   PERMISSIONS,
+  deviceTokenRegisterSchema,
   notificationListQuerySchema,
+  type DeviceTokenRegisterInput,
   type NotificationListQueryInput,
 } from '@monhorus/shared';
 import { Router, type NextFunction, type Request, type Response } from 'express';
@@ -15,6 +17,7 @@ import {
 } from '../../middlewares/authenticate.middleware';
 import { requirePermission } from '../../middlewares/authorize.middleware';
 import { validate } from '../../middlewares/validate.middleware';
+import * as deviceTokenService from './device-token.service';
 import * as notificationService from './notification.service';
 
 const notificationIdParam = z.object({
@@ -82,6 +85,47 @@ notificationRouter.post(
         requireAuth(req),
       );
       ok(res, result);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+/*
+ * Device registration is gated on being signed in, not on `notification.view`.
+ *
+ * Registering a handset is the caller acting on their own account — the same class of
+ * action as changing their own password — and the service scopes every write to the
+ * authenticated user. Requiring the permission would mean a role that cannot open the
+ * notification screen also cannot register for push, which is not a distinction anybody
+ * asked for: they would receive nothing while the app reported success.
+ */
+notificationRouter.post(
+  '/devices',
+  validate({ body: deviceTokenRegisterSchema }),
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const result = await deviceTokenService.registerDevice(
+        req.body as DeviceTokenRegisterInput,
+        requireAuth(req),
+      );
+      ok(res, result, 'Төхөөрөмж бүртгэгдлээ.');
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+notificationRouter.post(
+  '/devices/unregister',
+  validate({ body: deviceTokenRegisterSchema.pick({ token: true }) }),
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const result = await deviceTokenService.unregisterDevice(
+        (req.body as { token: string }).token,
+        requireAuth(req),
+      );
+      ok(res, result, 'Төхөөрөмжийн бүртгэл цуцлагдлаа.');
     } catch (error) {
       next(error);
     }

@@ -11,6 +11,12 @@ import { NotificationsPage } from './NotificationsPage';
 describe('NotificationsPage', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    /*
+     * The page loads the list and the server-side unread count together, so every case needs
+     * the count stubbed even when it is not what the case is about. Tests that assert on the
+     * number re-stub this with their own value.
+     */
+    vi.spyOn(notificationService, 'unreadCount').mockResolvedValue({ unread: 0 });
   });
 
   it('asks for one page rather than a fixed fifty', async () => {
@@ -32,13 +38,20 @@ describe('NotificationsPage', () => {
     expect(screen.getByText(/Нэхэмжлэл илгээгдсэн/)).toBeInTheDocument();
   });
 
-  /** Section 19.2 leaves the delivery channel open, so the limit is stated on screen. */
-  it('says nothing is delivered outside the system', async () => {
+  /**
+   * The delivery limits are stated on screen rather than left for a user to discover.
+   *
+   * The claim changed when Android push was approved: promising "in-app only" to somebody
+   * whose phone is buzzing is worse than saying nothing. What still needs saying is the two
+   * real limits — an iPhone gets no push, and nothing is emailed.
+   */
+  it('states which channels do and do not deliver', async () => {
     vi.spyOn(notificationService, 'list').mockResolvedValue(makePage([]));
 
     renderWithAuth(<NotificationsPage />, { permissions: [PERMISSIONS.NOTIFICATION_VIEW] });
 
-    expect(await screen.findByText(/имэйл, SMS, push/)).toBeInTheDocument();
+    expect(await screen.findByText(/Android/)).toBeInTheDocument();
+    expect(screen.getByText(/iPhone/)).toBeInTheDocument();
   });
 
   it('marks a notification read when it is opened', async () => {
@@ -74,6 +87,7 @@ describe('NotificationsPage', () => {
 
   it('marks everything read', async () => {
     vi.spyOn(notificationService, 'list').mockResolvedValue(makePage([makeNotification()]));
+    vi.spyOn(notificationService, 'unreadCount').mockResolvedValue({ unread: 1 });
     const markAll = vi.spyOn(notificationService, 'markAllRead').mockResolvedValue({ updated: 1 });
     const user = userEvent.setup();
 
@@ -93,6 +107,36 @@ describe('NotificationsPage', () => {
     renderWithAuth(<NotificationsPage />, { permissions: [PERMISSIONS.NOTIFICATION_VIEW] });
 
     expect(await screen.findByRole('button', { name: 'Бүгдийг уншсан болгох' })).toBeDisabled();
+  });
+
+  /*
+   * The regression this page shipped with: the count was `items.filter(unread).length` over
+   * the rows on screen. Page 2 of an inbox whose unread items sit on page 1 shows no unread
+   * rows, so the whole-inbox action disabled itself while the inbox still had unread items.
+   */
+  it('counts unread across the inbox, not just the page on screen', async () => {
+    vi.spyOn(notificationService, 'list').mockResolvedValue(
+      makePage([makeNotification({ readAt: '2026-07-29T01:00:00.000Z' })]),
+    );
+    vi.spyOn(notificationService, 'unreadCount').mockResolvedValue({ unread: 7 });
+
+    renderWithAuth(<NotificationsPage />, { permissions: [PERMISSIONS.NOTIFICATION_VIEW] });
+
+    // Every row on this page is read, yet the inbox is not.
+    expect(await screen.findByRole('button', { name: 'Бүгдийг уншсан болгох' })).toBeEnabled();
+  });
+
+  it('asks the server for the unread count rather than deriving it', async () => {
+    vi.spyOn(notificationService, 'list').mockResolvedValue(makePage([makeNotification()]));
+    const count = vi
+      .spyOn(notificationService, 'unreadCount')
+      .mockResolvedValue({ unread: 3 });
+
+    renderWithAuth(<NotificationsPage />, { permissions: [PERMISSIONS.NOTIFICATION_VIEW] });
+
+    await waitFor(() => {
+      expect(count).toHaveBeenCalled();
+    });
   });
 
   it('filters to unread only', async () => {

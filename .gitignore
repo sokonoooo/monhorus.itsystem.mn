@@ -104,3 +104,28 @@ var/
 key.properties
 *.jks
 *.keystore
+
+# -- Firebase / Apple push credentials ----------------------------------------
+# Nothing matching these patterns exists in the repository yet. They are listed
+# ahead of the work rather than after it, because the failure they prevent is
+# silent: `flutterfire configure` and the Firebase console both drop their output
+# straight into the app directories, and a service-account JSON or an APNs key
+# committed once stays in the history even after it is deleted.
+#
+# google-services.json and GoogleService-Info.plist are not secret in themselves
+# (they ship inside the installed app), but they pin a project a reader can then
+# probe, and they are regenerated per environment. Keep them out of the tree.
+#
+# *.p8 and serviceAccount*.json ARE secret: an APNs key signs push for every app
+# under the Apple team, and a service account can send push as the backend.
+# Globbed, not exact: downloading a second app's config gives google-services-2.json
+# and GoogleService-Info-2.plist, which exact names silently let through.
+google-services*.json
+GoogleService-Info*.plist
+*.p8
+*.p12
+serviceAccount*.json
+# The name the Firebase console actually gives the file it downloads:
+# <project>-firebase-adminsdk-<id>-<id>.json. serviceAccount*.json above only
+# catches it if somebody renames it first, and nobody does.
+*firebase-adminsdk*.json

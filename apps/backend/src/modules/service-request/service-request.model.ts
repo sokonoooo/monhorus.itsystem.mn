@@ -82,6 +82,17 @@ export interface IServiceRequest {
    */
   unclaimedNotifiedFor: Date | null;
 
+  /**
+   * The `slaDueAt` each SLA warning has already been sent for.
+   *
+   * Staked against the deadline rather than a boolean because `slaDueAt` is mutable: the
+   * extension path recomputes it. A request whose deadline moves is therefore a request
+   * that can be warned about again, which is the desired behaviour — the old warning was
+   * about a deadline that no longer exists.
+   */
+  slaNearBreachNotifiedFor: Date | null;
+  slaBreachNotifiedFor: Date | null;
+
   createdBy: Types.ObjectId | null;
   createdByName: string | null;
   createdAt: Date;
@@ -159,6 +170,8 @@ const serviceRequestSchema = new Schema<IServiceRequest>(
 
     openedForClaimAt: { type: Date, default: null },
     unclaimedNotifiedFor: { type: Date, default: null },
+    slaNearBreachNotifiedFor: { type: Date, default: null },
+    slaBreachNotifiedFor: { type: Date, default: null },
 
     createdBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
     createdByName: { type: String, default: null },

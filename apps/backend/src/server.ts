@@ -8,6 +8,7 @@ import {
   startOverdueReconciliationJob,
   stopOverdueReconciliationJob,
 } from './jobs/overdue-reconciliation.job';
+import { startReminderJob, stopReminderJob } from './jobs/reminder.job';
 import { startUnclaimedWorkJob, stopUnclaimedWorkJob } from './jobs/unclaimed-work.job';
 import { seedRbac } from './modules/rbac/rbac.service';
 import { ensureUploadDirectory } from './modules/storage/storage.service';
@@ -25,6 +26,7 @@ async function shutdown(signal: string, exitCode = 0): Promise<void> {
 
   stopOverdueReconciliationJob();
   stopUnclaimedWorkJob();
+  stopReminderJob();
 
   try {
     // `listening` guards the case where startup itself failed, for example on
@@ -55,6 +57,7 @@ async function start(): Promise<void> {
   // Planned-work deadlines are reconciled by the backend, not by any client.
   startOverdueReconciliationJob();
   startUnclaimedWorkJob();
+  startReminderJob();
 
   const app = createApp();
   server = app.listen(env.PORT, () => {
