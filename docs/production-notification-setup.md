@@ -322,9 +322,10 @@ curl -s https://monhorus.itsystem.mn/api/v1/../health
 
 Одоо **зориуд хийгээгүй**. Нэмэх бол дараалал:
 
-1. **Эхлээд** харилцагчийн аппын bundle id солих:
-   `com.example.monhorusMobile` → жишээ нь `mn.monhorus.monhorusMobile`
-   (`apps/mobile/ios/Runner.xcodeproj/project.pbxproj`, 3 газар)
+1. ~~Харилцагчийн аппын bundle id солих~~ — **2026-08-18-нд хийгдсэн**.
+   Одоо `mn.itsystem.monhorus` (`apps/mobile/ios/Runner.xcodeproj/project.pbxproj`).
+   Ажилтны апп нь `mn.monhorus.monhorusEmployee` хэвээр — хоёр апп нэг ижил
+   id-тай байж БОЛОХГҮЙ тул зориуд өөр.
    > ⚠️ Сертификат үүсгэсний **дараа** солих боломжгүй — бүгд хүчингүй болно
 2. Apple Developer Program гишүүнчлэл авах
 3. Xcode → Signing & Capabilities → team сонгох, **Push Notifications** нэмэх

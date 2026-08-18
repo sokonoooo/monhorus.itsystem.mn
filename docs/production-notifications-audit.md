@@ -149,7 +149,9 @@ try/catch дотор бөгөөд **хэзээ ч дахин шиддэггүй*
    redact хийдэг. Үр дүнд нь холбоосын оронд `[REDACTED]` гарна. Тайлбар нь энэ
    redaction-ыг production backstop гэж үздэг ч dev fallback-ийг устгаж байгааг
    анзаараагүй.
-2. **iOS bundle id template хэвээр.** Харилцагчийн апп: `com.example.monhorusMobile`
+2. **iOS bundle id template хэвээр байсан — 2026-08-18-нд ЗАСАГДСАН.**
+   Харилцагчийн апп `com.example.monhorusMobile` байснаа `mn.itsystem.monhorus`
+   болсон. Доорх тайлбар нь тухайн үеийн байдлыг тэмдэглэсэн хэвээр:
    (`apps/mobile/ios/Runner.xcodeproj/project.pbxproj:494,676,698`), `DEVELOPMENT_TEAM`
    огт байхгүй. Android талд нь зориуд `mn.monhorus.monhorus_mobile` болгож
    зассан байхад iOS үлдсэн. **APNs сертификат үүсгэхээс өмнө заавал шийдэх ёстой** —
@@ -266,7 +268,7 @@ iOS дээр APNs-ийг ороож өгдөг.
 - Firebase төсөл (1 ширхэг)
 - **4 апп бүртгэл** (2 апп × 2 платформ), учир нь id-нууд өөр:
   - `mn.monhorus.monhorus_mobile` (харилцагч, Android)
-  - `com.example.monhorusMobile` (харилцагч, iOS — **эхлээд засах ёстой**)
+  - `mn.itsystem.monhorus` (харилцагч, iOS — 2026-08-18-нд template утгаас засав)
   - `mn.monhorus.monhorus_employee` (ажилтан, Android)
   - `mn.monhorus.monhorusEmployee` (ажилтан, iOS)
 - `google-services.json` × 2, `GoogleService-Info.plist` × 2

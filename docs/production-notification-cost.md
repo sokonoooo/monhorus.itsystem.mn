@@ -72,7 +72,7 @@ Firebase Cloud Messaging нь **Spark (үнэгүй) төлөвлөгөөнд х
 | APNs мессеж | **үнэгүй** | Тоогоор төлбөргүй |
 
 Түүнчлэн **нэмэлт ажил**: харилцагчийн аппын bundle id
-(`com.example.monhorusMobile`) солих, signing team тохируулах, Xcode
+solih ажил 2026-08-18-нд хийгдсэн (`mn.itsystem.monhorus`); signing team тохируулах, Xcode
 capability нэмэх. Энэ нь мөнгө биш, цаг.
 
 > Шалгах: https://developer.apple.com/programs/
