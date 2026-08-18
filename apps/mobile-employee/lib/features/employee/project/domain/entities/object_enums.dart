@@ -216,3 +216,31 @@ enum LoadMeasurementPhase {
     return null;
   }
 }
+
+/// Mirrors `ObjectAttributeType` in
+/// packages/shared/src/constants/object-type-attribute.ts.
+///
+/// What one of an object TYPE's own declared fields holds — the thing an administrator
+/// defines in Тоноглолын төрөл and this app asks about on the үнэлгээ sheet. Unrelated to
+/// [ObjectCategory], which is structural and fixed.
+enum ObjectAttributeType {
+  select('SELECT'),
+  text('TEXT'),
+  number('NUMBER'),
+  boolean('BOOLEAN');
+
+  const ObjectAttributeType(this.wireValue);
+
+  final String wireValue;
+
+  /// Tolerant, like every other `fromWire` here: a kind this build has never heard of
+  /// falls back to free text rather than dropping the field or throwing. A technician
+  /// then still sees the question and can still answer it, and the server has the last
+  /// word on whether the answer is acceptable.
+  static ObjectAttributeType fromWire(String? value) {
+    for (final ObjectAttributeType type in ObjectAttributeType.values) {
+      if (type.wireValue == value) return type;
+    }
+    return ObjectAttributeType.text;
+  }
+}

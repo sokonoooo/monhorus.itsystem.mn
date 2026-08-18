@@ -2,6 +2,7 @@ import {
   LOAD_MEASUREMENT_KINDS,
   LOAD_MEASUREMENT_PHASES,
   LOAD_MEASUREMENT_UNITS,
+  OBJECT_ATTRIBUTE_TYPES,
   OBJECT_CATEGORIES,
   OBJECT_ICONS,
   OBJECT_STATUSES,
@@ -9,6 +10,8 @@ import {
   type LoadMeasurementKind,
   type LoadMeasurementPhase,
   type LoadMeasurementUnit,
+  type ObjectAttributeType,
+  type ObjectAttributeValue,
   type ObjectCategory,
   type ObjectIcon,
   type ObjectStatus,
@@ -24,6 +27,32 @@ import { Schema, Types, model, type Model } from 'mongoose';
  */
 
 // -- Section 4.1 type registry ----------------------------------------------
+
+/** One option of a SELECT attribute. The value is stored on the object; the label is read. */
+export interface IObjectAttributeOption {
+  value: string;
+  label: string;
+}
+
+/**
+ * One field this type demands of its objects (requirements 4.1).
+ *
+ * Administrator-defined at runtime, which is the whole point: "Автомат таслуур has a Хайлмал
+ * that is either Хайлмалтай or Хайлмалгүй" is a fact about the type, and the three section 4.2
+ * blocks below are per-CATEGORY and fixed in TypeScript, so there was nowhere to record it.
+ *
+ * NOTHING HERE REACHES A LOAD FIGURE. The section 11.5 walk reads `equipment.ratedPowerKw`,
+ * `equipment.quantity` and `equipment.usageCoefficient` and nothing else, so an administrator
+ * editing this list cannot silently change an estate's arithmetic. That is why these values
+ * live in their own bag instead of being folded into the typed blocks.
+ */
+export interface IObjectTypeAttribute {
+  key: string;
+  label: string;
+  type: ObjectAttributeType;
+  required: boolean;
+  options: IObjectAttributeOption[];
+}
 
 export interface IObjectType {
   code: string;
@@ -52,11 +81,40 @@ export interface IObjectType {
    * cleaned once at upload; nothing here is ever trusted to be re-checked at read time.
    */
   iconFile: Types.ObjectId | null;
+  /**
+   * The fields objects of this type must carry, IN DISPLAY ORDER.
+   *
+   * The array order is the order, and there is no `sortOrder` field: a second representation
+   * of the same fact is a second thing that can disagree with the first, and mongoose stores
+   * a document array in the order it is given. Reordering is therefore the administrator
+   * sending the array rearranged — which is also why add, edit, delete and reorder all reuse
+   * the one existing PATCH rather than growing four endpoints.
+   */
+  attributes: IObjectTypeAttribute[];
   isActive: boolean;
   createdBy: Types.ObjectId | null;
   createdAt: Date;
   updatedAt: Date;
 }
+
+const objectAttributeOptionSchema = new Schema<IObjectAttributeOption>(
+  {
+    value: { type: String, required: true, trim: true, maxlength: 60 },
+    label: { type: String, required: true, trim: true, maxlength: 120 },
+  },
+  { _id: false },
+);
+
+const objectTypeAttributeSchema = new Schema<IObjectTypeAttribute>(
+  {
+    key: { type: String, required: true, trim: true, maxlength: 40 },
+    label: { type: String, required: true, trim: true, maxlength: 120 },
+    type: { type: String, enum: OBJECT_ATTRIBUTE_TYPES, required: true },
+    required: { type: Boolean, default: false },
+    options: { type: [objectAttributeOptionSchema], default: [] },
+  },
+  { _id: false },
+);
 
 const objectTypeSchema = new Schema<IObjectType>(
   {
@@ -72,6 +130,10 @@ const objectTypeSchema = new Schema<IObjectType>(
     // rewritten: the field is absent on every row registered before now, and an absent
     // path with a default reads back as the default.
     iconFile: { type: Schema.Types.ObjectId, ref: 'StoredFile', default: null },
+    // Defaulted to an empty list for exactly the reason `iconFile` is defaulted to null: the
+    // path is absent on every type registered before attributes existed, and an absent path
+    // with a default reads back as the default. No migration, and no row is rewritten.
+    attributes: { type: [objectTypeAttributeSchema], default: [] },
     isActive: { type: Boolean, default: true, index: true },
     createdBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
   },
@@ -183,6 +245,26 @@ export interface IObject {
   circuit: ICircuitAttributes | null;
   equipment: IEquipmentAttributes | null;
 
+  /**
+   * What this object answered for the attributes its TYPE declares (requirements 4.1).
+   *
+   * Beside the three category blocks above, never inside them: those three are per-category
+   * and fixed, this is per-type and administrator-defined, and the section 11.5 walk reads
+   * only the former. Keeping them apart is what stops a configuration change from moving a
+   * load figure.
+   *
+   * WRITTEN BY THE REGISTRATION FORM AND BY THE Үнэлгээ бүртгэх FORM ALIKE — the answers are
+   * facts about the equipment, true between visits, so there is one set of them here rather
+   * than a copy on every assessment.
+   *
+   * MAY HOLD KEYS THE TYPE NO LONGER DECLARES. Removing an attribute from a type does not
+   * erase what was recorded against it on the objects: somebody stood in front of the
+   * equipment and entered that, the definition may well come back, and an unrelated edit must
+   * not be what quietly destroys it. `mergeAttributeValues` in the shared package is the rule;
+   * nothing else writes this field.
+   */
+  attributeValues: Record<string, ObjectAttributeValue>;
+
   latestAssessment: ILatestAssessment | null;
   /** Most recent measured reading, kept separate from the calculation (rule 17.16). */
   measuredLoadKw: number | null;
@@ -273,6 +355,15 @@ const objectSchema = new Schema<IObject>(
     panel: { type: panelAttributesSchema, default: null },
     circuit: { type: circuitAttributesSchema, default: null },
     equipment: { type: equipmentAttributesSchema, default: null },
+
+    // `Mixed` because the keys are defined by an administrator at runtime, so there is no
+    // schema to declare — the same reason `Setting.value` and `AuditLog.newValue` are Mixed.
+    // What the keys may be, and what each may hold, is enforced against the type's own
+    // definitions on the write path; nothing is trusted at read time.
+    //
+    // The default is a factory, not a literal: a shared `{}` would be one object handed to
+    // every document, and writing to one would write to all of them.
+    attributeValues: { type: Schema.Types.Mixed, default: () => ({}) },
 
     latestAssessment: { type: latestAssessmentSchema, default: null },
     measuredLoadKw: { type: Number, default: null, min: 0 },

@@ -151,6 +151,19 @@ export const workReportObjectAssessmentSchema = z.object({
   recommendation: z.string().trim().max(4000).nullish(),
   /** Evidence for THIS object, separate from the request-level before/after pair. */
   photoIds: z.array(objectIdSchema).max(20).default([]),
+  /**
+   * The equipment's own per-type attributes, answered while writing this report (4.1).
+   *
+   * NOT PART OF THE FINDING. "This breaker is fused" is a fact about the equipment, true
+   * between visits; the score and the narrative above are what this visit observed. So the
+   * server writes these onto the OBJECT and the ReportItem keeps none of them — one set of
+   * answers, corrected from whichever screen the technician happens to be on.
+   *
+   * OPTIONAL, AND ABSENT MEANS "NOT ASKED". A row that omits it enforces nothing and clears
+   * nothing, so a draft saved before the fields were filled in — and any client that has
+   * not been updated — behaves exactly as it did before.
+   */
+  attributeValues: z.record(z.union([z.string(), z.number(), z.boolean()])).optional(),
 });
 
 export const saveWorkReportSchema = z.object({

@@ -35,7 +35,7 @@ const PLACEABLE_INLINE = {
   icon: 'BREAKER' as const,
   /** No uploaded icon: the built-in glyph is what this type draws with. */
   iconUrl: null,
-  showOnPlan: true,
+  showOnPlan: true, attributes: [],
 };
 
 /** A second placeable type, so there is a layer to switch off independently. */
@@ -45,7 +45,7 @@ const CAMERA_INLINE = {
   name: 'Камер',
   icon: 'CAMERA' as const,
   iconUrl: null,
-  showOnPlan: true,
+  showOnPlan: true, attributes: [],
 };
 
 /** A type the registry never draws on a plan. */
@@ -55,7 +55,7 @@ const CABLE_INLINE = {
   name: 'Кабель',
   icon: 'CABLE' as const,
   iconUrl: null,
-  showOnPlan: false,
+  showOnPlan: false, attributes: [],
 };
 
 /**

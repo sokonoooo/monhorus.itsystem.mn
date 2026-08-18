@@ -4,7 +4,9 @@ import {
   LOAD_MEASUREMENT_UNIT_LABELS,
   RISK_LEVEL_LABELS,
   acceptsPhase,
+  mergeAttributeValues,
   riskLevelFor,
+  validateAttributeValues,
   type LoadMeasurementDto,
   type ObjectIcon,
   type CreateObjectAssessmentInput,
@@ -19,6 +21,7 @@ import {
   type ObjectListQueryInput,
   type ObjectPhotoDto,
   type ObjectRefDto,
+  type ObjectTypeAttributeDto,
   type PaginatedData,
   type QuickPlaceObjectInput,
   type UpdateObjectInput,
@@ -51,7 +54,7 @@ import { getRiskBands } from '../settings/settings.service';
 import { StoredFile, type IStoredFile } from '../storage/stored-file.model';
 import { appendAssessmentHistory } from './assessment-history.service';
 import { loadFiguresOf } from './load.service';
-import { objectTypeIconUrl } from './object-type.service';
+import { objectTypeIconUrl, toObjectTypeAttributeDtos } from './object-type.service';
 import {
   ObjectAssessment,
   ObjectRecord,
@@ -59,6 +62,8 @@ import {
   type ILoadMeasurement,
   type IObject,
   type IObjectAssessment,
+  type IObjectType,
+  type IObjectTypeAttribute,
 } from './object-master.models';
 
 type Doc<T> = HydratedDocument<T>;
@@ -74,6 +79,8 @@ function populatedType(
   iconFile?: Types.ObjectId | null;
   generatesConclusion?: boolean;
   showOnPlan?: boolean;
+  /** Only selected where a screen needs the definitions; absent everywhere else. */
+  attributes?: IObjectTypeAttribute[];
 } | null {
   if (typeof value !== 'object' || value === null || !('code' in value)) return null;
   return value as unknown as {
@@ -116,11 +123,23 @@ function named(value: unknown): string | null {
   return null;
 }
 
+/**
+ * What every object row needs off its type.
+ *
+ * `iconFile` is projected, not populated: the DTO needs the id to build a download path and
+ * nothing else about the file, so populating it would buy a lookup per row for data no client
+ * reads.
+ *
+ * `attributes` is here rather than only on the detail path because the screens that ASK the
+ * type's questions are list-driven — the Ажлын тайлан equipment rows and the employee app's
+ * Дүгнэлт editor both build from a picked list item. Fetching a detail per piece of equipment
+ * just to learn what to ask would be a round trip per tap.
+ */
+const OBJECT_TYPE_SELECT =
+  'code name icon iconFile generatesConclusion showOnPlan attributes';
+
 const LIST_POPULATE = [
-  // `iconFile` is projected, not populated: the DTO needs the id to build a download path
-  // and nothing else about the file, so populating it would buy a lookup per row for data
-  // no client reads.
-  { path: 'objectType', select: 'code name icon iconFile generatesConclusion showOnPlan' },
+  { path: 'objectType', select: OBJECT_TYPE_SELECT },
   { path: 'customer', select: 'name' },
   { path: 'floor', select: 'name parent' },
   CREATOR_POPULATE,
@@ -168,6 +187,9 @@ export async function toObjectListItemDto(
           // than asserted: a projection that forgot the field must read as "not on the
           // plan", never as a marker drawn on the strength of an undefined.
           showOnPlan: type.showOnPlan === true,
+          // What this type asks of its objects (4.1). Empty when the projection omitted it,
+          // which reads as "asks nothing" — the behaviour before the field existed.
+          attributes: toObjectTypeAttributeDtos(type.attributes),
         }
       : null,
     customerId: String(
@@ -199,6 +221,9 @@ export async function toObjectListItemDto(
           revisitDate: object.latestAssessment.revisitDate?.toISOString() ?? null,
         }
       : null,
+    // Spread rather than handed out: `attributeValues` is a `Mixed` path, so this is the
+    // loaded document's own object. `?? {}` covers every object written before it existed.
+    attributeValues: { ...(object.attributeValues ?? {}) },
     calculatedLoad: figures.calculated,
     measuredLoadKw: object.measuredLoadKw,
     loadVariance: figures.variance,
@@ -256,6 +281,79 @@ async function resolveObjectType(
     );
   }
   return type;
+}
+
+/**
+ * Refuses attribute values the object's type does not accept (requirements 4.1).
+ *
+ * The rule itself is `validateAttributeValues` in the shared package, which both the
+ * registration form and the Үнэлгээ бүртгэх form run before they submit. THIS IS THE
+ * ENFORCEMENT: their copies exist so a user is told without a round trip, and nothing here
+ * assumes either ran. One implementation, so the three cannot drift into refusing different
+ * things — the same arrangement as `rejectFloorlessPosition`.
+ *
+ * The issues come back already keyed `attributeValues.<key>`, which is the shape
+ * `validate.middleware.ts` produces from a `ZodError` and the shape every form's error map
+ * already reads, so a message lands under its own input with nothing translating it.
+ */
+function assertAttributeValues(
+  defs: readonly ObjectTypeAttributeDto[],
+  values: Readonly<Record<string, unknown>>,
+): void {
+  const issues = validateAttributeValues(defs, values);
+  if (issues.length > 0) {
+    throw AppError.badRequest(
+      ERROR_CODES.VALIDATION_ERROR,
+      'Тоноглолын төрлийн шаардсан үзүүлэлт дутуу эсвэл буруу байна.',
+      issues,
+    );
+  }
+}
+
+/**
+ * Applies attribute answers to one object, from a screen that is not the object's own form.
+ *
+ * THE ONE PLACE ANY OTHER MODULE WRITES `attributeValues`. The work report and the mobile
+ * conclusion editor both record findings against equipment and both ask the type's questions
+ * while doing it, so both need to store the answers — and neither should re-derive what a
+ * valid answer is, which is why this exists rather than each calling the validator itself.
+ *
+ * `fieldPrefix` is what lets a caller report the failure against the row the user is looking
+ * at: a work report keys its errors `objectAssessments.2.attributeValues.fuse`, because a
+ * report naming four pieces of equipment has four sets of these fields on screen at once.
+ *
+ * Absent values are not this function's business — a caller that was not asked does not call
+ * it at all. See the note on `saveWorkReportSchema`'s `attributeValues`.
+ */
+export async function applyObjectAttributeValues(
+  objectId: Types.ObjectId,
+  values: Readonly<Record<string, unknown>>,
+  fieldPrefix = '',
+): Promise<void> {
+  const object = await ObjectRecord.findById(objectId).populate({
+    path: 'objectType',
+    select: 'attributes',
+  });
+  if (!object) {
+    throw AppError.badRequest(ERROR_CODES.VALIDATION_ERROR, 'Тоноглол олдсонгүй.', [
+      { field: `${fieldPrefix}objectId`, message: 'Тоноглол олдсонгүй.' },
+    ]);
+  }
+
+  const defs = toObjectTypeAttributeDtos(populatedType(object.objectType)?.attributes);
+  const issues = validateAttributeValues(defs, values);
+  if (issues.length > 0) {
+    throw AppError.badRequest(
+      ERROR_CODES.VALIDATION_ERROR,
+      'Тоноглолын төрлийн шаардсан үзүүлэлт дутуу эсвэл буруу байна.',
+      issues.map((issue) => ({ field: `${fieldPrefix}${issue.field}`, message: issue.message })),
+    );
+  }
+
+  object.attributeValues = mergeAttributeValues(defs, object.attributeValues ?? {}, values);
+  // `Mixed` is not change-tracked; without this the assignment is invisible to `save()`.
+  object.markModified('attributeValues');
+  await object.save();
 }
 
 /** A floor must exist, be a FLOOR, be active, and belong to the object's customer. */
@@ -681,7 +779,11 @@ export async function createObject(
     ]);
   }
 
-  await resolveObjectType(input.objectTypeId, input.category);
+  const objectType = await resolveObjectType(input.objectTypeId, input.category);
+  const objectTypeAttributes = toObjectTypeAttributeDtos(objectType.attributes);
+  // Checked here, before the code-collision query and every reference lookup below, so a
+  // payload that was never going to be stored costs one round trip rather than five.
+  assertAttributeValues(objectTypeAttributes, input.attributeValues);
 
   const duplicate = await ObjectRecord.findOne({
     customer: customer._id,
@@ -724,6 +826,10 @@ export async function createObject(
     panel: null,
     circuit: null,
     equipment: null,
+    // Nothing is stored yet, so there is nothing to preserve: the merge is here rather than a
+    // plain assignment so trimming and the drop-the-blanks rule come from the same single
+    // implementation every other write path uses.
+    attributeValues: mergeAttributeValues(objectTypeAttributes, {}, input.attributeValues),
   };
 
   if (input.category === 'PANEL') {
@@ -960,6 +1066,19 @@ export async function quickPlaceObject(
 
   const name = await allocateObjectName(type.name, floorId, type._id);
 
+  /**
+   * THE TYPE'S ATTRIBUTES ARE NOT ASKED FOR HERE, AND THAT IS DELIBERATE.
+   *
+   * This endpoint exists so that picking a type once and tapping the drawing produces real
+   * objects with no form in the way — the payload carries only what a tap can express, and
+   * `code` and `name` are generated for the same reason. Demanding a required attribute would
+   * put a modal in front of every tap and destroy the one thing the flow is for.
+   *
+   * The object is therefore created with no values, exactly like every object registered
+   * before attributes existed, and the first report written against it is where they are
+   * asked. Enforcement is on the forms, never on the read.
+   */
+
   const attributes: Record<string, unknown> = { panel: null, circuit: null, equipment: null };
   if (type.category === 'PANEL') {
     attributes.panel = { capacityKw: null, location: null, protection: null };
@@ -1062,10 +1181,71 @@ export async function updateObject(
     floor: object.floor ? String(object.floor) : null,
   };
 
-  if (input.objectTypeId !== undefined) {
-    await resolveObjectType(input.objectTypeId, object.category);
-    object.objectType = new Types.ObjectId(input.objectTypeId);
+  /**
+   * The type the object will have when this update lands, or null when it is not changing.
+   *
+   * Held rather than discarded because the attribute rules below are the NEW type's rules:
+   * moving an object from Гэрэлтүүлэг to Автомат таслуур is a claim that it is a breaker, and
+   * a breaker is required to say whether it is fused.
+   */
+  const nextType =
+    input.objectTypeId !== undefined
+      ? await resolveObjectType(input.objectTypeId, object.category)
+      : null;
+  if (nextType) object.objectType = new Types.ObjectId(input.objectTypeId as string);
+
+  /**
+   * Attributes are re-checked when the values are sent, and when the type changes.
+   *
+   * NOT ON EVERY UPDATE. A rename or a status change is not an answer to "is this breaker
+   * fused", so it is not the moment to demand one — and demanding it there would make every
+   * object registered before the attribute existed uneditable until somebody happened to open
+   * a form that asks. That is the whole content of "enforced on write, not on read": the
+   * requirement bites when a human is in front of the fields, not when an unrelated field
+   * moves.
+   */
+  if (input.attributeValues !== undefined || nextType) {
+    const stored = object.attributeValues ?? {};
+    /**
+     * The type whose definitions apply.
+     *
+     * Loaded by id rather than through `resolveObjectType` when it is the type the object
+     * already has: that helper refuses a deactivated type, which is right for a new selection
+     * and wrong here. An object whose type was archived after it was registered must stay
+     * editable — deactivating a type retires it from the picker, it does not freeze the
+     * estate.
+     */
+    const effectiveType = nextType ?? (await ObjectType.findById(object.objectType));
+    if (!effectiveType) {
+      throw AppError.badRequest(ERROR_CODES.VALIDATION_ERROR, 'Тоноглолын төрөл олдсонгүй.', [
+        { field: 'objectTypeId', message: 'Төрөл олдсонгүй.' },
+      ]);
+    }
+    const defs = toObjectTypeAttributeDtos(effectiveType.attributes);
+    /**
+     * What to judge, when the caller sent nothing but the type moved.
+     *
+     * The answers the object already carries, rather than an empty set it was never asked
+     * for — but only those the NEW type declares. `validateAttributeValues` refuses an
+     * undeclared key, and rightly so for a PAYLOAD, where it means a stale or wrong client.
+     * Storage is different: a bag legitimately holds keys of a type the object has moved off,
+     * because removing a definition never erases what was recorded against it. Feeding those
+     * back in would refuse the move with a message about an attribute the user did not
+     * mention. They are not part of the question, and `mergeAttributeValues` carries them
+     * across untouched either way.
+     */
+    const incoming =
+      input.attributeValues ??
+      Object.fromEntries(
+        defs.filter((def) => def.key in stored).map((def) => [def.key, stored[def.key]]),
+      );
+    assertAttributeValues(defs, incoming);
+    object.attributeValues = mergeAttributeValues(defs, stored, incoming);
+    // `Mixed` is not change-tracked: mongoose cannot see into an untyped path, so an
+    // assignment to it is invisible to `save()` unless the path is marked by hand.
+    object.markModified('attributeValues');
   }
+
   if (input.name !== undefined) object.name = input.name;
   if (input.description !== undefined) object.description = input.description ?? null;
   if (input.notes !== undefined) object.notes = input.notes ?? null;
@@ -1507,7 +1687,9 @@ export async function recordAssessment(
     ...customerScopeFilter(scope),
   }).populate({
     path: 'objectType',
-    select: 'generatesConclusion name',
+    // `attributes` rides along because this endpoint also answers them — see below. A wider
+    // projection of a populate already being performed, not another query.
+    select: 'generatesConclusion name attributes',
   });
   if (!object) throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Объект олдсонгүй.');
 
@@ -1548,6 +1730,24 @@ export async function recordAssessment(
       'Хавсаргасан зураг олдсонгүй.',
       [{ field: 'photoIds', message: 'Зургийг дахин хуулна уу.' }],
     );
+  }
+
+  /**
+   * The equipment's own attributes, answered on the report (requirements 4.1).
+   *
+   * THIS IS THE FORM THAT ASKS THEM: writing a report is when somebody is standing in front
+   * of the equipment and can actually look. Checked here, with the evidence and before
+   * anything is written, so a report that cannot be stored is refused whole rather than
+   * leaving an assessment on record beside attributes that were rejected.
+   *
+   * ABSENT MEANS "NOT ASKED", NOT "EMPTY". The employee mobile app sends no such key and must
+   * keep recording assessments exactly as it did, so nothing is enforced against it and
+   * nothing it stores is touched. Only a caller that offers the values invites the check —
+   * the same rule `updateObject` follows.
+   */
+  const attributeDefs = toObjectTypeAttributeDtos(populatedType(object.objectType)?.attributes);
+  if (input.attributeValues !== undefined) {
+    assertAttributeValues(attributeDefs, input.attributeValues);
   }
 
   // Resolved once, before anything is written: every later use of the kW figure reads
@@ -1652,6 +1852,29 @@ export async function recordAssessment(
   // floor roll-up that sums it is untouched by the readings list.
   if (measuredLoadKw !== null) {
     object.measuredLoadKw = measuredLoadKw;
+  }
+
+  /**
+   * The attributes answered on the report land on the OBJECT, not on the entry above.
+   *
+   * "This breaker is fused" is a fact about the equipment, true between visits; it is not an
+   * observation this visit made, so keeping a copy per assessment would create as many
+   * answers as there are reports and no way to say which is current. One set of values,
+   * corrected from wherever the technician happens to be — the same route `measuredLoadKw`
+   * takes three lines above.
+   *
+   * `mergeAttributeValues` is what keeps this safe to run from a second form: values whose
+   * definitions the type no longer declares are carried across untouched rather than being
+   * dropped by a form that never knew about them.
+   */
+  if (input.attributeValues !== undefined) {
+    object.attributeValues = mergeAttributeValues(
+      attributeDefs,
+      object.attributeValues ?? {},
+      input.attributeValues,
+    );
+    // `Mixed` is not change-tracked; without this the assignment is invisible to `save()`.
+    object.markModified('attributeValues');
   }
 
   // Rule 17.9: a black-band object must not remain in active use.

@@ -1,4 +1,9 @@
-import { PERMISSIONS, type ObjectAssessmentDto, type ObjectPhotoDto } from '@monhorus/shared';
+import {
+  PERMISSIONS,
+  type ObjectAssessmentDto,
+  type ObjectPhotoDto,
+  type ObjectTypeAttributeDto,
+} from '@monhorus/shared';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -562,13 +567,14 @@ describe('ObjectDetailPage', () => {
   });
 
   /**
-   * Multiple load units: a repeatable row editor beside the kW box.
+   * "Бусад хэмжилт (А, В)" is gone from the form, and nothing is sent in its place.
    *
-   * Two rows added, one taken off again, and what reaches the service is checked in full —
-   * the unit has to be resolved from the kind, and the amps must not have leaked into
-   * `measuredLoadKw`, which is the field the floor totals add up.
+   * The kW box stays: it is the authoritative summable head that the floor totals add up.
+   * What was removed is only the per-phase amps and volts editor beside it — in this app and
+   * in the employee app together — and the API field it wrote to is untouched, so readings
+   * already recorded still display (see the assessment panel test below).
    */
-  it('adds and removes load measurement rows and sends them with the assessment', async () => {
+  it('no longer offers the other-measurements editor, and sends no measurements', async () => {
     vi.spyOn(objectMasterService, 'getById').mockResolvedValue(makeObjectDetail());
     const record = vi
       .spyOn(objectMasterService, 'recordAssessment')
@@ -579,67 +585,20 @@ describe('ObjectDetailPage', () => {
 
     await user.click(await screen.findByRole('button', { name: 'Үнэлгээ бүртгэх' }));
     const dialog = await screen.findByRole('dialog');
+
+    expect(within(dialog).queryByRole('button', { name: 'Хэмжилт нэмэх' })).not.toBeInTheDocument();
+    expect(within(dialog).queryByText('Бусад хэмжилт (А, В)')).not.toBeInTheDocument();
+    // The kW figure is a different field and stays.
+    expect(within(dialog).getByLabelText(/Хэмжсэн ачаалал/)).toBeInTheDocument();
+
     await user.type(within(dialog).getByLabelText(/^Шинэ оноо/), '95');
     await user.type(within(dialog).getByLabelText(/Хэмжсэн ачаалал/), '8.4');
-    await attachEvidence(user, dialog);
-
-    const add = within(dialog).getByRole('button', { name: 'Хэмжилт нэмэх' });
-    await user.click(add);
-    await user.click(add);
-    await user.click(add);
-
-    // A fresh row never collides with one already on the form, so the three defaults are
-    // "no phase", L1, L2 — and the third is the one taken off again below.
-    await user.type(within(dialog).getByLabelText('1-р хэмжилтийн утга'), '41.2');
-    await user.selectOptions(within(dialog).getByLabelText('2-р хэмжилтийн фаз'), 'L2');
-    await user.type(within(dialog).getByLabelText('2-р хэмжилтийн утга'), '38.9');
-    await user.selectOptions(within(dialog).getByLabelText('3-р хэмжилтийн төрөл'), 'VOLTAGE');
-    await user.type(within(dialog).getByLabelText('3-р хэмжилтийн утга'), '231');
-
-    await user.click(within(dialog).getByRole('button', { name: '3-р хэмжилт хасах' }));
-    expect(within(dialog).queryByLabelText('3-р хэмжилтийн утга')).not.toBeInTheDocument();
-
-    await user.click(within(dialog).getByRole('button', { name: 'Бүртгэх' }));
-
-    await waitFor(() => {
-      expect(record).toHaveBeenCalledWith(OBJECT_ID, {
-        newScore: 95,
-        conclusion: null,
-        recommendation: null,
-        actionTaken: null,
-        // The amps are their own readings; the kW box is untouched by them.
-        measuredLoadKw: 8.4,
-        measurements: [
-          { kind: 'CURRENT', value: 41.2, unit: 'AMPERE', phase: null },
-          { kind: 'CURRENT', value: 38.9, unit: 'AMPERE', phase: 'L2' },
-        ],
-        repairRequired: false,
-        revisitRequired: false,
-        revisitDate: null,
-        revisitOwnerEmployeeId: null,
-        photoIds: [PHOTO_ID],
-      });
-    });
-  });
-
-  /** An untouched editor sends exactly what the form sent before the field existed. */
-  it('omits measurements entirely when no row was added', async () => {
-    vi.spyOn(objectMasterService, 'getById').mockResolvedValue(makeObjectDetail());
-    const record = vi
-      .spyOn(objectMasterService, 'recordAssessment')
-      .mockResolvedValue(makeAssessment());
-    const user = userEvent.setup();
-
-    renderDetail([PERMISSIONS.OBJECT_MASTER_VIEW, PERMISSIONS.OBJECT_MASTER_ASSESS]);
-
-    await user.click(await screen.findByRole('button', { name: 'Үнэлгээ бүртгэх' }));
-    const dialog = await screen.findByRole('dialog');
-    await user.type(within(dialog).getByLabelText(/^Шинэ оноо/), '95');
     await attachEvidence(user, dialog);
     await user.click(within(dialog).getByRole('button', { name: 'Бүртгэх' }));
 
     await waitFor(() => expect(record).toHaveBeenCalled());
     expect(record.mock.calls[0]?.[1]).not.toHaveProperty('measurements');
+    expect(record.mock.calls[0]?.[1]).toMatchObject({ measuredLoadKw: 8.4 });
   });
 
   /** The stored readings are read beside the assessment they were taken during. */
@@ -991,5 +950,165 @@ describe('ObjectDetailPage', () => {
     // Row 0 is the header; the two entries below it read 1 and 2.
     expect(within(rows[1]!).getAllByRole('cell')[0]?.textContent?.trim()).toBe('1');
     expect(within(rows[2]!).getAllByRole('cell')[0]?.textContent?.trim()).toBe('2');
+  });
+});
+
+/**
+ * Per-type attributes on the Үнэлгээ бүртгэх report form (requirements 4.1).
+ *
+ * THIS IS THE FORM THAT ASKS THEM, because writing a report is the moment somebody is
+ * standing in front of the equipment and can see whether it is fused. They are saved onto the
+ * OBJECT, not onto the assessment — they are facts about the kit, true between visits.
+ */
+describe('AssessmentDrawer per-type attributes', () => {
+  /** The nested type reference an object row carries, declaring [defs]. */
+  function typeWith(defs: readonly ObjectTypeAttributeDto[]) {
+    return {
+      id: 'ot1',
+      code: 'MCB',
+      name: 'Автомат таслуур',
+      icon: 'BREAKER' as const,
+      iconUrl: null,
+      showOnPlan: false,
+      attributes: defs,
+    };
+  }
+
+  const FUSE = {
+    key: 'fuse',
+    label: 'Хайлмал хамгаалалт',
+    type: 'SELECT' as const,
+    required: true,
+    options: [
+      { value: 'FUSED', label: 'Хайлмалтай' },
+      { value: 'NOT_FUSED', label: 'Хайлмалгүй' },
+    ],
+  };
+
+  const SERIAL = {
+    key: 'serial',
+    label: 'Сериал дугаар',
+    type: 'TEXT' as const,
+    required: false,
+    options: [],
+  };
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    navigate.mockClear();
+    vi.spyOn(dispatchService, 'employeeCandidates').mockResolvedValue([]);
+    vi.spyOn(objectMasterService, 'history').mockResolvedValue(makeObjectHistory());
+    vi.spyOn(projectService, 'getFloor').mockResolvedValue(makeFloor());
+    vi.spyOn(fileUrl, 'authorisedFileUrl').mockResolvedValue('blob:assessment-photo');
+    vi.spyOn(objectMasterService, 'uploadAssessmentPhoto').mockResolvedValue(makeEvidence());
+  });
+
+  async function openDrawer(user: ReturnType<typeof userEvent.setup>): Promise<HTMLElement> {
+    await user.click(await screen.findByRole('button', { name: 'Үнэлгээ бүртгэх' }));
+    return screen.findByRole('dialog');
+  }
+
+  /** A score with no picture behind it is not an assessment, so every save attaches one. */
+  async function attachEvidence(
+    user: ReturnType<typeof userEvent.setup>,
+    dialog: HTMLElement,
+  ): Promise<void> {
+    const file = new File(['evidence'], 'evidence.png', { type: 'image/png' });
+    await user.upload(within(dialog).getByLabelText('Нотлох зураг сонгох'), file);
+    await waitFor(() => {
+      expect(within(dialog).getByRole('button', { name: 'Бүртгэх' })).toBeEnabled();
+    });
+  }
+
+  it("asks the equipment type's questions and sends the answers", async () => {
+    vi.spyOn(objectMasterService, 'getById').mockResolvedValue(
+      makeObjectDetail({ attributeValues: {}, objectType: typeWith([FUSE, SERIAL]) }),
+    );
+    const record = vi
+      .spyOn(objectMasterService, 'recordAssessment')
+      .mockResolvedValue(makeAssessment());
+    const user = userEvent.setup();
+
+    renderDetail([PERMISSIONS.OBJECT_MASTER_VIEW, PERMISSIONS.OBJECT_MASTER_ASSESS]);
+    const dialog = await openDrawer(user);
+
+    await user.type(within(dialog).getByLabelText(/^Шинэ оноо/), '95');
+    await user.selectOptions(within(dialog).getByLabelText(/Хайлмал хамгаалалт/), 'FUSED');
+    await user.type(within(dialog).getByLabelText(/Сериал дугаар/), 'AB-1200');
+    await attachEvidence(user, dialog);
+    await user.click(within(dialog).getByRole('button', { name: 'Бүртгэх' }));
+
+    await waitFor(() => expect(record).toHaveBeenCalled());
+    expect(record.mock.calls[0]?.[1]).toMatchObject({
+      attributeValues: { fuse: 'FUSED', serial: 'AB-1200' },
+    });
+  });
+
+  it('opens showing what the equipment already answered', async () => {
+    // Standing answers, not a blank form: the technician corrects what is on record rather
+    // than re-entering it from scratch every visit.
+    vi.spyOn(objectMasterService, 'getById').mockResolvedValue(
+      makeObjectDetail({
+        attributeValues: { fuse: 'NOT_FUSED', serial: 'AB-1200' },
+        objectType: typeWith([FUSE, SERIAL]),
+      }),
+    );
+    const user = userEvent.setup();
+
+    renderDetail([PERMISSIONS.OBJECT_MASTER_VIEW, PERMISSIONS.OBJECT_MASTER_ASSESS]);
+    const dialog = await openDrawer(user);
+
+    expect(within(dialog).getByLabelText(/Хайлмал хамгаалалт/)).toHaveValue('NOT_FUSED');
+    expect(within(dialog).getByLabelText(/Сериал дугаар/)).toHaveValue('AB-1200');
+  });
+
+  it('refuses to record while a required attribute is unanswered', async () => {
+    vi.spyOn(objectMasterService, 'getById').mockResolvedValue(
+      makeObjectDetail({ attributeValues: {}, objectType: typeWith([FUSE]) }),
+    );
+    const record = vi
+      .spyOn(objectMasterService, 'recordAssessment')
+      .mockResolvedValue(makeAssessment());
+    const user = userEvent.setup();
+
+    renderDetail([PERMISSIONS.OBJECT_MASTER_VIEW, PERMISSIONS.OBJECT_MASTER_ASSESS]);
+    const dialog = await openDrawer(user);
+
+    await user.type(within(dialog).getByLabelText(/^Шинэ оноо/), '95');
+    await attachEvidence(user, dialog);
+    await user.click(within(dialog).getByRole('button', { name: 'Бүртгэх' }));
+
+    // Caught before the request, from the same shared rule the backend enforces with.
+    expect(
+      await within(dialog).findByText(/"Хайлмал хамгаалалт" заавал бөглөнө/),
+    ).toBeInTheDocument();
+    expect(record).not.toHaveBeenCalled();
+  });
+
+  it('sends no attribute key at all for a type that declares nothing', async () => {
+    /**
+     * Absent means "not asked", and that is what protects every other client.
+     *
+     * The employee mobile app sends no such key, and the backend leaves whatever is stored
+     * untouched when it is missing. A form that sent `{}` instead would be saying "the answer
+     * to everything is nothing", which would clear the equipment's values.
+     */
+    vi.spyOn(objectMasterService, 'getById').mockResolvedValue(
+      makeObjectDetail({ attributeValues: {}, objectType: typeWith([]) }),
+    );
+    const record = vi
+      .spyOn(objectMasterService, 'recordAssessment')
+      .mockResolvedValue(makeAssessment());
+    const user = userEvent.setup();
+
+    renderDetail([PERMISSIONS.OBJECT_MASTER_VIEW, PERMISSIONS.OBJECT_MASTER_ASSESS]);
+    const dialog = await openDrawer(user);
+
+    await user.type(within(dialog).getByLabelText(/^Шинэ оноо/), '95');
+    await attachEvidence(user, dialog);
+    await user.click(within(dialog).getByRole('button', { name: 'Бүртгэх' }));
+
+    await waitFor(() => expect(record).toHaveBeenCalled());
+    expect(record.mock.calls[0]?.[1]).not.toHaveProperty('attributeValues');
   });
 });

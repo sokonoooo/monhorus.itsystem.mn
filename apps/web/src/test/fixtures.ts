@@ -414,6 +414,9 @@ export function makeObjectType(overrides: Partial<ObjectTypeDto> = {}): ObjectTy
     // uploads existed still draws with, and that is the case worth being the default.
     iconFileId: null,
     iconUrl: null,
+    // No per-type attributes by default. A type declaring none is what every type looked like
+    // before they existed, so it is the case that must keep behaving exactly as it did.
+    attributes: [],
     isActive: true,
     objectCount: 0,
     createdByName: 'Б. Энхтөр',
@@ -438,6 +441,7 @@ export function makeObjectListItem(
       icon: 'PANEL',
       iconUrl: null,
       showOnPlan: false,
+    attributes: [],
     },
     customerId: '507f1f77bcf86cd799439011',
     customerName: 'Central Tower ХХК',
@@ -447,6 +451,7 @@ export function makeObjectListItem(
     planPosition: null,
     status: 'ACTIVE',
     latestAssessment: null,
+    attributeValues: {},
     calculatedLoad: { valueKw: 18.4, complete: true, reasons: [] },
     measuredLoadKw: null,
     loadVariance: { valueKw: null, complete: false, reasons: [] },
@@ -466,6 +471,7 @@ export function makeObjectDetail(overrides: Partial<ObjectDetailDto> = {}): Obje
     panel: { capacityKw: 25, location: 'Баруун жигүүр', protection: 'IP54' },
     circuit: null,
     equipment: null,
+    attributeValues: {},
     childCircuits: [],
     childEquipment: [],
     mountedEquipment: [],

@@ -11,6 +11,10 @@ import type {
   LoadMeasurementPhase,
   LoadMeasurementUnit,
 } from '../constants/load-measurement';
+import type {
+  ObjectAttributeValue,
+  ObjectTypeAttributeDto,
+} from '../constants/object-type-attribute';
 
 /** A load figure plus why it could not be produced (rule 17.18). */
 export interface LoadValueDto {
@@ -68,6 +72,13 @@ export interface ObjectTypeDto {
    */
   iconUrl: string | null;
   isActive: boolean;
+  /**
+   * The extra fields objects of this type must carry (requirements 4.1), in display order.
+   *
+   * Empty for a type that declares none, which is every type registered before this existed —
+   * so a client that ignores the field behaves exactly as it did before.
+   */
+  attributes: readonly ObjectTypeAttributeDto[];
   /** Objects currently using this type. A type in use cannot be deleted. */
   objectCount: number;
   /**
@@ -200,6 +211,17 @@ export interface ObjectListItemDto {
      */
     iconUrl: string | null;
     showOnPlan: boolean;
+    /**
+     * The fields this type demands of its objects, in display order (requirements 4.1).
+     *
+     * ON THE LIST ROW, not only on the detail, because the screens that ask these questions
+     * are list-driven: the Ажлын тайлан equipment rows and the employee app's Дүгнэлт editor
+     * both build from a picked list item and would otherwise have to fetch a detail per
+     * piece of equipment just to know what to ask.
+     *
+     * Empty for a type that declares none.
+     */
+    attributes: readonly ObjectTypeAttributeDto[];
   } | null;
   customerId: string;
   customerName: string | null;
@@ -210,6 +232,14 @@ export interface ObjectListItemDto {
   planPosition: PlanPositionDto | null;
   status: ObjectStatus;
   latestAssessment: LatestAssessmentDto | null;
+  /**
+   * What this object has answered for its type's declared attributes (requirements 4.1).
+   *
+   * Read it THROUGH `objectType.attributes`, which is what says how each key is labelled and
+   * rendered. May hold keys the type no longer declares — removing an attribute does not
+   * erase what was recorded against it — and those are deliberately not shown.
+   */
+  attributeValues: Record<string, ObjectAttributeValue>;
   /** Backend-computed per section 11.5. Null when the inputs are incomplete. */
   calculatedLoad: LoadValueDto;
   measuredLoadKw: number | null;

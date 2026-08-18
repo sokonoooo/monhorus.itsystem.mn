@@ -16,5 +16,8 @@
     "outDir": "./dist/cjs"
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["node_modules", "dist"]
+  // Tests are colocated with the source they cover, as they are in both apps. They are
+  // excluded from the build so `dist` carries the package and nothing else — a `.test.js`
+  // shipped to the backend and the web app would be dead weight in both.
+  "exclude": ["node_modules", "dist", "src/**/*.test.ts"]
 }

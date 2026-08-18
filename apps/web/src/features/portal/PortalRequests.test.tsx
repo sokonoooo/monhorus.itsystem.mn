@@ -71,6 +71,7 @@ function makeObject(overrides: Partial<ObjectListItemDto> = {}): ObjectListItemD
       icon: 'PANEL',
       iconUrl: null,
       showOnPlan: true,
+    attributes: [],
     },
     customerId: CUSTOMER_ID,
     customerName: 'Central Tower ХХК',

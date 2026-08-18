@@ -219,6 +219,8 @@ ObjectListItemModel _equipment(
   String code,
   String name, {
   String status = 'ACTIVE',
+  List<Map<String, dynamic>> attributes = const <Map<String, dynamic>>[],
+  Map<String, dynamic> attributeValues = const <String, dynamic>{},
 }) =>
     ObjectListItemModel.fromJson(<String, dynamic>{
       'id': id,
@@ -228,6 +230,16 @@ ObjectListItemModel _equipment(
       'status': status,
       'floorId': 'f1',
       'floorName': '2-р давхар',
+      // The type's own declared fields ride on the type reference every object row carries,
+      // which is what lets a picked card ask them with no extra round trip.
+      'objectType': <String, dynamic>{
+        'id': 'ot1',
+        'code': 'MCB',
+        'name': 'Автомат таслуур',
+        'icon': 'BREAKER',
+        'attributes': attributes,
+      },
+      'attributeValues': attributeValues,
     });
 
 Future<void> _pumpEditor(
@@ -885,6 +897,67 @@ void main() {
   });
 
   // -- The three fields the app could not send --------------------------------
+
+  /// The equipment type's own declared fields, on the card a technician fills in (4.1).
+  ///
+  /// Nothing in the app names an attribute: the definitions ride on the picked row's type
+  /// reference, so a field added in Тоноглолын төрөл is asked here with no release.
+  testWidgets('an equipment card asks its type\'s questions and sends the answers', (
+    WidgetTester tester,
+  ) async {
+    final _ReportRepository repository = _ReportRepository(initial: _report());
+    await _pumpEditor(
+      tester,
+      repository: repository,
+      floors: <FloorModel>[_floor('f1', '2-р давхар')],
+      equipment: <ObjectListItemModel>[
+        _equipment(
+          'o1',
+          'MCB-01',
+          'Автомат таслуур 1',
+          attributes: <Map<String, dynamic>>[
+            <String, dynamic>{
+              'key': 'fuse',
+              'label': 'Хайлмал хамгаалалт',
+              'type': 'SELECT',
+              'required': true,
+              'options': <Map<String, dynamic>>[
+                <String, dynamic>{'value': 'FUSED', 'label': 'Хайлмалтай'},
+                <String, dynamic>{'value': 'NOT_FUSED', 'label': 'Хайлмалгүй'},
+              ],
+            },
+          ],
+          // Already on record, so the card opens on it rather than blank: these are standing
+          // facts about the kit, and a blank draft saved back would clear them.
+          attributeValues: <String, dynamic>{'fuse': 'NOT_FUSED'},
+        ),
+      ],
+    );
+
+    await tester.tap(find.byType(DropdownButtonFormField<String>));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('2-р давхар').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Тоноглол нэмэх'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('MCB-01 · Автомат таслуур 1'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.textContaining('Сонгосныг нэмэх'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('ХАЙЛМАЛ ХАМГААЛАЛТ (ЗААВАЛ)'), findsOneWidget);
+    expect(find.text('Хайлмалтай'), findsOneWidget);
+
+    await tester.tap(find.text('Хайлмалтай'));
+    await tester.pumpAndSettle();
+    await _tapAction(tester, 'Ноорогт хадгалах');
+
+    // The answer travels with the finding and the server writes it onto the EQUIPMENT.
+    expect(
+      repository.saved.single.objectAssessments.single.attributeValues,
+      <String, Object?>{'fuse': 'FUSED'},
+    );
+  });
 
   testWidgets('the visit score is enterable and reaches the payload', (
     WidgetTester tester,

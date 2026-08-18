@@ -85,6 +85,7 @@ class ObjectTypeRefModel {
     required this.icon,
     required this.iconUrl,
     required this.showOnPlan,
+    required this.attributes,
   });
 
   final String id;
@@ -107,6 +108,15 @@ class ObjectTypeRefModel {
   /// plan". False when absent: a server that predates the field must leave the plan as
   /// it was rather than scatter markers the admin web would not draw.
   final bool showOnPlan;
+
+  /// What this type demands of its objects, in display order (requirements 4.1).
+  ///
+  /// On the type REFERENCE rather than only on a detail, because the screens that ask these
+  /// questions are list-driven: the Дүгнэлт editor builds its cards from picked list items
+  /// and would otherwise need a round trip per piece of equipment to learn what to ask.
+  ///
+  /// Empty for a type that declares none, and for a server that predates the field.
+  final List<ObjectTypeAttributeModel> attributes;
 
   /// The stored-file id inside [iconUrl], or null when there is no usable one.
   ///
@@ -136,6 +146,7 @@ class ObjectTypeRefModel {
       // null the server sends for most types.
       iconUrl: iconUrl is String && iconUrl.isNotEmpty ? iconUrl : null,
       showOnPlan: parseBool(raw['showOnPlan']),
+      attributes: parseList(raw['attributes'], ObjectTypeAttributeModel.fromJson),
     );
   }
 }
@@ -382,6 +393,7 @@ class ObjectListItemModel {
     required this.planPosition,
     required this.status,
     required this.latestAssessment,
+    required this.attributeValues,
     required this.calculatedLoad,
     required this.measuredLoadKw,
     required this.loadVariance,
@@ -408,6 +420,13 @@ class ObjectListItemModel {
   /// Null when the object has never been assessed. That is a distinct state from a
   /// low score and renders as "Үнэлгээгүй", never as a zero.
   final LatestAssessmentModel? latestAssessment;
+  /// What this object has answered for its type's declared attributes (4.1).
+  ///
+  /// Read it THROUGH `objectType.attributes`, which is what says how each key is labelled
+  /// and rendered. May hold keys the type no longer declares — removing an attribute does
+  /// not erase what was recorded against it — and those are deliberately not shown.
+  final Map<String, Object?> attributeValues;
+
   final LoadValueModel calculatedLoad;
   final double? measuredLoadKw;
 
@@ -430,6 +449,9 @@ class ObjectListItemModel {
       planPosition: PlanPositionModel.fromJson(json['planPosition']),
       status: ObjectStatus.fromWire(json['status'] as String?),
       latestAssessment: LatestAssessmentModel.fromJson(json['latestAssessment']),
+      attributeValues: json['attributeValues'] is Map
+          ? Map<String, Object?>.from(json['attributeValues'] as Map)
+          : const <String, Object?>{},
       calculatedLoad: LoadValueModel.fromJson(json['calculatedLoad']),
       measuredLoadKw: parseDouble(json['measuredLoadKw']),
       loadVariance: LoadValueModel.fromJson(json['loadVariance']),
@@ -454,6 +476,86 @@ class ObjectListItemModel {
 }
 
 /// Mirrors `ObjectDetailDto`, which extends `ObjectListItemDto`.
+/// One option of a SELECT attribute. Mirrors `ObjectAttributeOptionDto`.
+///
+/// The value is what is stored on the object; the label is what a technician taps. Kept
+/// apart because a label is edited freely without touching anything already recorded.
+class ObjectAttributeOptionModel {
+  const ObjectAttributeOptionModel({required this.value, required this.label});
+
+  final String value;
+  final String label;
+
+  factory ObjectAttributeOptionModel.fromJson(Map<String, dynamic> json) {
+    final String value = json['value'] as String? ?? '';
+    return ObjectAttributeOptionModel(
+      value: value,
+      // A label that never arrived still has to render as something tappable, and the
+      // stored value is the honest fallback.
+      label: json['label'] as String? ?? value,
+    );
+  }
+}
+
+/// One field an object TYPE demands of its objects. Mirrors `ObjectTypeAttributeDto`.
+///
+/// Administrator-defined at runtime in Тоноглолын төрөл — "Автомат таслуур has a Хайлмал
+/// that is either Хайлмалтай or Хайлмалгүй" — so this app renders whatever arrives and
+/// hardcodes no field of its own. The list arrives in display order and is kept in it.
+class ObjectTypeAttributeModel {
+  const ObjectTypeAttributeModel({
+    required this.key,
+    required this.label,
+    required this.type,
+    required this.required,
+    required this.options,
+  });
+
+  /// The key the answer is stored under, and the segment of the `attributeValues.<key>`
+  /// error path the server reports failures against.
+  final String key;
+  final String label;
+  final ObjectAttributeType type;
+  final bool required;
+
+  /// Non-empty for [ObjectAttributeType.select], empty for every other kind.
+  final List<ObjectAttributeOptionModel> options;
+
+  factory ObjectTypeAttributeModel.fromJson(Map<String, dynamic> json) {
+    final String key = json['key'] as String? ?? '';
+    return ObjectTypeAttributeModel(
+      key: key,
+      label: json['label'] as String? ?? key,
+      type: ObjectAttributeType.fromWire(json['type'] as String?),
+      required: json['required'] as bool? ?? false,
+      options: parseList(json['options'], ObjectAttributeOptionModel.fromJson),
+    );
+  }
+
+  /// How a stored answer reads, or null when there is none.
+  ///
+  /// Mirrors `formatAttributeValue`: a SELECT reads as its option's label, and a value
+  /// whose option was deleted falls back to itself rather than vanishing — it is still
+  /// what somebody recorded.
+  String? display(Object? value) {
+    if (value == null) return null;
+    if (value is String && value.trim().isEmpty) return null;
+
+    switch (type) {
+      case ObjectAttributeType.select:
+        for (final ObjectAttributeOptionModel option in options) {
+          if (option.value == value) return option.label;
+        }
+        return value.toString();
+      case ObjectAttributeType.boolean:
+        return value == true ? 'Тийм' : 'Үгүй';
+      case ObjectAttributeType.text:
+      case ObjectAttributeType.number:
+        return value.toString();
+    }
+  }
+}
+
 class ObjectDetailModel extends ObjectListItemModel {
   const ObjectDetailModel({
     required super.id,
@@ -469,6 +571,7 @@ class ObjectDetailModel extends ObjectListItemModel {
     required super.planPosition,
     required super.status,
     required super.latestAssessment,
+    required super.attributeValues,
     required super.calculatedLoad,
     required super.measuredLoadKw,
     required super.loadVariance,
@@ -523,6 +626,7 @@ class ObjectDetailModel extends ObjectListItemModel {
   /// object whose type cannot be assessed explains an absent үнэлгээ.
   final bool canAssess;
 
+
   factory ObjectDetailModel.fromJson(Map<String, dynamic> json) {
     return ObjectDetailModel(
       id: json['id'] as String,
@@ -538,6 +642,9 @@ class ObjectDetailModel extends ObjectListItemModel {
       planPosition: PlanPositionModel.fromJson(json['planPosition']),
       status: ObjectStatus.fromWire(json['status'] as String?),
       latestAssessment: LatestAssessmentModel.fromJson(json['latestAssessment']),
+      attributeValues: json['attributeValues'] is Map
+          ? Map<String, Object?>.from(json['attributeValues'] as Map)
+          : const <String, Object?>{},
       calculatedLoad: LoadValueModel.fromJson(json['calculatedLoad']),
       measuredLoadKw: parseDouble(json['measuredLoadKw']),
       loadVariance: LoadValueModel.fromJson(json['loadVariance']),
@@ -824,6 +931,7 @@ class CreateAssessmentRequest {
     this.actionTaken,
     this.measuredLoadKw,
     this.measurements = const <LoadMeasurementModel>[],
+    this.attributeValues,
     this.repairRequired = false,
   });
 
@@ -837,6 +945,20 @@ class CreateAssessmentRequest {
   /// Extra readings in their own units. Left off the body entirely when empty, so an
   /// untouched form sends exactly what it sent before the field existed.
   final List<LoadMeasurementModel> measurements;
+
+  /// The object's per-type attributes, answered while writing this report (4.1).
+  ///
+  /// NOT PART OF THE ASSESSMENT. They are facts about the equipment — is this breaker
+  /// fused — not observations of this visit, so the server writes them onto the OBJECT and
+  /// the stored entry keeps none of them. They travel here because a report is written in
+  /// front of the equipment, which is the one moment somebody can look and answer, and
+  /// because it is one call rather than two with a half-applied state in between.
+  ///
+  /// NULL MEANS "NOT ASKED", AND IS NOT THE SAME AS EMPTY. Null leaves the key off the body
+  /// entirely, and the server then enforces nothing and clears nothing — which is what a
+  /// type declaring no attributes sends. An empty map would say "the answer to everything
+  /// is nothing" and would wipe the object's stored values.
+  final Map<String, Object?>? attributeValues;
 
   final bool repairRequired;
 
@@ -856,6 +978,8 @@ class CreateAssessmentRequest {
         'measurements': measurements
             .map((LoadMeasurementModel reading) => reading.toJson())
             .toList(growable: false),
+      // Null and empty are different here, deliberately — see the field's own note.
+      if (attributeValues != null) 'attributeValues': attributeValues,
     };
   }
 }

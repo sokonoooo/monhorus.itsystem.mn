@@ -9,6 +9,8 @@ import {
   type WorkReportMaterialDto,
   type WorkReportObjectDto,
   type WorkReportPhotoDto,
+  type ObjectAttributeValue,
+  type ObjectTypeAttributeDto,
 } from '@monhorus/shared';
 import { Types, type FilterQuery } from 'mongoose';
 
@@ -23,7 +25,12 @@ import type { RequestMeta } from '../../common/utils/request-meta.util';
 import { logger } from '../../config/logger';
 import { recordAudit } from '../audit/audit.service';
 import { notify } from '../notification/notification.service';
-import { ObjectRecord } from '../object-master/object-master.models';
+import {
+  ObjectRecord,
+  type IObjectTypeAttribute,
+} from '../object-master/object-master.models';
+import { applyObjectAttributeValues } from '../object-master/object-master.service';
+import { toObjectTypeAttributeDtos } from '../object-master/object-type.service';
 import { resolveAssignedWorkFilter } from '../planned-work/planned-work.scope';
 import { Report } from '../report-record/report-record.model';
 import { applyReportSafely, writeReport } from '../report-record/report-record.service';
@@ -64,6 +71,38 @@ function toPhotoDto(value: unknown): WorkReportPhotoDto | null {
  * maps to its id with null labels, so a caller that did not populate still gets a usable
  * row rather than a crash.
  */
+/**
+ * The equipment's own attribute answers and the definitions that describe them.
+ *
+ * Both come off the OBJECT rather than off the finding: they are facts about the kit, true
+ * between visits, so every report against the same equipment reads the same answers.
+ *
+ * Empty on both counts when the path was not populated or the type declares nothing, so a
+ * report saved before the feature existed renders exactly as it did.
+ */
+function attributesOf(value: unknown): {
+  attributeValues: Record<string, ObjectAttributeValue>;
+  objectTypeAttributes: ObjectTypeAttributeDto[];
+} {
+  if (typeof value !== 'object' || value === null) {
+    return { attributeValues: {}, objectTypeAttributes: [] };
+  }
+  const object = value as {
+    attributeValues?: Record<string, ObjectAttributeValue>;
+    objectType?: { attributes?: IObjectTypeAttribute[] } | Types.ObjectId;
+  };
+  const type = object.objectType;
+  const attributes =
+    type !== null && typeof type === 'object' && 'attributes' in type ? type.attributes : undefined;
+
+  return {
+    // Spread rather than handed out: `attributeValues` is a `Mixed` path, so this is the
+    // loaded document's own object.
+    attributeValues: { ...(object.attributeValues ?? {}) },
+    objectTypeAttributes: toObjectTypeAttributeDtos(attributes),
+  };
+}
+
 function toLinkedObject(value: unknown): WorkReportObjectDto {
   if (typeof value === 'object' && value !== null && 'code' in value) {
     const object = value as { _id: Types.ObjectId; code: string; name: string };
@@ -139,6 +178,7 @@ function toDto(report: WithId<IWorkReport>): WorkReportDto {
         conclusion: entry.conclusion,
         recommendation: entry.recommendation,
         photoIds: listOf(entry.photos).map(String),
+        ...attributesOf(entry.object),
       };
     }),
     missing: completeness.missing,
@@ -160,6 +200,22 @@ const POPULATE = [
   { path: 'beforePhotos', select: PHOTO_SELECT },
   { path: 'afterPhotos', select: PHOTO_SELECT },
   { path: 'objects', select: 'code name' },
+  /**
+   * The assessed equipment, and the type behind it.
+   *
+   * `attributeValues` and the type's definitions come back so each row on the report can ask
+   * the type's own questions (4.1) pre-filled with what the equipment already answered — a
+   * report may name a panel and a breaker, and they declare different things.
+   *
+   * Populating this path also gives the per-row `code` and `name` something to read: they
+   * were declared nullable and always came back null, because only the flat `objects` list
+   * above was ever populated.
+   */
+  {
+    path: 'objectAssessments.object',
+    select: 'code name attributeValues objectType',
+    populate: { path: 'objectType', select: 'attributes' },
+  },
 ];
 
 function actorOf(actor: AuthContext): {
@@ -524,6 +580,30 @@ export async function saveWorkReport(
       photos: (entry.photoIds ?? []).map((id) => new Types.ObjectId(id)),
     })),
   );
+
+  /**
+   * The type's own attributes answered on this report land on the EQUIPMENT (4.1).
+   *
+   * Not on the ReportItem: the score and the narrative are what this visit observed, while
+   * "this breaker is fused" is a standing fact about the kit. A copy per report would create
+   * as many answers as there are visits with no way to say which is current.
+   *
+   * Applied AFTER the ownership check above, so a row naming another tenant's equipment is
+   * refused before anything is written to it. Sequential rather than parallel because each
+   * call saves its own document and a refusal should name the first row that is wrong rather
+   * than racing several.
+   *
+   * A row that omits the key is not asked and not touched — which is what lets a draft saved
+   * from an older client, or before the fields were filled in, save unchanged.
+   */
+  for (const [index, entry] of assessments.entries()) {
+    if (entry.attributeValues === undefined) continue;
+    await applyObjectAttributeValues(
+      new Types.ObjectId(entry.objectId),
+      entry.attributeValues,
+      `objectAssessments.${index}.`,
+    );
+  }
 
   // Editing a returned conclusion puts it back into draft, so the technician resubmits
   // rather than leaving it sitting in a rejected state that reads as unaddressed.

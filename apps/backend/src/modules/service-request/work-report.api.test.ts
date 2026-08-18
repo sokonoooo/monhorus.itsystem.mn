@@ -367,6 +367,118 @@ describe('Service-request equipment assessment', () => {
   }
 
   /**
+   * The equipment type's own attributes (requirements 4.1), answered on the Ажлын тайлан.
+   *
+   * They land on the EQUIPMENT, never on the finding: the score and the narrative are what
+   * this visit observed, while "this breaker is fused" is true between visits. A copy per
+   * report would create as many answers as there are visits with no way to say which is
+   * current.
+   */
+  describe('per-type attributes on an equipment row', () => {
+    const FUSE = {
+      key: 'fuse',
+      label: 'Хайлмал хамгаалалт',
+      type: 'SELECT' as const,
+      required: true,
+      options: [
+        { value: 'FUSED', label: 'Хайлмалтай' },
+        { value: 'NOT_FUSED', label: 'Хайлмалгүй' },
+      ],
+    };
+
+    /** A panel whose type declares the worked example from the brief. */
+    async function seedBreaker(code: string): Promise<string> {
+      const objectType = await ObjectType.create({
+        code: `MCB-${code}`,
+        name: 'Автомат таслуур',
+        category: 'PANEL',
+        attributes: [FUSE],
+      });
+      const object = await ObjectRecord.create({
+        code,
+        name: `Таслуур ${code}`,
+        objectType: objectType._id,
+        category: 'PANEL',
+        floor: new Types.ObjectId(fixture.floorId),
+        customer: new Types.ObjectId(fixture.customerId),
+      });
+      return String(object._id);
+    }
+
+    it('writes an answered attribute onto the equipment, not onto the finding', async () => {
+      const requestId = await seedRequest();
+      const assessed = await seedBreaker('MCB-30');
+      await request(app)
+        .get(`${API}/service-requests/${requestId}/report`)
+        .set('Authorization', `Bearer ${token}`);
+
+      const saved = await fillReport(requestId, {
+        objectIds: [assessed],
+        objectAssessments: [
+          { objectId: assessed, score: 91, attributeValues: { fuse: 'FUSED' } },
+        ],
+      });
+
+      expect(saved.status).toBe(200);
+      // The report reads it back off the object, beside the definitions that describe it.
+      const row = saved.body.data.objectAssessments[0];
+      expect(row.attributeValues).toEqual({ fuse: 'FUSED' });
+      expect(row.objectTypeAttributes.map((a: { key: string }) => a.key)).toEqual(['fuse']);
+
+      const object = await ObjectRecord.findById(assessed);
+      expect(object?.attributeValues).toEqual({ fuse: 'FUSED' });
+    });
+
+    it('refuses a value the type does not offer, naming the row it is on', async () => {
+      const requestId = await seedRequest();
+      const assessed = await seedBreaker('MCB-31');
+      await request(app)
+        .get(`${API}/service-requests/${requestId}/report`)
+        .set('Authorization', `Bearer ${token}`);
+
+      const refused = await fillReport(requestId, {
+        objectIds: [assessed],
+        objectAssessments: [
+          { objectId: assessed, score: 91, attributeValues: { fuse: 'MELTED' } },
+        ],
+      });
+
+      expect(refused.status).toBe(400);
+      // The row index is what puts the message on the right card: a report may list four.
+      expect(
+        (refused.body.issues as { field: string }[]).map((issue) => issue.field),
+      ).toEqual(['objectAssessments.0.attributeValues.fuse']);
+    });
+
+    it('leaves the equipment untouched when a row omits the key', async () => {
+      /**
+       * ABSENT MEANS "NOT ASKED", NEVER "THE ANSWER IS NOTHING".
+       *
+       * This is what lets a draft saved from a client that has not been updated, or before
+       * the fields were filled in, save without clearing answers it never showed.
+       */
+      const requestId = await seedRequest();
+      const assessed = await seedBreaker('MCB-32');
+      await request(app)
+        .get(`${API}/service-requests/${requestId}/report`)
+        .set('Authorization', `Bearer ${token}`);
+      await ObjectRecord.updateOne(
+        { _id: assessed },
+        { $set: { attributeValues: { fuse: 'NOT_FUSED' } } },
+      );
+
+      const saved = await fillReport(requestId, {
+        objectIds: [assessed],
+        objectAssessments: [{ objectId: assessed, score: 91 }],
+      });
+
+      expect(saved.status).toBe(200);
+      const object = await ObjectRecord.findById(assessed);
+      expect(object?.attributeValues).toEqual({ fuse: 'NOT_FUSED' });
+    });
+  });
+
+  /**
    * The completeness rule is VISIT-LEVEL and per-equipment findings do not satisfy it.
    *
    * A technician can fill every equipment card — score, observation, conclusion,

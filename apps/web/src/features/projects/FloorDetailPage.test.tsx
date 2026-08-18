@@ -572,7 +572,7 @@ describe('FloorDetailPage object search and filters', () => {
       name: 'Түгээх самбар нэг',
       status: 'ACTIVE',
       planPosition: { x: 10, y: 10 },
-      objectType: { ...PANEL_TYPE, icon: 'PANEL', iconUrl: null, showOnPlan: true },
+      objectType: { ...PANEL_TYPE, icon: 'PANEL', iconUrl: null, showOnPlan: true, attributes: [] },
     }),
     makeObjectListItem({
       id: 'o-light-a',
@@ -580,7 +580,7 @@ describe('FloorDetailPage object search and filters', () => {
       name: 'Гэрэлтүүлэг нэг',
       status: 'INACTIVE',
       planPosition: { x: 20, y: 20 },
-      objectType: { ...LIGHT_TYPE, icon: 'LIGHT', iconUrl: null, showOnPlan: true },
+      objectType: { ...LIGHT_TYPE, icon: 'LIGHT', iconUrl: null, showOnPlan: true, attributes: [] },
     }),
     makeObjectListItem({
       id: 'o-light-b',
@@ -588,7 +588,7 @@ describe('FloorDetailPage object search and filters', () => {
       name: 'Гэрэлтүүлэг хоёр',
       status: 'DECOMMISSIONED',
       planPosition: { x: 30, y: 30 },
-      objectType: { ...LIGHT_TYPE, icon: 'LIGHT', iconUrl: null, showOnPlan: true },
+      objectType: { ...LIGHT_TYPE, icon: 'LIGHT', iconUrl: null, showOnPlan: true, attributes: [] },
     }),
   ];
 
@@ -735,7 +735,7 @@ describe('FloorDetailPage object search and filters', () => {
         code: `LT-${index}`,
         name: `Гэрэлтүүлэг ${index}`,
         status: 'ACTIVE',
-        objectType: { ...LIGHT_TYPE, icon: 'LIGHT', iconUrl: null, showOnPlan: true },
+        objectType: { ...LIGHT_TYPE, icon: 'LIGHT', iconUrl: null, showOnPlan: true, attributes: [] },
       }),
     );
     const panels = Array.from({ length: 5 }, (_, index) =>
@@ -744,7 +744,7 @@ describe('FloorDetailPage object search and filters', () => {
         code: `DB-${index}`,
         name: `Самбар ${index}`,
         status: 'INACTIVE',
-        objectType: { ...PANEL_TYPE, icon: 'PANEL', iconUrl: null, showOnPlan: true },
+        objectType: { ...PANEL_TYPE, icon: 'PANEL', iconUrl: null, showOnPlan: true, attributes: [] },
       }),
     );
     return vi

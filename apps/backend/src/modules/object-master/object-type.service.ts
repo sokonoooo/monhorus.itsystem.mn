@@ -1,5 +1,6 @@
 import type {
   CreateObjectTypeInput,
+  ObjectTypeAttributeDto,
   ObjectTypeDto,
   ObjectTypeListQueryInput,
   PaginatedData,
@@ -39,6 +40,34 @@ export function objectTypeIconUrl(iconFile: Types.ObjectId | null | undefined): 
   return iconFile ? `/api/v1/files/${String(iconFile)}` : null;
 }
 
+/**
+ * The type's attribute definitions, in the order they are stored.
+ *
+ * Mapped rather than handed straight out because a mongoose document array is not a plain
+ * array and its sub-documents are not plain objects: passing one through would ship mongoose
+ * internals on the wire and make the DTO's `readonly` claim a lie. `?? []` covers a type
+ * document written before the path existed.
+ */
+export function toObjectTypeAttributeDtos(
+  attributes: IObjectType['attributes'] | undefined,
+): ObjectTypeAttributeDto[] {
+  return (attributes ?? []).map((attribute) => ({
+    key: attribute.key,
+    label: attribute.label,
+    type: attribute.type,
+    required: attribute.required,
+    options: (attribute.options ?? []).map((option) => ({
+      value: option.value,
+      label: option.label,
+    })),
+  }));
+}
+
+/** The attribute keys in order, which is what an audit reader needs to see a change. */
+function attributeKeysOf(type: Pick<IObjectType, 'attributes'>): string[] {
+  return (type.attributes ?? []).map((attribute) => attribute.key);
+}
+
 export function toObjectTypeDto(type: Doc<IObjectType>, objectCount: number): ObjectTypeDto {
   return {
     id: String(type._id),
@@ -52,6 +81,7 @@ export function toObjectTypeDto(type: Doc<IObjectType>, objectCount: number): Ob
     icon: type.icon,
     iconFileId: type.iconFile ? String(type.iconFile) : null,
     iconUrl: objectTypeIconUrl(type.iconFile),
+    attributes: toObjectTypeAttributeDtos(type.attributes),
     isActive: type.isActive,
     objectCount,
     createdByName: creatorName(type.createdBy),
@@ -178,6 +208,7 @@ export async function createObjectType(
     generatesConclusion: input.generatesConclusion,
     icon: input.icon,
     iconFile,
+    attributes: input.attributes,
     isActive: true,
     createdBy: new Types.ObjectId(actor.userId),
   });
@@ -213,6 +244,10 @@ export async function updateObjectType(
     name: type.name,
     generatesConclusion: type.generatesConclusion,
     isActive: type.isActive,
+    // The keys rather than the whole definitions: an audit row is read by a human asking
+    // "which attribute disappeared", and the option lists would bury that under their own
+    // bulk. The audit log is append-only, so this is the only record of a removal.
+    attributeKeys: attributeKeysOf(type),
   };
 
   if (input.name !== undefined) type.name = input.name;
@@ -222,6 +257,17 @@ export async function updateObjectType(
   if (input.generatesConclusion !== undefined) type.generatesConclusion = input.generatesConclusion;
   if (input.icon !== undefined) type.icon = input.icon;
   if (input.isActive !== undefined) type.isActive = input.isActive;
+  /**
+   * The whole list, replaced. Add, edit, delete and reorder are all "the array should now
+   * look like this", so there is nothing to patch element-wise — and assigning the array
+   * wholesale is also what makes the new ORDER stick, which an element-wise update could not
+   * express at all.
+   *
+   * Safe to replace freely because a removed definition does not cascade: the values already
+   * recorded against it stay on their objects, and `mergeAttributeValues` preserves them
+   * through every later edit. See `IObject.attributeValues`.
+   */
+  if (input.attributes !== undefined) type.attributes = input.attributes;
 
   /**
    * Set, replace or clear the custom icon. Three-valued: absent leaves it alone, an id
@@ -258,6 +304,7 @@ export async function updateObjectType(
       name: type.name,
       generatesConclusion: type.generatesConclusion,
       isActive: type.isActive,
+      attributeKeys: attributeKeysOf(type),
     },
   });
 

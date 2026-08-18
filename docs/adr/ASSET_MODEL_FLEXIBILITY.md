@@ -4,6 +4,13 @@ Status: **Design only. Deferred by the product owner — nothing here is impleme
 Written against the tree at commit `2e17308`.
 Last updated: 2026-08-06
 
+> **Except open question 4, which has since been answered "per-type" and shipped.**
+> An object type carries its own attribute definitions and an object carries the values, asked
+> on the Үнэлгээ бүртгэх form. It is a narrow slice of Candidate B's Tier 2 taken at the TYPE
+> level, and it touches none of the category machinery this document is about — §1's three jobs
+> of the discriminator, the whole of §5's regression table and every candidate below remain
+> exactly as written. See `docs/adr/CATEGORY_REFACTOR_PLAN.md` §12 Q3.
+
 The brief, in the product owner's words:
 
 > "I don't want the system to be limited to electrical assets only. The current PANEL →

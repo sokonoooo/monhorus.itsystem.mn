@@ -1,4 +1,5 @@
 import '../../../../../core/util/json_parse.dart';
+import '../../../project/data/models/object_models.dart';
 
 /// The section 9.2 service-request conclusion, as this app reads and writes it.
 ///
@@ -121,6 +122,8 @@ class WorkReportObjectAssessmentModel {
   const WorkReportObjectAssessmentModel({
     required this.objectId,
     required this.photoIds,
+    required this.attributeValues,
+    required this.objectTypeAttributes,
     this.code,
     this.name,
     this.score,
@@ -137,6 +140,19 @@ class WorkReportObjectAssessmentModel {
   final String? conclusion;
   final String? recommendation;
   final List<String> photoIds;
+
+  /// What the equipment has answered for its type's declared attributes (4.1).
+  ///
+  /// Off the OBJECT, not off this finding: the score and the narrative are what the visit
+  /// observed, while "this breaker is fused" is true between visits — so every report
+  /// against the same equipment reads the same answers.
+  final Map<String, Object?> attributeValues;
+
+  /// The definitions in force for this equipment's type, in display order.
+  ///
+  /// Per row rather than per report: a report may name a panel and a breaker and they
+  /// declare different things.
+  final List<ObjectTypeAttributeModel> objectTypeAttributes;
 
   /*
    * THERE IS DELIBERATELY NO `riskLevel` HERE.
@@ -165,6 +181,13 @@ class WorkReportObjectAssessmentModel {
           .map((Object? id) => parseString(id))
           .whereType<String>()
           .toList(),
+      // Defensive on both: a server that predates the field answers neither, and the editor
+      // then simply asks nothing extra rather than failing to parse the report.
+      attributeValues: json['attributeValues'] is Map
+          ? Map<String, Object?>.from(json['attributeValues'] as Map)
+          : const <String, Object?>{},
+      objectTypeAttributes:
+          parseList(json['objectTypeAttributes'], ObjectTypeAttributeModel.fromJson),
     );
   }
 }
@@ -359,6 +382,7 @@ class SaveObjectAssessment {
     this.observation,
     this.conclusion,
     this.recommendation,
+    this.attributeValues,
   });
 
   final String objectId;
@@ -367,6 +391,14 @@ class SaveObjectAssessment {
   final String? conclusion;
   final String? recommendation;
   final List<String> photoIds;
+
+  /// The equipment's per-type attributes, answered while writing this finding (4.1).
+  ///
+  /// NULL MEANS "NOT ASKED", AND IS NOT EMPTY. Null leaves the key off the body, and the
+  /// server then enforces nothing and clears nothing — which is what a card whose type
+  /// declares no attributes sends. An empty map would say "the answer to everything is
+  /// nothing" and would wipe what the equipment already carries.
+  final Map<String, Object?>? attributeValues;
 
   Map<String, dynamic> toJson() {
     return <String, dynamic>{
@@ -378,6 +410,9 @@ class SaveObjectAssessment {
       'conclusion': conclusion,
       'recommendation': recommendation,
       'photoIds': photoIds,
+      // Unlike the nullish fields above, null here means "leave it alone" rather than
+      // "clear it", so the key is omitted entirely.
+      if (attributeValues != null) 'attributeValues': attributeValues,
     };
   }
 }

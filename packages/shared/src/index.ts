@@ -8,6 +8,7 @@ export * from './constants/material';
 export * from './constants/planned-work';
 export * from './constants/settings';
 export * from './constants/object-master';
+export * from './constants/object-type-attribute';
 export * from './constants/load-measurement';
 export * from './constants/invoice';
 export * from './constants/report';

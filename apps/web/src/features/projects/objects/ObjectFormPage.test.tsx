@@ -805,3 +805,216 @@ describe('ObjectFormPage', () => {
     });
   });
 });
+
+/**
+ * The chosen type's own fields on the registration form (requirements 4.1).
+ *
+ * The Үнэлгээ бүртгэх form asks the same questions from the same renderer; this covers the
+ * other entry point, where the equipment is first recorded. Everything is rendered from
+ * definitions the API supplies, so what is pinned down is that the form ASKS FOR WHAT THE
+ * TYPE DECLARES and refuses to submit without it — with nothing in the page naming an
+ * attribute, a type or a category.
+ */
+describe('ObjectFormPage per-type attributes', () => {
+  const FUSE = {
+    key: 'fuse',
+    label: 'Хайлмал хамгаалалт',
+    type: 'SELECT' as const,
+    required: true,
+    options: [
+      { value: 'FUSED', label: 'Хайлмалтай' },
+      { value: 'NOT_FUSED', label: 'Хайлмалгүй' },
+    ],
+  };
+
+  const POLES = {
+    key: 'poles',
+    label: 'Туйлын тоо',
+    type: 'NUMBER' as const,
+    required: false,
+    options: [],
+  };
+
+  const SEALED = {
+    key: 'sealed',
+    label: 'Лацдсан эсэх',
+    type: 'BOOLEAN' as const,
+    required: true,
+    options: [],
+  };
+
+  beforeEach(() => {
+    invalidateRiskBands();
+    vi.spyOn(settingsService, 'get').mockResolvedValue(evaluationSettings());
+    vi.spyOn(projectService, 'getFloor').mockResolvedValue(makeFloor());
+    vi.spyOn(projectService, 'listFloors').mockResolvedValue(makePage([makeFloor()]));
+    vi.spyOn(objectMasterService, 'list').mockResolvedValue(makePage([]));
+  });
+
+  function withAttributes(attributes: readonly unknown[]): void {
+    vi.spyOn(objectTypeService, 'list').mockResolvedValue(
+      makePage([makeObjectType({ attributes: attributes as never })]),
+    );
+  }
+
+  /** Fills in the fields every create needs, whatever the type declares on top. */
+  async function fillBasics(user: ReturnType<typeof userEvent.setup>): Promise<void> {
+    await user.selectOptions(await screen.findByLabelText(/^Тоноглолын төрөл/), TYPE_ID);
+    await user.type(screen.getByLabelText(/^Код/), 'MCB-01');
+    await user.type(screen.getByLabelText(/^Нэр\*/), 'Автомат таслуур 1');
+  }
+
+  it('renders nothing extra for a type that declares no attributes', async () => {
+    // The path every type took before this existed, and the one that must be untouched.
+    withAttributes([]);
+    const create = vi.spyOn(objectMasterService, 'create').mockResolvedValue(makeObjectDetail());
+    const user = userEvent.setup();
+
+    renderCreate();
+    await fillBasics(user);
+    await user.click(screen.getByRole('button', { name: 'Хадгалах' }));
+
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(create.mock.calls[0]![0]).toMatchObject({ attributeValues: {} });
+  });
+
+  it('renders a field per declared attribute once a type is chosen', async () => {
+    withAttributes([FUSE, POLES]);
+    const user = userEvent.setup();
+
+    renderCreate();
+    // Nothing is shown before a type is chosen, because nothing is known yet.
+    expect(screen.queryByLabelText(/Хайлмал хамгаалалт/)).not.toBeInTheDocument();
+
+    await user.selectOptions(await screen.findByLabelText(/^Тоноглолын төрөл/), TYPE_ID);
+
+    expect(screen.getByLabelText(/Хайлмал хамгаалалт/)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Туйлын тоо/)).toBeInTheDocument();
+  });
+
+  it('offers a SELECT exactly the options its definition lists', async () => {
+    withAttributes([FUSE]);
+    const user = userEvent.setup();
+
+    renderCreate();
+    await user.selectOptions(await screen.findByLabelText(/^Тоноглолын төрөл/), TYPE_ID);
+
+    const select = screen.getByLabelText(/Хайлмал хамгаалалт/);
+    const labels = within(select).getAllByRole('option').map((option) => option.textContent);
+    expect(labels).toEqual(['Сонгоно уу', 'Хайлмалтай', 'Хайлмалгүй']);
+  });
+
+  it('sends the chosen values, parsed to their declared types', async () => {
+    withAttributes([FUSE, POLES, SEALED]);
+    const create = vi.spyOn(objectMasterService, 'create').mockResolvedValue(makeObjectDetail());
+    const user = userEvent.setup();
+
+    renderCreate();
+    await fillBasics(user);
+
+    await user.selectOptions(screen.getByLabelText(/Хайлмал хамгаалалт/), 'FUSED');
+    await user.type(screen.getByLabelText(/Туйлын тоо/), '3');
+    await user.selectOptions(screen.getByLabelText(/Лацдсан эсэх/), 'false');
+
+    await user.click(screen.getByRole('button', { name: 'Хадгалах' }));
+
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(create.mock.calls[0]![0]).toMatchObject({
+      // A number as a number and a boolean as a boolean, not as the text of their inputs.
+      attributeValues: { fuse: 'FUSED', poles: 3, sealed: false },
+    });
+  });
+
+  it('refuses to submit while a required attribute is empty', async () => {
+    withAttributes([FUSE]);
+    const create = vi.spyOn(objectMasterService, 'create').mockResolvedValue(makeObjectDetail());
+    const user = userEvent.setup();
+
+    renderCreate();
+    await fillBasics(user);
+    await user.click(screen.getByRole('button', { name: 'Хадгалах' }));
+
+    // Caught before the request, from the same shared rule the backend enforces with, and
+    // reported under the field itself rather than as a banner alone.
+    expect(await screen.findByText(/"Хайлмал хамгаалалт" заавал бөглөнө/)).toBeInTheDocument();
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('lets an optional attribute stay empty', async () => {
+    withAttributes([POLES]);
+    const create = vi.spyOn(objectMasterService, 'create').mockResolvedValue(makeObjectDetail());
+    const user = userEvent.setup();
+
+    renderCreate();
+    await fillBasics(user);
+    await user.click(screen.getByRole('button', { name: 'Хадгалах' }));
+
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(create.mock.calls[0]![0]).toMatchObject({ attributeValues: {} });
+  });
+
+  it('treats a required yes/no answered "Үгүй" as answered', async () => {
+    /**
+     * The reason a BOOLEAN is a three-state select and not a checkbox: an unticked box cannot
+     * be told apart from a deliberate no, which would make `required` satisfiable by never
+     * looking at the field.
+     */
+    withAttributes([SEALED]);
+    const create = vi.spyOn(objectMasterService, 'create').mockResolvedValue(makeObjectDetail());
+    const user = userEvent.setup();
+
+    renderCreate();
+    await fillBasics(user);
+
+    await user.click(screen.getByRole('button', { name: 'Хадгалах' }));
+    expect(await screen.findByText(/"Лацдсан эсэх" заавал бөглөнө/)).toBeInTheDocument();
+    expect(create).not.toHaveBeenCalled();
+
+    await user.selectOptions(screen.getByLabelText(/Лацдсан эсэх/), 'false');
+    await user.click(screen.getByRole('button', { name: 'Хадгалах' }));
+
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(create.mock.calls[0]![0]).toMatchObject({ attributeValues: { sealed: false } });
+  });
+
+  it('hydrates an edit from the values the object already carries', async () => {
+    withAttributes([FUSE, POLES]);
+    vi.spyOn(objectMasterService, 'getById').mockResolvedValue(
+      makeObjectDetail({
+        objectType: {
+          id: TYPE_ID,
+          code: 'MCB',
+          name: 'Автомат таслуур',
+          icon: 'BREAKER',
+          iconUrl: null,
+          showOnPlan: false,
+          attributes: [FUSE, POLES],
+        },
+        category: 'EQUIPMENT',
+        panel: null,
+        equipment: null,
+        attributeValues: { fuse: 'NOT_FUSED', poles: 4 },
+      }),
+    );
+    const update = vi.spyOn(objectMasterService, 'update').mockResolvedValue(makeObjectDetail());
+    const user = userEvent.setup();
+
+    renderWithAuth(<ObjectFormPage />, {
+      permissions: [PERMISSIONS.OBJECT_MASTER_VIEW, PERMISSIONS.OBJECT_MASTER_MANAGE],
+      route: `/floors/${FLOOR_ID}/objects/o1/edit`,
+      path: '/floors/:floorId/objects/:objectId/edit',
+    });
+
+    // A number comes back in its box as text, and a SELECT comes back on its option.
+    expect(await screen.findByLabelText(/Хайлмал хамгаалалт/)).toHaveValue('NOT_FUSED');
+    expect(screen.getByLabelText(/Туйлын тоо/)).toHaveValue(4);
+
+    await user.selectOptions(screen.getByLabelText(/Хайлмал хамгаалалт/), 'FUSED');
+    await user.click(screen.getByRole('button', { name: 'Хадгалах' }));
+
+    await waitFor(() => expect(update).toHaveBeenCalled());
+    expect(update.mock.calls[0]![1]).toMatchObject({
+      attributeValues: { fuse: 'FUSED', poles: 4 },
+    });
+  });
+});

@@ -13,6 +13,7 @@ import * as fileUrl from '../../lib/file-url';
 import { objectTypeService } from '../../services/object-master.service';
 import { renderWithAuth } from '../../test/render';
 import planIconsSource from '../projects/plan-icons.tsx?raw';
+import attributesEditorSource from './ObjectTypeAttributesEditor.tsx?raw';
 import { ObjectTypesPage } from './ObjectTypesPage';
 import objectTypesPageSource from './ObjectTypesPage.tsx?raw';
 
@@ -29,6 +30,7 @@ function makeType(overrides: Partial<ObjectTypeDto> = {}): ObjectTypeDto {
     icon: 'OTHER',
     iconFileId: null,
     iconUrl: null,
+    attributes: [],
     isActive: true,
     objectCount: 0,
     createdByName: 'Б. Энхтөр',
@@ -281,7 +283,9 @@ describe('ObjectTypesPage custom icon', () => {
    * exact hole they exist to close.
    */
   it('has no markup-inlining path in the pages that draw an uploaded icon', () => {
-    for (const source of [objectTypesPageSource, planIconsSource]) {
+    // The attribute editor is included because it was carved out of this page: code that
+    // moves out from under a source-level assertion stops being covered by it, silently.
+    for (const source of [objectTypesPageSource, attributesEditorSource, planIconsSource]) {
       expect(source).not.toMatch(/dangerouslySetInnerHTML/);
       expect(source).not.toMatch(/innerHTML/);
     }
@@ -388,5 +392,245 @@ describe('ObjectTypesPage custom icon', () => {
     expect(Object.keys(update.mock.calls[0]![1] as Record<string, unknown>)).not.toContain(
       'iconFileId',
     );
+  });
+});
+
+/**
+ * Per-type attributes (requirements 4.1).
+ *
+ * The editor is what an administrator uses to say that an Автомат таслуур must record a
+ * Хайлмал; the Үнэлгээ бүртгэх form then asks it. What is asserted here is the PAYLOAD,
+ * because the array is the whole contract: add, edit, delete and reorder are all "the list
+ * should now look like this", and the array order is the display order with no `sortOrder` to
+ * carry it.
+ */
+describe('ObjectTypesPage per-type attributes', () => {
+  const FUSE = {
+    key: 'fuse',
+    label: 'Хайлмал хамгаалалт',
+    type: 'SELECT' as const,
+    required: true,
+    options: [
+      { value: 'FUSED', label: 'Хайлмалтай' },
+      { value: 'NOT_FUSED', label: 'Хайлмалгүй' },
+    ],
+  };
+
+  const SEPARATOR = {
+    key: 'separator',
+    label: 'Тусгаарлагч',
+    type: 'SELECT' as const,
+    required: true,
+    options: [{ value: 'WITH', label: 'Тусгаарлагчтай' }],
+  };
+
+  async function openDrawer(user: ReturnType<typeof userEvent.setup>): Promise<void> {
+    await user.click(await screen.findByRole('button', { name: 'Шинэ төрөл' }));
+    await screen.findByRole('dialog');
+  }
+
+  async function openEditor(
+    user: ReturnType<typeof userEvent.setup>,
+    typeName: string,
+  ): Promise<void> {
+    await screen.findByText(typeName);
+    await user.click(within(screen.getByRole('table')).getByRole('button', { name: 'Үйлдэл' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Засах' }));
+    await screen.findByRole('dialog');
+  }
+
+  function render(): void {
+    renderWithAuth(<ObjectTypesPage />, {
+      permissions: [PERMISSIONS.OBJECT_MASTER_VIEW, PERMISSIONS.OBJECT_TYPE_MANAGE],
+    });
+  }
+
+  it('says so plainly when a type declares no attributes', async () => {
+    vi.spyOn(objectTypeService, 'list').mockResolvedValue(makePage([makeType()]));
+    const user = userEvent.setup();
+
+    render();
+    await openDrawer(user);
+
+    // An empty list must read as a deliberate "nothing extra is asked", not as a form that
+    // failed to load.
+    expect(screen.getByText(/Үзүүлэлт тодорхойлоогүй байна/)).toBeInTheDocument();
+  });
+
+  it('sends a new SELECT attribute with its options', async () => {
+    vi.spyOn(objectTypeService, 'list').mockResolvedValue(makePage([makeType()]));
+    const create = vi.spyOn(objectTypeService, 'create').mockResolvedValue(makeType());
+    const user = userEvent.setup();
+
+    render();
+    await openDrawer(user);
+
+    await user.type(screen.getByLabelText(/^Код/), 'MCB');
+    await user.type(screen.getByLabelText(/^Нэр/), 'Автомат таслуур');
+
+    await user.click(screen.getByRole('button', { name: 'Үзүүлэлт нэмэх' }));
+    await user.type(screen.getByLabelText('Үзүүлэлт 1 нэр'), 'Fuse');
+    await user.selectOptions(screen.getByLabelText('Үзүүлэлт 1 төрөл'), 'SELECT');
+    await user.click(screen.getByLabelText('Fuse заавал бөглөх'));
+
+    await user.click(screen.getByRole('button', { name: 'Сонголт нэмэх' }));
+    await user.type(screen.getByLabelText('Fuse сонголт 1 нэр'), 'Fused');
+
+    await user.click(screen.getByRole('button', { name: 'Хадгалах' }));
+
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(create.mock.calls[0]![0]).toMatchObject({
+      attributes: [
+        {
+          // The key is proposed from the label, and the option value from its own label, so
+          // the common case needs no thought from the administrator.
+          key: 'fuse',
+          label: 'Fuse',
+          type: 'SELECT',
+          required: true,
+          options: [{ value: 'FUSED', label: 'Fused' }],
+        },
+      ],
+    });
+  });
+
+  it('reorders with the up button and sends the new order', async () => {
+    vi.spyOn(objectTypeService, 'list').mockResolvedValue(
+      makePage([makeType({ name: 'Автомат таслуур', attributes: [FUSE, SEPARATOR] })]),
+    );
+    const update = vi.spyOn(objectTypeService, 'update').mockResolvedValue(makeType());
+    const user = userEvent.setup();
+
+    render();
+    await openEditor(user, 'Автомат таслуур');
+
+    await user.click(screen.getByRole('button', { name: 'Тусгаарлагч дээш' }));
+    await user.click(screen.getByRole('button', { name: 'Хадгалах' }));
+
+    await waitFor(() => expect(update).toHaveBeenCalled());
+    const sent = update.mock.calls[0]![1] as { attributes: { key: string }[] };
+    expect(sent.attributes.map((attribute) => attribute.key)).toEqual(['separator', 'fuse']);
+  });
+
+  it('cannot move the first row up or the last row down', async () => {
+    vi.spyOn(objectTypeService, 'list').mockResolvedValue(
+      makePage([makeType({ name: 'Автомат таслуур', attributes: [FUSE, SEPARATOR] })]),
+    );
+    const user = userEvent.setup();
+
+    render();
+    await openEditor(user, 'Автомат таслуур');
+
+    expect(screen.getByRole('button', { name: 'Хайлмал хамгаалалт дээш' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Тусгаарлагч доош' })).toBeDisabled();
+  });
+
+  it('removes an attribute and sends the list without it', async () => {
+    vi.spyOn(objectTypeService, 'list').mockResolvedValue(
+      makePage([makeType({ name: 'Автомат таслуур', attributes: [FUSE, SEPARATOR] })]),
+    );
+    const update = vi.spyOn(objectTypeService, 'update').mockResolvedValue(makeType());
+    const user = userEvent.setup();
+
+    render();
+    await openEditor(user, 'Автомат таслуур');
+
+    await user.click(screen.getByRole('button', { name: 'Тусгаарлагч устгах' }));
+    await user.click(screen.getByRole('button', { name: 'Хадгалах' }));
+
+    await waitFor(() => expect(update).toHaveBeenCalled());
+    const sent = update.mock.calls[0]![1] as { attributes: { key: string }[] };
+    expect(sent.attributes.map((attribute) => attribute.key)).toEqual(['fuse']);
+  });
+
+  it('drops the option list when the attribute stops being a SELECT', async () => {
+    // The schema refuses options on a text box, so leaving them behind would hand the user a
+    // rejection for a change they made two fields away from the message.
+    vi.spyOn(objectTypeService, 'list').mockResolvedValue(
+      makePage([makeType({ name: 'Автомат таслуур', attributes: [FUSE] })]),
+    );
+    const update = vi.spyOn(objectTypeService, 'update').mockResolvedValue(makeType());
+    const user = userEvent.setup();
+
+    render();
+    await openEditor(user, 'Автомат таслуур');
+
+    await user.selectOptions(screen.getByLabelText('Үзүүлэлт 1 төрөл'), 'TEXT');
+    expect(screen.queryByLabelText('Хайлмал хамгаалалт сонголт 1 нэр')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Хадгалах' }));
+
+    await waitFor(() => expect(update).toHaveBeenCalled());
+    const sent = update.mock.calls[0]![1] as { attributes: { options: unknown[] }[] };
+    expect(sent.attributes[0]!.options).toEqual([]);
+  });
+
+  it('refuses a SELECT with no options before anything is sent', async () => {
+    vi.spyOn(objectTypeService, 'list').mockResolvedValue(makePage([makeType()]));
+    const create = vi.spyOn(objectTypeService, 'create').mockResolvedValue(makeType());
+    const user = userEvent.setup();
+
+    render();
+    await openDrawer(user);
+
+    await user.type(screen.getByLabelText(/^Код/), 'MCB');
+    await user.type(screen.getByLabelText(/^Нэр/), 'Автомат таслуур');
+    await user.click(screen.getByRole('button', { name: 'Үзүүлэлт нэмэх' }));
+    await user.type(screen.getByLabelText('Үзүүлэлт 1 нэр'), 'Fuse');
+    await user.selectOptions(screen.getByLabelText('Үзүүлэлт 1 төрөл'), 'SELECT');
+
+    await user.click(screen.getByRole('button', { name: 'Хадгалах' }));
+
+    expect(await screen.findByText(/дор хаяж нэг утга нэмнэ үү/)).toBeInTheDocument();
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The key of a saved attribute is frozen, and a rename of its label must not move it.
+   *
+   * This is not a nicety. The key is the join between a definition and every value already
+   * recorded against it, so moving one turns every stored answer into an orphan that no
+   * screen will ever show again. Retyping a label to something whose suggested key collides
+   * with the existing one is a real thing a user does, which is why the key is read-only
+   * rather than merely defended by the follow-the-label heuristic.
+   */
+  it('freezes the key of a saved attribute while its label stays editable', async () => {
+    vi.spyOn(objectTypeService, 'list').mockResolvedValue(
+      makePage([makeType({ name: 'Автомат таслуур', attributes: [FUSE] })]),
+    );
+    const update = vi.spyOn(objectTypeService, 'update').mockResolvedValue(makeType());
+    const user = userEvent.setup();
+
+    render();
+    await openEditor(user, 'Автомат таслуур');
+
+    expect(screen.getByLabelText('Үзүүлэлт 1 түлхүүр')).toBeDisabled();
+
+    // "Fuse" would suggest exactly `fuse`, the key this attribute already has — the precise
+    // coincidence that would let a heuristic hand back control and then rename it.
+    await user.clear(screen.getByLabelText('Үзүүлэлт 1 нэр'));
+    await user.type(screen.getByLabelText('Үзүүлэлт 1 нэр'), 'Fuse holder');
+    await user.click(screen.getByRole('button', { name: 'Хадгалах' }));
+
+    await waitFor(() => expect(update).toHaveBeenCalled());
+    const sent = update.mock.calls[0]![1] as { attributes: { key: string; label: string }[] };
+    expect(sent.attributes[0]).toMatchObject({ key: 'fuse', label: 'Fuse holder' });
+  });
+
+  it('leaves a newly added row free to edit its own key', async () => {
+    // The freeze is about values that may already exist. A row added in this session has
+    // none, so its key is still the user's to choose.
+    vi.spyOn(objectTypeService, 'list').mockResolvedValue(
+      makePage([makeType({ name: 'Автомат таслуур', attributes: [FUSE] })]),
+    );
+    const user = userEvent.setup();
+
+    render();
+    await openEditor(user, 'Автомат таслуур');
+
+    await user.click(screen.getByRole('button', { name: 'Үзүүлэлт нэмэх' }));
+
+    expect(screen.getByLabelText('Үзүүлэлт 1 түлхүүр')).toBeDisabled();
+    expect(screen.getByLabelText('Үзүүлэлт 2 түлхүүр')).toBeEnabled();
   });
 });

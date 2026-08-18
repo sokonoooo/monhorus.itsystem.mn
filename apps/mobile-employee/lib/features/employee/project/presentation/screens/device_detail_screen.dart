@@ -648,6 +648,11 @@ class _AssessAction extends ConsumerWidget {
               ? device.name
               : '${device.code} · ${device.name}',
           currentScore: device.score,
+          // The type's own declared fields, and what this device has already answered.
+          // Handed down rather than refetched inside the sheet: this screen has already
+          // loaded the detail and both travel on it.
+          attributes: device.objectType?.attributes ?? const <ObjectTypeAttributeModel>[],
+          attributeValues: device.attributeValues,
         ),
       ),
     );

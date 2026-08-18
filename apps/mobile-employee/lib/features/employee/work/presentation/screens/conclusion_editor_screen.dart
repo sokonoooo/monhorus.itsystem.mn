@@ -340,6 +340,9 @@ class _ConclusionEditorScreenState extends ConsumerState<ConclusionEditorScreen>
                                 conclusion: conclusion,
                                 recommendation: recommendation,
                               ),
+                      onAttributeChanged: (String key, String value) => ref
+                          .read(conclusionEditorProvider(_ref).notifier)
+                          .patchDraftAttribute(draft.objectId, key, value),
                       onRemove: writable && !draft.isReadOnly
                           ? () => _confirmRemove(draft)
                           : null,

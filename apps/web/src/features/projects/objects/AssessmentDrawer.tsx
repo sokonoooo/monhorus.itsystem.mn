@@ -1,5 +1,6 @@
 import {
   createObjectAssessmentSchema,
+  validateAttributeValues,
   type DispatchCandidateDto,
   type ObjectDetailDto,
   type ObjectPhotoDto,
@@ -18,10 +19,10 @@ import { objectMasterService } from '../../../services/object-master.service';
 import { dispatchService } from '../../../services/service-request.service';
 import { Field, SelectInput, TextInput } from '../../employees/FormControls';
 import {
-  LoadMeasurementEditor,
-  toMeasurementPayload,
-  type LoadMeasurementDraft,
-} from './LoadMeasurements';
+  ObjectAttributeFields,
+  toAttributeDrafts,
+  toAttributePayload,
+} from './ObjectAttributeFields';
 
 interface AssessmentDrawerProps {
   object: ObjectDetailDto | null;
@@ -56,6 +57,14 @@ export function AssessmentDrawer({
   onSaved,
 }: AssessmentDrawerProps): ReactElement {
   const { notify } = useToast();
+  /**
+   * What this equipment's TYPE asks about it (requirements 4.1).
+   *
+   * Off the object's own type reference, which every object row carries — the same source
+   * the Ажлын тайлан rows and the employee app read, so the three cannot drift about what a
+   * type declares.
+   */
+  const typeAttributes = object?.objectType?.attributes ?? [];
   const fileInputRef = useRef<HTMLInputElement>(null);
   const objectUrls = useRef<string[]>([]);
 
@@ -64,7 +73,14 @@ export function AssessmentDrawer({
   const [recommendation, setRecommendation] = useState('');
   const [actionTaken, setActionTaken] = useState('');
   const [measuredLoadKw, setMeasuredLoadKw] = useState('');
-  const [measurements, setMeasurements] = useState<LoadMeasurementDraft[]>([]);
+  /**
+   * The equipment's own per-type attributes (requirements 4.1), as their controls hold them.
+   *
+   * ASKED HERE because writing a report is when somebody is standing in front of the
+   * equipment and can actually see whether it is fused. Saved onto the OBJECT, not onto this
+   * assessment — they are facts about the kit, true between visits.
+   */
+  const [attributeDrafts, setAttributeDrafts] = useState<Record<string, string>>({});
   const [repairRequired, setRepairRequired] = useState(false);
   const [revisitRequired, setRevisitRequired] = useState(false);
   const [revisitDate, setRevisitDate] = useState('');
@@ -103,7 +119,9 @@ export function AssessmentDrawer({
     setRecommendation('');
     setActionTaken('');
     setMeasuredLoadKw('');
-    setMeasurements([]);
+    // Hydrated, not cleared: these are the equipment's standing answers, so the form opens
+    // showing what is on record and the technician corrects it rather than re-entering it.
+    setAttributeDrafts(toAttributeDrafts(typeAttributes, object.attributeValues));
     setRepairRequired(false);
     setRevisitRequired(false);
     setRevisitDate('');
@@ -153,15 +171,20 @@ export function AssessmentDrawer({
     setFormError(null);
     setFieldErrors({});
 
+    const attributeValues = toAttributePayload(typeAttributes, attributeDrafts);
+
     const parsed = createObjectAssessmentSchema.safeParse({
       newScore: Number(newScore || '-1'),
       conclusion: conclusion.trim() || null,
       recommendation: recommendation.trim() || null,
       actionTaken: actionTaken.trim() || null,
       measuredLoadKw: measuredLoadKw.trim() === '' ? null : Number(measuredLoadKw),
-      // Omitted entirely when no row was added, so an untouched form sends exactly what it
-      // sent before the field existed.
-      ...(measurements.length > 0 ? { measurements: toMeasurementPayload(measurements) } : {}),
+      /*
+        Omitted entirely for a type that declares nothing, so an assessment on such an object
+        sends exactly what it sent before the field existed — and, more importantly, absent
+        means "not asked" to the backend, which leaves whatever is stored untouched.
+      */
+      ...(typeAttributes.length > 0 ? { attributeValues } : {}),
       repairRequired,
       revisitRequired,
       revisitDate: revisitDate ? `${revisitDate}T00:00:00.000Z` : null,
@@ -169,11 +192,27 @@ export function AssessmentDrawer({
       photoIds: photos.map((photo) => photo.id),
     });
 
-    if (!parsed.success) {
+    /**
+     * The type's own rules, which zod cannot state.
+     *
+     * Whether a key is legal, whether it is required and whether a SELECT value is one of its
+     * options all depend on definitions held in the database. The same shared function the
+     * backend enforces with runs here so the technician is told without a round trip; the
+     * backend does not assume it did.
+     */
+    const attributeIssues = validateAttributeValues(typeAttributes, attributeValues);
+
+    if (!parsed.success || attributeIssues.length > 0) {
       const errors: Record<string, string> = {};
-      for (const issue of parsed.error.issues) {
-        const key = issue.path.join('.') || '_';
-        if (!errors[key]) errors[key] = issue.message;
+      if (!parsed.success) {
+        for (const issue of parsed.error.issues) {
+          const key = issue.path.join('.') || '_';
+          if (!errors[key]) errors[key] = issue.message;
+        }
+      }
+      // Already keyed `attributeValues.<key>`, the same path the backend returns.
+      for (const issue of attributeIssues) {
+        if (!errors[issue.field]) errors[issue.field] = issue.message;
       }
       setFieldErrors(errors);
       setFormError('Оруулсан мэдээлэл шаардлага хангахгүй байна.');
@@ -341,15 +380,40 @@ export function AssessmentDrawer({
               </Field>
             </div>
 
-            {/* Amps and volts sit beside the kW box rather than inside it: only the kW
-                figure is summed into a floor total, and a 42 A reading written into that
-                box would become 42 kW of load that was never there. */}
-            <LoadMeasurementEditor
-              rows={measurements}
-              onChange={setMeasurements}
-              fieldErrors={fieldErrors}
-              disabled={submitting}
-            />
+            {/*
+              What this equipment's TYPE asks about it (requirements 4.1).
+
+              Rendered entirely from the definitions the object carries, so a field added to
+              Автомат таслуур in Тоноглолын төрөл is asked here with no change to this file.
+              Absent for a type that declares nothing.
+
+              These are facts about the kit, not observations about this visit, so they are
+              saved onto the object rather than onto this entry — but they are ASKED here,
+              because a report is written in front of the equipment and that is the one moment
+              somebody can actually look and answer.
+
+              This is where "Бусад хэмжилт (А, В)" used to be. The per-phase amps and volts
+              editor was removed, here and in the employee app together; the kW box above
+              stays, because it is the authoritative figure the floor totals sum.
+            */}
+            {typeAttributes.length > 0 && (
+              <div>
+                <p className="mb-1.5 text-xs font-medium text-slate-600">
+                  {object.objectType?.name ?? 'Төрлийн'} үзүүлэлт
+                </p>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <ObjectAttributeFields
+                    attributes={typeAttributes}
+                    drafts={attributeDrafts}
+                    onChange={(key, next) =>
+                      setAttributeDrafts((current) => ({ ...current, [key]: next }))
+                    }
+                    disabled={submitting}
+                    fieldErrors={fieldErrors}
+                  />
+                </div>
+              </div>
+            )}
 
             <div>
               <label htmlFor="assess-conclusion" className={FILTER_LABEL}>

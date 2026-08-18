@@ -7,6 +7,7 @@ import {
   createObjectSchema,
   riskLevelFor,
   updateObjectSchema,
+  validateAttributeValues,
   type CustomerDto,
   type FloorDto,
   type ObjectCategory,
@@ -29,6 +30,11 @@ import { objectService } from '../../../services/object.service';
 import { objectMasterService, objectTypeService } from '../../../services/object-master.service';
 import { projectService } from '../../../services/project.service';
 import { Field, SelectInput, TextInput } from '../../employees/FormControls';
+import {
+  ObjectAttributeFields,
+  toAttributeDrafts,
+  toAttributePayload,
+} from './ObjectAttributeFields';
 
 /** The name each category's own attribute block goes by, shown beside the section header. */
 const ELECTRICAL_BLOCK_LABELS: Record<ObjectCategory, string> = {
@@ -158,6 +164,16 @@ export function ObjectFormPage(): ReactElement {
    * capacity and leaves a blank registration folded. Once the header is clicked the choice
    * is theirs and stays theirs. See `electricalExpanded` for the one thing that overrides it.
    */
+  /**
+   * The answers to whatever the chosen TYPE declares (requirements 4.1), keyed by attribute.
+   *
+   * Strings whatever the attribute's declared type is, exactly as every other box on this
+   * form; `toAttributePayload` parses them once, on submit. Keyed by attribute rather than
+   * held per field because the fields are not known until a type is chosen — that is the
+   * whole point of the feature.
+   */
+  const [attributeDrafts, setAttributeDrafts] = useState<Record<string, string>>({});
+
   const [electricalToggled, setElectricalToggled] = useState<boolean | null>(null);
   const electricalPanelId = useId();
 
@@ -234,6 +250,13 @@ export function ObjectFormPage(): ReactElement {
           setUsageCoefficient(object.equipment?.usageCoefficient?.toString() ?? '');
           setInstalledAt(object.equipment?.installedAt?.slice(0, 10) ?? '');
           setWarrantyUntil(object.equipment?.warrantyUntil?.slice(0, 10) ?? '');
+
+          // Hydrated from the definitions the detail response carries rather than from the
+          // type list, which has not loaded yet at this point. They are the same definitions
+          // — this is the type's own list, travelling with the object that uses it.
+          setAttributeDrafts(
+            toAttributeDrafts(object.objectType?.attributes ?? [], object.attributeValues),
+          );
         }
       } catch (caught) {
         if (!cancelled) {
@@ -392,6 +415,14 @@ export function ObjectFormPage(): ReactElement {
   const effectiveFloorId = floorId ?? (chosenFloorId || null);
   const floorPath = floorId ? `/floors/${floorId}` : '/projects';
   const selectedType = types.find((type) => type.id === objectTypeId) ?? null;
+  /**
+   * What the chosen type demands beyond its category's own fields (requirements 4.1).
+   *
+   * Empty until a type is chosen, and empty for every type that declares nothing — which is
+   * the case this form behaved as before the feature existed, so that path renders and
+   * submits exactly as it always did.
+   */
+  const typeAttributes = selectedType?.attributes ?? [];
   // Section 4.1: only a type flagged as generating a conclusion may carry an assessment,
   // so the score field appears exactly where the backend would accept one.
   const showInitialScore = !isEdit && canAssess && (selectedType?.generatesConclusion ?? false);
@@ -495,6 +526,19 @@ export function ObjectFormPage(): ReactElement {
               },
             };
 
+    const attributeValues = toAttributePayload(typeAttributes, attributeDrafts);
+
+    /**
+     * The attribute bag is sent only once the chosen type is actually in hand.
+     *
+     * The type registry loads in its own request, so there is a window in which `selectedType`
+     * is null and this form cannot know what the type declares. Sending `{}` in that window
+     * would be a statement — a declared attribute absent from an update is a declared
+     * attribute cleared — and it would wipe values off an object over a race. Omitting the key
+     * says nothing instead, and the backend leaves what is stored exactly as it is.
+     */
+    const attributePayload = selectedType ? { attributeValues } : {};
+
     const parsed = isEdit
       ? updateObjectSchema.safeParse({
           name: name.trim(),
@@ -502,6 +546,7 @@ export function ObjectFormPage(): ReactElement {
           floorId: floorId ?? null,
           description: description.trim() || null,
           notes: notes.trim() || null,
+          ...attributePayload,
           ...attributes,
         })
       : createObjectSchema.safeParse({
@@ -513,14 +558,32 @@ export function ObjectFormPage(): ReactElement {
           description: description.trim() || null,
           notes: notes.trim() || null,
           category,
+          ...attributePayload,
           ...attributes,
         });
 
-    if (!parsed.success) {
+    /**
+     * The type's own rules, which zod cannot state.
+     *
+     * Whether a key is legal, whether it is required and whether a SELECT value is one of its
+     * options all depend on definitions held in the database, so they come from the same
+     * shared function the backend enforces with — checked here purely so the user is told
+     * without a round trip. The backend does not assume this ran.
+     */
+    const attributeIssues = validateAttributeValues(typeAttributes, attributeValues);
+
+    if (!parsed.success || attributeIssues.length > 0) {
       const errors: Record<string, string> = {};
-      for (const issue of parsed.error.issues) {
-        const key = issue.path.join('.') || '_';
-        if (!errors[key]) errors[key] = issue.message;
+      if (!parsed.success) {
+        for (const issue of parsed.error.issues) {
+          const key = issue.path.join('.') || '_';
+          if (!errors[key]) errors[key] = issue.message;
+        }
+      }
+      // Already keyed `attributeValues.<key>`, the same path the backend returns, so the two
+      // sources land on the same input without either knowing about the other.
+      for (const issue of attributeIssues) {
+        if (!errors[issue.field]) errors[issue.field] = issue.message;
       }
       setFieldErrors(errors);
       setFormError('Оруулсан мэдээлэл шаардлага хангахгүй байна.');
@@ -1088,6 +1151,36 @@ export function ObjectFormPage(): ReactElement {
             )}
           </div>
         </section>
+
+        {/*
+          The chosen type's own fields, rendered entirely from its definitions.
+
+          Nothing here names an attribute, a category or a type — adding a field to Автомат
+          таслуур is an edit in Тоноглолын төрөл, not a change to this file. The section is
+          absent altogether for a type that declares nothing, which is every type registered
+          before this existed.
+
+          The Үнэлгээ бүртгэх form asks the same questions from the same renderer, and both
+          write to the object: these are facts about the kit, not about a visit.
+        */}
+        {typeAttributes.length > 0 && (
+          <fieldset aria-label={`${selectedType?.name ?? ''} үзүүлэлт`.trim()}>
+            <legend className="mb-3 w-full border-b border-slate-200 pb-1.5 text-sm font-semibold text-slate-900">
+              {selectedType?.name ?? 'Төрлийн'} үзүүлэлт
+            </legend>
+            <div className="grid grid-cols-1 gap-x-5 gap-y-3.5 md:grid-cols-2 xl:grid-cols-3">
+              <ObjectAttributeFields
+                attributes={typeAttributes}
+                drafts={attributeDrafts}
+                onChange={(key, next) =>
+                  setAttributeDrafts((current) => ({ ...current, [key]: next }))
+                }
+                disabled={submitting}
+                fieldErrors={fieldErrors}
+              />
+            </div>
+          </fieldset>
+        )}
 
         {showInitialScore && (
           <fieldset aria-label="Анхны үнэлгээ">

@@ -1,6 +1,18 @@
 # Category → Object Type → Asset — implementation plan
 
-**Status:** proposed, awaiting decisions in §12. No code written.
+**Status:** proposed, awaiting decisions in §12. No code written **for the category work**.
+
+> **One decision has since been taken and shipped: §12 Q3, answered "per-type".**
+>
+> An object TYPE now carries its own `attributes: FieldDef[]`, and an object carries the
+> matching `attributeValues`. See `packages/shared/src/constants/object-type-attribute.ts` for
+> the rules and `apps/web/src/features/object-master/ObjectTypeAttributesEditor.tsx` for the
+> admin editor.
+>
+> **It changes nothing else in this document.** `OBJECT_CATEGORIES` is still a fixed tuple,
+> the discriminated union in `schemas/object-master.schema.ts` is intact, the three section 4.2
+> blocks are untouched, and no backend code reads an attribute — so the whole of §5 and the
+> §10.1 golden fixture still apply unchanged when the category work is picked up.
 **Supersedes the sequencing in:** `docs/adr/ASSET_MODEL_FLEXIBILITY.md` §9–§12.
 **Keeps from it:** the candidate analysis (§6–§8) and the recommendation of Candidate C.
 
@@ -496,12 +508,46 @@ today. If an asset needs two, capabilities must attach to the **object** rather 
 category, and Tier 1 becomes a union of several capabilities' contracts. Must be answered
 before Phase 2, not after.
 
-**Q3 — Are custom fields per-category, per-type, or both?**
+**Q3 — Are custom fields per-category, per-type, or both?** — **ANSWERED: per-type. Shipped.**
 Your brief says "each category can have its own capabilities and properties", but the existing
 flags are split across both levels — `insidePanel` and `generatesConclusion` are per *type*
 while the attribute blocks are per *category*. Concretely: does `MCB` need a field that a
 generic `EQUIPMENT` does not? If yes, `FieldDef[]` lives on both levels and merges, roughly
 doubling Phase 4's validation work.
+
+It does. `MCB` needs a Хайлмал that a generic `EQUIPMENT` has no use for, so definitions live
+on the TYPE and are implemented there: `ObjectType.attributes` with `SELECT`/`TEXT`/`NUMBER`/
+`BOOLEAN`, ordered by array position, validated on both ends by one shared function, values
+stored in `Object.attributeValues`.
+
+Deliberately narrow, and the edges are worth knowing before extending it:
+
+- **Asked on the Үнэлгээ бүртгэх form**, which is where somebody is standing in front of the
+  equipment and can look, and on the registration form when equipment is first recorded. Both
+  write to `Object.attributeValues` — these are facts about the kit, true between visits, so no
+  copy is kept per assessment. `POST /objects-master/:id/assessments` therefore accepts
+  `attributeValues` and applies them to the object, the same route `measuredLoadKw` already
+  took. The equipment DETAIL page deliberately does not show them.
+- **Enforced on write, never on read.** Objects registered before a definition existed stay
+  valid and readable; the requirement bites the next time a human creates, edits or reports on
+  one. That is why it needed no migration and no backfill.
+- **Absent means "not asked", never "the answer is nothing".** A payload omitting
+  `attributeValues` enforces nothing and clears nothing — which is the whole reason the employee
+  mobile app needed no change and no release.
+- **Removing a definition does not erase its values.** They stay on the objects and reappear if
+  the definition does — see `mergeAttributeValues`. This is also what makes it safe for two
+  different forms to write the same bag.
+- **Quick-place is exempt** and writes an empty bag, because a tap on a plan has no form to
+  carry an answer.
+
+Still open: whether a CATEGORY should carry definitions too. If it should, the two lists merge
+and the doubling above applies to the category half.
+
+Removed in the same change: the "Бусад хэмжилт (А, В)" per-phase amps/volts editor, from the
+web assessment drawer and the employee app's assessment sheet together. `ILoadMeasurement`,
+`ObjectAssessmentDto.measurements` and the API that accepts them are untouched — the assessment
+collection is append-only, readings already recorded still display, and nothing was migrated.
+This does not resolve §5's note that `MISSING_PERMITTED_CAPACITY` is dead.
 
 **Q4 — Confirm: category codes frozen, names editable, deletion refused while in use.**
 Renaming a display name is safe. Changing a *code* is not — it is the join key for 137

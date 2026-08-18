@@ -1,3 +1,7 @@
+import type {
+  ObjectAttributeValue,
+  ObjectTypeAttributeDto,
+} from '../constants/object-type-attribute';
 import type { MaterialUnit } from '../constants/material';
 import type { RiskLevel } from '../constants/service-request';
 import type { WorkReportRequirement, WorkReportStatus } from '../constants/work-report';
@@ -53,6 +57,21 @@ export interface WorkReportObjectAssessmentDto {
   conclusion: string | null;
   recommendation: string | null;
   photoIds: readonly string[];
+  /**
+   * What this equipment has answered for its type's declared attributes (4.1).
+   *
+   * Read off the OBJECT, not off the finding — they are facts about the kit rather than
+   * observations of this visit, so every report against the same equipment sees the same
+   * answers and writing one corrects them everywhere.
+   */
+  attributeValues: Record<string, ObjectAttributeValue>;
+  /**
+   * The definitions in force for this equipment's type, in display order.
+   *
+   * Per row rather than per report, because a report may name a panel and a breaker and
+   * they declare different things. Empty for a type that declares none.
+   */
+  objectTypeAttributes: readonly ObjectTypeAttributeDto[];
 }
 
 /**

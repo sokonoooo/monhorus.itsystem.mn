@@ -4,6 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../presentation/theme/employee_tokens.dart';
 import '../../../project/domain/entities/risk_level.dart';
+import '../../../project/data/models/object_models.dart';
+import '../../../project/presentation/widgets/object_attribute_field.dart';
 import '../providers/conclusion_providers.dart';
 import 'report_photo_strip.dart';
 import 'work_ui.dart';
@@ -27,6 +29,7 @@ class EquipmentAssessmentCard extends ConsumerStatefulWidget {
     required this.editable,
     required this.uploading,
     required this.onChanged,
+    required this.onAttributeChanged,
     this.error,
     this.onRemove,
     this.onAddPhoto,
@@ -48,6 +51,13 @@ class EquipmentAssessmentCard extends ConsumerStatefulWidget {
     String? conclusion,
     String? recommendation,
   ) onChanged;
+
+  /// One of the type's own attributes was answered: its key, and the new draft text.
+  ///
+  /// Its own callback rather than another positional on [onChanged], because that one is
+  /// driven by text controllers on every keystroke and these are not — a picker fires once,
+  /// and the set of keys is not known until the type says what it declares.
+  final void Function(String key, String value) onAttributeChanged;
 
   final VoidCallback? onRemove;
   final VoidCallback? onAddPhoto;
@@ -260,6 +270,37 @@ class _EquipmentAssessmentCardState extends ConsumerState<EquipmentAssessmentCar
               maxLines: 2,
               enabled: widget.editable,
             ),
+
+            /*
+              What this equipment's TYPE asks about it (requirements 4.1).
+
+              Rendered from the definitions the picked row carried, so a field added in
+              Тоноглолын төрөл is asked here with no release. Per card, because a conclusion
+              may name a panel and a breaker and they declare different things.
+
+              These are facts about the kit, not observations of this visit, so the server
+              writes them onto the EQUIPMENT — the score and the narrative above stay with
+              the finding.
+            */
+            if (draft.attributes.isNotEmpty) ...<Widget>[
+              for (final ObjectTypeAttributeModel attribute in draft.attributes) ...<Widget>[
+                const SizedBox(height: 10),
+                FieldLabel(
+                  attribute.required ? '${attribute.label} (заавал)' : attribute.label,
+                ),
+                ObjectAttributeControl(
+                  attribute: attribute,
+                  // No controller: the editor's state owns these drafts and the card rebuilds
+                  // from them, unlike the four text fields above.
+                  controller: null,
+                  value: draft.attributeDrafts[attribute.key] ?? '',
+                  enabled: widget.editable,
+                  error: null,
+                  onChanged: (String next) =>
+                      widget.onAttributeChanged(attribute.key, next),
+                ),
+              ],
+            ],
 
             const SizedBox(height: 12),
             // Evidence for ONE piece of equipment. Separate from the visit-level

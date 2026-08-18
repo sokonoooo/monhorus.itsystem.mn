@@ -10,6 +10,7 @@ import {
   updateObjectTypeSchema,
   type ObjectCategory,
   type ObjectIcon,
+  type ObjectTypeAttributeDto,
   type ObjectTypeDto,
   type ObjectTypeListQuery,
   type PaginatedData,
@@ -39,6 +40,7 @@ import { ApiError } from '../../lib/api-client';
 import { authorisedFileUrl } from '../../lib/file-url';
 import { objectTypeService } from '../../services/object-master.service';
 import { Field, SelectInput, TextInput } from '../employees/FormControls';
+import { ObjectTypeAttributesEditor } from './ObjectTypeAttributesEditor';
 import { ObjectCategoryBadge } from '../projects/objects/ObjectBadges';
 import { ObjectTypeIcon } from '../projects/plan-icons';
 
@@ -99,6 +101,8 @@ function TypeDrawer({
   const [generatesConclusion, setGeneratesConclusion] = useState(true);
   const [icon, setIcon] = useState<ObjectIcon>('OTHER');
   const [isActive, setIsActive] = useState(true);
+  /** What objects of this type must record beyond their category's own fields (4.1). */
+  const [attributes, setAttributes] = useState<ObjectTypeAttributeDto[]>([]);
 
   // -- Custom icon -----------------------------------------------------------
   /** The uploaded file the type will carry, or null for "no custom icon". */
@@ -145,6 +149,14 @@ function TypeDrawer({
       setGeneratesConclusion(existing.generatesConclusion);
       setIcon(existing.icon);
       setIsActive(existing.isActive);
+      // Copied rather than referenced: the editor replaces rows wholesale, and holding the
+      // list row's own objects would let an unsaved edit show up in the table behind.
+      setAttributes(
+        existing.attributes.map((attribute) => ({
+          ...attribute,
+          options: attribute.options.map((option) => ({ ...option })),
+        })),
+      );
     } else {
       setCode('');
       setName('');
@@ -155,6 +167,7 @@ function TypeDrawer({
       setGeneratesConclusion(true);
       setIcon('OTHER');
       setIsActive(true);
+      setAttributes([]);
     }
   }, [target, existing]);
 
@@ -263,6 +276,7 @@ function TypeDrawer({
           insidePanel,
           generatesConclusion,
           icon,
+          attributes,
           // Sent only when there is one to claim; the endpoint treats absent as "none".
           ...(iconFileId !== null ? { iconFileId } : {}),
         })
@@ -274,6 +288,10 @@ function TypeDrawer({
           generatesConclusion,
           icon,
           isActive,
+          // Always sent, unlike the icon below: the whole list is what the editor holds, so
+          // "as it now stands" is the only thing it can say, and every change to it — an
+          // added row, a removed one, a new order — is expressed the same way.
+          attributes,
           /*
             The three-valued field, and the key is deliberately absent unless the icon was
             touched. Absent leaves the type's icon exactly as it is, an id replaces it, and
@@ -520,6 +538,20 @@ function TypeDrawer({
             </label>
           )}
         </fieldset>
+
+        <ObjectTypeAttributesEditor
+          value={attributes}
+          onChange={setAttributes}
+          disabled={submitting}
+          /*
+            Read off the SAVED type rather than off the editor's own state, so a key that
+            objects may already carry values under stays fixed while a row added in this
+            session stays editable. Empty when registering a new type, where nothing can be
+            stored against anything yet.
+          */
+          savedKeys={new Set((existing?.attributes ?? []).map((attribute) => attribute.key))}
+          fieldErrors={fieldErrors}
+        />
       </div>
     </Drawer>
   );
