@@ -29,6 +29,9 @@ const String _channelDescription = 'Ажил, хүсэлт, хугацааны �
 /// Called with a freshly issued registration token, to hand to the backend.
 typedef PushTokenSink = Future<void> Function(String token);
 
+/// Called when a push arrives or is tapped, so a badge can re-ask the server.
+typedef PushArrivalListener = void Function();
+
 /// Called when the user taps a notification. Carries the server's `linkPath`, when it sent
 /// one, so the app can decide where to go.
 typedef PushOpenSink = void Function(String? linkPath);
@@ -47,6 +50,26 @@ class PushMessaging {
   PushMessaging._();
 
   static final FlutterLocalNotificationsPlugin _local = FlutterLocalNotificationsPlugin();
+
+  static final Set<PushArrivalListener> _arrivals = <PushArrivalListener>{};
+
+  /// Subscribes to push arrivals. Returns the unsubscribe function.
+  ///
+  /// Carries no payload deliberately: subscribers refetch rather than adjusting a local
+  /// number, so a badge stays the server's answer instead of drifting from it on a
+  /// notification the caller may not even be a recipient of.
+  static VoidCallback onPushArrived(PushArrivalListener listener) {
+    _arrivals.add(listener);
+    return () => _arrivals.remove(listener);
+  }
+
+  static void _announceArrival() {
+    // Copied before iterating: a listener may unsubscribe itself while being called.
+    for (final PushArrivalListener listener in List<PushArrivalListener>.of(_arrivals)) {
+      listener();
+    }
+  }
+
 
   static bool _started = false;
   static StreamSubscription<String>? _tokenRefresh;
@@ -137,10 +160,13 @@ class PushMessaging {
           ),
           payload: message.data['linkPath'] as String?,
         );
+        // The badge is stale the instant this lands; tell it to re-ask.
+        _announceArrival();
       });
 
       // Tapped while the app was backgrounded but alive.
       _opened = FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
+        _announceArrival();
         onOpen(message.data['linkPath'] as String?);
       });
 
