@@ -129,7 +129,3 @@ export function RiskBadge({ level, score }: { level: RiskLevel; score?: number |
     </span>
   );
 }
-
-export function UrgentBadge(): ReactElement {
-  return <span className={`${BASE} ${RED}`}>Яаралтай</span>;
-}

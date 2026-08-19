@@ -127,6 +127,25 @@ describe('PortalRequestListPage', () => {
     expect(screen.queryByText('Dispatch board')).not.toBeInTheDocument();
   });
 
+  /**
+   * Urgency is derived from the equipment type's SLA window - urgent means a window of six
+   * hours or less. Showing the flag to a customer therefore hands back exactly the SLA
+   * classification that was deliberately hidden from them, so its absence is asserted.
+   */
+  it('never shows the urgency flag, which would leak the SLA window', async () => {
+    vi.spyOn(portalService, 'listRequests').mockResolvedValue(
+      makePage([makeServiceRequest({ id: REQUEST_ID, isUrgent: true })]),
+    );
+
+    renderPortal(<PortalRequestListPage />, '/portal/requests');
+
+    const table = await screen.findByRole('table');
+    expect(within(table).queryByText('Яаралтай')).not.toBeInTheDocument();
+    expect(
+      within(table).queryByRole('columnheader', { name: 'Яаралтай' }),
+    ).not.toBeInTheDocument();
+  });
+
   it('offers a retry when the list fails rather than reading as empty', async () => {
     vi.spyOn(portalService, 'listRequests').mockRejectedValue(
       new ApiError('Сервер алдаа.', 'INTERNAL', 500, []),

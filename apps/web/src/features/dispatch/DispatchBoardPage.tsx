@@ -8,7 +8,7 @@ import { useCallback, useEffect, useState, type ReactElement } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { Button } from '../../components/ui/Button';
-import { SlaBadge, UrgentBadge } from '../../components/ui/DomainBadges';
+import { SlaBadge } from '../../components/ui/DomainBadges';
 import { PageHeader } from '../../components/ui/PageHeader';
 import { SubNav } from '../../components/ui/SubNav';
 import { EmptyState, ErrorState, Skeleton } from '../../components/ui/States';
@@ -47,12 +47,9 @@ function RequestCard({
         onClick={onOpen}
         className="w-full text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
       >
-      <div className="mb-1 flex items-center justify-between gap-2">
-        <span className="truncate text-xs font-semibold text-slate-900">
-          {request.requestNumber}
-        </span>
-        {request.isUrgent && <UrgentBadge />}
-      </div>
+      <span className="mb-1 block truncate text-xs font-semibold text-slate-900">
+        {request.requestNumber}
+      </span>
       <p className="mb-1 truncate text-xs text-slate-600">{request.customer?.name ?? '-'}</p>
       <p className="mb-1.5 truncate text-[11px] text-slate-500">
         {[request.building?.name, request.floor?.name].filter(Boolean).join(' · ') || '-'}
