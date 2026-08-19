@@ -96,6 +96,16 @@ async function main(): Promise<void> {
     if (dryRun) {
       created += 1;
       logger.info({ name }, 'Would create a catalogue entry');
+      /*
+       * A STAND-IN ID, so the rest of the dry run simulates the real one.
+       *
+       * Without it the pass below looks this name up, fails to find it, and counts the row
+       * as identifying no material — reporting that it would DELETE exactly the rows it had
+       * just decided to create catalogue entries for. The real run was never going to do
+       * that, which is the point: a dry run that misstates what the real one does is worse
+       * than no dry run at all, because it is the thing people trust before saying yes.
+       */
+      byLowerName.set(key, new mongoose.Types.ObjectId());
       continue;
     }
 
