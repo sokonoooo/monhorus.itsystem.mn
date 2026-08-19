@@ -498,6 +498,92 @@ void main() {
     });
   });
 
+  /// Opening the SAME row twice, which is not the same test as opening it once.
+  ///
+  /// A Route is a single-use object: it holds the navigator it was installed in and
+  /// completes when its screen is popped. These rows used to build their route in
+  /// `build` and close over it, so the first tap worked, the second handed the Navigator
+  /// a spent instance, and it asserted `!_debugLocked` — the row rebuilds rarely enough
+  /// that the dead route was still there when the reader came back and tapped again.
+  ///
+  /// `takeException` is the assertion that matters here; the screen being found again is
+  /// what proves the tap was not merely swallowed.
+  group('a row opens again after coming back', () {
+    testWidgets('an urgent service-request row opens a second time', (
+      WidgetTester tester,
+    ) async {
+      await _pumpHome(
+        tester,
+        _overview(
+          requests: <ServiceRequestListItemModel>[
+            _request(
+              id: 'r-mine',
+              status: 'ASSIGNED',
+              slaState: 'BREACHED',
+              deviceName: 'Лифт №2',
+              assignedEmployees: <Map<String, dynamic>>[
+                <String, dynamic>{'id': 'e1', 'name': 'Дорж Ganbold'},
+              ],
+            ),
+          ],
+        ),
+      );
+
+      for (int attempt = 1; attempt <= 2; attempt++) {
+        await tester.tap(find.text('Лифт №2'));
+        await tester.pumpAndSettle();
+
+        expect(
+          find.byType(ServiceRequestDetailScreen),
+          findsOneWidget,
+          reason: 'the request did not open on attempt $attempt',
+        );
+        expect(tester.takeException(), isNull, reason: 'attempt $attempt threw');
+
+        await tester.pageBack();
+        await tester.pumpAndSettle();
+      }
+    });
+
+    testWidgets('an agenda row opens a second time', (
+      WidgetTester tester,
+    ) async {
+      await _pumpHome(
+        tester,
+        _overview(
+          agenda: <CalendarEventModel>[
+            _event(
+              sourceId: 'w-agenda',
+              source: 'PLANNED_WORK',
+              reference: 'PW-202607-0009',
+              title: 'Өнөөдрийн ажил',
+              status: 'STARTED',
+            ),
+          ],
+        ),
+      );
+
+      for (int attempt = 1; attempt <= 2; attempt++) {
+        await tester.tap(find.text('Өнөөдрийн ажил'));
+        await tester.pumpAndSettle();
+
+        expect(
+          find.byType(PlannedWorkDetailScreen),
+          findsOneWidget,
+          reason: 'the work did not open on attempt $attempt',
+        );
+        expect(tester.takeException(), isNull, reason: 'attempt $attempt threw');
+
+        // Popped through the navigator rather than with `pageBack()`: this screen
+        // carries its own header chip instead of a Material AppBar, so there is no
+        // back button for that helper to find. What matters to this test is that the
+        // route completes, which either way of leaving it does.
+        tester.state<NavigatorState>(find.byType(Navigator).first).pop();
+        await tester.pumpAndSettle();
+      }
+    });
+  });
+
   testWidgets('the home page carries no schedule CTA', (
     WidgetTester tester,
   ) async {

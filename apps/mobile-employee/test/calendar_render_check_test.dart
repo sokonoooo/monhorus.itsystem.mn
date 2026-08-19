@@ -159,6 +159,40 @@ void main() {
     expect(find.text('Ямар нэг ажил'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  /// Opening the SAME entry twice, which is not the same test as opening it once.
+  ///
+  /// A Route is a single-use object: it holds the navigator it was installed in and
+  /// completes when its screen is popped. This card used to build its route in `build`
+  /// and close over it, so the first tap worked and the second handed the Navigator a
+  /// spent instance, which asserts `!_debugLocked`.
+  testWidgets('a service-request row opens a second time', (
+    WidgetTester tester,
+  ) async {
+    await _pumpCalendar(tester, <CalendarEventModel>[
+      _event(
+        source: 'SERVICE_REQUEST',
+        sourceId: 'r1',
+        reference: 'SR-202607-0005',
+        title: 'Лифт №2 зогссон',
+      ),
+    ]);
+
+    for (int attempt = 1; attempt <= 2; attempt++) {
+      await tester.tap(find.text('Лифт №2 зогссон'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byType(ServiceRequestDetailScreen),
+        findsOneWidget,
+        reason: 'the request did not open on attempt $attempt',
+      );
+      expect(tester.takeException(), isNull, reason: 'attempt $attempt threw');
+
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+    }
+  });
 }
 
 /// Answers every detail read with a network failure — see the twin in
