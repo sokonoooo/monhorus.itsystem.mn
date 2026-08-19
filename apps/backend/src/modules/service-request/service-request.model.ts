@@ -1,9 +1,7 @@
 import {
   SERVICE_REQUEST_STATUSES,
-  SERVICE_REQUEST_TYPES,
   type PlanPositionDto,
   type ServiceRequestStatus,
-  type ServiceRequestType,
 } from '@monhorus/shared';
 import { Schema, Types, model, type Model } from 'mongoose';
 
@@ -38,8 +36,6 @@ export interface IServiceRequest {
    * independent of `room`: a caller may know the spot without a zone having been named.
    */
   planPosition: PlanPositionDto | null;
-
-  requestType: ServiceRequestType;
   /** The equipment type the call is about, or null for calls raised before types had SLAs. */
   objectType: Types.ObjectId | null;
   isUrgent: boolean;
@@ -141,8 +137,6 @@ const serviceRequestSchema = new Schema<IServiceRequest>(
     circuit: { type: Schema.Types.ObjectId, ref: 'ObjectNode', default: null },
     device: { type: Schema.Types.ObjectId, ref: 'ObjectNode', default: null },
     planPosition: { type: planPositionSchema, default: null },
-
-    requestType: { type: String, enum: SERVICE_REQUEST_TYPES, required: true, index: true },
     /*
      * The equipment type this call is about, and where its SLA window came from.
      *
@@ -157,6 +151,12 @@ const serviceRequestSchema = new Schema<IServiceRequest>(
      * agreed when the call was raised, not whatever the catalogue says later.
      */
     objectType: { type: Schema.Types.ObjectId, ref: 'ObjectType', default: null, index: true },
+    /*
+     * Derived, not supplied. Set at creation from the equipment type's SLA window - a short
+     * window means urgent - so it can no longer disagree with the deadline the same choice
+     * produced. Still stored and still indexed: it orders the dispatch board and decides
+     * what the Today panel surfaces early.
+     */
     isUrgent: { type: Boolean, default: false, index: true },
     description: { type: String, required: true, trim: true, maxlength: 4000 },
     contactName: { type: String, required: true, trim: true, maxlength: 200 },

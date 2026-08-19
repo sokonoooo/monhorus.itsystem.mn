@@ -307,4 +307,67 @@ describe('Equipment type SLA', () => {
       expect(response.status).toBe(403);
     });
   });
+  describe('urgency, derived', () => {
+    /**
+     * Urgency used to be a checkbox that decided nothing: the deadline came from the
+     * equipment type, so ticking it on a 24-hour call changed no behaviour while telling
+     * the dispatch board otherwise. It is now the same fact as the window - six hours or
+     * less IS the urgent case - so the board's ordering and the deadline finally agree.
+     */
+    it('marks a short window urgent', async () => {
+      const typeId = await createCallableObjectType({ callSlaHours: 6 });
+
+      const response = await request(app)
+        .post(`${API}/service-requests`)
+        .set('Authorization', `Bearer ${token}`)
+        .send(callBody(typeId));
+
+      expect(response.status).toBe(201);
+      expect(response.body.data.isUrgent).toBe(true);
+    });
+
+    it('leaves a long window ordinary', async () => {
+      const typeId = await createCallableObjectType({ callSlaHours: 24 });
+
+      const response = await request(app)
+        .post(`${API}/service-requests`)
+        .set('Authorization', `Bearer ${token}`)
+        .send(callBody(typeId));
+
+      expect(response.status).toBe(201);
+      expect(response.body.data.isUrgent).toBe(false);
+    });
+
+    /** Six hours is the boundary, and it is inclusive - it is what sla.urgent_hours shipped as. */
+    it('treats exactly six hours as urgent', async () => {
+      const six = await createCallableObjectType({ callSlaHours: 6 });
+      const seven = await createCallableObjectType({ callSlaHours: 7 });
+
+      const urgencyOf = async (typeId: string): Promise<boolean> => {
+        const response = await request(app)
+          .post(`${API}/service-requests`)
+          .set('Authorization', `Bearer ${token}`)
+          .send(callBody(typeId));
+        expect(response.status).toBe(201);
+        return response.body.data.isUrgent as boolean;
+      };
+
+      expect(await urgencyOf(six)).toBe(true);
+      expect(await urgencyOf(seven)).toBe(false);
+    });
+
+    /** A caller cannot claim urgency any more; the field is not read from the payload. */
+    it('ignores an isUrgent a caller tries to send', async () => {
+      const typeId = await createCallableObjectType({ callSlaHours: 24 });
+
+      const response = await request(app)
+        .post(`${API}/service-requests`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ ...callBody(typeId), isUrgent: true });
+
+      expect(response.status).toBe(201);
+      // The 24-hour window decides, not the request body.
+      expect(response.body.data.isUrgent).toBe(false);
+    });
+  });
 });

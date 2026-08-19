@@ -1,4 +1,3 @@
-import { SERVICE_REQUEST_TYPE_LABELS } from '@monhorus/shared';
 import { Types } from 'mongoose';
 
 import { logger } from '../../config/logger';
@@ -115,7 +114,6 @@ export async function runUnclaimedSweep(now: Date = new Date()): Promise<Unclaim
       named(request.customer) && `Харилцагч: ${named(request.customer)}`,
       named(request.project) && `Төсөл: ${named(request.project)}`,
       named(request.building) && `Барилга: ${named(request.building)}`,
-      `Төрөл: ${SERVICE_REQUEST_TYPE_LABELS[request.requestType]}`,
       request.isUrgent ? 'Яаралтай' : 'Энгийн',
       `Нээлттэй болсон: ${stamp.toISOString()} (${openMinutes} мин)`,
     ].filter(Boolean);

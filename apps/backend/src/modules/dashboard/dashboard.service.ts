@@ -7,8 +7,6 @@ import {
   RISK_LEVELS,
   SERVICE_REQUEST_STATUSES,
   SERVICE_REQUEST_STATUS_LABELS,
-  SERVICE_REQUEST_TYPES,
-  SERVICE_REQUEST_TYPE_LABELS,
   SETTING_KEYS,
   aggregateProgress,
   effectivePlannedWorkStatus,
@@ -153,7 +151,6 @@ async function requestBlock(
 ): Promise<{
   requests: NonNullable<DashboardSummaryDto['requests']>;
   byStatus: DashboardSlice[];
-  byType: DashboardSlice[];
 }> {
   const open = { status: { $nin: SETTLED_REQUEST_STATUSES } };
 
@@ -192,7 +189,6 @@ async function requestBlock(
     breached,
     completedToday,
     statusGroups,
-    typeGroups,
   ] = await Promise.all([
     ServiceRequest.countDocuments({ status: 'NEW' }),
     ServiceRequest.countDocuments({ status: { $in: ['NEW', 'UNASSIGNED'] } }),
@@ -210,14 +206,9 @@ async function requestBlock(
     ServiceRequest.aggregate<{ _id: ServiceRequestStatus; count: number }>([
       { $group: { _id: '$status', count: { $sum: 1 } } },
     ]),
-    ServiceRequest.aggregate<{ _id: string; count: number }>([
-      { $match: open },
-      { $group: { _id: '$requestType', count: { $sum: 1 } } },
-    ]),
   ]);
 
   const statusCounts = new Map(statusGroups.map((row) => [row._id, row.count]));
-  const typeCounts = new Map(typeGroups.map((row) => [row._id, row.count]));
 
   return {
     requests: {
@@ -239,11 +230,6 @@ async function requestBlock(
       key: status,
       label: SERVICE_REQUEST_STATUS_LABELS[status],
       count: statusCounts.get(status) ?? 0,
-    })).filter((slice) => slice.count > 0),
-    byType: SERVICE_REQUEST_TYPES.map((type) => ({
-      key: type,
-      label: SERVICE_REQUEST_TYPE_LABELS[type],
-      count: typeCounts.get(type) ?? 0,
     })).filter((slice) => slice.count > 0),
   };
 }
@@ -552,7 +538,6 @@ export async function buildDashboardSummary(actor: AuthContext): Promise<Dashboa
     const block = await requestBlock(now, start, end);
     summary.requests = block.requests;
     summary.requestsByStatus = block.byStatus;
-    summary.requestsByType = block.byType;
     summary.trend = await trendBlock(now);
   }
 

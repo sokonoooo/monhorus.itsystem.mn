@@ -206,24 +206,7 @@ export const DISPATCH_BOARD_COLUMNS = [
 export type DispatchBoardColumnId = (typeof DISPATCH_BOARD_COLUMNS)[number]['id'];
 
 /** Requirements section 8.1. */
-export const SERVICE_REQUEST_TYPES = [
-  'PLANNED_INSPECTION',
-  'REPAIR',
-  'STANDARD_CALL',
-  'URGENT_CALL',
-  'INSTALLATION',
-  'REVISIT',
-] as const;
-export type ServiceRequestType = (typeof SERVICE_REQUEST_TYPES)[number];
 
-export const SERVICE_REQUEST_TYPE_LABELS: Record<ServiceRequestType, string> = {
-  PLANNED_INSPECTION: 'Төлөвлөгөөт үзлэг',
-  REPAIR: 'Засвар үйлчилгээ',
-  STANDARD_CALL: 'Энгийн дуудлага',
-  URGENT_CALL: 'Яаралтай дуудлага',
-  INSTALLATION: 'Шинэ угсралт/өргөтгөл',
-  REVISIT: 'Давтан үзлэг',
-};
 
 /** Requirements section 8.4. */
 export const SLA_STATES = [

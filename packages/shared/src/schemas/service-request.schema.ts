@@ -3,7 +3,6 @@ import { z } from 'zod';
 import { MATERIAL_UNITS } from '../constants/material';
 import {
   SERVICE_REQUEST_STATUSES,
-  SERVICE_REQUEST_TYPES,
   SLA_STATES,
 } from '../constants/service-request';
 import {
@@ -41,7 +40,6 @@ export const createServiceRequestSchema = z
      * needs a drawing, not a name, so only the floor is required alongside it.
      */
     planPosition: planPositionSchema.nullish(),
-    requestType: z.enum(SERVICE_REQUEST_TYPES, { required_error: 'Хүсэлтийн төрөл заавал.' }),
   /**
    * The equipment type the call is about. Required, and its `callSlaHours` is what sets the
    * deadline - so a call with no type would be a call with no agreed window, which is the
@@ -49,7 +47,12 @@ export const createServiceRequestSchema = z
    * `canCreateCall` is false; the form filtering the list is a convenience, not the rule.
    */
   objectTypeId: objectIdSchema,
-    isUrgent: z.boolean().default(false),
+    /*
+     * Not accepted from a client. Urgency is derived on the server from the chosen
+     * equipment type's SLA window, so a caller cannot claim it - see deriveIsUrgent in
+     * service-request.service.ts. Left out of the payload entirely rather than accepted and
+     * ignored, which would let a form believe it had set something.
+     */
     description: z
       .string()
       .trim()
@@ -112,7 +115,6 @@ export const serviceRequestListQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(100).default(20),
   search: z.string().trim().max(200).optional(),
   status: z.enum(SERVICE_REQUEST_STATUSES).optional(),
-  requestType: z.enum(SERVICE_REQUEST_TYPES).optional(),
   isUrgent: booleanQuerySchema.optional(),
   slaState: z.enum(SLA_STATES).optional(),
   customerId: objectIdSchema.optional(),

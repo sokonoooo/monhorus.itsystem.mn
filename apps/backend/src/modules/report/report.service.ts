@@ -12,7 +12,6 @@ import {
   REPORT_TYPE_LABELS,
   RISK_LEVEL_LABELS,
   SERVICE_REQUEST_STATUS_LABELS,
-  SERVICE_REQUEST_TYPE_LABELS,
   SETTING_KEYS,
   effectivePlannedWorkStatus,
   type KpiSummaryDto,
@@ -218,7 +217,6 @@ async function serviceWorkReport(query: ReportQueryInput): Promise<ReportResultD
 
   const rows: Row[] = requests.map((request) => ({
     requestNumber: request.requestNumber,
-    type: SERVICE_REQUEST_TYPE_LABELS[request.requestType],
     urgent: request.isUrgent ? 'Тийм' : 'Үгүй',
     customer: nameOf(request.customer),
     building: nameOf(request.building),
@@ -239,7 +237,6 @@ async function serviceWorkReport(query: ReportQueryInput): Promise<ReportResultD
     query,
     [
       { key: 'requestNumber', label: 'Хүсэлтийн №', format: 'TEXT' },
-      { key: 'type', label: 'Төрөл', format: 'TEXT' },
       { key: 'urgent', label: 'Яаралтай', format: 'TEXT' },
       { key: 'customer', label: 'Харилцагч', format: 'TEXT' },
       { key: 'building', label: 'Барилга', format: 'TEXT' },
@@ -336,7 +333,6 @@ async function slaReport(query: ReportQueryInput): Promise<ReportResultDto> {
     return {
       requestNumber: request.requestNumber,
       customer: nameOf(request.customer),
-      type: SERVICE_REQUEST_TYPE_LABELS[request.requestType],
       status: SERVICE_REQUEST_STATUS_LABELS[request.status],
       slaDueAt: isoOrNull(request.slaDueAt),
       completedAt: isoOrNull(settledAt),
@@ -361,7 +357,6 @@ async function slaReport(query: ReportQueryInput): Promise<ReportResultDto> {
     [
       { key: 'requestNumber', label: 'Хүсэлтийн №', format: 'TEXT' },
       { key: 'customer', label: 'Харилцагч', format: 'TEXT' },
-      { key: 'type', label: 'Төрөл', format: 'TEXT' },
       { key: 'status', label: 'Төлөв', format: 'TEXT' },
       { key: 'slaDueAt', label: 'SLA хугацаа', format: 'DATETIME' },
       { key: 'completedAt', label: 'Дууссан', format: 'DATETIME' },
@@ -834,7 +829,6 @@ async function technicalReport(query: ReportQueryInput): Promise<ReportResultDto
     query,
     [
       { key: 'reportNumber', label: 'Тайлангийн №', format: 'TEXT' },
-      { key: 'type', label: 'Төрөл', format: 'TEXT' },
       { key: 'status', label: 'Төлөв', format: 'TEXT' },
       { key: 'title', label: 'Гарчиг', format: 'TEXT' },
       { key: 'customer', label: 'Харилцагч', format: 'TEXT' },

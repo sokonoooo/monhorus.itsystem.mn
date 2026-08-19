@@ -141,7 +141,6 @@ export interface DashboardSummaryDto {
   workload?: readonly DashboardWorkloadRow[];
   requests?: DashboardRequestSummary;
   requestsByStatus?: readonly DashboardSlice[];
-  requestsByType?: readonly DashboardSlice[];
   trend?: readonly DashboardTrendPoint[];
   plannedWork?: DashboardPlannedWorkSummary;
   risk?: DashboardRiskSummary;

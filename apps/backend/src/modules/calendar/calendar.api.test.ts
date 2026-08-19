@@ -113,9 +113,7 @@ async function createRequest(): Promise<string> {
     .send({
       customerId: objects.customerId,
       buildingId: objects.buildingId,
-      requestType: 'URGENT_CALL',
       objectTypeId: callableTypeId,
-      isUrgent: true,
       description: 'Гэрэлтүүлэг ажиллахгүй байна',
       contactName: 'Бат',
       contactPhone: '99001122',
@@ -184,7 +182,13 @@ afterAll(async () => {
 beforeEach(async () => {
   await resetDomainCollections();
   // After the reset: object types are domain data and are wiped with everything else.
-  callableTypeId = await createCallableObjectType();
+  /*
+   * A six-hour window, because urgency is no longer sent by the caller: it is derived from
+   * the equipment type, and six hours or less is what counts as urgent. A default 24-hour
+   * type would make every request here non-urgent and the calendar's urgent projection
+   * untestable.
+   */
+  callableTypeId = await createCallableObjectType({ callSlaHours: 6 });
   org = await createOrgFixture();
   objects = await createObjectFixture();
   const user = await createUserWithPermissions('cal@test.mn', OPERATOR_PERMISSIONS);

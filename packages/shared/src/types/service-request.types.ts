@@ -1,7 +1,6 @@
 import type {
   DispatchBoardColumnId,
   ServiceRequestStatus,
-  ServiceRequestType,
   SlaState,
 } from '../constants/service-request';
 import type { EmployeeRefDto } from './employee.types';
@@ -26,7 +25,6 @@ export interface ServiceRequestListItemDto {
    * existed still compiles; the server always sends the field.
    */
   planPosition?: PlanPositionDto | null;
-  requestType: ServiceRequestType;
   isUrgent: boolean;
   status: ServiceRequestStatus;
   assignedEmployees: EmployeeRefDto[];
@@ -109,7 +107,6 @@ export interface ServiceRequestListQuery {
   limit?: number;
   search?: string;
   status?: ServiceRequestStatus;
-  requestType?: ServiceRequestType;
   isUrgent?: boolean;
   slaState?: SlaState;
   customerId?: string;
@@ -135,7 +132,6 @@ export interface CreateServiceRequestRequest {
   deviceId?: string | null;
   /** Optional pin on the floor plan. Rejected without `floorId`; independent of `roomId`. */
   planPosition?: PlanPositionDto | null;
-  requestType: ServiceRequestType;
   isUrgent: boolean;
   description: string;
   contactName: string;

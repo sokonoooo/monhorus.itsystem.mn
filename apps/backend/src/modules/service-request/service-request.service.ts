@@ -111,7 +111,6 @@ export function toListItemDto(
     planPosition: request.planPosition
       ? { x: request.planPosition.x, y: request.planPosition.y }
       : null,
-    requestType: request.requestType,
     isUrgent: request.isUrgent,
     status: request.status,
     assignedEmployees: employees,
@@ -437,6 +436,23 @@ export async function listCallableObjectTypes(): Promise<CallableObjectTypeDto[]
     }));
 }
 
+/**
+ * Whether a call counts as urgent, from the window its equipment type carries.
+ *
+ * Urgency used to be a checkbox on the form, and it decided nothing: the deadline comes
+ * from the equipment type, so a caller could tick "urgent" on a 24-hour call and see no
+ * change. The two facts are now one fact - a short window IS the urgent case - which means
+ * the dispatch board's ordering and the Today panel finally agree with the deadline.
+ *
+ * Six hours is the threshold because it is what `sla.urgent_hours` shipped as, so a call
+ * that would previously have been raised urgent lands on the same side of the line.
+ */
+const URGENT_WINDOW_HOURS = 6;
+
+export function deriveIsUrgent(callSlaHours: number): boolean {
+  return callSlaHours <= URGENT_WINDOW_HOURS;
+}
+
 async function equipmentSlaHoursFor(objectTypeId: Types.ObjectId | null): Promise<number | null> {
   if (!objectTypeId) return null;
   const type = await ObjectType.findById(objectTypeId).select('callSlaHours').lean();
@@ -489,9 +505,10 @@ export async function createServiceRequest(
    * non-null for any type that reached this line, because a type may only be called about
    * when it carries one.
    */
+  const isUrgent = deriveIsUrgent(callableType.callSlaHours);
   const slaDueAt = computeSlaDueAt(
     now,
-    input.isUrgent,
+    isUrgent,
     0,
     await getSlaConfig(),
     callableType.callSlaHours,
@@ -513,9 +530,8 @@ export async function createServiceRequest(
     planPosition: input.planPosition
       ? { x: input.planPosition.x, y: input.planPosition.y }
       : null,
-    requestType: input.requestType,
     objectType: callableType._id,
-    isUrgent: input.isUrgent,
+    isUrgent,
     description: input.description,
     contactName: input.contactName,
     contactPhone: input.contactPhone,
@@ -629,7 +645,6 @@ export async function listServiceRequests(
   }
 
   if (query.status) filter.status = query.status;
-  if (query.requestType) filter.requestType = query.requestType;
   if (query.isUrgent !== undefined) filter.isUrgent = query.isUrgent;
   if (query.projectId) filter.project = new Types.ObjectId(query.projectId);
   if (query.buildingId) filter.building = new Types.ObjectId(query.buildingId);
