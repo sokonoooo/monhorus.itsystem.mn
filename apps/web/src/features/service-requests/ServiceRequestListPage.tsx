@@ -15,7 +15,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Button } from '../../components/ui/Button';
 import { ColumnPicker } from '../../components/ui/ColumnPicker';
 import { DataTable, Pagination, type Column } from '../../components/ui/DataTable';
-import { RequestStatusBadge, SlaBadge, UrgentBadge } from '../../components/ui/DomainBadges';
+import { RequestStatusBadge, SlaBadge } from '../../components/ui/DomainBadges';
 import { PageHeader } from '../../components/ui/PageHeader';
 import { RowActions } from '../../components/ui/RowActions';
 import { SearchField } from '../../components/ui/SearchField';
@@ -101,11 +101,6 @@ export function ServiceRequestListPage(): ReactElement {
       render: (row) => (
         <span className="whitespace-nowrap font-medium text-slate-900">{row.requestNumber}</span>
       ),
-    },
-    {
-      key: 'urgent',
-      header: 'Яаралтай',
-      render: (row) => (row.isUrgent ? <UrgentBadge /> : <span className="text-slate-400">-</span>),
     },
     {
       key: 'customer',

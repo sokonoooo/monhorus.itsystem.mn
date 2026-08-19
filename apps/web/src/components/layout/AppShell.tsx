@@ -4,6 +4,8 @@ import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 
 import { NAVIGATION, TOP_NAV_ITEMS, type NavSection } from '../../config/navigation';
 import { useAuth } from '../../contexts/auth-context';
+import { HelpPanel } from '../../features/help/HelpPanel';
+import { HELP_CONTENT, resolveHelp } from '../../features/help/help-content';
 import { onUnreadCountChanged } from '../../lib/unread-notifications';
 import { notificationService } from '../../services/report.service';
 import { NavGlyph } from './NavGlyph';
@@ -96,6 +98,20 @@ export function AppShell({ children }: { children: ReactNode }): ReactElement {
     () => localStorage.getItem(SIDEBAR_STATE_KEY) === 'true',
   );
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+
+  /*
+    Help lives in the shell, not in each page, for two reasons: it is then impossible to
+    ship a page that forgot its Help button, and it covers screens that render no header of
+    their own - the not-found page among them. Resolution is by route, so the panel always
+    describes the screen the reader is actually looking at.
+  */
+  const help = resolveHelp(HELP_CONTENT, location.pathname);
+
+  // Navigating away closes it, otherwise the panel outlives the page it explains.
+  useEffect(() => {
+    setHelpOpen(false);
+  }, [location.pathname]);
 
   useEffect(() => {
     localStorage.setItem(SIDEBAR_STATE_KEY, String(collapsed));
@@ -278,6 +294,31 @@ export function AppShell({ children }: { children: ReactNode }): ReactElement {
               })}
             </nav>
 
+            {/*
+              Not permission-gated, unlike the shortcuts above it: the panel only explains
+              the page the reader already reached, so it can reveal nothing their own
+              permissions have not already shown them.
+            */}
+            <button
+              type="button"
+              onClick={() => setHelpOpen(true)}
+              aria-label="Тусламж"
+              title="Тусламж"
+              aria-haspopup="dialog"
+              aria-expanded={helpOpen}
+              className={`rounded-md p-1.5 hover:bg-slate-100 ${
+                helpOpen ? 'bg-slate-100 text-blue-600' : 'text-slate-600'
+              }`}
+            >
+              <svg className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                <path
+                  fillRule="evenodd"
+                  d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.94 6.94a1.5 1.5 0 012.56 1.06c0 .5-.2.78-.79 1.25-.7.56-1.21 1.14-1.21 2.13v.12a.75.75 0 001.5 0c0-.5.2-.78.79-1.25.7-.56 1.21-1.14 1.21-2.13a3 3 0 00-5.12-2.12.75.75 0 101.06 1.06zM10 14.75a.9.9 0 100-1.8.9.9 0 000 1.8z"
+                  clipRule="evenodd"
+                />
+              </svg>
+            </button>
+
             {user && (
               <div className="hidden text-right sm:block">
                 <p className="max-w-[180px] truncate text-sm font-medium text-slate-900">
@@ -294,6 +335,8 @@ export function AppShell({ children }: { children: ReactNode }): ReactElement {
         </header>
 
         <main className="mx-auto max-w-[1600px] px-4 py-5 sm:px-6">{children}</main>
+
+        <HelpPanel open={helpOpen} onClose={() => setHelpOpen(false)} help={help} />
       </div>
     </div>
   );

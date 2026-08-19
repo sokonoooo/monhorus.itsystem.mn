@@ -16,7 +16,7 @@ import { FILTER_BAR, FILTER_LABEL, FILTER_SELECT } from '../../components/ui/con
 import { useAuth } from '../../contexts/auth-context';
 import { ApiError } from '../../lib/api-client';
 import { portalService } from '../../services/portal.service';
-import { PortalStatusBadge, PortalUrgentBadge } from './PortalBadges';
+import { PortalStatusBadge } from './PortalBadges';
 
 const PAGE_SIZE = 20;
 
@@ -116,12 +116,6 @@ export function PortalRequestListPage(): ReactElement {
           {[row.building?.name, row.floor?.name].filter(Boolean).join(' · ') || '-'}
         </span>
       ),
-    },
-    {
-      key: 'urgent',
-      header: 'Яаралтай',
-      render: (row) =>
-        row.isUrgent ? <PortalUrgentBadge /> : <span className="text-slate-400">-</span>,
     },
     {
       key: 'status',

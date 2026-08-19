@@ -12,7 +12,7 @@ import { PageHeader } from '../../components/ui/PageHeader';
 import { ErrorState, Skeleton } from '../../components/ui/States';
 import { ApiError } from '../../lib/api-client';
 import { portalService } from '../../services/portal.service';
-import { PortalStatusBadge, PortalUrgentBadge } from './PortalBadges';
+import { PortalStatusBadge } from './PortalBadges';
 
 function formatDateTime(iso: string | null): string {
   if (!iso) return '-';
@@ -127,7 +127,6 @@ export function PortalRequestDetailPage(): ReactElement {
         <div className="rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
           <div className="mb-4 flex flex-wrap items-center gap-2">
             <PortalStatusBadge status={request.status} />
-            {request.isUrgent && <PortalUrgentBadge />}
           </div>
 
           <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">

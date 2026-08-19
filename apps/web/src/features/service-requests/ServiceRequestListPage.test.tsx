@@ -53,7 +53,7 @@ describe('ServiceRequestListPage', () => {
     expect(screen.getByRole('status', { name: 'Ачааллаж байна' })).toBeInTheDocument();
   });
 
-  it('renders request rows with urgency and SLA', async () => {
+  it('renders request rows with SLA but no urgency column', async () => {
     vi.spyOn(serviceRequestService, 'list').mockResolvedValue(makePage([makeRow()]));
 
     renderWithAuth(<ServiceRequestListPage />, {
@@ -67,9 +67,10 @@ describe('ServiceRequestListPage', () => {
       .getAllByRole('columnheader')
       .map((header) => header.textContent);
 
-    expect(within(row).getAllByRole('cell')[headers.indexOf('Яаралтай')]).toHaveTextContent(
-      'Яаралтай',
-    );
+    // Urgency is derived from the equipment type's SLA window rather than chosen, and is
+    // no longer shown: the fixture row is urgent, so a surviving badge would show here.
+    expect(headers).not.toContain('Яаралтай');
+    expect(within(table).queryByText('Яаралтай')).not.toBeInTheDocument();
     // "Хуваарилагдаагүй" appears both as the status badge and as the assignee
     // placeholder, so assert on the count rather than a single match.
     expect(within(table).getAllByText('Хуваарилагдаагүй')).toHaveLength(2);

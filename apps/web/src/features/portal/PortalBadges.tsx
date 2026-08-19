@@ -51,10 +51,6 @@ export function PortalStatusBadge({ status }: { status: ServiceRequestStatus }):
   );
 }
 
-export function PortalUrgentBadge(): ReactElement {
-  return <span className={`${BASE} ${RED}`}>Яаралтай</span>;
-}
-
 /**
  * Planned-work status for the portal.
  *

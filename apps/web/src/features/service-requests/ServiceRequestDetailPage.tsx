@@ -13,7 +13,7 @@ import { Button } from '../../components/ui/Button';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import { RequestAttachments } from './RequestAttachments';
 import { WorkReportPanel } from './WorkReportPanel';
-import { RequestStatusBadge, SlaBadge, UrgentBadge } from '../../components/ui/DomainBadges';
+import { RequestStatusBadge, SlaBadge } from '../../components/ui/DomainBadges';
 import { PageHeader } from '../../components/ui/PageHeader';
 import { ErrorState, Skeleton } from '../../components/ui/States';
 import { useToast } from '../../components/ui/ToastProvider';
@@ -152,7 +152,6 @@ export function ServiceRequestDetailPage(): ReactElement {
           <Card title="Төлөв">
             <div className="mb-3 flex flex-wrap items-center gap-2">
               <RequestStatusBadge status={request.status} />
-              {request.isUrgent && <UrgentBadge />}
               <SlaBadge state={request.slaState} remainingMinutes={request.slaRemainingMinutes} />
             </div>
             <Row

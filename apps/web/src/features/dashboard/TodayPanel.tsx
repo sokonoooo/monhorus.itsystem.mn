@@ -99,11 +99,6 @@ function TodayRow({
           <span className="truncate">
             {item.assigneeNames.length > 0 ? item.assigneeNames.join(', ') : 'Хуваарилагдаагүй'}
           </span>
-          {item.isUrgent && (
-            <span className="rounded bg-red-50 px-1.5 py-0.5 font-medium text-red-700">
-              Яаралтай
-            </span>
-          )}
           {item.isOverdue && (
             <span className="rounded bg-red-600 px-1.5 py-0.5 font-medium text-white">
               Хугацаа хэтэрсэн

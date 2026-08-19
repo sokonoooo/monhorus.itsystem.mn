@@ -13,7 +13,7 @@ import { EmptyState, ErrorState, Skeleton } from '../../components/ui/States';
 import { useAuth } from '../../contexts/auth-context';
 import { ApiError } from '../../lib/api-client';
 import { portalService } from '../../services/portal.service';
-import { PortalStatusBadge, PortalUrgentBadge } from './PortalBadges';
+import { PortalStatusBadge } from './PortalBadges';
 import {
   BarChart,
   CHARTED_WORK_STATUSES,
@@ -301,7 +301,6 @@ export function PortalHomePage(): ReactElement {
                       {[item.building?.name, item.floor?.name].filter(Boolean).join(' · ')}
                     </span>
                     <span className="ml-auto flex items-center gap-2">
-                      {item.isUrgent && <PortalUrgentBadge />}
                       <PortalStatusBadge status={item.status} />
                       <span className="text-xs text-slate-500">{formatDate(item.createdAt)}</span>
                     </span>
