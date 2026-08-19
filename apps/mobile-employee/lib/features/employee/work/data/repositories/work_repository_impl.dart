@@ -174,6 +174,21 @@ class WorkRepositoryImpl implements WorkRepository {
   }
 
   @override
+  Future<ApiResult<PlannedWorkModel>> recordTaskMaterialUsage({
+    required String plannedWorkId,
+    required String taskId,
+    required RecordTaskMaterialUsageRequest request,
+  }) {
+    return _guard(
+      () => _remote.recordTaskMaterialUsage(
+        plannedWorkId: plannedWorkId,
+        taskId: taskId,
+        request: request,
+      ),
+    );
+  }
+
+  @override
   Future<ApiResult<PlannedWorkModel>> attachTaskPhoto({
     required String plannedWorkId,
     required String taskId,

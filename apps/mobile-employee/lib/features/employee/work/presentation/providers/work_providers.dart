@@ -1041,6 +1041,24 @@ class PlannedWorkDetailNotifier
     );
   }
 
+  /// Records what one sub-task consumed of one registered material.
+  ///
+  /// The quantity is absolute for the (sub-task, material) pair, and the endpoint
+  /// answers with the whole record — so [_publish] alone refreshes the work's
+  /// Зарцуулсан/Үлдсэн totals along with the sub-task's own rows. No second fetch.
+  Future<ApiResult<PlannedWorkModel>> recordMaterialUsage({
+    required String taskId,
+    required RecordTaskMaterialUsageRequest request,
+  }) async {
+    return _publish(
+      await _repository.recordTaskMaterialUsage(
+        plannedWorkId: arg,
+        taskId: taskId,
+        request: request,
+      ),
+    );
+  }
+
   /// Uploads one evidence photo against a sub-task.
   ///
   /// The reply is the whole record, so publishing it can flip the task's status to

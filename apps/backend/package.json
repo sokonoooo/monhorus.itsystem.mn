@@ -18,7 +18,8 @@
     "backfill:user-roles": "tsx src/scripts/backfill-user-roles.ts",
     "backfill:report-assessment-history": "tsx src/scripts/backfill-report-assessment-history.ts",
     "backfill:assessment-judged-by": "tsx src/scripts/backfill-assessment-judged-by.ts",
-    "migrate:drop-request-type": "tsx src/scripts/drop-request-type.ts"
+    "migrate:drop-request-type": "tsx src/scripts/drop-request-type.ts",
+    "migrate:planned-materials": "tsx src/scripts/migrate-planned-materials-to-catalogue.ts"
   },
   "dependencies": {
     "@monhorus/shared": "*",

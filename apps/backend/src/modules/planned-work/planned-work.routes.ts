@@ -5,6 +5,7 @@ import {
   plannedWorkListQuerySchema,
   plannedWorkMaterialsSchema,
   plannedWorkTransitionSchema,
+  recordTaskMaterialUsageSchema,
   recordTaskProgressSchema,
   reschedulePlannedWorkSchema,
   returnPlannedWorkReportSchema,
@@ -13,6 +14,7 @@ import {
   type PlannedWorkListQueryInput,
   type PlannedWorkMaterialsInput,
   type PlannedWorkTransitionInput,
+  type RecordTaskMaterialUsageInput,
   type RecordTaskProgressInput,
   type ReschedulePlannedWorkInput,
   type ReturnPlannedWorkReportInput,
@@ -294,6 +296,34 @@ plannedWorkRouter.post(
         meta(req),
       );
       ok(res, result, 'Биелэлт бүртгэгдлээ.');
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+/**
+ * What a sub-task consumed of one material registered on the work.
+ *
+ * Gated on `record_progress`, not on a key of its own: recording what a job took is the
+ * same act as recording what it completed, by the same person at the same moment, and the
+ * TECHNICIAN preset already holds it. `material.view` is what lets that person read the
+ * catalogue to choose from; it is not what lets them write here.
+ */
+plannedWorkRouter.post(
+  '/:plannedWorkId/tasks/:taskId/materials',
+  requirePermission(PERMISSIONS.PLANNED_WORK_RECORD_PROGRESS),
+  validate({ params: taskParams, body: recordTaskMaterialUsageSchema }),
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const result = await plannedWorkService.recordTaskMaterialUsageOnWork(
+        pathParam(req, 'plannedWorkId'),
+        pathParam(req, 'taskId'),
+        req.body as RecordTaskMaterialUsageInput,
+        requireAuth(req),
+        meta(req),
+      );
+      ok(res, result, 'Материалын зарцуулалт бүртгэгдлээ.');
     } catch (error) {
       next(error);
     }

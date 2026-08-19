@@ -17,6 +17,7 @@ import {
 import { AuditLog } from '../audit/audit-log.model';
 import { Employee } from '../employee/employee.model';
 import { Customer, ObjectNode } from '../objects/object.models';
+import { MaterialItem } from '../material/material.models';
 import { PlannedWork, PlannedWorkTask } from './planned-work.models';
 import { runOverdueReconciliation } from './planned-work.overdue.service';
 
@@ -1549,55 +1550,311 @@ describe('overdue behaviour', () => {
 });
 
 describe('planned materials', () => {
-  it('stores a material as a name, a quantity and a unit', async () => {
-    const workId = await createWork();
+  /** The catalogue is the authority on a registered material's name and unit. */
+  async function catalogueItem(code: string, name: string, unit = 'METRE'): Promise<string> {
+    const item = await MaterialItem.create({ code, name, category: 'CABLE', defaultUnit: unit });
+    return String(item._id);
+  }
 
-    const response = await request(app)
+  async function registerMaterial(workId: string, itemId: string, quantity: number) {
+    return request(app)
       .put(`${API}/planned-work/${workId}/materials`)
       .set('Authorization', `Bearer ${token}`)
-      .send({ materials: [{ name: 'Кабель 3x2.5', quantity: 120, unit: 'METRE' }] });
+      .send({ materials: [{ materialItemId: itemId, quantity }] });
+  }
+
+  it('registers a material from the catalogue with nothing yet consumed', async () => {
+    const workId = await createWork();
+    const itemId = await catalogueItem('CBL-1', 'Кабель 3x2.5');
+
+    const response = await registerMaterial(workId, itemId, 120);
 
     expect(response.status).toBe(200);
     expect(response.body.data.materials).toHaveLength(1);
+    // The name and the unit come from the catalogue, not from the request.
     expect(response.body.data.materials[0]).toMatchObject({
+      materialItemId: itemId,
       name: 'Кабель 3x2.5',
       quantity: 120,
+      consumedQuantity: 0,
+      remainingQuantity: 120,
       unit: 'METRE',
     });
   });
 
   it('replaces the whole list rather than merging into it', async () => {
     const workId = await createWork();
+    const cable = await catalogueItem('CBL-2', 'Кабель');
+    const breaker = await catalogueItem('BRK-1', 'Автомат таслуур', 'PIECE');
 
-    await request(app)
-      .put(`${API}/planned-work/${workId}/materials`)
-      .set('Authorization', `Bearer ${token}`)
-      .send({ materials: [{ name: 'Кабель', quantity: 10, unit: 'METRE' }] });
-
-    const response = await request(app)
-      .put(`${API}/planned-work/${workId}/materials`)
-      .set('Authorization', `Bearer ${token}`)
-      .send({ materials: [{ name: 'Автомат таслуур', quantity: 4, unit: 'PIECE' }] });
+    await registerMaterial(workId, cable, 10);
+    const response = await registerMaterial(workId, breaker, 4);
 
     expect(response.status).toBe(200);
     expect(response.body.data.materials).toHaveLength(1);
     expect(response.body.data.materials[0].name).toBe('Автомат таслуур');
   });
 
-  it('rejects a duplicated material name in the list', async () => {
+  it('rejects the same catalogue item listed twice', async () => {
     const workId = await createWork();
+    const itemId = await catalogueItem('CBL-3', 'Кабель 3x2.5');
 
     const response = await request(app)
       .put(`${API}/planned-work/${workId}/materials`)
       .set('Authorization', `Bearer ${token}`)
       .send({
         materials: [
-          { name: 'Кабель 3x2.5', quantity: 10, unit: 'METRE' },
-          { name: 'кабель 3x2.5', quantity: 20, unit: 'METRE' },
+          { materialItemId: itemId, quantity: 10 },
+          { materialItemId: itemId, quantity: 20 },
         ],
       });
 
     expect(response.status).toBe(400);
+  });
+
+  it('refuses a material that is not in the catalogue', async () => {
+    const workId = await createWork();
+
+    const response = await request(app)
+      .put(`${API}/planned-work/${workId}/materials`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ materials: [{ materialItemId: '65b000000000000000000000', quantity: 5 }] });
+
+    expect(response.status).toBe(400);
+  });
+});
+
+describe('sub-task material consumption', () => {
+  let workId: string;
+  let taskId: string;
+  let itemId: string;
+
+  async function openTask(title: string): Promise<string> {
+    const task = await PlannedWorkTask.create({
+      plannedWork: workId,
+      title,
+      unit: 'METRE',
+      totalQuantity: 10,
+      completedQuantity: 0,
+      status: 'PENDING',
+      plannedStartDate: new Date('2026-07-01T00:00:00.000Z'),
+      plannedEndDate: new Date('2026-07-02T00:00:00.000Z'),
+    });
+    return String(task._id);
+  }
+
+  /**
+   * A work with one registered material of 100 and one open sub-task to draw against it.
+   * PLANNED rather than DRAFT, because a draft refuses progress writes of every kind.
+   */
+  beforeEach(async () => {
+    const item = await MaterialItem.create({
+      code: 'CBL-USE',
+      name: 'Кабель 3x2.5',
+      category: 'CABLE',
+      defaultUnit: 'METRE',
+    });
+    itemId = String(item._id);
+
+    workId = await createWork({ status: 'PLANNED' });
+    await request(app)
+      .put(`${API}/planned-work/${workId}/materials`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ materials: [{ materialItemId: itemId, quantity: 100 }] });
+
+    taskId = await openTask('Кабель татах');
+  });
+
+  async function useMaterial(quantity: number, material = () => itemId) {
+    return request(app)
+      .post(`${API}/planned-work/${workId}/tasks/${taskId}/materials`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ materialItemId: material(), quantity });
+  }
+
+  async function readMaterials() {
+    const detail = await request(app)
+      .get(`${API}/planned-work/${workId}`)
+      .set('Authorization', `Bearer ${token}`);
+    return detail.body.data.materials[0];
+  }
+
+  it('draws the used quantity down from the registered pool', async () => {
+    const response = await useMaterial(50);
+
+    expect(response.status).toBe(200);
+    // The figures the brief asked for: 100 registered, 50 used, 50 remaining.
+    expect(response.body.data.materials[0]).toMatchObject({
+      quantity: 100,
+      consumedQuantity: 50,
+      remainingQuantity: 50,
+    });
+  });
+
+  it('records which sub-task consumed it', async () => {
+    await useMaterial(50);
+
+    const detail = await request(app)
+      .get(`${API}/planned-work/${workId}`)
+      .set('Authorization', `Bearer ${token}`);
+
+    const task = detail.body.data.tasks.find((entry: { id: string }) => entry.id === taskId);
+    expect(task.materialUsage).toHaveLength(1);
+    expect(task.materialUsage[0]).toMatchObject({
+      materialItemId: itemId,
+      materialName: 'Кабель 3x2.5',
+      quantity: 50,
+      unit: 'METRE',
+    });
+  });
+
+  /**
+   * A SECOND sub-task, deliberately: recording again on the same one is a correction, not
+   * a further draw, so it could never exceed anything. Over-consumption is what happens
+   * when two pieces of work share one pool.
+   */
+  it('refuses a draw larger than what remains, naming what is left', async () => {
+    await useMaterial(80);
+    const secondTaskId = await openTask('Хоёр дахь дэд ажил');
+
+    const response = await request(app)
+      .post(`${API}/planned-work/${workId}/tasks/${secondTaskId}/materials`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ materialItemId: itemId, quantity: 30 });
+
+    expect(response.status).toBe(400);
+    // The refusal has to say what is actually available, or the technician is guessing.
+    expect(response.body.message).toContain('20');
+    expect(response.body.issues?.[0]?.field).toBe('quantity');
+  });
+
+  it('leaves the pool untouched when it refuses', async () => {
+    await useMaterial(80);
+    const secondTaskId = await openTask('Хоёр дахь дэд ажил');
+
+    await request(app)
+      .post(`${API}/planned-work/${workId}/tasks/${secondTaskId}/materials`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ materialItemId: itemId, quantity: 30 });
+
+    expect(await readMaterials()).toMatchObject({
+      consumedQuantity: 80,
+      remainingQuantity: 20,
+    });
+  });
+
+  /**
+   * The write is an absolute figure, not an increment — the same request twice must not
+   * draw twice. This is the property that makes a retry from a phone safe.
+   */
+  it('treats a repeated record as a correction, not a second draw', async () => {
+    await useMaterial(50);
+    const response = await useMaterial(50);
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.materials[0]).toMatchObject({
+      consumedQuantity: 50,
+      remainingQuantity: 50,
+    });
+  });
+
+  it('returns the difference to the pool when a correction lowers the figure', async () => {
+    await useMaterial(50);
+    const response = await useMaterial(20);
+
+    expect(response.body.data.materials[0]).toMatchObject({
+      consumedQuantity: 20,
+      remainingQuantity: 80,
+    });
+  });
+
+  it('removes the record when the correction is zero', async () => {
+    await useMaterial(50);
+    const response = await useMaterial(0);
+
+    expect(response.body.data.materials[0]).toMatchObject({
+      consumedQuantity: 0,
+      remainingQuantity: 100,
+    });
+    const task = response.body.data.tasks.find((entry: { id: string }) => entry.id === taskId);
+    expect(task.materialUsage).toHaveLength(0);
+  });
+
+  /**
+   * The concurrency case the whole design turns on. Two simultaneous draws of 60 against
+   * 100 must not both succeed: a read-then-check would let them, because both reads see
+   * 100 free before either write lands.
+   */
+  it('lets only one of two simultaneous over-drawing requests through', async () => {
+    const secondTaskId = await openTask('Хоёр дахь дэд ажил');
+
+    const [first, other] = await Promise.all([
+      request(app)
+        .post(`${API}/planned-work/${workId}/tasks/${taskId}/materials`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ materialItemId: itemId, quantity: 60 }),
+      request(app)
+        .post(`${API}/planned-work/${workId}/tasks/${secondTaskId}/materials`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ materialItemId: itemId, quantity: 60 }),
+    ]);
+
+    expect([first.status, other.status].sort()).toEqual([200, 400]);
+
+    // Never negative, and never more than was registered.
+    expect(await readMaterials()).toMatchObject({
+      consumedQuantity: 60,
+      remainingQuantity: 40,
+    });
+  });
+
+  it('refuses a material that is not registered on the work', async () => {
+    const other = await MaterialItem.create({
+      code: 'BRK-OTHER',
+      name: 'Автомат таслуур',
+      category: 'BREAKER',
+      defaultUnit: 'PIECE',
+    });
+
+    const response = await useMaterial(1, () => String(other._id));
+
+    expect(response.status).toBe(400);
+    expect(response.body.issues?.[0]?.field).toBe('materialItemId');
+  });
+
+  it('refuses to lower the registered quantity below what is already consumed', async () => {
+    await useMaterial(50);
+
+    const response = await request(app)
+      .put(`${API}/planned-work/${workId}/materials`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ materials: [{ materialItemId: itemId, quantity: 20 }] });
+
+    expect(response.status).toBe(400);
+  });
+
+  it('refuses to drop a material that has already been drawn on', async () => {
+    await useMaterial(50);
+
+    const response = await request(app)
+      .put(`${API}/planned-work/${workId}/materials`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ materials: [] });
+
+    expect(response.status).toBe(400);
+  });
+
+  it('returns the material to the pool when the sub-task is deleted', async () => {
+    await useMaterial(50);
+
+    await request(app)
+      .delete(`${API}/planned-work/${workId}/tasks/${taskId}`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(await readMaterials()).toMatchObject({
+      consumedQuantity: 0,
+      remainingQuantity: 100,
+    });
   });
 });
 

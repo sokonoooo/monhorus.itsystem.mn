@@ -194,6 +194,14 @@ export function PlannedWorkReportPage(): ReactElement {
     },
   ];
 
+  /**
+   * Registered, used and left — the same three figures the work itself shows.
+   *
+   * The report is what gets signed off and exported, so it may not quietly print only what
+   * was planned: a plan of 100 metres against 12 metres drawn is a different report from a
+   * plan of 100 metres against 98. Үлдэгдэл is the server's stored figure, never a
+   * subtraction done here.
+   */
   const materialColumns: ReadonlyArray<Column<PlannedWorkMaterialDto>> = [
     {
       key: 'material',
@@ -202,11 +210,31 @@ export function PlannedWorkReportPage(): ReactElement {
     },
     {
       key: 'quantity',
-      header: 'Тоо',
+      header: 'Бүртгэсэн',
       align: 'right',
       render: (row) => (
         <span className="whitespace-nowrap font-medium text-slate-900">
           {row.quantity.toLocaleString('mn-MN')}
+        </span>
+      ),
+    },
+    {
+      key: 'consumed',
+      header: 'Зарцуулсан',
+      align: 'right',
+      render: (row) => (
+        <span className="whitespace-nowrap text-slate-700">
+          {row.consumedQuantity.toLocaleString('mn-MN')}
+        </span>
+      ),
+    },
+    {
+      key: 'remaining',
+      header: 'Үлдэгдэл',
+      align: 'right',
+      render: (row) => (
+        <span className="whitespace-nowrap text-slate-700">
+          {row.remainingQuantity.toLocaleString('mn-MN')}
         </span>
       ),
     },
@@ -499,7 +527,7 @@ export function PlannedWorkReportPage(): ReactElement {
           <DataTable
             columns={materialColumnState.visibleColumns}
             rows={preview.materials}
-            rowKey={(row) => row.name}
+            rowKey={(row) => row.materialItemId}
             numbering
             emptyTitle="Материал бүртгэгдээгүй"
           />

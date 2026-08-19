@@ -2,7 +2,7 @@ import {
   type PlannedWorkFloorProgressDto,
   type PlannedWorkTaskDto,
 } from '@monhorus/shared';
-import { useId, type ReactElement } from 'react';
+import { useId, type ReactElement, type ReactNode } from 'react';
 
 import { DataTable, type Column } from '../../components/ui/DataTable';
 import { ProgressBar } from './PlannedWorkBadges';
@@ -123,9 +123,19 @@ interface FloorTaskSectionProps {
   columns: ReadonlyArray<Column<PlannedWorkTaskDto>>;
   expanded: boolean;
   onToggle: () => void;
-  /** Ids of the sub-tasks whose equipment panel is open, across every floor. */
+  /** Ids of the sub-tasks whose detail panel is open, across every floor. */
   expandedTaskIds: readonly string[];
   onToggleTask: (taskId: string) => void;
+  /**
+   * The panel revealed under an open sub-task row.
+   *
+   * A render prop rather than a fixed component: the panel now holds the material-usage
+   * form as well as the equipment list, and that form writes — it needs the work, the
+   * caller's permissions and somewhere to hand the refreshed work back. Passing all of
+   * that through the floor section would make this component know about things a floor
+   * has no opinion on.
+   */
+  renderTaskPanel: (task: PlannedWorkTaskDto) => ReactNode;
 }
 
 /** One floor, its rollup, and the sub-tasks planned on it. */
@@ -136,6 +146,7 @@ export function FloorTaskSection({
   onToggle,
   expandedTaskIds,
   onToggleTask,
+  renderTaskPanel,
 }: FloorTaskSectionProps): ReactElement {
   const panelId = useId();
 
@@ -194,10 +205,10 @@ export function FloorTaskSection({
             numbering
             ariaLabel={`${group.name} дэд ажил`}
             emptyTitle="Дэд ажил бүртгэгдээгүй"
-            renderExpanded={(row) => <TaskEquipmentPanel task={row} />}
+            renderExpanded={(row) => renderTaskPanel(row)}
             expandedKeys={expandedTaskIds}
             onToggleExpand={(key) => onToggleTask(key)}
-            expandLabel={(row) => `${row.title} — хамрах тоноглол`}
+            expandLabel={(row) => `${row.title} — тоноглол ба материал`}
           />
         )}
       </div>

@@ -168,33 +168,55 @@ export const recordTaskProgressSchema = z
   .strict();
 
 /**
- * The whole material list is sent at once: the drawer edits it as a table, so a partial
- * update would need an identifier for a row that is only a name and a number.
+ * The whole material list is sent at once: the drawer edits it as a table.
+ *
+ * ROWS NAME A CATALOGUE ITEM, NOT A STRING. The list used to be free text, which was
+ * serviceable while nothing was counted against it; once sub-tasks draw from a row, that
+ * row needs an identity that survives a rename, and a name is not one. The catalogue id
+ * is that identity, which is also why the duplicate check below moved from the name to
+ * the reference — two rows for one material would split a pool that is meant to be shared.
+ *
+ * The unit is NOT accepted here. It belongs to the catalogue entry, and taking it from
+ * the caller would let two works disagree about what a KILOGRAM of the same item is.
  */
 export const plannedWorkMaterialsSchema = z.object({
   materials: z
     .array(
       z.object({
-        name: z.string().trim().min(1, 'Материалын нэр хоосон байж болохгүй.').max(200),
+        materialItemId: objectIdSchema,
         quantity: z.number().positive('Тоо хэмжээ 0-ээс их байна.'),
-        unit: z.enum(MATERIAL_UNITS).default('PIECE'),
       }),
     )
     .max(200)
     .superRefine((items, ctx) => {
       const seen = new Set<string>();
       for (const [index, item] of items.entries()) {
-        const key = item.name.toLocaleLowerCase('mn');
-        if (seen.has(key)) {
+        if (seen.has(item.materialItemId)) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
-            path: [index, 'name'],
+            path: [index, 'materialItemId'],
             message: 'Материал давхардсан байна.',
           });
         }
-        seen.add(key);
+        seen.add(item.materialItemId);
       }
     }),
+});
+
+/**
+ * One sub-task's draw against one registered material.
+ *
+ * The quantity is what this row consumes IN TOTAL, not an increment — recording twice
+ * for the same material on the same sub-task edits the existing row rather than adding
+ * to it. An increment would make a retried request silently double the draw, and this
+ * write is reachable from a phone on a bad connection.
+ *
+ * No unit: it is the registered row's, frozen at registration. Nothing the caller sends
+ * decides how much of the pool a number represents.
+ */
+export const recordTaskMaterialUsageSchema = z.object({
+  materialItemId: objectIdSchema,
+  quantity: z.number().nonnegative('Тоо хэмжээ сөрөг байж болохгүй.'),
 });
 
 // -- Report workflow ---------------------------------------------------------
@@ -241,6 +263,7 @@ export type CreatePlannedWorkTaskInput = z.infer<typeof createPlannedWorkTaskSch
 export type UpdatePlannedWorkTaskInput = z.infer<typeof updatePlannedWorkTaskSchema>;
 export type RecordTaskProgressInput = z.infer<typeof recordTaskProgressSchema>;
 export type PlannedWorkMaterialsInput = z.infer<typeof plannedWorkMaterialsSchema>;
+export type RecordTaskMaterialUsageInput = z.infer<typeof recordTaskMaterialUsageSchema>;
 export type UpdatePlannedWorkReportInput = z.infer<typeof updatePlannedWorkReportSchema>;
 export type ReturnPlannedWorkReportInput = z.infer<typeof returnPlannedWorkReportSchema>;
 export type PlannedWorkListQueryInput = z.infer<typeof plannedWorkListQuerySchema>;

@@ -12,6 +12,7 @@ import '../providers/work_providers.dart';
 import '../widgets/inspection_report_sheet.dart';
 import '../widgets/report_preview_sheet.dart';
 import '../widgets/task_card.dart';
+import '../widgets/task_material_sheet.dart';
 import '../widgets/task_progress_sheet.dart';
 import '../widgets/work_async_view.dart';
 import '../widgets/work_ui.dart';
@@ -265,6 +266,20 @@ class _DetailBody extends ConsumerWidget {
                 plannedWorkId: work.id,
                 task: task,
               ),
+              // Only a material registered on the work can be drawn, so with none
+              // registered there is nothing to offer and the control is withheld
+              // rather than opening onto an empty list. The same blockers as the
+              // progress button apply: the write is gated on the very same
+              // `planned_work.record_progress` grant and the same assignment scope.
+              onRecordMaterials: work.materials.isEmpty ||
+                      _progressBlockedReason(grants, assignment) != null
+                  ? null
+                  : () => showTaskMaterialSheet(
+                        context,
+                        plannedWorkId: work.id,
+                        task: task,
+                        materials: work.materials,
+                      ),
             ),
 
         if (work.materials.isNotEmpty) ...<Widget>[
@@ -1367,12 +1382,71 @@ class _MaterialsCard extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: <Widget>[
           for (int i = 0; i < work.materials.length; i++)
-            InfoRow(
-              label: work.materials[i].name,
-              value: '${formatQuantity(work.materials[i].quantity)}'
-                  ' ${work.materials[i].unit.label}',
+            _MaterialRow(
+              material: work.materials[i],
               divider: i < work.materials.length - 1,
             ),
+        ],
+      ),
+    );
+  }
+}
+
+/// One registered material: the name, and the three figures the pool is described by.
+///
+/// Бүртгэсэн is what the plan allows, Зарцуулсан what the sub-tasks have drawn and
+/// Үлдсэн what is left. All three arrive from the server — Үлдсэн in particular is
+/// stored there rather than derived, and is printed rather than subtracted here,
+/// because it is the exact field the over-consumption guard compares a write against.
+class _MaterialRow extends StatelessWidget {
+  const _MaterialRow({required this.material, required this.divider});
+
+  final PlannedWorkMaterialModel material;
+  final bool divider;
+
+  @override
+  Widget build(BuildContext context) {
+    final String unit = material.unit.label;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 9),
+      decoration: divider
+          ? const BoxDecoration(
+              border: Border(bottom: BorderSide(color: EmployeeTokens.faint)),
+            )
+          : null,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Expanded(
+                child: Text(
+                  material.name,
+                  style: EmployeeTokens.rowSub
+                      .copyWith(fontWeight: FontWeight.w500),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Text(
+                'Үлдсэн ${formatQuantity(material.remainingQuantity)} $unit',
+                textAlign: TextAlign.right,
+                style: EmployeeTokens.detailValue.copyWith(
+                  color: material.remainingQuantity <= 0
+                      ? EmployeeTokens.muted
+                      : EmployeeTokens.green,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 3),
+          Text(
+            'Бүртгэсэн ${formatQuantity(material.quantity)} $unit · '
+            'Зарцуулсан ${formatQuantity(material.consumedQuantity)} $unit',
+            style: EmployeeTokens.microNote,
+          ),
         ],
       ),
     );

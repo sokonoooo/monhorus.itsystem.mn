@@ -116,6 +116,19 @@ abstract class WorkRepository {
     required RecordTaskProgressRequest request,
   });
 
+  /// Records what one sub-task consumed of one material registered on the work, and
+  /// returns the re-read record.
+  ///
+  /// Separate from [recordTaskProgress] because the API is, and because the figures
+  /// are different in kind: progress is how much of the sub-task is done, this is how
+  /// much of the work's material pool it took. The quantity is absolute for the pair,
+  /// so the same call repeated is a correction rather than a second draw.
+  Future<ApiResult<PlannedWorkModel>> recordTaskMaterialUsage({
+    required String plannedWorkId,
+    required String taskId,
+    required RecordTaskMaterialUsageRequest request,
+  });
+
   /// Attaches one evidence photo to a sub-task and returns the re-read record.
   ///
   /// Separate from [recordTaskProgress] because the API is: a photo is stored the
