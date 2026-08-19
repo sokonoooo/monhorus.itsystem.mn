@@ -11,7 +11,6 @@ import '../widgets/authenticated_image.dart';
 import '../widgets/customer_async_view.dart';
 import '../widgets/customer_ui.dart';
 import '../widgets/risk_widgets.dart';
-import '../widgets/service_request_card.dart';
 import 'customer_shell_screen.dart';
 
 /// Which half of the request the screen is showing.
@@ -170,21 +169,6 @@ class _ProgressTab extends StatelessWidget {
                     note: request.assigneeLine,
                     valueColor: status?.tone.foreground ?? CustomerTokens.ink,
                   ),
-                  MetricCard(
-                    label: 'SLA',
-                    value: _slaValue,
-                    note: request.slaState?.label ?? 'SLA мэдээлэлгүй',
-                    valueColor:
-                        request.slaState?.tone.foreground ?? CustomerTokens.ink,
-                  ),
-                ],
-              ),
-              const SizedBox(height: 10),
-              Wrap(
-                spacing: 7,
-                runSpacing: 5,
-                children: <Widget>[
-                  SlaLine(request: request),
                 ],
               ),
               // Absent for a cancelled request, and for any status off the linear
@@ -272,13 +256,6 @@ class _ProgressTab extends StatelessWidget {
           ),
       ],
     );
-  }
-
-  String get _slaValue {
-    final int? remaining = request.slaRemainingMinutes;
-    if (remaining == null) return '-';
-    final int hours = (remaining.abs() / 60).floor();
-    return remaining < 0 ? '-$hours ц' : '$hours ц';
   }
 
   static String _historyTitle(ServiceRequestStatusHistoryModel entry) {

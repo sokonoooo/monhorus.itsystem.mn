@@ -114,37 +114,3 @@ class ServiceRequestCard extends StatelessWidget {
   }
 }
 
-/// A one-line SLA read-out. Negative remaining minutes mean the window is overdue,
-/// which the backend reports rather than clamping, so it is shown as overdue here.
-class SlaLine extends StatelessWidget {
-  const SlaLine({super.key, required this.request});
-
-  final ServiceRequestListItemModel request;
-
-  @override
-  Widget build(BuildContext context) {
-    final SlaState? state = request.slaState;
-    final int? remaining = request.slaRemainingMinutes;
-
-    final String text;
-    if (remaining == null) {
-      text = state?.label ?? 'SLA мэдээлэлгүй';
-    } else if (remaining < 0) {
-      text = '${_hours(-remaining)} хугацаа хэтэрсэн';
-    } else {
-      text = '${_hours(remaining)} үлдсэн';
-    }
-
-    return StatusPill(
-      label: text,
-      tone: state?.tone ?? AccentTone.neutral,
-    );
-  }
-
-  static String _hours(int minutes) {
-    if (minutes < 60) return '$minutes мин';
-    final int hours = minutes ~/ 60;
-    final int rest = minutes % 60;
-    return rest == 0 ? '$hours ц' : '$hours ц $rest мин';
-  }
-}

@@ -167,8 +167,6 @@ export function PortalRequestCreatePage(): ReactElement {
     };
   }, []);
 
-  const selectedObjectType = objectTypes.find((type) => type.id === objectTypeId) ?? null;
-
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     setFormError(null);
@@ -294,15 +292,18 @@ export function PortalRequestCreatePage(): ReactElement {
                 "Төрөл", and this suite finds controls by label - two fields whose labels
                 both start with that word would make every such query ambiguous.
               */}
+              {/*
+                No hours here, unlike the staff form.
+                The window is an internal commitment: the customer chooses the equipment,
+                and the response time that choice implies is between the company and its
+                own dispatchers. Naming it on the portal turns an operating target into
+                something the customer reads as a promise, and one they will hold the
+                company to on the request they are looking at.
+              */}
               <Field
                 label="Тоног төхөөрөмжийн төрөл"
                 required
                 error={fieldErrors.objectTypeId}
-                hint={
-                  selectedObjectType
-                    ? `Энэ дуудлагын SLA хугацаа ${selectedObjectType.callSlaHours} цаг.`
-                    : 'Сонгосон төрлөөс SLA хугацаа тодорхойлогдоно.'
-                }
               >
                 <SelectInput
                   value={objectTypeId}
@@ -310,7 +311,7 @@ export function PortalRequestCreatePage(): ReactElement {
                   placeholder="Төхөөрөмж сонгох"
                   options={objectTypes.map((type) => ({
                     value: type.id,
-                    label: `${type.name} (${type.callSlaHours} цаг)`,
+                    label: type.name,
                   }))}
                   disabled={submitting}
                 />

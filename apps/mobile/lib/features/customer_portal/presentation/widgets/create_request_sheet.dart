@@ -397,7 +397,11 @@ class _CreateRequestSheetState extends ConsumerState<CreateRequestSheet> {
                             child: Text(
                               // The window is shown beside the name: it is what the choice
                               // decides, and the customer is the one waiting on it.
-                              '${type.name} (${type.callSlaHours} цаг)',
+                              // Name only. The window is an internal commitment
+                              // between the company and its dispatchers; printing it
+                              // here turns an operating target into a promise the
+                              // customer will hold them to.
+                              type.name,
                               overflow: TextOverflow.ellipsis,
                             ),
                           ),

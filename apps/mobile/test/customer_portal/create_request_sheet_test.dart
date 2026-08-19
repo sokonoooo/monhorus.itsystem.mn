@@ -891,7 +891,7 @@ void main() {
       );
 
       await openEquipmentPicker(tester);
-      await tester.tap(find.text('Автомат залгуур (6 цаг)').last);
+      await tester.tap(find.text('Автомат залгуур').last);
       await tester.pumpAndSettle();
 
       await completeAndSubmit(tester);
@@ -900,9 +900,11 @@ void main() {
       expect(repository.created.single.objectTypeId, 'socket-1');
     });
 
-    /// The window is what the customer is really choosing, so it is on the option itself
-    /// rather than left to be discovered after the call is raised.
-    testWidgets('each option states the hours it carries', (WidgetTester tester) async {
+    /// Inverted when SLA windows were hidden from customers. The window is an internal
+    /// commitment between the company and its dispatchers; printing it on the portal turns
+    /// an operating target into a promise the customer will hold them to. The staff form
+    /// still shows it, which is where it belongs.
+    testWidgets('names the options without naming their hours', (WidgetTester tester) async {
       final FakeCustomerPortalRepository repository = FakeCustomerPortalRepository(
         callableObjectTypes: <CallableObjectTypeModel>[
           callableObjectTypeFixture(name: 'Гэрэл', callSlaHours: 24),
@@ -923,8 +925,10 @@ void main() {
 
       await openEquipmentPicker(tester);
 
-      expect(find.text('Гэрэл (24 цаг)'), findsWidgets);
-      expect(find.text('Автомат залгуур (6 цаг)'), findsWidgets);
+      expect(find.text('Гэрэл'), findsWidgets);
+      expect(find.text('Автомат залгуур'), findsWidgets);
+      // No window anywhere on the sheet, in either option or hint.
+      expect(find.textContaining('цаг'), findsNothing);
     });
 
     /// One option is not a choice, and making somebody tap through it is friction with a
