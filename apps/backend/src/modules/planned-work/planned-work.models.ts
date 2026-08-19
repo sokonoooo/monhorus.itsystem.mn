@@ -73,17 +73,39 @@ const scheduleChangeSchema = new Schema<IPlannedWorkScheduleChange>(
   { _id: false },
 );
 
-/** Requirements 19.2 keeps V1 at "нэр/тоо": free text, no catalogue behind it. */
+/**
+ * A material registered on the work, and the running totals its sub-tasks draw against.
+ *
+ * `materialItem` IS THE IDENTITY of the row — a material appears at most once per work —
+ * which is why this subdocument still has no `_id` of its own. `name` and `unit` are
+ * frozen copies taken from the catalogue at registration, so renaming a catalogue entry
+ * never rewrites what an old work recorded.
+ *
+ * BOTH TOTALS ARE STORED, and `remainingQuantity` is not redundant with them. The
+ * over-consumption guard is a conditional update, and MongoDB cannot compare two fields
+ * of the same subdocument inside `$elemMatch` — `remaining >= n` can be expressed as a
+ * filter, `consumed + n <= quantity` cannot. Keeping remaining as a field is what makes
+ * the invariant enforceable in the same atomic write that changes it, which matters here
+ * because `withTransaction` degrades to no transaction on a standalone mongod.
+ *
+ * The invariant is `consumedQuantity + remainingQuantity === quantity`, always.
+ */
 export interface IPlannedWorkMaterial {
+  materialItem: Types.ObjectId;
   name: string;
   quantity: number;
+  consumedQuantity: number;
+  remainingQuantity: number;
   unit: MaterialUnit;
 }
 
 const plannedMaterialSchema = new Schema<IPlannedWorkMaterial>(
   {
+    materialItem: { type: Schema.Types.ObjectId, ref: 'MaterialItem', required: true },
     name: { type: String, required: true, trim: true, maxlength: 200 },
     quantity: { type: Number, required: true, min: 0 },
+    consumedQuantity: { type: Number, required: true, default: 0, min: 0 },
+    remainingQuantity: { type: Number, required: true, default: 0, min: 0 },
     unit: { type: String, enum: MATERIAL_UNITS, required: true, default: 'PIECE' },
   },
   { _id: false },
@@ -469,3 +491,55 @@ export const PlannedWorkReport: Model<IPlannedWorkReport> = model<IPlannedWorkRe
   'PlannedWorkReport',
   plannedWorkReportSchema,
 );
+
+/**
+ * One sub-task's draw against one material registered on the parent work.
+ *
+ * ITS OWN COLLECTION, not an array on the task, for the same reason `PlannedWorkTask` is
+ * its own collection: the interesting reads cross the boundary. "What did this sub-task
+ * consume" and "who drew down this material" are both one indexed query here, and neither
+ * is a scan of every task's embedded array.
+ *
+ * ONE ROW PER (task, material). The unique index is the idempotency: recording twice for
+ * the same pair edits the existing row rather than adding a second, so a retried request
+ * from a phone on a bad connection cannot double a draw. The running totals live on the
+ * parent work's `plannedMaterials` row, where the guard can act on them atomically; these
+ * rows are the ledger that says where the total came from.
+ *
+ * `materialName` and `unit` are frozen at the moment of recording — what was written down
+ * then, not what the catalogue says now.
+ */
+export interface IPlannedWorkMaterialUsage {
+  plannedWork: Types.ObjectId;
+  task: Types.ObjectId;
+  materialItem: Types.ObjectId;
+  materialName: string;
+  quantity: number;
+  unit: MaterialUnit;
+  recordedBy: Types.ObjectId | null;
+  recordedByName: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const plannedWorkMaterialUsageSchema = new Schema<IPlannedWorkMaterialUsage>(
+  {
+    plannedWork: { type: Schema.Types.ObjectId, ref: 'PlannedWork', required: true, index: true },
+    task: { type: Schema.Types.ObjectId, ref: 'PlannedWorkTask', required: true, index: true },
+    materialItem: { type: Schema.Types.ObjectId, ref: 'MaterialItem', required: true },
+    materialName: { type: String, required: true, trim: true, maxlength: 200 },
+    quantity: { type: Number, required: true, min: 0 },
+    unit: { type: String, enum: MATERIAL_UNITS, required: true, default: 'PIECE' },
+    recordedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
+    recordedByName: { type: String, default: null },
+  },
+  { timestamps: true, versionKey: false },
+);
+
+// The idempotency rule above, enforced by the database rather than by a service check.
+plannedWorkMaterialUsageSchema.index({ task: 1, materialItem: 1 }, { unique: true });
+// "Who drew down this material on this work", for the per-material breakdown.
+plannedWorkMaterialUsageSchema.index({ plannedWork: 1, materialItem: 1 });
+
+export const PlannedWorkMaterialUsage: Model<IPlannedWorkMaterialUsage> =
+  model<IPlannedWorkMaterialUsage>('PlannedWorkMaterialUsage', plannedWorkMaterialUsageSchema);

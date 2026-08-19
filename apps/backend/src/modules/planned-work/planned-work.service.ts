@@ -1,8 +1,10 @@
 import {
+  MATERIAL_UNIT_LABELS,
   PERMISSIONS,
   progressPercentOf,
   riskLevelFor,
   type CreatePlannedWorkInput,
+  type MaterialUnit,
   type CreatePlannedWorkTaskInput,
   type PaginatedData,
   type PlannedWorkDto,
@@ -14,6 +16,8 @@ import {
   type PlannedWorkReportDto,
   type PlannedWorkScheduleChangeDto,
   type PlannedWorkTaskDto,
+  type PlannedWorkTaskMaterialUsageDto,
+  type RecordTaskMaterialUsageInput,
   type RecordTaskProgressInput,
   type ReschedulePlannedWorkInput,
   type UpdatePlannedWorkInput,
@@ -34,6 +38,7 @@ import type { RequestMeta } from '../../common/utils/request-meta.util';
 import { hasPermission } from '../../middlewares/authorize.middleware';
 import { recordAudit } from '../audit/audit.service';
 import { Employee } from '../employee/employee.model';
+import { MaterialItem } from '../material/material.models';
 import { ObjectRecord } from '../object-master/object-master.models';
 import { ObjectNode } from '../objects/object.models';
 import { Team } from '../org/org.models';
@@ -42,6 +47,11 @@ import { StoredFile, type IStoredFile } from '../storage/stored-file.model';
 import { deleteStoredFile } from '../storage/storage.service';
 import { assertEmployeesExist } from './planned-work.crew';
 import { plannedWorkMaterialsOf } from './planned-work.materials.service';
+import {
+  recordTaskMaterialUsage,
+  releaseTaskMaterialUsage,
+  usageByTask,
+} from './planned-work.material-usage.service';
 import {
   PlannedWork,
   PlannedWorkTask,
@@ -394,6 +404,13 @@ function photoDto(value: unknown): PlannedWorkPhotoDto | null {
 export function toTaskDto(
   task: Doc<IPlannedWorkTask>,
   floorNames: ReadonlyMap<string, string>,
+  /**
+   * Usage rows for this task, from the one read the caller already did for the whole work.
+   *
+   * Passed in rather than fetched here: this runs once per sub-task, and a query inside it
+   * would turn one page of a floor's tasks into a query per row.
+   */
+  materialUsage: readonly PlannedWorkTaskMaterialUsageDto[] = [],
 ): PlannedWorkTaskDto {
   const completed = Math.min(task.completedQuantity, task.totalQuantity);
 
@@ -430,6 +447,7 @@ export function toTaskDto(
     afterPhotos: task.afterPhotos.map(photoDto).filter((photo): photo is PlannedWorkPhotoDto =>
       photo !== null,
     ),
+    materialUsage,
     missingEvidence: missingTaskEvidenceOf(task),
     completedAt: task.completedAt?.toISOString() ?? null,
     createdByName: creatorName(task.createdBy),
@@ -538,8 +556,10 @@ async function loadDetail(
     : [];
   const floorNames = new Map(floors.map((floor) => [String(floor._id), floor.name]));
 
-  const [materials, reportState, assignmentAllowed] = await Promise.all([
+  const [materials, usage, reportState, assignmentAllowed] = await Promise.all([
     plannedWorkMaterialsOf(work),
+    // One read for the whole work, handed to each task below, rather than a query per row.
+    usageByTask(work._id),
     loadReportState(work),
     /**
      * Resolved once here so the action list a technician is shown matches what the write
@@ -578,7 +598,7 @@ async function loadDetail(
       name: work.archivedByName,
       at: work.archivedAt?.toISOString() ?? null,
     },
-    tasks: tasks.map((task) => toTaskDto(task, floorNames)),
+    tasks: tasks.map((task) => toTaskDto(task, floorNames, usage.get(String(task._id)) ?? [])),
     floorProgress: floorProgressOf(tasks, floorNames),
     materials,
     report: narrowReportForActor(
@@ -1449,6 +1469,11 @@ export async function deleteTask(
     await StoredFile.deleteMany({ _id: { $in: photoIds } });
   }
 
+  // Whatever this sub-task drew goes back to the pool before the rows that record it are
+  // gone. Deleting the task without this would leave the work permanently short of a
+  // material that nothing left in the system claims to have used.
+  await releaseTaskMaterialUsage(work._id, task._id);
+
   await PlannedWorkTask.deleteOne({ _id: task._id });
   await recalculatePlannedWorkProgress(work._id);
 
@@ -1483,16 +1508,95 @@ export async function setPlannedMaterials(
   assertMutable(work);
 
   const before = work.plannedMaterials.map((entry) => ({
+    materialItemId: String(entry.materialItem),
     name: entry.name,
     quantity: entry.quantity,
+    consumedQuantity: entry.consumedQuantity,
     unit: entry.unit,
   }));
 
-  work.plannedMaterials = input.materials.map((entry) => ({
-    name: entry.name,
-    quantity: entry.quantity,
-    unit: entry.unit,
-  }));
+  // The catalogue is the authority on the name and the unit. Resolving all of them in one
+  // read rather than per row, and refusing the whole list if any id is unknown or retired:
+  // a partially applied material list is worse than a refused one.
+  const requestedIds = input.materials.map((entry) => new Types.ObjectId(entry.materialItemId));
+  const catalogue = await MaterialItem.find({ _id: { $in: requestedIds }, isActive: true })
+    .select('name defaultUnit')
+    .lean<{ _id: Types.ObjectId; name: string; defaultUnit: MaterialUnit }[]>();
+  const byId = new Map(catalogue.map((item) => [String(item._id), item]));
+
+  const issues = input.materials
+    .map((entry, index) =>
+      byId.has(entry.materialItemId)
+        ? null
+        : { field: `materials.${index}.materialItemId`, message: 'Материал олдсонгүй.' },
+    )
+    .filter((issue): issue is { field: string; message: string } => issue !== null);
+  if (issues.length > 0) {
+    throw AppError.badRequest(
+      ERROR_CODES.VALIDATION_ERROR,
+      'Жагсаалтад байхгүй эсвэл идэвхгүй материал байна.',
+      issues,
+    );
+  }
+
+  /*
+   * WHAT IS ALREADY CONSUMED SURVIVES THIS WRITE, and bounds it.
+   *
+   * The drawer replaces the whole list, which was harmless while a row was only a plan.
+   * It is not harmless now: a row carries what sub-tasks have already drawn, and rebuilding
+   * it from the request alone would silently reset that to zero and hand the pool back out
+   * a second time. So the consumed figure is carried across per material, and lowering a
+   * registered quantity below it is refused outright — the alternative is a negative
+   * remainder, which is the exact state this feature exists to make impossible.
+   *
+   * Removing a row that has been drawn on is refused for the same reason: the ledger rows
+   * would still name a material the work no longer registers.
+   */
+  const consumedById = new Map(
+    work.plannedMaterials.map((entry) => [String(entry.materialItem), entry.consumedQuantity]),
+  );
+
+  const shortfalls = input.materials
+    .map((entry, index) => {
+      const consumed = consumedById.get(entry.materialItemId) ?? 0;
+      return entry.quantity < consumed
+        ? {
+            field: `materials.${index}.quantity`,
+            message: `Зарцуулсан хэмжээнээс бага байж болохгүй. Зарцуулсан: ${consumed}.`,
+          }
+        : null;
+    })
+    .filter((issue): issue is { field: string; message: string } => issue !== null);
+
+  const requestedIdSet = new Set(input.materials.map((entry) => entry.materialItemId));
+  const droppedInUse = work.plannedMaterials.filter(
+    (entry) => entry.consumedQuantity > 0 && !requestedIdSet.has(String(entry.materialItem)),
+  );
+
+  if (shortfalls.length > 0 || droppedInUse.length > 0) {
+    throw AppError.badRequest(
+      ERROR_CODES.VALIDATION_ERROR,
+      droppedInUse.length > 0
+        ? `Зарцуулсан материалыг жагсаалтаас хасах боломжгүй: ${droppedInUse
+            .map((entry) => entry.name)
+            .join(', ')}.`
+        : 'Бүртгэсэн хэмжээ зарцуулсан хэмжээнээс бага байна.',
+      shortfalls,
+    );
+  }
+
+  work.plannedMaterials = input.materials.map((entry) => {
+    const item = byId.get(entry.materialItemId)!;
+    const consumed = consumedById.get(entry.materialItemId) ?? 0;
+    return {
+      materialItem: new Types.ObjectId(entry.materialItemId),
+      name: item.name,
+      quantity: entry.quantity,
+      consumedQuantity: consumed,
+      remainingQuantity: entry.quantity - consumed,
+      unit: item.defaultUnit,
+    };
+  });
   await work.save();
 
   await recordAudit({
@@ -1505,8 +1609,10 @@ export async function setPlannedMaterials(
     oldValue: { materials: before },
     newValue: {
       materials: work.plannedMaterials.map((entry) => ({
+        materialItemId: String(entry.materialItem),
         name: entry.name,
         quantity: entry.quantity,
+        consumedQuantity: entry.consumedQuantity,
         unit: entry.unit,
       })),
     },
@@ -1636,6 +1742,76 @@ export async function detachTaskPhoto(
 /** Exposed so the routes can hand the caller's permission set to the detail mapper. */
 export function canRecordProgress(actor: AuthContext): boolean {
   return hasPermission(actor, PERMISSIONS.PLANNED_WORK_RECORD_PROGRESS);
+}
+
+/**
+ * Records what one sub-task consumed of one material registered on its parent work.
+ *
+ * THE SAME GATES AS PROGRESS, and for the same reasons: the work must be mutable, the
+ * caller must be inside the assignment scope, and the task must belong to this work — the
+ * last checked by scoping the lookup rather than by trusting the id, so naming another
+ * job's task is a 404 and not a way to draw down somebody else's materials.
+ *
+ * ONE GATE OF ITS OWN: a finished sub-task is closed to this. The figure it reported is
+ * the record of what that piece of work took, and letting it move afterwards would edit
+ * history to make a later shortage disappear. Corrections belong to a sub-task that is
+ * still open.
+ *
+ * The arithmetic and the refusal live in `planned-work.material-usage.service`; this
+ * function is the gatekeeper, not the accountant.
+ */
+export async function recordTaskMaterialUsageOnWork(
+  plannedWorkId: string,
+  taskId: string,
+  input: RecordTaskMaterialUsageInput,
+  actor: AuthContext,
+  meta: RequestMeta,
+): Promise<PlannedWorkDto> {
+  const work = await findRaw(plannedWorkId);
+  assertMutable(work);
+  await assertPlannedWorkAssignmentScope(work._id, actor);
+
+  const task = await findTask(plannedWorkId, taskId);
+
+  if (task.status === 'DONE' || task.skipped) {
+    throw AppError.badRequest(
+      ERROR_CODES.VALIDATION_ERROR,
+      'Дууссан дэд ажлын материалын бүртгэлийг өөрчлөх боломжгүй.',
+    );
+  }
+
+  const registered = work.plannedMaterials.find(
+    (entry) => String(entry.materialItem) === input.materialItemId,
+  );
+
+  await recordTaskMaterialUsage(
+    {
+      plannedWorkId: work._id,
+      taskId: task._id,
+      registered: registered
+        ? { materialItem: registered.materialItem, name: registered.name, unit: registered.unit }
+        : undefined,
+      unitLabel: registered ? MATERIAL_UNIT_LABELS[registered.unit] : '',
+    },
+    input,
+    actor,
+  );
+
+  await recordAudit({
+    entityType: 'PlannedWork',
+    entityId: work._id,
+    action: 'Updated',
+    actor: { id: actor.userId, role: actor.role, label: actor.fullName },
+    meta,
+    reason: 'sub-task material usage recorded',
+    newValue: {
+      taskId: String(task._id),
+      materialItemId: input.materialItemId,
+      quantity: input.quantity,
+    },
+  });
+
+  return getPlannedWorkById(plannedWorkId, actor);
 }
 
 export { isIncludedTask, findRaw as findPlannedWorkOrThrow };

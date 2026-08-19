@@ -462,6 +462,28 @@ class WorkRemoteDataSource {
     );
   }
 
+  /// POST /planned-work/:id/tasks/:taskId/materials — what one sub-task consumed of
+  /// one material registered on the work.
+  ///
+  /// The quantity is ABSOLUTE for that (sub-task, material) pair, so re-sending the
+  /// same body after a timeout leaves the same figure recorded rather than doubling
+  /// it, and a zero deletes the entry. Answers with the whole re-read
+  /// [PlannedWorkModel], which is what refreshes the work's Зарцуулсан/Үлдсэн totals
+  /// alongside the sub-task's own rows without a second GET.
+  Future<PlannedWorkModel> recordTaskMaterialUsage({
+    required String plannedWorkId,
+    required String taskId,
+    required RecordTaskMaterialUsageRequest request,
+  }) {
+    return _client.request<PlannedWorkModel>(
+      path: '/planned-work/$plannedWorkId/tasks/$taskId/materials',
+      method: 'POST',
+      data: request.toJson(),
+      decoder: (Object? json) =>
+          PlannedWorkModel.fromJson(json! as Map<String, dynamic>),
+    );
+  }
+
   /// GET /planned-work/:id/report. `report` is null until the work is completed;
   /// `preview` is assembled on every call.
   Future<PlannedWorkReportBundleModel> getReport(String plannedWorkId) {

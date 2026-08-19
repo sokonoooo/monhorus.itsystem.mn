@@ -9,8 +9,11 @@ import type {
   PaginatedData,
   PlannedWorkDto,
   PlannedWorkListItemDto,
+  MaterialItemDto,
+  PlannedWorkMaterialDto,
   PlannedWorkReportDto,
   PlannedWorkTaskDto,
+  PlannedWorkTaskMaterialUsageDto,
   FloorDto,
   FloorLoadSummaryDto,
   FloorPlanDto,
@@ -163,11 +166,65 @@ export function makePlannedWorkTask(
     relatedObjects: [],
     beforePhotos: [],
     afterPhotos: [],
+    materialUsage: [],
     missingEvidence: ['Ажлын өмнөх зураг', 'Ажлын дараах зураг', 'Тайлбар', 'Зөвлөмж'],
     completedAt: null,
     createdAt: '2026-06-25T00:00:00.000Z',
     createdByName: 'Б. Энхтөр',
     updatedAt: '2026-06-25T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+/** A row of the material catalogue, as the pickers on a planned work see it. */
+export function makeMaterialItem(overrides: Partial<MaterialItemDto> = {}): MaterialItemDto {
+  return {
+    id: '507f1f77bcf86cd799439091',
+    code: 'CBL-3X2.5',
+    name: 'Кабель 3x2.5',
+    category: 'CABLE',
+    defaultUnit: 'METRE',
+    description: null,
+    isActive: true,
+    createdAt: '2026-06-01T00:00:00.000Z',
+    updatedAt: '2026-06-01T00:00:00.000Z',
+  ...overrides,
+  };
+}
+
+/**
+ * One material registered on a work.
+ *
+ * All three figures are given explicitly rather than derived from each other, because that
+ * is exactly how they arrive: the backend stores the remainder, and a fixture that computed
+ * it would hide a screen that computes it too.
+ */
+export function makePlannedWorkMaterial(
+  overrides: Partial<PlannedWorkMaterialDto> = {},
+): PlannedWorkMaterialDto {
+  return {
+    materialItemId: '507f1f77bcf86cd799439091',
+    name: 'Кабель 3x2.5',
+    quantity: 100,
+    consumedQuantity: 40,
+    remainingQuantity: 60,
+    unit: 'METRE',
+    ...overrides,
+  };
+}
+
+export function makeTaskMaterialUsage(
+  overrides: Partial<PlannedWorkTaskMaterialUsageDto> = {},
+): PlannedWorkTaskMaterialUsageDto {
+  return {
+    id: '507f1f77bcf86cd7994390a1',
+    taskId: '507f1f77bcf86cd799439071',
+    materialItemId: '507f1f77bcf86cd799439091',
+    materialName: 'Кабель 3x2.5',
+    quantity: 40,
+    unit: 'METRE',
+    recordedByName: 'Бат Дорж',
+    recordedAt: '2026-07-12T00:00:00.000Z',
     ...overrides,
   };
 }

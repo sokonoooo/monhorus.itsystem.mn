@@ -21,6 +21,7 @@ class TaskCard extends StatelessWidget {
     required this.task,
     required this.progressBlockedReason,
     required this.onRecordProgress,
+    required this.onRecordMaterials,
   });
 
   final PlannedWorkTaskModel task;
@@ -34,6 +35,11 @@ class TaskCard extends StatelessWidget {
   final String? progressBlockedReason;
 
   final VoidCallback onRecordProgress;
+
+  /// Opens the material-consumption sheet, or null when there is nothing to draw
+  /// from — no material is registered on the work — so the control is not offered at
+  /// all rather than opening onto an empty list.
+  final VoidCallback? onRecordMaterials;
 
   @override
   Widget build(BuildContext context) {
@@ -220,6 +226,11 @@ class TaskCard extends StatelessWidget {
             _RecordedText(label: 'Зөвлөмж', text: task.recommendation!),
           ],
 
+          if (task.materialUsage.isNotEmpty) ...<Widget>[
+            const SizedBox(height: 8),
+            _MaterialUsageBlock(usage: task.materialUsage),
+          ],
+
           if (task.beforePhotos.isNotEmpty) ...<Widget>[
             const SizedBox(height: 11),
             EvidencePhotoStrip(
@@ -255,6 +266,7 @@ class TaskCard extends StatelessWidget {
             task: task,
             blockedReason: progressBlockedReason,
             onRecordProgress: onRecordProgress,
+            onRecordMaterials: onRecordMaterials,
           ),
         ],
       ),
@@ -293,11 +305,13 @@ class _TaskAction extends StatelessWidget {
     required this.task,
     required this.blockedReason,
     required this.onRecordProgress,
+    required this.onRecordMaterials,
   });
 
   final PlannedWorkTaskModel task;
   final String? blockedReason;
   final VoidCallback onRecordProgress;
+  final VoidCallback? onRecordMaterials;
 
   @override
   Widget build(BuildContext context) {
@@ -343,12 +357,79 @@ class _TaskAction extends StatelessWidget {
     final bool started =
         percent == null ? task.completedQuantity > 0 : percent > 0;
 
-    return WorkButton(
-      label: started
-          ? 'Гүйцэтгэл шинэчлэх'
-          : 'Өнөөдрийн гүйцэтгэл оруулах',
-      icon: Icons.add,
-      onPressed: onRecordProgress,
+    // The material control sits beside the progress one, and only while the sub-task
+    // can still take a write: the server refuses consumption on a DONE or a skipped
+    // sub-task outright, so a button there could do nothing but 400. The DONE case is
+    // handled above, where the card returns before reaching here.
+    final VoidCallback? materials = task.isSkipped ? null : onRecordMaterials;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      mainAxisSize: MainAxisSize.min,
+      children: <Widget>[
+        WorkButton(
+          label: started
+              ? 'Гүйцэтгэл шинэчлэх'
+              : 'Өнөөдрийн гүйцэтгэл оруулах',
+          icon: Icons.add,
+          onPressed: onRecordProgress,
+        ),
+        if (materials != null) ...<Widget>[
+          const SizedBox(height: 8),
+          WorkButton.secondary(
+            label: task.materialUsage.isEmpty
+                ? 'Материал зарцуулалт бүртгэх'
+                : 'Материал зарцуулалт засах',
+            icon: Icons.inventory_2_outlined,
+            onPressed: materials,
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+/// What this sub-task drew from the work's registered materials.
+///
+/// Rows exactly as the server recorded them — the name frozen with the entry, the
+/// quantity as stored, and who put it there. Nothing is totalled here: the running
+/// totals belong to the work's Материал card, where the shared pool actually lives.
+class _MaterialUsageBlock extends StatelessWidget {
+  const _MaterialUsageBlock({required this.usage});
+
+  final List<TaskMaterialUsageModel> usage;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: EmployeeTokens.soft2,
+        border: Border.all(color: EmployeeTokens.faint),
+        borderRadius: BorderRadius.circular(EmployeeTokens.radiusInput),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Text(
+            'ЗАРЦУУЛСАН МАТЕРИАЛ (${usage.length})',
+            style: EmployeeTokens.microLabel,
+          ),
+          const SizedBox(height: 4),
+          for (final TaskMaterialUsageModel row in usage)
+            Text(
+              '· ${row.materialName} — ${formatQuantity(row.quantity)} '
+              '${row.unit.label}'
+              '${row.recordedByName == null ? '' : ' · ${row.recordedByName}'}',
+              style: EmployeeTokens.rowSub.copyWith(
+                color: EmployeeTokens.ink2,
+                height: 1.6,
+              ),
+            ),
+        ],
+      ),
     );
   }
 }

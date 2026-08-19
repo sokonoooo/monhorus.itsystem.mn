@@ -10,6 +10,7 @@ import type {
   PlannedWorkMaterialsInput,
   PlannedWorkReportDto,
   PlannedWorkReportPreviewDto,
+  RecordTaskMaterialUsageInput,
   RecordTaskProgressInput,
   ReschedulePlannedWorkInput,
   ReturnPlannedWorkReportInput,
@@ -183,6 +184,30 @@ export const plannedWorkService = {
     return unwrap(
       await apiClient.put<ApiResponse<PlannedWorkDto>>(
         `/planned-work/${plannedWorkId}/materials`,
+        payload,
+      ),
+    );
+  },
+
+  /**
+   * One sub-task's draw against one material registered on the work.
+   *
+   * The quantity is ABSOLUTE for that (sub-task, material) pair rather than an increment,
+   * so sending the same figure twice is the same as sending it once — which is what makes
+   * this safe to retry from a phone — and sending zero deletes the row.
+   *
+   * Gated on `planned_work.record_progress`, not on `planned_work.update`: consumption is
+   * something the crew reports, while the registered list is something a manager plans.
+   * The whole work comes back, because a draw moves the work-level totals too.
+   */
+  async recordMaterialUsage(
+    plannedWorkId: string,
+    taskId: string,
+    payload: RecordTaskMaterialUsageInput,
+  ): Promise<PlannedWorkDto> {
+    return unwrap(
+      await apiClient.post<ApiResponse<PlannedWorkDto>>(
+        `/planned-work/${plannedWorkId}/tasks/${taskId}/materials`,
         payload,
       ),
     );

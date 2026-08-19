@@ -100,6 +100,14 @@ export interface PlannedWorkTaskDto {
   recommendation: string | null;
   beforePhotos: readonly PlannedWorkPhotoDto[];
   afterPhotos: readonly PlannedWorkPhotoDto[];
+  /**
+   * What this sub-task drew from the work's registered materials.
+   *
+   * Rows, not a total: the totals belong to the work, where the pool is shared and the
+   * over-consumption guard can act on it atomically. Empty for a sub-task that consumed
+   * nothing, which is the ordinary case for inspection work.
+   */
+  materialUsage: readonly PlannedWorkTaskMaterialUsageDto[];
   /** Mongolian labels of the evidence still missing before the task may be DONE. */
   missingEvidence: readonly string[];
   completedAt: string | null;
@@ -126,15 +134,51 @@ export interface PlannedWorkPhotoDto {
 }
 
 /**
- * A material planned for the work: a typed name, a quantity and a unit.
+ * A material registered on the work, and what its sub-tasks have drawn against it.
  *
- * Requirements 19.2 keeps V1 at "нэр/тоо". There is no catalogue behind the name and no
- * stock ledger to compare against, so nothing here is planned-versus-actual.
+ * NOW CATALOGUE-BACKED. The name used to be free text with nothing behind it, which was
+ * fine while nothing was ever counted against it. It is not fine now: consumption has to
+ * point at a row that survives being renamed, and a name is not an identity. The
+ * catalogue reference IS the identity here — a material appears at most once per work —
+ * so `name` and `unit` are frozen copies kept for display and for history.
+ *
+ * THE THREE FIGURES ARE ALL SERVER-SENT, including `remainingQuantity`, which is stored
+ * rather than derived. Two reasons, and the second is the load-bearing one: the Flutter
+ * client's rule is that nothing is recalculated on the device, and the over-consumption
+ * guard is a conditional update on `remainingQuantity` itself, so it has to be a field
+ * the database can compare against a constant.
+ *
+ * The invariant is `consumedQuantity + remainingQuantity === quantity`, always.
  */
 export interface PlannedWorkMaterialDto {
+  materialItemId: string;
+  /** Frozen at registration, so a later catalogue rename does not rewrite this work. */
   name: string;
+  /** Registered — what the plan allows to be drawn in total. */
+  quantity: number;
+  /** Used — the sum of every sub-task's usage. */
+  consumedQuantity: number;
+  /** Remaining — stored, never `quantity - consumedQuantity` computed by a client. */
+  remainingQuantity: number;
+  unit: MaterialUnit;
+}
+
+/**
+ * One sub-task's draw against one registered material.
+ *
+ * A ledger row, not a running total: the total lives on [PlannedWorkMaterialDto] where
+ * the guard can act on it atomically. This is the "which sub-task consumed what" record.
+ */
+export interface PlannedWorkTaskMaterialUsageDto {
+  id: string;
+  taskId: string;
+  materialItemId: string;
+  /** Frozen with the row, so a renamed catalogue entry does not rewrite what was recorded. */
+  materialName: string;
   quantity: number;
   unit: MaterialUnit;
+  recordedByName: string | null;
+  recordedAt: string;
 }
 
 export interface PlannedWorkFloorProgressDto {
