@@ -372,7 +372,6 @@ Map<String, dynamic> _request({
       'floor': <String, dynamic>{'id': 'f', 'name': '3-р давхар'},
       if (deviceName != null)
         'device': <String, dynamic>{'id': 'd', 'name': deviceName},
-      'requestType': 'REPAIR',
       'isUrgent': isUrgent,
       'status': status,
       'slaState': slaState,
@@ -2445,7 +2444,6 @@ ServiceRequestDetailModel _detailFor({
       'building': <String, dynamic>{'id': 'b', 'name': 'Төв байр'},
       if (deviceName != null)
         'device': <String, dynamic>{'id': 'd', 'name': deviceName},
-      'requestType': 'REPAIR',
       'status': 'UNASSIGNED',
       'isUrgent': false,
       'description': 'Лифт зогссон.',

@@ -117,7 +117,6 @@ Map<String, dynamic> _detailJson({
     'floor': <String, dynamic>{'id': 'fl1', 'name': '3-р давхар'},
     'room': <String, dynamic>{'id': 'rm1', 'name': '304 тоот'},
     'device': <String, dynamic>{'id': 'd1', 'name': 'Гэрэлтүүлгийн самбар'},
-    'requestType': 'REPAIR',
     'isUrgent': false,
     'status': status,
     'slaState': 'STARTED',
@@ -240,7 +239,6 @@ void main() {
     );
 
     // 2 — what kind of job it is.
-    expect(find.text('Засвар үйлчилгээ'), findsOneWidget);
 
     // 3 — who to talk to on site. Both halves: a name with no number is not a contact.
     expect(_caption('Холбоо барих'), findsOneWidget);

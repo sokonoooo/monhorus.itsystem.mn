@@ -1,6 +1,5 @@
 import {
   RISK_LEVEL_LABELS,
-  SERVICE_REQUEST_TYPE_LABELS,
   type CustomerWorkReportDto,
   type ServiceRequestDetailDto,
 } from '@monhorus/shared';
@@ -132,7 +131,6 @@ export function PortalRequestDetailPage(): ReactElement {
           </div>
 
           <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            <Row label="Төрөл" value={SERVICE_REQUEST_TYPE_LABELS[request.requestType]} />
             <Row
               label="Байршил"
               value={

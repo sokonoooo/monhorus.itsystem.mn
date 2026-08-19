@@ -130,7 +130,6 @@ ServiceRequestDetailModel _detail() =>
     ServiceRequestDetailModel.fromJson(<String, dynamic>{
       'id': kRequestId,
       'requestNumber': 'SR-202608-0001',
-      'requestType': 'REPAIR',
       'status': 'ON_SITE',
       'assignedEmployees': <Map<String, dynamic>>[
         <String, dynamic>{'id': kEmployeeId, 'name': 'Дорж'},

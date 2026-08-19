@@ -282,7 +282,6 @@ void main() {
   group('service request enums', () {
     test('carry every status the shared constant declares', () {
       expect(ServiceRequestStatus.values.length, 14);
-      expect(ServiceRequestType.values.length, 6);
       expect(SlaState.values.length, 6);
       expect(NotificationEvent.values.length, 17);
     });
@@ -452,7 +451,6 @@ void main() {
 
       expect(request.requestNumber, 'SR-202607-0012');
       expect(request.status, ServiceRequestStatus.assigned);
-      expect(request.requestType, ServiceRequestType.urgentCall);
       expect(request.isUrgent, isTrue);
       expect(request.building?.name, 'Төв цамхаг');
       expect(request.room, isNull);
@@ -473,11 +471,9 @@ void main() {
         buildingId: 'b1',
         objectTypeId: 'ot1',
         floorId: 'f1',
-        requestType: ServiceRequestType.repair,
         description: 'Гэрэл асахгүй байна.',
         contactName: 'Д. Оюунчимэг',
         contactPhone: '9911-2233',
-        isUrgent: true,
       );
 
       final Map<String, dynamic> json = request.toJson();
@@ -486,8 +482,6 @@ void main() {
       // The server takes the SLA window from this, so it must always be on the wire.
       expect(json['objectTypeId'], 'ot1');
       expect(json['floorId'], 'f1');
-      expect(json['requestType'], 'REPAIR');
-      expect(json['isUrgent'], isTrue);
       expect(json['attachmentIds'], isEmpty);
       // Optional keys are omitted rather than sent as null, which the strict
       // branches of the Zod schema would reject.

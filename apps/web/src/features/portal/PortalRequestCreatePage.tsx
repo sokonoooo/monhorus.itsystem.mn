@@ -1,6 +1,4 @@
 import {
-  SERVICE_REQUEST_TYPES,
-  SERVICE_REQUEST_TYPE_LABELS,
   createServiceRequestSchema,
   type BuildingDto,
   type CallableObjectTypeDto,
@@ -8,7 +6,6 @@ import {
   type FloorDto,
   type ProjectDto,
   type ServiceRequestAttachmentDto,
-  type ServiceRequestType,
 } from '@monhorus/shared';
 import { useEffect, useRef, useState, type FormEvent, type ReactElement } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
@@ -62,12 +59,6 @@ export function PortalRequestCreatePage(): ReactElement {
   const [projectId, setProjectId] = useState('');
   const [buildingId, setBuildingId] = useState(searchParams.get('buildingId') ?? '');
   const [floorId, setFloorId] = useState(searchParams.get('floorId') ?? '');
-  // Prefilled from the type in the query so "request scheduled maintenance" can be one
-  // click from elsewhere in the portal.
-  const [requestType, setRequestType] = useState<ServiceRequestType | ''>(
-    (searchParams.get('type') as ServiceRequestType | null) ?? '',
-  );
-  const [isUrgent, setIsUrgent] = useState(false);
   const [description, setDescription] = useState('');
   const [contactName, setContactName] = useState(user?.fullName ?? '');
   const [contactPhone, setContactPhone] = useState(user?.phone ?? '');
@@ -196,9 +187,7 @@ export function PortalRequestCreatePage(): ReactElement {
       projectId: projectId || null,
       buildingId,
       floorId: floorId || null,
-      requestType: requestType as ServiceRequestType,
       objectTypeId,
-      isUrgent,
       description: description.trim(),
       contactName: contactName.trim(),
       contactPhone: contactPhone.trim(),
@@ -234,8 +223,6 @@ export function PortalRequestCreatePage(): ReactElement {
       setSubmitting(false);
     }
   }
-
-  const isScheduled = requestType === 'PLANNED_INSPECTION';
 
   return (
     <>
@@ -301,18 +288,6 @@ export function PortalRequestCreatePage(): ReactElement {
 
           <Section title="Хүсэлт">
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-              <Field label="Төрөл" required error={fieldErrors.requestType}>
-                <SelectInput
-                  value={requestType}
-                  onChange={(value) => setRequestType(value as ServiceRequestType)}
-                  placeholder="Төрөл сонгох"
-                  options={SERVICE_REQUEST_TYPES.map((value) => ({
-                    value,
-                    label: SERVICE_REQUEST_TYPE_LABELS[value],
-                  }))}
-                  disabled={submitting}
-                />
-              </Field>
 
               {/*
                 Labelled "Тоног төхөөрөмжийн төрөл", not "Төрөл". The field above is already
@@ -349,26 +324,6 @@ export function PortalRequestCreatePage(): ReactElement {
                 <TextInput value={contactPhone} onChange={setContactPhone} disabled={submitting} />
               </Field>
             </div>
-
-            {isScheduled && (
-              <div className="mt-3">
-                <Alert variant="info">
-                  Төлөвлөгөөт үзлэгийн хүсэлт манай багт очно. Хүлээн авч баталсны дараа
-                  ажилтан хуваарилагдаж, товлосон хугацаа тодорхой болно.
-                </Alert>
-              </div>
-            )}
-
-            <label className="mt-3 flex items-center gap-2 text-sm text-slate-700">
-              <input
-                type="checkbox"
-                checked={isUrgent}
-                onChange={(event) => setIsUrgent(event.target.checked)}
-                disabled={submitting}
-                className="h-4 w-4 rounded border-slate-300"
-              />
-              Яаралтай
-            </label>
 
             <div className="mt-3">
               <label htmlFor="portal-description" className={FILTER_LABEL}>

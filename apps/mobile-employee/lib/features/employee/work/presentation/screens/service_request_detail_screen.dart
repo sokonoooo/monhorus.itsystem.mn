@@ -838,8 +838,6 @@ class _SummaryCard extends StatelessWidget {
           ],
           const SizedBox(height: 8),
           InfoRow(label: 'Байршил', value: where),
-          if (record?.requestType != null)
-            InfoRow(label: 'Төрөл', value: record!.requestType!.label),
           if (record?.branch != null)
             InfoRow(label: 'Салбар', value: record!.branch!),
           if (status != null)

@@ -217,7 +217,6 @@ class CustomerPortalRemoteDataSource {
   Future<PaginatedData<ServiceRequestListItemModel>> listServiceRequests({
     required ResolvedCustomerScope scope,
     ServiceRequestStatus? status,
-    ServiceRequestType? requestType,
     bool? isUrgent,
     String? buildingId,
     String? projectId,
@@ -233,7 +232,6 @@ class CustomerPortalRemoteDataSource {
       queryParameters: <String, dynamic>{
         'customerId': scope.customerId,
         if (status != null) 'status': status.wireValue,
-        if (requestType != null) 'requestType': requestType.wireValue,
         if (isUrgent != null) 'isUrgent': isUrgent,
         if (buildingId != null) 'buildingId': buildingId,
         if (projectId != null) 'projectId': projectId,

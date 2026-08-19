@@ -159,21 +159,7 @@ describe('requesting scheduled maintenance', () => {
    * Scheduled maintenance is an existing REQUEST TYPE, not a new endpoint or status. This
    * is the whole mechanism, so it is pinned.
    */
-  it('offers Төлөвлөгөөт үзлэг as a request type', async () => {
-    renderPortal(<PortalRequestCreatePage />, '/portal/requests/new');
 
-    const typeSelect = await screen.findByLabelText(/^Төрөл/);
-    expect(within(typeSelect).getByRole('option', { name: 'Төлөвлөгөөт үзлэг' })).toBeInTheDocument();
-  });
-
-  it('prefills the type from the link so it is one click from the home page', async () => {
-    renderPortal(<PortalRequestCreatePage />, '/portal/requests/new?type=PLANNED_INSPECTION');
-
-    const typeSelect = await screen.findByLabelText(/^Төрөл/);
-    expect(typeSelect).toHaveValue('PLANNED_INSPECTION');
-    // And says plainly that a person has to accept it before anyone is assigned.
-    expect(screen.getByText(/Хүлээн авч баталсны дараа ажилтан хуваарилагдаж/)).toBeInTheDocument();
-  });
 
   it('submits it as an ordinary service request owned by the caller organisation', async () => {
     const create = vi
@@ -196,7 +182,6 @@ describe('requesting scheduled maintenance', () => {
         expect.objectContaining({
           customerId: CUSTOMER_ID,
           buildingId: BUILDING_ID,
-          requestType: 'PLANNED_INSPECTION',
           objectTypeId: OBJECT_TYPE_ID,
         }),
       );

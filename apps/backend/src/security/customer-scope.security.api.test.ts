@@ -137,7 +137,6 @@ async function seedTwoTenants(): Promise<void> {
       requestNumber: number,
       customer: customerId,
       building: buildingId,
-      requestType: 'URGENT_CALL',
       description,
       contactName: 'Батаа',
       contactPhone: '9911-0000',

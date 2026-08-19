@@ -73,11 +73,6 @@ class ServiceRequestCard extends StatelessWidget {
                       ),
                     if (status != null)
                       StatusPill(label: status.label, tone: statusTone),
-                    if (request.requestType != null)
-                      StatusPill(
-                        label: request.requestType!.label,
-                        tone: AccentTone.neutral,
-                      ),
                   ],
                 ),
                 const SizedBox(height: 6),

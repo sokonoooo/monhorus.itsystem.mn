@@ -1,13 +1,10 @@
 import {
   OBJECT_NODE_KIND_LABELS,
-  SERVICE_REQUEST_TYPES,
-  SERVICE_REQUEST_TYPE_LABELS,
   createServiceRequestSchema,
   type CallableObjectTypeDto,
   type CreateServiceRequestInput,
   type PlanPositionDto,
   type ServiceRequestAttachmentDto,
-  type ServiceRequestType,
 } from '@monhorus/shared';
 import { useEffect, useRef, useState, type FormEvent, type ReactElement } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -43,9 +40,6 @@ export function ServiceRequestCreatePage(): ReactElement {
    * nothing uses - and doing so behind a `settings.view` check that several request-creating
    * roles do not hold.
    */
-
-  const [requestType, setRequestType] = useState<ServiceRequestType | ''>('');
-  const [isUrgent, setIsUrgent] = useState(false);
   const [branch, setBranch] = useState('');
   const [description, setDescription] = useState('');
   const [contactName, setContactName] = useState('');
@@ -130,9 +124,7 @@ export function ServiceRequestCreatePage(): ReactElement {
       // Omitted rather than sent as null when nothing was pinned, so an untouched form
       // submits exactly the payload it always did.
       ...(planPosition ? { planPosition } : {}),
-      requestType: requestType as ServiceRequestType,
       objectTypeId,
-      isUrgent,
       description: description.trim(),
       contactName: contactName.trim(),
       contactPhone: contactPhone.trim(),
@@ -263,19 +255,6 @@ export function ServiceRequestCreatePage(): ReactElement {
             </div>
 
             <Section title="Хүсэлтийн мэдээлэл">
-              <Field label="Хүсэлтийн төрөл" required error={fieldErrors.requestType}>
-                <SelectInput
-                  value={requestType}
-                  onChange={(value) => setRequestType(value as ServiceRequestType)}
-                  placeholder="Төрөл сонгох"
-                  options={SERVICE_REQUEST_TYPES.map((type) => ({
-                    value: type,
-                    label: SERVICE_REQUEST_TYPE_LABELS[type],
-                  }))}
-                  disabled={submitting}
-                />
-              </Field>
-
               <Field
                 label="Тоног төхөөрөмжийн төрөл"
                 required
@@ -296,28 +275,6 @@ export function ServiceRequestCreatePage(): ReactElement {
                   }))}
                   disabled={submitting}
                 />
-              </Field>
-
-              <Field
-                label="Яаралтай эсэх"
-                /*
-                 * The hint states what urgency now does, which is NOT the deadline. The
-                 * window comes from the equipment type; this flag orders the queue. It used
-                 * to read `SLA n цаг` off the global settings, which after that change would
-                 * have been a number nothing uses.
-                 */
-                hint="Дараалалд эрэмбэлнэ. SLA хугацааг өөрчлөхгүй."
-              >
-                <label className="flex items-center gap-2 py-1.5 text-sm text-slate-700">
-                  <input
-                    type="checkbox"
-                    checked={isUrgent}
-                    onChange={(event) => setIsUrgent(event.target.checked)}
-                    disabled={submitting}
-                    className="h-4 w-4 rounded border-slate-300"
-                  />
-                  Яаралтай дуудлага
-                </label>
               </Field>
 
               <Field label="Холбоо барих хүн" required error={fieldErrors.contactName}>

@@ -21,7 +21,6 @@ function makeRow(overrides: Partial<ServiceRequestListItemDto> = {}): ServiceReq
     floor: { id: 'f1', name: '2-р давхар' },
     room: null,
     device: null,
-    requestType: 'URGENT_CALL',
     isUrgent: true,
     status: 'UNASSIGNED',
     assignedEmployees: [],

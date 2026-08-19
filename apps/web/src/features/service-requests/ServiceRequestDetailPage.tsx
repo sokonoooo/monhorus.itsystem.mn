@@ -2,7 +2,6 @@ import {
   PERMISSIONS,
   SERVICE_REQUEST_STATUS_LABELS,
   SERVICE_REQUEST_TRANSITIONS,
-  SERVICE_REQUEST_TYPE_LABELS,
   isReasonRequired,
   type ServiceRequestDetailDto,
   type ServiceRequestStatus,
@@ -132,7 +131,7 @@ export function ServiceRequestDetailPage(): ReactElement {
     <>
       <PageHeader
         title={request.requestNumber}
-        description={SERVICE_REQUEST_TYPE_LABELS[request.requestType]}
+        description={request.customer?.name ?? undefined}
         backTo={{ to: '/service-requests', label: 'Хүсэлтийн жагсаалт руу буцах' }}
         breadcrumbs={[
           { label: 'Нүүр', to: '/dashboard' },

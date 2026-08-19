@@ -24,7 +24,6 @@ class ServiceRequestListItemModel {
     required this.building,
     required this.floor,
     required this.device,
-    required this.requestType,
     required this.isUrgent,
     required this.status,
     required this.slaState,
@@ -41,7 +40,6 @@ class ServiceRequestListItemModel {
   final NamedRef? building;
   final NamedRef? floor;
   final NamedRef? device;
-  final ServiceRequestType? requestType;
   final bool isUrgent;
   final ServiceRequestStatus? status;
   final SlaState? slaState;
@@ -67,7 +65,6 @@ class ServiceRequestListItemModel {
       building: NamedRef.fromJson(json['building']),
       floor: NamedRef.fromJson(json['floor']),
       device: NamedRef.fromJson(json['device']),
-      requestType: ServiceRequestType.fromWire(parseString(json['requestType'])),
       isUrgent: parseBool(json['isUrgent']),
       status: ServiceRequestStatus.fromWire(parseString(json['status'])),
       slaState: SlaState.fromWire(parseString(json['slaState'])),
@@ -83,14 +80,15 @@ class ServiceRequestListItemModel {
   ///
   /// `ServiceRequestListItemDto` carries no `description` — only the detail DTO does,
   /// and fetching a detail per row would be a request per card. The device is the
-  /// most specific thing on the list row; failing that, the request type says what
-  /// kind of job it is. The request number is never used, because it is already
-  /// printed on its own mono line and a card titled with its own reference says
-  /// nothing twice.
+  /// most specific thing on the list row; failing that the location does, narrowest
+  /// first. The request type used to sit in the middle of this chain and no longer
+  /// exists. The request number is never used, because it is already printed on its own
+  /// mono line and a card titled with its own reference says nothing twice.
   String get subjectLabel {
-    final NamedRef? target = device;
-    if (target != null && target.name.isNotEmpty) return target.name;
-    return requestType?.label ?? 'Үйлчилгээний хүсэлт';
+    for (final NamedRef? target in <NamedRef?>[device, floor, building, customer]) {
+      if (target != null && target.name.isNotEmpty) return target.name;
+    }
+    return 'Үйлчилгээний хүсэлт';
   }
 
   String get locationLabel => <String>[
@@ -202,7 +200,6 @@ class ServiceRequestDetailModel {
     required this.panel,
     required this.circuit,
     required this.branch,
-    required this.requestType,
     required this.isUrgent,
     required this.status,
     required this.slaState,
@@ -230,7 +227,6 @@ class ServiceRequestDetailModel {
   final NamedRef? panel;
   final NamedRef? circuit;
   final String? branch;
-  final ServiceRequestType? requestType;
   final bool isUrgent;
   final ServiceRequestStatus? status;
   final SlaState? slaState;
@@ -276,7 +272,6 @@ class ServiceRequestDetailModel {
       panel: NamedRef.fromJson(json['panel']),
       circuit: NamedRef.fromJson(json['circuit']),
       branch: parseString(json['branch']),
-      requestType: ServiceRequestType.fromWire(parseString(json['requestType'])),
       isUrgent: parseBool(json['isUrgent']),
       status: ServiceRequestStatus.fromWire(parseString(json['status'])),
       slaState: SlaState.fromWire(parseString(json['slaState'])),
@@ -329,9 +324,10 @@ class ServiceRequestDetailModel {
   /// The heading, chosen the same way a list card chooses one, so the title does not
   /// change under the reader when the fetch lands.
   String get subjectLabel {
-    final NamedRef? target = device;
-    if (target != null && target.name.isNotEmpty) return target.name;
-    return requestType?.label ?? 'Үйлчилгээний хүсэлт';
+    for (final NamedRef? target in <NamedRef?>[device, floor, building, customer]) {
+      if (target != null && target.name.isNotEmpty) return target.name;
+    }
+    return 'Үйлчилгээний хүсэлт';
   }
 
   /// Nobody holds this request. The server's own definition, both halves of it — see

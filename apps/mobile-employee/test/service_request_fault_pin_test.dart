@@ -102,7 +102,6 @@ Map<String, dynamic> _detailJson({
         ? <String, dynamic>{'id': _floorId, 'name': '3-р давхар'}
         : null,
     'device': <String, dynamic>{'id': 'd1', 'name': 'Гэрэлтүүлгийн самбар'},
-    'requestType': 'REPAIR',
     'isUrgent': false,
     'status': 'ASSIGNED',
     'slaState': 'STARTED',

@@ -12,7 +12,6 @@ import '../../data/models/object_master_model.dart';
 import '../../data/models/project_model.dart';
 import '../../data/models/service_request_model.dart';
 import '../../domain/entities/customer_scope.dart';
-import '../../domain/entities/service_request_enums.dart';
 import '../providers/customer_portal_providers.dart';
 import '../theme/customer_tokens.dart';
 import 'authenticated_image.dart';
@@ -171,8 +170,6 @@ class _CreateRequestSheetState extends ConsumerState<CreateRequestSheet> {
   /// The equipment type the call is about. Null until chosen - or until the list arrives
   /// holding exactly one, which is preselected below.
   String? _objectTypeId;
-  ServiceRequestType _requestType = ServiceRequestType.standardCall;
-  late bool _isUrgent;
 
   /// Files already uploaded and parked on this account, in the order they were added.
   /// Their ids are what `attachmentIds` carries.
@@ -213,10 +210,6 @@ class _CreateRequestSheetState extends ConsumerState<CreateRequestSheet> {
     // enforces on the way out.
     _planPosition = _floorId == null ? null : widget.initialPlanPosition;
     _pinInherited = _planPosition != null;
-    _isUrgent = widget.initialUrgent;
-    _requestType = widget.initialUrgent
-        ? ServiceRequestType.urgentCall
-        : ServiceRequestType.standardCall;
   }
 
   @override
@@ -427,48 +420,6 @@ class _CreateRequestSheetState extends ConsumerState<CreateRequestSheet> {
                   ),
                 ),
                 const SizedBox(height: 12),
-                const FieldLabel('Хүсэлтийн төрөл'),
-                      DropdownButtonFormField<ServiceRequestType>(
-                        initialValue: _requestType,
-                        isExpanded: true,
-                        items: <DropdownMenuItem<ServiceRequestType>>[
-                          for (final ServiceRequestType type
-                              in ServiceRequestType.values)
-                            DropdownMenuItem<ServiceRequestType>(
-                              value: type,
-                              child: Text(type.label, overflow: TextOverflow.ellipsis),
-                            ),
-                        ],
-                        onChanged: (ServiceRequestType? value) => setState(() {
-                          if (value != null) _requestType = value;
-                        }),
-                      ),
-                      const SizedBox(height: 6),
-
-                      SwitchListTile.adaptive(
-                        value: _isUrgent,
-                        onChanged: (bool value) => setState(() => _isUrgent = value),
-                        contentPadding: EdgeInsets.zero,
-                        title: Text(
-                          'Яаралтай',
-                          style: CustomerTokens.rowTitle.copyWith(
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                        // No hours are named here on purpose. The window is the
-                        // `sla.urgent_hours` / `sla.standard_hours` setting (1-720),
-                        // the backend is the sole authority for the deadline, and the
-                        // customer role holds portal keys only - no `settings.view` -
-                        // so this app cannot read the values in force. Printing 6/24
-                        // would be a promise the server may not honour.
-                        subtitle: Text(
-                          'Яаралтай дуудлагыг эхэнд авч үзнэ. Гүйцэтгэх эцсийн '
-                          'хугацааг хүсэлтийг хүлээн авах үед тогтооно.',
-                          style: CustomerTokens.rowSub,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-
                       const FieldLabel('Холбогдох хүн'),
                       TextFormField(
                         controller: _contactName,
@@ -909,8 +860,6 @@ class _CreateRequestSheetState extends ConsumerState<CreateRequestSheet> {
       // rearrangement of the widget tree above can put a point on the wire without the
       // floor that gives it meaning — the server refuses a floorless pin outright.
       planPosition: _floorId == null ? null : _planPosition,
-      requestType: _requestType,
-      isUrgent: _isUrgent,
       description: _description.text.trim(),
       contactName: _contactName.text.trim(),
       contactPhone: _contactPhone.text.trim(),

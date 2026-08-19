@@ -184,11 +184,6 @@ class _ProgressTab extends StatelessWidget {
                 spacing: 7,
                 runSpacing: 5,
                 children: <Widget>[
-                  if (request.requestType != null)
-                    StatusPill(
-                      label: request.requestType!.label,
-                      tone: AccentTone.neutral,
-                    ),
                   SlaLine(request: request),
                 ],
               ),

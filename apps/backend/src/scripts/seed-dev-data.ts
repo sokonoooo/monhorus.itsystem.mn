@@ -659,33 +659,27 @@ async function seedServiceRequests(): Promise<void> {
   const employees = await Employee.find({ status: 'ACTIVE' }).limit(3);
 
   const requestSeed = [
-    {
-      type: 'URGENT_CALL' as const, urgent: true, status: 'UNASSIGNED' as const,
+    { urgent: true, status: 'UNASSIGNED' as const,
       description: 'LDB-2F-01 самбар дээр хэт ачаалал илэрч, таслуур байнга унтарч байна.',
       ageHours: 5, assign: false,
     },
-    {
-      type: 'URGENT_CALL' as const, urgent: true, status: 'IN_PROGRESS' as const,
+    { urgent: true, status: 'IN_PROGRESS' as const,
       description: 'UPS-01 төхөөрөмжийн зайн хүчин чадал шалгах шаардлагатай.',
       ageHours: 3, assign: true,
     },
-    {
-      type: 'STANDARD_CALL' as const, urgent: false, status: 'ASSIGNED' as const,
+    { urgent: false, status: 'ASSIGNED' as const,
       description: '2-р давхрын гэрлийн цэгүүд анивчиж байна.',
       ageHours: 8, assign: true,
     },
-    {
-      type: 'PLANNED_INSPECTION' as const, urgent: false, status: 'ON_SITE' as const,
+    { urgent: false, status: 'ON_SITE' as const,
       description: 'Улирлын төлөвлөгөөт үзлэг, самбар болон хэлхээний хэмжилт.',
       ageHours: 20, assign: true,
     },
-    {
-      type: 'REPAIR' as const, urgent: false, status: 'COMPLETED' as const,
+    { urgent: false, status: 'COMPLETED' as const,
       description: 'Розетка R-04 солих ажил.',
       ageHours: 40, assign: true,
     },
-    {
-      type: 'STANDARD_CALL' as const, urgent: false, status: 'NEW' as const,
+    { urgent: false, status: 'NEW' as const,
       description: 'Агааржуулагчийн тэжээлийн шугам шалгуулах хүсэлт.',
       ageHours: 1, assign: false,
     },
@@ -702,7 +696,6 @@ async function seedServiceRequests(): Promise<void> {
       project: project._id,
       building: building._id,
       floor: floor?._id ?? null,
-      requestType: entry.type,
       isUrgent: entry.urgent,
       description: entry.description,
       contactName: 'Б. Болд',

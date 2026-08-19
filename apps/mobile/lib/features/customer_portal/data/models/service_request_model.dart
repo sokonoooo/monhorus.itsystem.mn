@@ -178,7 +178,6 @@ class ServiceRequestListItemModel {
     required this.floor,
     required this.room,
     required this.device,
-    required this.requestType,
     required this.isUrgent,
     required this.status,
     required this.assignedEmployees,
@@ -197,7 +196,6 @@ class ServiceRequestListItemModel {
   final ObjectRefModel? floor;
   final ObjectRefModel? room;
   final ObjectRefModel? device;
-  final ServiceRequestType? requestType;
   final bool isUrgent;
   final ServiceRequestStatus? status;
   final List<EmployeeRefModel> assignedEmployees;
@@ -222,7 +220,6 @@ class ServiceRequestListItemModel {
       floor: ObjectRefModel.fromJson(json['floor']),
       room: ObjectRefModel.fromJson(json['room']),
       device: ObjectRefModel.fromJson(json['device']),
-      requestType: ServiceRequestType.fromWire(json['requestType'] as String?),
       isUrgent: json['isUrgent'] as bool? ?? false,
       status: ServiceRequestStatus.fromWire(json['status'] as String?),
       assignedEmployees: parseList(json['assignedEmployees'], EmployeeRefModel.fromJson),
@@ -266,7 +263,6 @@ class ServiceRequestDetailModel extends ServiceRequestListItemModel {
     required super.floor,
     required super.room,
     required super.device,
-    required super.requestType,
     required super.isUrgent,
     required super.status,
     required super.assignedEmployees,
@@ -338,7 +334,6 @@ class ServiceRequestDetailModel extends ServiceRequestListItemModel {
       floor: ObjectRefModel.fromJson(json['floor']),
       room: ObjectRefModel.fromJson(json['room']),
       device: ObjectRefModel.fromJson(json['device']),
-      requestType: ServiceRequestType.fromWire(json['requestType'] as String?),
       isUrgent: json['isUrgent'] as bool? ?? false,
       status: ServiceRequestStatus.fromWire(json['status'] as String?),
       assignedEmployees: parseList(json['assignedEmployees'], EmployeeRefModel.fromJson),
@@ -448,7 +443,6 @@ class CreateServiceRequestRequestModel {
     required this.customerId,
     required this.buildingId,
     required this.objectTypeId,
-    required this.requestType,
     required this.description,
     required this.contactName,
     required this.contactPhone,
@@ -460,7 +454,6 @@ class CreateServiceRequestRequestModel {
     this.circuitId,
     this.deviceId,
     this.planPosition,
-    this.isUrgent = false,
     this.attachmentIds = const <String>[],
   });
 
@@ -494,9 +487,6 @@ class CreateServiceRequestRequestModel {
   /// ever sent alongside [floorId]. Independent of [roomId]: pointing at the spot and
   /// naming a zone are two different statements and either may be made alone.
   final PlanPositionModel? planPosition;
-
-  final ServiceRequestType requestType;
-  final bool isUrgent;
   final String description;
   final String contactName;
   final String contactPhone;
@@ -522,8 +512,6 @@ class CreateServiceRequestRequestModel {
         if (circuitId != null) 'circuitId': circuitId,
         if (deviceId != null) 'deviceId': deviceId,
         if (planPosition != null) 'planPosition': planPosition!.toJson(),
-        'requestType': requestType.wireValue,
-        'isUrgent': isUrgent,
         'description': description,
         'contactName': contactName,
         'contactPhone': contactPhone,

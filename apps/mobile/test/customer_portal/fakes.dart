@@ -360,7 +360,6 @@ ServiceRequestDetailModel serviceRequestFixture({
       'id': '6e0000000000000000000003',
       'name': 'LDB-2F-02',
     },
-    'requestType': 'URGENT_CALL',
     'isUrgent': isUrgent,
     'status': status,
     'assignedEmployees': <Map<String, dynamic>>[

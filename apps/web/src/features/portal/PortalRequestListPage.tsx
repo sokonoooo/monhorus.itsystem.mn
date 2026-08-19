@@ -2,7 +2,6 @@ import {
   PERMISSIONS,
   SERVICE_REQUEST_STATUSES,
   SERVICE_REQUEST_STATUS_LABELS,
-  SERVICE_REQUEST_TYPE_LABELS,
   type ServiceRequestListItemDto,
   type ServiceRequestListQuery,
 } from '@monhorus/shared';
@@ -108,13 +107,6 @@ export function PortalRequestListPage(): ReactElement {
       key: 'requestNumber',
       header: 'Дугаар',
       render: (row) => <span className="font-medium text-slate-900">{row.requestNumber}</span>,
-    },
-    {
-      key: 'requestType',
-      header: 'Төрөл',
-      render: (row) => (
-        <span className="text-slate-700">{SERVICE_REQUEST_TYPE_LABELS[row.requestType]}</span>
-      ),
     },
     {
       key: 'location',

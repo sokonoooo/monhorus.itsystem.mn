@@ -85,7 +85,6 @@ export function makeServiceRequest(
     floor: null,
     room: null,
     device: null,
-    requestType: 'URGENT_CALL',
     isUrgent: true,
     status: 'UNASSIGNED',
     assignedEmployees: [],
@@ -764,7 +763,6 @@ export function makeDashboardSummary(
       { key: 'NEW', label: 'Шинэ', count: 2 },
       { key: 'ASSIGNED', label: 'Хуваарилагдсан', count: 4 },
     ],
-    requestsByType: [{ key: 'REPAIR', label: 'Засвар үйлчилгээ', count: 3 }],
     trend: Array.from({ length: 14 }, (_, index) => ({
       date: `2026-07-${String(index + 16).padStart(2, '0')}`,
       created: index % 3,

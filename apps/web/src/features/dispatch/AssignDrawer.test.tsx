@@ -21,7 +21,6 @@ const REQUEST: ServiceRequestListItemDto = {
   floor: null,
   room: null,
   device: null,
-  requestType: 'URGENT_CALL',
   isUrgent: true,
   status: 'UNASSIGNED',
   assignedEmployees: [],

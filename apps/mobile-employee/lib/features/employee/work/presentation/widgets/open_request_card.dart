@@ -120,10 +120,6 @@ class OpenRequestCard extends StatelessWidget {
           ],
           const SizedBox(height: 6),
           InfoRow(
-            label: 'Төрөл',
-            value: request.requestType?.label ?? kNoValue,
-          ),
-          InfoRow(
             label: sla == null ? 'SLA' : 'SLA · ${sla.label}',
             value: formatSlaRemaining(request.slaRemainingMinutes),
             tone:

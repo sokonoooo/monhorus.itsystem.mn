@@ -44,7 +44,6 @@ function makeRequest(overrides: Partial<ServiceRequestDetailDto> = {}): ServiceR
     panel: null,
     circuit: null,
     branch: null,
-    requestType: 'URGENT_CALL',
     isUrgent: false,
     status: 'UNASSIGNED',
     assignedEmployees: [],

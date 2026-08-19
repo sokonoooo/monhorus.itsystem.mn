@@ -8,7 +8,6 @@ import 'package:monhorus_mobile/core/media/photo_capture.dart';
 import 'package:monhorus_mobile/features/customer_portal/data/models/object_master_model.dart';
 import 'package:monhorus_mobile/features/customer_portal/data/models/project_model.dart';
 import 'package:monhorus_mobile/features/customer_portal/data/models/service_request_model.dart';
-import 'package:monhorus_mobile/features/customer_portal/domain/entities/service_request_enums.dart';
 import 'package:monhorus_mobile/features/customer_portal/presentation/screens/device_detail_screen.dart';
 import 'package:monhorus_mobile/features/customer_portal/presentation/widgets/create_request_sheet.dart';
 import 'package:monhorus_mobile/features/customer_portal/presentation/widgets/floor_plan_markers.dart';
@@ -131,7 +130,6 @@ void main() {
             scope: testScope,
             initialBuildingId: buildingFixture().id,
             deviceName: 'LDB-2F-02',
-            initialUrgent: true,
             pickPhoto: fakePick,
           ),
         ),
@@ -160,10 +158,8 @@ void main() {
     expect(sent.buildingId, buildingFixture().id);
     // Nothing this app holds can populate `deviceId`; see the device-page test below.
     expect(sent.deviceId, isNull);
-    expect(sent.isUrgent, isTrue);
     // The urgent switch preselects the urgent call type, matching the SLA the
     // backend applies to it.
-    expect(sent.requestType, ServiceRequestType.urgentCall);
     expect(sent.contactPhone, '9911-2233');
     // The id the upload minted, claimed by this request.
     expect(sent.attachmentIds, hasLength(1));

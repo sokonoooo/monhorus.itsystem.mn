@@ -244,12 +244,6 @@ export function DashboardPage(): ReactElement {
     colour: CATEGORICAL_COLOURS[index % CATEGORICAL_COLOURS.length] ?? CHART_COLOURS.blue,
   }));
 
-  const typeData: ChartDatum[] = (summary.requestsByType ?? []).map((slice, index) => ({
-    key: slice.key,
-    label: slice.label,
-    value: slice.count,
-    colour: CATEGORICAL_COLOURS[index % CATEGORICAL_COLOURS.length] ?? CHART_COLOURS.teal,
-  }));
 
   const financeData: ChartDatum[] = (summary.finance?.byStatus ?? []).map((slice) => ({
     key: slice.key,
@@ -353,15 +347,6 @@ export function DashboardPage(): ReactElement {
             hint="Бүх хүсэлтийн төлвийн хуваарилалт."
             data={statusData}
             centreLabel="хүсэлт"
-          />
-        ) : null;
-
-      case 'REQUESTS_BY_TYPE':
-        return summary.requestsByType ? (
-          <BarChart
-            title="Нээлттэй хүсэлт төрлөөр"
-            hint="Дуусаагүй хүсэлтүүд ажлын төрлөөр."
-            data={typeData}
           />
         ) : null;
 

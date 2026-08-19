@@ -235,15 +235,6 @@ describe('ServiceRequestCreatePage', () => {
     expect(await screen.findByText('Энэ дуудлагын SLA хугацаа 24 цаг.')).toBeInTheDocument();
   });
 
-  it('says the urgent flag does not change the deadline', async () => {
-    renderWithAuth(<ServiceRequestCreatePage />, {
-      permissions: [PERMISSIONS.SERVICE_REQUEST_CREATE],
-    });
-
-    // The flag orders the queue now. Saying otherwise beside a checkbox that no longer
-    // does it is how somebody ends up expecting a four-hour response.
-    expect(await screen.findByText(/SLA хугацааг өөрчлөхгүй/)).toBeInTheDocument();
-  });
 
   it('never reads the settings, whatever the caller may see', async () => {
     const get = vi.spyOn(settingsService, 'get').mockResolvedValue(slaSettings(4, 48));
@@ -320,10 +311,6 @@ describe('ServiceRequestCreatePage', () => {
     async function fillRequiredFields(
       user: ReturnType<typeof userEvent.setup>,
     ): Promise<void> {
-      await user.selectOptions(
-        selectContainingOption('Яаралтай дуудлага') as HTMLSelectElement,
-        'URGENT_CALL',
-      );
       await user.selectOptions(
         selectContainingOption('Гэрэл (24 цаг)') as HTMLSelectElement,
         OBJECT_TYPE_ID,

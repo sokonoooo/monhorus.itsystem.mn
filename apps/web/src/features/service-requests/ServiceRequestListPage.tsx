@@ -2,14 +2,11 @@ import {
   PERMISSIONS,
   SERVICE_REQUEST_STATUSES,
   SERVICE_REQUEST_STATUS_LABELS,
-  SERVICE_REQUEST_TYPES,
-  SERVICE_REQUEST_TYPE_LABELS,
   SLA_STATES,
   SLA_STATE_LABELS,
   type ServiceRequestListItemDto,
   type ServiceRequestListQuery,
   type ServiceRequestStatus,
-  type ServiceRequestType,
   type SlaState,
 } from '@monhorus/shared';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
@@ -38,7 +35,6 @@ export function ServiceRequestListPage(): ReactElement {
   const query = useMemo<ServiceRequestListQuery>(() => {
     const page = Number.parseInt(searchParams.get('page') ?? '1', 10);
     const status = searchParams.get('status');
-    const requestType = searchParams.get('requestType');
     const slaState = searchParams.get('slaState');
     const search = searchParams.get('search');
     const isUrgent = searchParams.get('isUrgent');
@@ -48,7 +44,6 @@ export function ServiceRequestListPage(): ReactElement {
       limit: 20,
       ...(search ? { search } : {}),
       ...(status ? { status: status as ServiceRequestStatus } : {}),
-      ...(requestType ? { requestType: requestType as ServiceRequestType } : {}),
       ...(slaState ? { slaState: slaState as SlaState } : {}),
       ...(isUrgent === 'true' ? { isUrgent: true } : {}),
     };
@@ -111,13 +106,6 @@ export function ServiceRequestListPage(): ReactElement {
       key: 'urgent',
       header: 'Яаралтай',
       render: (row) => (row.isUrgent ? <UrgentBadge /> : <span className="text-slate-400">-</span>),
-    },
-    {
-      key: 'requestType',
-      header: 'Төрөл',
-      render: (row) => (
-        <span className="text-slate-700">{SERVICE_REQUEST_TYPE_LABELS[row.requestType]}</span>
-      ),
     },
     {
       key: 'customer',
@@ -257,25 +245,6 @@ export function ServiceRequestListPage(): ReactElement {
             {SERVICE_REQUEST_STATUSES.map((status) => (
               <option key={status} value={status}>
                 {SERVICE_REQUEST_STATUS_LABELS[status]}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div>
-          <label htmlFor="request-type" className={FILTER_LABEL}>
-            Төрөл
-          </label>
-          <select
-            id="request-type"
-            value={searchParams.get('requestType') ?? ''}
-            onChange={(event) => updateParam('requestType', event.target.value)}
-            className={FILTER_SELECT}
-          >
-            <option value="">Бүх төрөл</option>
-            {SERVICE_REQUEST_TYPES.map((type) => (
-              <option key={type} value={type}>
-                {SERVICE_REQUEST_TYPE_LABELS[type]}
               </option>
             ))}
           </select>

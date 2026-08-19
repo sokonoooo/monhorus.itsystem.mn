@@ -81,29 +81,6 @@ enum ServiceRequestStatus {
   }
 }
 
-/// Mirrors `ServiceRequestType` / `SERVICE_REQUEST_TYPE_LABELS` in
-/// packages/shared/src/constants/service-request.ts.
-enum ServiceRequestType {
-  plannedInspection('PLANNED_INSPECTION', 'Төлөвлөгөөт үзлэг'),
-  repair('REPAIR', 'Засвар үйлчилгээ'),
-  standardCall('STANDARD_CALL', 'Энгийн дуудлага'),
-  urgentCall('URGENT_CALL', 'Яаралтай дуудлага'),
-  installation('INSTALLATION', 'Шинэ угсралт/өргөтгөл'),
-  revisit('REVISIT', 'Давтан үзлэг');
-
-  const ServiceRequestType(this.wireValue, this.label);
-
-  final String wireValue;
-  final String label;
-
-  static ServiceRequestType? fromWire(String? value) {
-    if (value == null) return null;
-    for (final ServiceRequestType type in ServiceRequestType.values) {
-      if (type.wireValue == value) return type;
-    }
-    return null;
-  }
-}
 
 /// Mirrors `SlaState` / `SLA_STATE_LABELS` in
 /// packages/shared/src/constants/service-request.ts.

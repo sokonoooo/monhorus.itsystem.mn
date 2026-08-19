@@ -74,7 +74,6 @@ ServiceRequestListItemModel _request({
     ServiceRequestListItemModel.fromJson(<String, dynamic>{
       'id': id,
       'requestNumber': id,
-      'requestType': 'REPAIR',
       'isUrgent': false,
       if (deviceName != null)
         'device': <String, dynamic>{'id': 'd-$id', 'name': deviceName},
