@@ -32,6 +32,7 @@ import { PlannedWorkDetailPage } from './features/planned-work/PlannedWorkDetail
 import { PlannedWorkFormPage } from './features/planned-work/PlannedWorkFormPage';
 import { PlannedWorkListPage } from './features/planned-work/PlannedWorkListPage';
 import { PlannedWorkReportPage } from './features/planned-work/PlannedWorkReportPage';
+import { MaterialsPage } from './features/materials/MaterialsPage';
 import { ObjectTypesPage } from './features/object-master/ObjectTypesPage';
 import { CompaniesPage } from './features/org/CompaniesPage';
 import { DepartmentsPage } from './features/org/DepartmentsPage';
@@ -320,6 +321,15 @@ export default function App(): ReactElement {
             element={
               <Page anyOf={[PERMISSIONS.OBJECT_MASTER_VIEW]}>
                 <ObjectTypesPage />
+              </Page>
+            }
+          />
+
+          <Route
+            path="/materials"
+            element={
+              <Page anyOf={[PERMISSIONS.MATERIAL_VIEW]}>
+                <MaterialsPage />
               </Page>
             }
           />

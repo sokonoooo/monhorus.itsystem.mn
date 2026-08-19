@@ -176,6 +176,16 @@ export const NAVIGATION: readonly NavSection[] = [
     label: 'Техникийн бүртгэл',
     items: [
       {
+        key: 'materials',
+        label: 'Материалын жагсаалт',
+        path: '/materials',
+        permissions: [PERMISSIONS.MATERIAL_VIEW],
+        // CATALOGUE rather than an icon of its own: this is the same kind of thing as the
+        // equipment-type list — reference data a form picks from — and a new glyph would
+        // mean a new NavIcon member and a new case in NavGlyph for no gain in legibility.
+        icon: 'CATALOGUE',
+      },
+      {
         key: 'inspections',
         label: 'Үзлэг ба дүгнэлт',
         path: '/inspections',
