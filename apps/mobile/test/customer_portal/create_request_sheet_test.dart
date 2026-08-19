@@ -342,10 +342,13 @@ void main() {
 
   // -- Байршил ---------------------------------------------------------------
 
-  /// The building and floor selectors, in the order the sheet renders them. The
-  /// request-type chooser is a `DropdownButtonFormField<ServiceRequestType>` and so is
-  /// deliberately not in this list.
-  Finder locationDropdowns() => find.byType(DropdownButtonFormField<String>);
+  /// Every `DropdownButtonFormField<String>` the sheet renders: building, floor, and the
+  /// equipment-type picker. The request-type chooser is a
+  /// `DropdownButtonFormField<ServiceRequestType>` and so is deliberately not in this list.
+  ///
+  /// Was named for the two location selectors; the equipment picker joined them when calls
+  /// started taking their SLA window from the type, and it is the same widget type.
+  Finder stringDropdowns() => find.byType(DropdownButtonFormField<String>);
 
   /// Fills the parts of the form that are not what a test is about, attaches the
   /// mandatory picture and sends it.
@@ -394,8 +397,12 @@ void main() {
       ),
     );
 
-    // Building and floor only. A third string dropdown would be the zone picker back.
-    expect(locationDropdowns(), findsNWidgets(2));
+    /*
+     * Building, floor, equipment type. The number is asserted rather than the absence of a
+     * zone picker alone, because a FOURTH would be the zone control returning - which is
+     * what this test exists to catch.
+     */
+    expect(stringDropdowns(), findsNWidgets(3));
     expect(find.textContaining('Өрөө/Бүс'), findsNothing);
     // The "unpick" entry the zone list carried, and the sentence a zoneless floor got.
     expect(find.text('Сонгохгүй'), findsNothing);
@@ -849,5 +856,130 @@ void main() {
     await completeAndSubmit(tester);
     expect(repository.created.single.planPosition, isNull);
     expect(repository.created.single.floorId, isNull);
+  });
+
+  /// Opens the equipment-type picker. It is the third `DropdownButtonFormField<String>`
+  /// the sheet renders, after building and floor, and a closed dropdown shows none of its
+  /// options - so a test that wants to choose or read one has to open it.
+  Future<void> openEquipmentPicker(WidgetTester tester) async {
+    await tester.ensureVisible(stringDropdowns().at(2));
+    await tester.pumpAndSettle();
+    await tester.tap(stringDropdowns().at(2));
+    await tester.pumpAndSettle();
+  }
+
+  group('equipment type', () {
+    /// The whole point of the field: the id has to reach the server, because the deadline
+    /// is computed from it.
+    testWidgets('the chosen type reaches the request', (WidgetTester tester) async {
+      final FakeCustomerPortalRepository repository = FakeCustomerPortalRepository(
+        callableObjectTypes: <CallableObjectTypeModel>[
+          callableObjectTypeFixture(id: 'light-1', name: 'Гэрэл', callSlaHours: 24),
+          callableObjectTypeFixture(id: 'socket-1', name: 'Автомат залгуур', callSlaHours: 6),
+        ],
+      );
+
+      await pumpPhone(
+        tester,
+        wrapCustomerScreen(
+          Scaffold(
+            body: CreateRequestSheet(
+              scope: testScope,
+              initialBuildingId: buildingFixture().id,
+              pickPhoto: fakePick,
+            ),
+          ),
+          repository: repository,
+          user: customerWithCreateRight(),
+        ),
+      );
+
+      await openEquipmentPicker(tester);
+      await tester.tap(find.text('Автомат залгуур (6 цаг)').last);
+      await tester.pumpAndSettle();
+
+      await completeAndSubmit(tester);
+
+      expect(repository.created, hasLength(1));
+      expect(repository.created.single.objectTypeId, 'socket-1');
+    });
+
+    /// The window is what the customer is really choosing, so it is on the option itself
+    /// rather than left to be discovered after the call is raised.
+    testWidgets('each option states the hours it carries', (WidgetTester tester) async {
+      final FakeCustomerPortalRepository repository = FakeCustomerPortalRepository(
+        callableObjectTypes: <CallableObjectTypeModel>[
+          callableObjectTypeFixture(name: 'Гэрэл', callSlaHours: 24),
+          callableObjectTypeFixture(id: 's', name: 'Автомат залгуур', callSlaHours: 6),
+        ],
+      );
+
+      await pumpPhone(
+        tester,
+        wrapCustomerScreen(
+          const Scaffold(
+            body: CreateRequestSheet(scope: testScope, pickPhoto: fakePick),
+          ),
+          repository: repository,
+          user: customerWithCreateRight(),
+        ),
+      );
+
+      await openEquipmentPicker(tester);
+
+      expect(find.text('Гэрэл (24 цаг)'), findsWidgets);
+      expect(find.text('Автомат залгуур (6 цаг)'), findsWidgets);
+    });
+
+    /// One option is not a choice, and making somebody tap through it is friction with a
+    /// single possible outcome.
+    testWidgets('a lone type is chosen without asking', (WidgetTester tester) async {
+      final FakeCustomerPortalRepository repository = FakeCustomerPortalRepository(
+        callableObjectTypes: <CallableObjectTypeModel>[
+          callableObjectTypeFixture(id: 'only-1'),
+        ],
+      );
+
+      await pumpPhone(
+        tester,
+        wrapCustomerScreen(
+          Scaffold(
+            body: CreateRequestSheet(
+              scope: testScope,
+              initialBuildingId: buildingFixture().id,
+              pickPhoto: fakePick,
+            ),
+          ),
+          repository: repository,
+          user: customerWithCreateRight(),
+        ),
+      );
+
+      await completeAndSubmit(tester);
+
+      expect(repository.created.single.objectTypeId, 'only-1');
+    });
+
+    /// Nothing callable configured yet. Saying so is better than a dropdown with no
+    /// options and a validator the customer cannot satisfy.
+    testWidgets('an empty catalogue says so instead of blocking silently',
+        (WidgetTester tester) async {
+      final FakeCustomerPortalRepository repository = FakeCustomerPortalRepository(
+        callableObjectTypes: <CallableObjectTypeModel>[],
+      );
+
+      await pumpPhone(
+        tester,
+        wrapCustomerScreen(
+          const Scaffold(
+            body: CreateRequestSheet(scope: testScope, pickPhoto: fakePick),
+          ),
+          repository: repository,
+          user: customerWithCreateRight(),
+        ),
+      );
+
+      expect(find.textContaining('тохируулаагүй'), findsOneWidget);
+    });
   });
 }

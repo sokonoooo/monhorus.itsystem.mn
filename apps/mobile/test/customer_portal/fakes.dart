@@ -522,8 +522,22 @@ ServiceRequestAttachmentModel attachmentFixture({
 ///
 /// Failures are opt-in per method so a test can assert the error branch without a
 /// second fake.
+/// One callable equipment type, matching the worked example the rule was written with.
+///
+/// A single entry on purpose: the sheet preselects a lone option, so the cases that were
+/// written before this field existed keep submitting without choosing anything. A case
+/// about the picker itself passes its own list.
+CallableObjectTypeModel callableObjectTypeFixture({
+  String id = '760000000000000000000001',
+  String name = 'Гэрэл',
+  int callSlaHours = 24,
+}) {
+  return CallableObjectTypeModel(id: id, name: name, callSlaHours: callSlaHours);
+}
+
 class FakeCustomerPortalRepository implements CustomerPortalRepository {
   FakeCustomerPortalRepository({
+    List<CallableObjectTypeModel>? callableObjectTypes,
     List<BuildingModel>? buildings,
     List<FloorModel>? floors,
     List<ObjectListItemModel>? objects,
@@ -539,6 +553,8 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
     this.uploadFailure,
     this.buildingPageSize = 100,
   })  : fileBytes = fileBytes ?? Uint8List(0),
+        callableObjectTypes =
+            callableObjectTypes ?? <CallableObjectTypeModel>[callableObjectTypeFixture()],
         buildings = buildings ?? <BuildingModel>[buildingFixture()],
         floors = floors ?? <FloorModel>[floorFixture()],
         objects = objects ?? <ObjectListItemModel>[objectFixture()],
@@ -562,6 +578,9 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
   final List<ObjectListItemModel> objects;
   final List<ServiceRequestListItemModel> requests;
   final List<NotificationModel> notifications;
+
+  /// What the picker will offer. One entry by default.
+  final List<CallableObjectTypeModel> callableObjectTypes;
   final ObjectDetailModel objectDetail;
   final ServiceRequestDetailModel requestDetail;
   final FloorPlanModel? floorPlan;
@@ -746,6 +765,10 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
     }
     return _result(attachmentFixture(id: 'aa000000000000000000000${uploadedPhotos.length}'));
   }
+
+  @override
+  Future<ApiResult<List<CallableObjectTypeModel>>> listCallableObjectTypes() async =>
+      _result(callableObjectTypes);
 
   @override
   Future<ApiResult<ServiceRequestDetailModel>> createServiceRequest(

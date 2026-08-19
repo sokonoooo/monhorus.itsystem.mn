@@ -446,3 +446,16 @@ final FutureProvider<CustomerHomeSummary> customerHomeSummaryProvider =
     unassessedCount: unassessed,
   );
 });
+
+/// The equipment types a call may be raised against.
+///
+/// Not scoped to the customer: the catalogue is global, and which types are callable is an
+/// administrator's decision rather than a per-organisation one. Kept a plain FutureProvider
+/// so the sheet gets the same `.when(data/loading/error)` shape as the building list beside
+/// it.
+final FutureProvider<List<CallableObjectTypeModel>> callableObjectTypesProvider =
+    FutureProvider<List<CallableObjectTypeModel>>((Ref ref) async {
+  final CustomerPortalRepository repository =
+      ref.watch(customerPortalRepositoryProvider);
+  return _unwrap(await repository.listCallableObjectTypes());
+});

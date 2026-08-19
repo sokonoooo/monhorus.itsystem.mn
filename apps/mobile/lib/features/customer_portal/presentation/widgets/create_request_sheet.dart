@@ -168,6 +168,9 @@ class _CreateRequestSheetState extends ConsumerState<CreateRequestSheet> {
   /// saying otherwise.
   bool _pinInherited = false;
 
+  /// The equipment type the call is about. Null until chosen - or until the list arrives
+  /// holding exactly one, which is preselected below.
+  String? _objectTypeId;
   ServiceRequestType _requestType = ServiceRequestType.standardCall;
   late bool _isUrgent;
 
@@ -228,6 +231,8 @@ class _CreateRequestSheetState extends ConsumerState<CreateRequestSheet> {
   Widget build(BuildContext context) {
     if (_createdId != null) return _buildConfirmation(_createdId!);
 
+    final AsyncValue<List<CallableObjectTypeModel>> objectTypes =
+        ref.watch(callableObjectTypesProvider);
     final AsyncValue<List<BuildingModel>> buildings =
         ref.watch(customerBuildingsProvider);
     final AsyncValue<List<FloorModel>> floors = _buildingId == null
@@ -356,7 +361,73 @@ class _CreateRequestSheetState extends ConsumerState<CreateRequestSheet> {
                         const SizedBox(height: 13),
                       ],
 
-                      const FieldLabel('Хүсэлтийн төрөл'),
+                      const FieldLabel('Тоног төхөөрөмжийн төрөл'),
+                objectTypes.when(
+                  data: (List<CallableObjectTypeModel> items) {
+                    /*
+                     * One option is not a choice. Preselecting it saves a tap that can only
+                     * have one outcome, and the SLA sentence below still states what was
+                     * chosen - so nothing is hidden, only the pointless step.
+                     *
+                     * Done during build rather than in initState because the list is
+                     * asynchronous; guarded so it cannot fight a selection the user made.
+                     */
+                    if (_objectTypeId == null && items.length == 1) {
+                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                        if (mounted && _objectTypeId == null) {
+                          setState(() => _objectTypeId = items.single.id);
+                        }
+                      });
+                    }
+                    if (items.isEmpty) {
+                      return Text(
+                        'Дуудлага үүсгэх боломжтой тоног төхөөрөмжийн төрөл тохируулаагүй '
+                        'байна. Админд хандана уу.',
+                        style: CustomerTokens.rowSub.copyWith(
+                          color: CustomerTokens.red,
+                        ),
+                      );
+                    }
+                    return DropdownButtonFormField<String>(
+                      initialValue: items.any(
+                              (CallableObjectTypeModel t) => t.id == _objectTypeId)
+                          ? _objectTypeId
+                          : null,
+                      isExpanded: true,
+                      decoration: const InputDecoration(
+                        hintText: 'Төхөөрөмж сонгоно уу',
+                      ),
+                      items: <DropdownMenuItem<String>>[
+                        for (final CallableObjectTypeModel type in items)
+                          DropdownMenuItem<String>(
+                            value: type.id,
+                            child: Text(
+                              // The window is shown beside the name: it is what the choice
+                              // decides, and the customer is the one waiting on it.
+                              '${type.name} (${type.callSlaHours} цаг)',
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                      ],
+                      validator: (String? value) => value == null
+                          ? 'Тоног төхөөрөмжийн төрөл заавал сонгоно.'
+                          : null,
+                      onChanged: (String? value) =>
+                          setState(() => _objectTypeId = value),
+                    );
+                  },
+                  loading: () => const LinearProgressIndicator(),
+                  error: (Object error, StackTrace _) => Text(
+                    error is Failure
+                        ? error.message
+                        : 'Тоног төхөөрөмжийн жагсаалт ачаалж чадсангүй.',
+                    style: CustomerTokens.rowSub.copyWith(
+                      color: CustomerTokens.red,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const FieldLabel('Хүсэлтийн төрөл'),
                       DropdownButtonFormField<ServiceRequestType>(
                         initialValue: _requestType,
                         isExpanded: true,
@@ -830,6 +901,9 @@ class _CreateRequestSheetState extends ConsumerState<CreateRequestSheet> {
         CreateServiceRequestRequestModel(
       customerId: widget.scope.customerId,
       buildingId: _buildingId!,
+      // Non-null by here: the field carries a validator, and _submit returns on a failed
+      // form before reaching this.
+      objectTypeId: _objectTypeId!,
       floorId: _floorId,
       // The pin is the floor's. Guarded on it here as well as cleared with it, so no
       // rearrangement of the widget tree above can put a point on the wire without the

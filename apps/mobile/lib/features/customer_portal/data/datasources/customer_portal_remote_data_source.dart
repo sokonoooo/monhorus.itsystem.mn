@@ -306,6 +306,22 @@ class CustomerPortalRemoteDataSource {
     );
   }
 
+  /// GET /service-requests/callable-object-types.
+  ///
+  /// Not the object-type catalogue: reading that needs `object_master.view`, which a
+  /// customer account does not hold. This endpoint is gated on being able to CREATE a
+  /// request instead, and answers the narrower question the call form actually asks.
+  Future<List<CallableObjectTypeModel>> listCallableObjectTypes() {
+    return _client.request<List<CallableObjectTypeModel>>(
+      path: '/service-requests/callable-object-types',
+      method: 'GET',
+      decoder: (Object? json) => (json! as List<dynamic>)
+          .map((dynamic item) =>
+              CallableObjectTypeModel.fromJson(item as Map<String, dynamic>))
+          .toList(growable: false),
+    );
+  }
+
   /// POST /service-requests. Guarded server-side by `service_request.create`, which
   /// the caller must hold; the UI only offers this when `GET /auth/me` reported it.
   Future<ServiceRequestDetailModel> createServiceRequest(

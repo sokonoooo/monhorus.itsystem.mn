@@ -447,6 +447,7 @@ class CreateServiceRequestRequestModel {
   const CreateServiceRequestRequestModel({
     required this.customerId,
     required this.buildingId,
+    required this.objectTypeId,
     required this.requestType,
     required this.description,
     required this.contactName,
@@ -464,6 +465,11 @@ class CreateServiceRequestRequestModel {
   });
 
   final String customerId;
+
+  /// The equipment type this call is about. The server takes the SLA window from it, and
+  /// refuses a type that may not be called about, so this is required rather than nullable:
+  /// a nullable field here would only move that refusal to runtime.
+  final String objectTypeId;
   final String? branch;
   final String? projectId;
   final String buildingId;
@@ -506,6 +512,7 @@ class CreateServiceRequestRequestModel {
 
   Map<String, dynamic> toJson() => <String, dynamic>{
         'customerId': customerId,
+        'objectTypeId': objectTypeId,
         if (branch != null && branch!.isNotEmpty) 'branch': branch,
         if (projectId != null) 'projectId': projectId,
         'buildingId': buildingId,
@@ -522,4 +529,33 @@ class CreateServiceRequestRequestModel {
         'contactPhone': contactPhone,
         'attachmentIds': attachmentIds,
       };
+}
+
+/// One option in the call form's equipment-type picker.
+///
+/// Mirrors `CallableObjectTypeDto`: a label, a value, and the SLA window the choice
+/// implies. Deliberately NOT `ObjectTypeRefModel`, which is the reference embedded on an
+/// object row - that carries a code and an icon and no window, and answers a different
+/// question.
+class CallableObjectTypeModel {
+  const CallableObjectTypeModel({
+    required this.id,
+    required this.name,
+    required this.callSlaHours,
+  });
+
+  factory CallableObjectTypeModel.fromJson(Map<String, dynamic> json) {
+    return CallableObjectTypeModel(
+      id: json['id'] as String,
+      name: json['name'] as String,
+      callSlaHours: (json['callSlaHours'] as num).toInt(),
+    );
+  }
+
+  final String id;
+  final String name;
+
+  /// Hours. The deadline this call will be given, and worth showing beside the name so the
+  /// choice is not made blind.
+  final int callSlaHours;
 }

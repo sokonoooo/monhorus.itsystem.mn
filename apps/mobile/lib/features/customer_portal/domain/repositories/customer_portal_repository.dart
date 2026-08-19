@@ -81,6 +81,10 @@ abstract interface class CustomerPortalRepository {
     CapturedPhoto photo,
   );
 
+  /// The equipment types this account may raise a call against, with the SLA window each
+  /// one implies.
+  Future<ApiResult<List<CallableObjectTypeModel>>> listCallableObjectTypes();
+
   Future<ApiResult<ServiceRequestDetailModel>> createServiceRequest(
     CreateServiceRequestRequestModel request,
   );

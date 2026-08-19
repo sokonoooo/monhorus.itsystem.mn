@@ -174,6 +174,11 @@ class CustomerPortalRepositoryImpl implements CustomerPortalRepository {
   }
 
   @override
+  Future<ApiResult<List<CallableObjectTypeModel>>> listCallableObjectTypes() {
+    return _guard(() => _remote.listCallableObjectTypes());
+  }
+
+  @override
   Future<ApiResult<ServiceRequestDetailModel>> createServiceRequest(
     CreateServiceRequestRequestModel request,
   ) {

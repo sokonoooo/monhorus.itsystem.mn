@@ -471,6 +471,7 @@ void main() {
           CreateServiceRequestRequestModel(
         customerId: 'c1',
         buildingId: 'b1',
+        objectTypeId: 'ot1',
         floorId: 'f1',
         requestType: ServiceRequestType.repair,
         description: 'Гэрэл асахгүй байна.',
@@ -482,6 +483,8 @@ void main() {
       final Map<String, dynamic> json = request.toJson();
       expect(json['customerId'], 'c1');
       expect(json['buildingId'], 'b1');
+      // The server takes the SLA window from this, so it must always be on the wire.
+      expect(json['objectTypeId'], 'ot1');
       expect(json['floorId'], 'f1');
       expect(json['requestType'], 'REPAIR');
       expect(json['isUrgent'], isTrue);
