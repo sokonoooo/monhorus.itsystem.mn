@@ -417,6 +417,10 @@ export function makeObjectType(overrides: Partial<ObjectTypeDto> = {}): ObjectTy
     // No per-type attributes by default. A type declaring none is what every type looked like
     // before they existed, so it is the case that must keep behaving exactly as it did.
     attributes: [],
+    // Not callable by default: that is what every type registered before calls carried an
+    // SLA looks like, and the case that must keep behaving as it did.
+    canCreateCall: false,
+    callSlaHours: null,
     isActive: true,
     objectCount: 0,
     createdByName: 'Б. Энхтөр',

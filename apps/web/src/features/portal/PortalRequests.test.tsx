@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../../lib/api-client';
 import { objectService } from '../../services/object.service';
 import { portalService } from '../../services/portal.service';
-import { dispatchService } from '../../services/service-request.service';
+import { dispatchService, serviceRequestService } from '../../services/service-request.service';
 import {
   makeBuilding,
   makeFloor,
@@ -26,6 +26,7 @@ import { PortalSiteDetailPage } from './PortalSiteDetailPage';
 import { PortalSitesPage } from './PortalSitesPage';
 
 const CUSTOMER_ID = '507f1f77bcf86cd799439011';
+const OBJECT_TYPE_ID = '507f1f77bcf86cd799439199';
 const BUILDING_ID = '507f1f77bcf86cd799439021';
 const REQUEST_ID = '507f1f77bcf86cd799439061';
 
@@ -142,6 +143,11 @@ describe('PortalRequestListPage', () => {
 describe('requesting scheduled maintenance', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    // The create form now has a required equipment-type field; with no options it cannot
+    // be filled, and nothing submits.
+    vi.spyOn(serviceRequestService, 'callableObjectTypes').mockResolvedValue([
+      { id: OBJECT_TYPE_ID, name: 'Гэрэл', callSlaHours: 24 },
+    ]);
     vi.spyOn(portalService, 'listProjects').mockResolvedValue(makePage([]));
     vi.spyOn(portalService, 'listBuildingsIn').mockResolvedValue(
       makePage([{ id: BUILDING_ID, name: 'Төв барилга' } as never]),
@@ -178,6 +184,10 @@ describe('requesting scheduled maintenance', () => {
     renderPortal(<PortalRequestCreatePage />, '/portal/requests/new?type=PLANNED_INSPECTION');
 
     await user.selectOptions(await screen.findByLabelText(/^Барилга/), BUILDING_ID);
+    await user.selectOptions(
+      await screen.findByLabelText(/^Тоног төхөөрөмжийн төрөл/),
+      OBJECT_TYPE_ID,
+    );
     await user.type(screen.getByLabelText(/^Тайлбар/), 'Улирлын урьдчилан сэргийлэх үзлэг.');
     await user.click(screen.getByRole('button', { name: 'Илгээх' }));
 
@@ -187,6 +197,7 @@ describe('requesting scheduled maintenance', () => {
           customerId: CUSTOMER_ID,
           buildingId: BUILDING_ID,
           requestType: 'PLANNED_INSPECTION',
+          objectTypeId: OBJECT_TYPE_ID,
         }),
       );
     });

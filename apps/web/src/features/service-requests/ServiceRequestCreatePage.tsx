@@ -3,6 +3,7 @@ import {
   SERVICE_REQUEST_TYPES,
   SERVICE_REQUEST_TYPE_LABELS,
   createServiceRequestSchema,
+  type CallableObjectTypeDto,
   type CreateServiceRequestInput,
   type PlanPositionDto,
   type ServiceRequestAttachmentDto,
@@ -16,7 +17,6 @@ import { Button } from '../../components/ui/Button';
 import { PageHeader } from '../../components/ui/PageHeader';
 import { useToast } from '../../components/ui/ToastProvider';
 import { FILTER_INPUT, FILTER_LABEL } from '../../components/ui/control-styles';
-import { useSlaHours } from '../../hooks/use-sla-hours';
 import { ApiError } from '../../lib/api-client';
 import { serviceRequestService } from '../../services/service-request.service';
 import { Field, Section, SelectInput, TextInput } from '../employees/FormControls';
@@ -35,7 +35,14 @@ export function ServiceRequestCreatePage(): ReactElement {
   const navigate = useNavigate();
   const { notify } = useToast();
   const chain = useLocationChain();
-  const slaHours = useSlaHours();
+  /*
+   * The global SLA settings are no longer read here.
+   *
+   * They no longer decide anything on this form: a call takes its window from the equipment
+   * type it names. Reading them anyway would mean fetching settings to display a number that
+   * nothing uses - and doing so behind a `settings.view` check that several request-creating
+   * roles do not hold.
+   */
 
   const [requestType, setRequestType] = useState<ServiceRequestType | ''>('');
   const [isUrgent, setIsUrgent] = useState(false);
@@ -44,6 +51,8 @@ export function ServiceRequestCreatePage(): ReactElement {
   const [contactName, setContactName] = useState('');
   const [contactPhone, setContactPhone] = useState('');
 
+  const [objectTypeId, setObjectTypeId] = useState('');
+  const [objectTypes, setObjectTypes] = useState<CallableObjectTypeDto[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -90,6 +99,21 @@ export function ServiceRequestCreatePage(): ReactElement {
     }
   }
 
+  useEffect(() => {
+    let cancelled = false;
+    void serviceRequestService
+      .callableObjectTypes()
+      .then((types) => {
+        if (!cancelled) setObjectTypes(types);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const selectedObjectType = objectTypes.find((type) => type.id === objectTypeId) ?? null;
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     setFormError(null);
@@ -107,6 +131,7 @@ export function ServiceRequestCreatePage(): ReactElement {
       // submits exactly the payload it always did.
       ...(planPosition ? { planPosition } : {}),
       requestType: requestType as ServiceRequestType,
+      objectTypeId,
       isUrgent,
       description: description.trim(),
       contactName: contactName.trim(),
@@ -252,15 +277,36 @@ export function ServiceRequestCreatePage(): ReactElement {
               </Field>
 
               <Field
-                label="Яаралтай эсэх"
-                // Silence rather than a guess: the deadline is computed server-side from
-                // the Тохиргоо values, and a caller who cannot read them (DISPATCH and
-                // SALES hold no `settings.view`) must not state a number for them.
+                label="Тоног төхөөрөмжийн төрөл"
+                required
+                error={fieldErrors.objectTypeId}
                 hint={
-                  slaHours
-                    ? `SLA ${isUrgent ? slaHours.urgent : slaHours.standard} цаг`
-                    : undefined
+                  selectedObjectType
+                    ? `Энэ дуудлагын SLA хугацаа ${selectedObjectType.callSlaHours} цаг.`
+                    : 'Сонгосон төрлөөс SLA хугацаа тодорхойлогдоно.'
                 }
+              >
+                <SelectInput
+                  value={objectTypeId}
+                  onChange={setObjectTypeId}
+                  placeholder="Төхөөрөмж сонгох"
+                  options={objectTypes.map((type) => ({
+                    value: type.id,
+                    label: `${type.name} (${type.callSlaHours} цаг)`,
+                  }))}
+                  disabled={submitting}
+                />
+              </Field>
+
+              <Field
+                label="Яаралтай эсэх"
+                /*
+                 * The hint states what urgency now does, which is NOT the deadline. The
+                 * window comes from the equipment type; this flag orders the queue. It used
+                 * to read `SLA n цаг` off the global settings, which after that change would
+                 * have been a number nothing uses.
+                 */
+                hint="Дараалалд эрэмбэлнэ. SLA хугацааг өөрчлөхгүй."
               >
                 <label className="flex items-center gap-2 py-1.5 text-sm text-slate-700">
                   <input

@@ -35,6 +35,8 @@ function makeType(overrides: Partial<ObjectTypeDto> = {}): ObjectTypeDto {
     objectCount: 0,
     createdByName: 'Б. Энхтөр',
     createdAt: '2026-01-01T00:00:00.000Z',
+    canCreateCall: false,
+    callSlaHours: null,
     updatedAt: '2026-01-01T00:00:00.000Z',
     ...overrides,
   };
@@ -632,5 +634,81 @@ describe('ObjectTypesPage per-type attributes', () => {
 
     expect(screen.getByLabelText('Үзүүлэлт 1 түлхүүр')).toBeDisabled();
     expect(screen.getByLabelText('Үзүүлэлт 2 түлхүүр')).toBeEnabled();
+  });
+  /**
+   * The two fields that make a type callable. Worth testing at this level because the
+   * drawer builds untyped literals for `safeParse` - omitting either field compiles
+   * perfectly and simply sends a type nobody can raise a call against.
+   */
+  describe('call settings', () => {
+    it('hides the SLA field until calls are enabled', async () => {
+      vi.spyOn(objectTypeService, 'list').mockResolvedValue(makePage([makeType()]));
+      const user = userEvent.setup();
+
+      renderWithAuth(<ObjectTypesPage />, { permissions: [PERMISSIONS.OBJECT_TYPE_MANAGE] });
+      await openDrawer(user);
+
+      expect(screen.queryByLabelText(/^Дуудлагын SLA хугацаа/)).not.toBeInTheDocument();
+
+      await user.click(screen.getByRole('checkbox', { name: /Дуудлага үүсгэх боломжтой/ }));
+      expect(await screen.findByLabelText(/^Дуудлагын SLA хугацаа/)).toBeInTheDocument();
+    });
+
+    it('sends both fields when a callable type is created', async () => {
+      vi.spyOn(objectTypeService, 'list').mockResolvedValue(makePage([makeType()]));
+      const create = vi.spyOn(objectTypeService, 'create').mockResolvedValue(makeType());
+      const user = userEvent.setup();
+
+      renderWithAuth(<ObjectTypesPage />, { permissions: [PERMISSIONS.OBJECT_TYPE_MANAGE] });
+      await openDrawer(user);
+
+      await user.type(screen.getByLabelText(/^Код/), 'LIGHT');
+      await user.type(screen.getByLabelText(/^Нэр/), 'Гэрэл');
+      await user.click(screen.getByRole('checkbox', { name: /Дуудлага үүсгэх боломжтой/ }));
+      await user.type(screen.getByLabelText(/^Дуудлагын SLA хугацаа/), '24');
+      await user.click(screen.getByRole('button', { name: 'Хадгалах' }));
+
+      await waitFor(() => expect(create).toHaveBeenCalled());
+      expect(create.mock.calls[0]![0]).toMatchObject({
+        code: 'LIGHT',
+        name: 'Гэрэл',
+        canCreateCall: true,
+        callSlaHours: 24,
+      });
+    });
+
+    /**
+     * A number, not the string the input holds. `Number('')` is 0, which would read as a
+     * zero-hour SLA rather than as "not filled in".
+     */
+    it('sends no hours when calls are left off', async () => {
+      vi.spyOn(objectTypeService, 'list').mockResolvedValue(makePage([makeType()]));
+      const create = vi.spyOn(objectTypeService, 'create').mockResolvedValue(makeType());
+      const user = userEvent.setup();
+
+      renderWithAuth(<ObjectTypesPage />, { permissions: [PERMISSIONS.OBJECT_TYPE_MANAGE] });
+      await openDrawer(user);
+
+      await user.type(screen.getByLabelText(/^Код/), 'CABLE');
+      await user.type(screen.getByLabelText(/^Нэр/), 'Кабель');
+      await user.click(screen.getByRole('button', { name: 'Хадгалах' }));
+
+      await waitFor(() => expect(create).toHaveBeenCalled());
+      expect(create.mock.calls[0]![0]).toMatchObject({
+        canCreateCall: false,
+        callSlaHours: null,
+      });
+    });
+
+    it('shows the stored hours when editing a callable type', async () => {
+      const callable = makeType({ name: 'Гэрэл', canCreateCall: true, callSlaHours: 24 });
+      vi.spyOn(objectTypeService, 'list').mockResolvedValue(makePage([callable]));
+      const user = userEvent.setup();
+
+      renderWithAuth(<ObjectTypesPage />, { permissions: [PERMISSIONS.OBJECT_TYPE_MANAGE] });
+      await openEditor(user, 'Гэрэл');
+
+      expect(await screen.findByLabelText(/^Дуудлагын SLA хугацаа/)).toHaveValue(24);
+    });
   });
 });

@@ -1,4 +1,5 @@
 import {
+  type CallableObjectTypeDto,
   SERVICE_REQUEST_STATUS_LABELS,
   canTransition,
   isReasonRequired,
@@ -409,6 +410,33 @@ async function assertAttachmentsBelongToActor(
  * Refusing an extension because of a later catalogue edit would punish the wrong person, so
  * a missing or hours-less type simply falls back to the global window.
  */
+/**
+ * The active, callable equipment types, for a call form's picker.
+ *
+ * Three fields, not the whole `ObjectTypeDto`. A picker needs a label, a value and the
+ * window it implies; the rest of the catalogue row - attributes, icons, structural flags -
+ * is administrative data, and a customer-portal account has no business receiving it just
+ * to fill in a dropdown.
+ *
+ * Sorted by name so the list is stable between renders and between users.
+ */
+export async function listCallableObjectTypes(): Promise<CallableObjectTypeDto[]> {
+  const types = await ObjectType.find({ canCreateCall: true, isActive: true })
+    .select('_id name callSlaHours')
+    .sort({ name: 1 })
+    .lean();
+
+  return types
+    // A callable type with no hours should not exist - the write path refuses it - but if
+    // one somehow does, offering it would produce a call the create endpoint then rejects.
+    .filter((type) => typeof type.callSlaHours === 'number')
+    .map((type) => ({
+      id: String(type._id),
+      name: type.name,
+      callSlaHours: type.callSlaHours as number,
+    }));
+}
+
 async function equipmentSlaHoursFor(objectTypeId: Types.ObjectId | null): Promise<number | null> {
   if (!objectTypeId) return null;
   const type = await ObjectType.findById(objectTypeId).select('callSlaHours').lean();

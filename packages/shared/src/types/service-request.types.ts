@@ -174,3 +174,17 @@ export interface DispatchBoardDto {
   columns: DispatchBoardColumnDto[];
   generatedAt: string;
 }
+
+/**
+ * One option in a call form's equipment-type picker.
+ *
+ * Deliberately not `ObjectTypeDto`: a picker needs a label, a value, and the window the
+ * choice implies. The rest of a catalogue row is administrative data that a customer-portal
+ * account should not receive merely to fill in a dropdown.
+ */
+export interface CallableObjectTypeDto {
+  id: string;
+  name: string;
+  /** Hours. What the call's deadline will be set from, and worth showing beside the name. */
+  callSlaHours: number;
+}

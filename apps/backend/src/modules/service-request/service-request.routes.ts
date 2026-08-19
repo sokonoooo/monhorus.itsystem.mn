@@ -23,6 +23,7 @@ import { requireAnyPermission, requirePermission } from '../../middlewares/autho
 import { validate } from '../../middlewares/validate.middleware';
 import { claimServiceRequest } from './claim.service';
 import * as service from './service-request.service';
+import { listCallableObjectTypes } from './service-request.service';
 import * as workReportService from './work-report.service';
 
 const requestIdParamSchema = z.object({
@@ -80,6 +81,34 @@ serviceRequestRouter.post(
         meta(req),
       );
       created(res, result, 'Үйлчилгээний хүсэлт үүслээ.');
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+/**
+ * The equipment types the caller may raise a call against.
+ *
+ * A separate endpoint rather than `GET /object-types?canCreateCall=true`, because the two
+ * audiences for that catalogue are different. Reading the catalogue needs
+ * `object_master.view`, which a customer-portal account does not hold and a staff role with
+ * only `service_request.create` need not hold either - both would be refused while being
+ * perfectly entitled to raise a call.
+ *
+ * So this is gated on being able to CREATE a request, by either route, and answers a
+ * narrower question: it returns only active, callable types, and only the three fields a
+ * picker needs. An administrator managing the catalogue still uses /object-types.
+ */
+serviceRequestRouter.get(
+  '/callable-object-types',
+  requireAnyPermission(
+    PERMISSIONS.SERVICE_REQUEST_CREATE,
+    PERMISSIONS.PORTAL_SERVICE_REQUEST_CREATE,
+  ),
+  async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      ok(res, await listCallableObjectTypes());
     } catch (error) {
       next(error);
     }

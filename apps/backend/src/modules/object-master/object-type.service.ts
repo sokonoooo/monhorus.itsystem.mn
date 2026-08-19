@@ -149,6 +149,7 @@ export async function listObjectTypes(
   const filter: FilterQuery<IObjectType> = {};
   if (query.category) filter.category = query.category;
   if (query.isActive !== undefined) filter.isActive = query.isActive;
+  if (query.canCreateCall !== undefined) filter.canCreateCall = query.canCreateCall;
   if (query.search) {
     const escaped = query.search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const pattern = new RegExp(escaped, 'i');

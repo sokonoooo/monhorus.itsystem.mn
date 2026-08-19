@@ -3,6 +3,7 @@ import {
   SERVICE_REQUEST_TYPE_LABELS,
   createServiceRequestSchema,
   type BuildingDto,
+  type CallableObjectTypeDto,
   type CreateServiceRequestInput,
   type FloorDto,
   type ProjectDto,
@@ -20,6 +21,7 @@ import { FIELD_TEXTAREA, FILTER_LABEL } from '../../components/ui/control-styles
 import { useAuth } from '../../contexts/auth-context';
 import { ApiError } from '../../lib/api-client';
 import { portalService } from '../../services/portal.service';
+import { serviceRequestService } from '../../services/service-request.service';
 import { Field, Section, SelectInput, TextInput } from '../employees/FormControls';
 
 /** Mirrors ALLOWED_MIME_TYPES and MAX_FILE_BYTES in the storage service. */
@@ -72,6 +74,8 @@ export function PortalRequestCreatePage(): ReactElement {
   const [attachments, setAttachments] = useState<ServiceRequestAttachmentDto[]>([]);
 
   const [uploading, setUploading] = useState(false);
+  const [objectTypeId, setObjectTypeId] = useState('');
+  const [objectTypes, setObjectTypes] = useState<CallableObjectTypeDto[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -159,6 +163,21 @@ export function PortalRequestCreatePage(): ReactElement {
     }
   }
 
+  useEffect(() => {
+    let cancelled = false;
+    void serviceRequestService
+      .callableObjectTypes()
+      .then((types) => {
+        if (!cancelled) setObjectTypes(types);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const selectedObjectType = objectTypes.find((type) => type.id === objectTypeId) ?? null;
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     setFormError(null);
@@ -178,6 +197,7 @@ export function PortalRequestCreatePage(): ReactElement {
       buildingId,
       floorId: floorId || null,
       requestType: requestType as ServiceRequestType,
+      objectTypeId,
       isUrgent,
       description: description.trim(),
       contactName: contactName.trim(),
@@ -289,6 +309,33 @@ export function PortalRequestCreatePage(): ReactElement {
                   options={SERVICE_REQUEST_TYPES.map((value) => ({
                     value,
                     label: SERVICE_REQUEST_TYPE_LABELS[value],
+                  }))}
+                  disabled={submitting}
+                />
+              </Field>
+
+              {/*
+                Labelled "Тоног төхөөрөмжийн төрөл", not "Төрөл". The field above is already
+                "Төрөл", and this suite finds controls by label - two fields whose labels
+                both start with that word would make every such query ambiguous.
+              */}
+              <Field
+                label="Тоног төхөөрөмжийн төрөл"
+                required
+                error={fieldErrors.objectTypeId}
+                hint={
+                  selectedObjectType
+                    ? `Энэ дуудлагын SLA хугацаа ${selectedObjectType.callSlaHours} цаг.`
+                    : 'Сонгосон төрлөөс SLA хугацаа тодорхойлогдоно.'
+                }
+              >
+                <SelectInput
+                  value={objectTypeId}
+                  onChange={setObjectTypeId}
+                  placeholder="Төхөөрөмж сонгох"
+                  options={objectTypes.map((type) => ({
+                    value: type.id,
+                    label: `${type.name} (${type.callSlaHours} цаг)`,
                   }))}
                   disabled={submitting}
                 />

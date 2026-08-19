@@ -213,6 +213,15 @@ export const objectTypeListQuerySchema = z.object({
   search: z.string().trim().max(200).optional(),
   category: z.enum(OBJECT_CATEGORIES).optional(),
   isActive: booleanQuerySchema.optional(),
+  /**
+   * Narrow the catalogue to the types a call may be raised against.
+   *
+   * Exists for the call forms, which must not offer a type the backend would then refuse.
+   * A filter rather than a separate endpoint: this is the same catalogue, asked a narrower
+   * question, and an administrator listing types still wants to see the ones that are not
+   * callable.
+   */
+  canCreateCall: booleanQuerySchema.optional(),
 });
 
 // -- Per-category attribute blocks -------------------------------------------

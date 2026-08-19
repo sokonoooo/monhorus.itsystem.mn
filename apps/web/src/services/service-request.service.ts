@@ -1,5 +1,6 @@
 import type {
   ApiResponse,
+  CallableObjectTypeDto,
   SaveWorkReportInput,
   WorkReportDto,
   WorkReportPhotoDto,
@@ -34,6 +35,22 @@ export const serviceRequestService = {
   async getById(requestId: string): Promise<ServiceRequestDetailDto> {
     return unwrap(
       await apiClient.get<ApiResponse<ServiceRequestDetailDto>>(`/service-requests/${requestId}`),
+    );
+  },
+
+  /**
+   * The equipment types this caller may raise a call against.
+   *
+   * Not `/object-types`: reading the catalogue needs `object_master.view`, which a
+   * customer-portal account does not hold, so both call forms would be unable to fill their
+   * own required field. This endpoint is gated on being able to CREATE a request instead,
+   * and returns only what a picker needs.
+   */
+  async callableObjectTypes(): Promise<CallableObjectTypeDto[]> {
+    return unwrap(
+      await apiClient.get<ApiResponse<CallableObjectTypeDto[]>>(
+        '/service-requests/callable-object-types',
+      ),
     );
   },
 

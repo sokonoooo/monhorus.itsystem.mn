@@ -11,7 +11,6 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { invalidateSlaHours } from '../../hooks/use-sla-hours';
-import { ApiError } from '../../lib/api-client';
 import * as fileUrl from '../../lib/file-url';
 import { objectService } from '../../services/object.service';
 import { projectService } from '../../services/project.service';
@@ -33,6 +32,8 @@ const FLOOR = node('507f1f77bcf86cd799439023', 'FLOOR', '2 давхар');
 const ZONE = node('507f1f77bcf86cd799439024', 'ROOM', '201 тоот');
 
 /** Finds the select that contains an option with the given label. */
+const OBJECT_TYPE_ID = '507f1f77bcf86cd799439199';
+
 function selectContainingOption(label: string): HTMLSelectElement | undefined {
   return screen
     .getAllByRole('combobox')
@@ -81,6 +82,11 @@ describe('ServiceRequestCreatePage', () => {
     // The hook caches a successful read for the page's lifetime, which in a suite is
     // the whole file.
     invalidateSlaHours();
+    // Required field now, so every case needs options - including the ones that only
+    // assert the form renders.
+    vi.spyOn(serviceRequestService, 'callableObjectTypes').mockResolvedValue([
+      { id: OBJECT_TYPE_ID, name: 'Гэрэл', callSlaHours: 24 },
+    ]);
     vi.spyOn(objectService, 'customers').mockResolvedValue([CUSTOMER]);
     vi.spyOn(objectService, 'rootNodes').mockResolvedValue([PROJECT]);
     vi.spyOn(objectService, 'children').mockResolvedValue([BUILDING]);
@@ -209,35 +215,46 @@ describe('ServiceRequestCreatePage', () => {
     expect(await screen.findByText('Хавсралт байхгүй байна.')).toBeInTheDocument();
   });
 
-  it('shows the SLA hours the settings actually hold, not 6/24', async () => {
+  /**
+   * Replaces two tests that asserted this form showed the global `sla.urgent_hours` /
+   * `sla.standard_hours`. It no longer does, and must not: the deadline now comes from the
+   * equipment type, so those numbers would describe nothing the backend does.
+   */
+  it('states the window of the equipment type that was chosen', async () => {
     const user = userEvent.setup();
-    vi.spyOn(settingsService, 'get').mockResolvedValue(slaSettings(4, 48));
 
     renderWithAuth(<ServiceRequestCreatePage />, {
       permissions: [PERMISSIONS.SERVICE_REQUEST_CREATE, PERMISSIONS.SETTINGS_VIEW],
     });
 
-    // The shipped defaults are 6 and 24; this installation runs 4 and 48, and the
-    // deadline the backend computes follows the settings, not the constants.
-    expect(await screen.findByText('SLA 48 цаг')).toBeInTheDocument();
+    await user.selectOptions(
+      (await screen.findByRole('combobox', { name: /Тоног төхөөрөмжийн төрөл/ })) as HTMLSelectElement,
+      OBJECT_TYPE_ID,
+    );
 
-    await user.click(screen.getByRole('checkbox', { name: /Яаралтай дуудлага/ }));
-    expect(await screen.findByText('SLA 4 цаг')).toBeInTheDocument();
+    expect(await screen.findByText('Энэ дуудлагын SLA хугацаа 24 цаг.')).toBeInTheDocument();
   });
 
-  it('says nothing about the SLA when the setting cannot be read', async () => {
-    const get = vi
-      .spyOn(settingsService, 'get')
-      .mockRejectedValue(new ApiError('Энэ үйлдлийг хийх эрх байхгүй байна.', 'FORBIDDEN', 403));
+  it('says the urgent flag does not change the deadline', async () => {
+    renderWithAuth(<ServiceRequestCreatePage />, {
+      permissions: [PERMISSIONS.SERVICE_REQUEST_CREATE],
+    });
+
+    // The flag orders the queue now. Saying otherwise beside a checkbox that no longer
+    // does it is how somebody ends up expecting a four-hour response.
+    expect(await screen.findByText(/SLA хугацааг өөрчлөхгүй/)).toBeInTheDocument();
+  });
+
+  it('never reads the settings, whatever the caller may see', async () => {
+    const get = vi.spyOn(settingsService, 'get').mockResolvedValue(slaSettings(4, 48));
 
     renderWithAuth(<ServiceRequestCreatePage />, {
       permissions: [PERMISSIONS.SERVICE_REQUEST_CREATE, PERMISSIONS.SETTINGS_VIEW],
     });
 
-    await waitFor(() => expect(get).toHaveBeenCalled());
-    // No fallback to the shipped 6/24: a number presented as the rule that may not be
-    // the rule is worse than no number, because the form is a promise to the customer.
-    await waitFor(() => expect(screen.queryByText(/SLA/)).not.toBeInTheDocument());
+    expect(await screen.findByRole('button', { name: 'Хүсэлт үүсгэх' })).toBeInTheDocument();
+    // Even holding settings.view, there is nothing here to read them for.
+    expect(get).not.toHaveBeenCalled();
   });
 
   /**
@@ -306,6 +323,10 @@ describe('ServiceRequestCreatePage', () => {
       await user.selectOptions(
         selectContainingOption('Яаралтай дуудлага') as HTMLSelectElement,
         'URGENT_CALL',
+      );
+      await user.selectOptions(
+        selectContainingOption('Гэрэл (24 цаг)') as HTMLSelectElement,
+        OBJECT_TYPE_ID,
       );
       await user.type(screen.getByLabelText(/^Холбоо барих хүн/), 'Д. Болор');
       await user.type(screen.getByLabelText(/^Холбоо барих утас/), '9911-2233');
@@ -483,7 +504,8 @@ describe('ServiceRequestCreatePage', () => {
     });
 
     expect(await screen.findByRole('button', { name: 'Хүсэлт үүсгэх' })).toBeInTheDocument();
+    // The point is the request that is never made. The form does mention an SLA now - the
+    // equipment type's - but that number comes with the type list, not from /settings.
     expect(get).not.toHaveBeenCalled();
-    expect(screen.queryByText(/SLA/)).not.toBeInTheDocument();
   });
 });

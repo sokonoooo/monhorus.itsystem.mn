@@ -99,6 +99,13 @@ function TypeDrawer({
   const [showOnPlan, setShowOnPlan] = useState(false);
   const [insidePanel, setInsidePanel] = useState(false);
   const [generatesConclusion, setGeneratesConclusion] = useState(true);
+  const [canCreateCall, setCanCreateCall] = useState(false);
+  /*
+   * Held as a string, like every other numeric field in this app: a number input reports ''
+   * while being cleared, and Number('') is 0 - which here would read as a zero-hour SLA
+   * rather than as "not filled in yet".
+   */
+  const [callSlaHours, setCallSlaHours] = useState('');
   const [icon, setIcon] = useState<ObjectIcon>('OTHER');
   const [isActive, setIsActive] = useState(true);
   /** What objects of this type must record beyond their category's own fields (4.1). */
@@ -147,6 +154,8 @@ function TypeDrawer({
       setShowOnPlan(existing.showOnPlan);
       setInsidePanel(existing.insidePanel);
       setGeneratesConclusion(existing.generatesConclusion);
+      setCanCreateCall(existing.canCreateCall);
+      setCallSlaHours(existing.callSlaHours === null ? '' : String(existing.callSlaHours));
       setIcon(existing.icon);
       setIsActive(existing.isActive);
       // Copied rather than referenced: the editor replaces rows wholesale, and holding the
@@ -165,6 +174,8 @@ function TypeDrawer({
       setShowOnPlan(false);
       setInsidePanel(false);
       setGeneratesConclusion(true);
+      setCanCreateCall(false);
+      setCallSlaHours('');
       setIcon('OTHER');
       setIsActive(true);
       setAttributes([]);
@@ -275,6 +286,10 @@ function TypeDrawer({
           showOnPlan,
           insidePanel,
           generatesConclusion,
+          canCreateCall,
+          // Null rather than 0 when blank, and dropped entirely when calls are off, so the
+          // server is never asked to store hours for a type nobody can call about.
+          callSlaHours: canCreateCall && callSlaHours.trim() !== '' ? Number(callSlaHours) : null,
           icon,
           attributes,
           // Sent only when there is one to claim; the endpoint treats absent as "none".
@@ -286,6 +301,8 @@ function TypeDrawer({
           showOnPlan,
           insidePanel,
           generatesConclusion,
+          canCreateCall,
+          callSlaHours: canCreateCall && callSlaHours.trim() !== '' ? Number(callSlaHours) : null,
           icon,
           isActive,
           // Always sent, unlike the icon below: the whole list is what the editor holds, so
@@ -482,6 +499,45 @@ function TypeDrawer({
         </div>
 
         <fieldset aria-label="Тохиргоо" className="space-y-2">
+          <label className="flex items-start gap-2 text-sm text-slate-700">
+            <input
+              type="checkbox"
+              checked={canCreateCall}
+              onChange={(event) => setCanCreateCall(event.target.checked)}
+              disabled={submitting}
+              className="mt-0.5 h-4 w-4 rounded border-slate-300"
+            />
+            <span>
+              Дуудлага үүсгэх боломжтой эсэх
+              <span className="block text-xs text-slate-500">
+                Идэвхтэй бол энэ төрлийг сонгож дуудлага үүсгэнэ. Дуудлагын SLA хугацаа
+                доорх утгаар бодогдоно.
+              </span>
+            </span>
+          </label>
+
+          {/*
+            Shown only when calls are enabled, because the hours mean nothing otherwise -
+            and required then, because the server refuses the pair apart. Same conditional
+            shape as `isActive` below, which is likewise only meaningful in one state.
+          */}
+          {canCreateCall && (
+            <Field
+              label="Дуудлагын SLA хугацаа (цаг)"
+              required
+              error={fieldErrors.callSlaHours}
+              hint="Жишээ: гэрэл 24 цаг, автомат залгуур 6 цаг. Яаралтай эсэх нь энэ хугацааг өөрчлөхгүй."
+            >
+              <TextInput
+                value={callSlaHours}
+                onChange={setCallSlaHours}
+                type="number"
+                placeholder="24"
+                disabled={submitting}
+              />
+            </Field>
+          )}
+
           <label className="flex items-start gap-2 text-sm text-slate-700">
             <input
               type="checkbox"

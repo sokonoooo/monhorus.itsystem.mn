@@ -223,4 +223,88 @@ describe('Equipment type SLA', () => {
       expect(response.body.data.callSlaHours).toBeNull();
     });
   });
+  describe('listing types for a call form', () => {
+    /**
+     * The call forms ask for this narrowed list so they never offer a type the create
+     * endpoint would then refuse. The refusal is still the rule - this only keeps the two
+     * from disagreeing in front of the user.
+     */
+    it('returns only callable types when asked', async () => {
+      await createCallableObjectType({ name: 'Гэрэл', callSlaHours: 24 });
+      await createCallableObjectType({ name: 'Кабель', canCreateCall: false });
+
+      const response = await request(app)
+        .get(`${API}/object-types?canCreateCall=true`)
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(response.status).toBe(200);
+      const names = (response.body.data.items as { name: string }[]).map((t) => t.name);
+      expect(names).toContain('Гэрэл');
+      expect(names).not.toContain('Кабель');
+    });
+
+    it('returns the whole catalogue when not asked', async () => {
+      await createCallableObjectType({ name: 'Гэрэл' });
+      await createCallableObjectType({ name: 'Кабель', canCreateCall: false });
+
+      const response = await request(app)
+        .get(`${API}/object-types`)
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(response.status).toBe(200);
+      const names = (response.body.data.items as { name: string }[]).map((t) => t.name);
+      // An administrator managing the catalogue still needs to see what is not callable.
+      expect(names).toContain('Гэрэл');
+      expect(names).toContain('Кабель');
+    });
+  });
+  describe('the picker endpoint', () => {
+    /**
+     * Exists because /object-types needs `object_master.view`, which a customer-portal
+     * account does not hold and a staff role with only `service_request.create` need not
+     * hold either. Both are entitled to raise a call, so both must be able to see what they
+     * may raise one against.
+     */
+    it('lists callable types to a staff creator', async () => {
+      await createCallableObjectType({ name: 'Гэрэл', callSlaHours: 24 });
+      await createCallableObjectType({ name: 'Кабель', canCreateCall: false });
+
+      const response = await request(app)
+        .get(`${API}/service-requests/callable-object-types`)
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(response.status).toBe(200);
+      const names = (response.body.data as { name: string }[]).map((t) => t.name);
+      expect(names).toEqual(['Гэрэл']);
+    });
+
+    it('carries the window so the form can show it', async () => {
+      await createCallableObjectType({ name: 'Гэрэл', callSlaHours: 24 });
+
+      const response = await request(app)
+        .get(`${API}/service-requests/callable-object-types`)
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(response.body.data[0]).toMatchObject({ name: 'Гэрэл', callSlaHours: 24 });
+      // Administrative catalogue data has no business reaching a dropdown.
+      expect(Object.keys(response.body.data[0]).sort()).toEqual([
+        'callSlaHours',
+        'id',
+        'name',
+      ]);
+    });
+
+    it('refuses a caller who may not raise a call at all', async () => {
+      const outsider = await createUserWithPermissions('nocreate@test.mn', [
+        PERMISSIONS.SERVICE_REQUEST_VIEW,
+      ]);
+      const outsiderToken = await login(outsider.email, outsider.password);
+
+      const response = await request(app)
+        .get(`${API}/service-requests/callable-object-types`)
+        .set('Authorization', `Bearer ${outsiderToken}`);
+
+      expect(response.status).toBe(403);
+    });
+  });
 });
