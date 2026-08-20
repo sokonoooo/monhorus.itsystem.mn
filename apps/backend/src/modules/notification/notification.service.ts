@@ -150,8 +150,31 @@ export async function notify(input: NotifyInput): Promise<void> {
       if (id) recipients.set(String(id), id);
     }
 
-    for (const id of await recipientsByCustomer(input.customerId)) {
-      recipients.set(String(id), id);
+    if (input.customerId) {
+      const forCustomer = await recipientsByCustomer(input.customerId);
+
+      /*
+       * THE SILENT FAILURE, MADE AUDIBLE.
+       *
+       * A customer notification that reaches nobody looks identical to one that was never
+       * written: `notify` swallows its own errors, an empty recipient set is not an error,
+       * and the caller gets no answer either way. That is exactly how "the customer is not
+       * getting their notification" can be true for weeks with nothing in the logs.
+       *
+       * There are only three ways to land here, and all three are somebody's mistake rather
+       * than a normal state: the organisation has no portal account at all, every one of
+       * them is suspended, or an account carries `role: 'customer'` with `customer: null`
+       * and is therefore attached to no organisation — live data has one. None is worth
+       * failing the business operation over, and all three are worth a line in monitoring.
+       */
+      if (forCustomer.length === 0) {
+        logger.warn(
+          { event: input.event, customerId: String(input.customerId) },
+          'Customer notification reached nobody: the organisation has no active portal account',
+        );
+      }
+
+      for (const id of forCustomer) recipients.set(String(id), id);
     }
 
     const excluded = toObjectId(input.excludeUserId);

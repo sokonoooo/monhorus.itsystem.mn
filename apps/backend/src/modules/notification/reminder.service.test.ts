@@ -11,6 +11,7 @@ import {
   startTestApp,
   stopTestApp,
 } from '../../test/helpers';
+import { Employee } from '../employee/employee.model';
 import { Invoice } from '../invoice/invoice.model';
 import { ServiceRequest } from '../service-request/service-request.model';
 import { PlannedWork } from '../planned-work/planned-work.models';
@@ -93,6 +94,35 @@ async function makeServiceRequest(overrides: Record<string, unknown>): Promise<s
   return String(request._id);
 }
 
+/**
+ * A technician who can be put on a job: an employee card joined to a sign-in account.
+ *
+ * They hold `service_request.view` deliberately — the key the old blanket fan-out used — so
+ * that "an unassigned technician hears nothing" is an assertion about targeting rather than
+ * about the account being unprivileged.
+ */
+let technicianSequence = 0;
+async function makeAssignableTechnician(
+  email: string,
+): Promise<{ userId: string; employeeId: Types.ObjectId }> {
+  const user = await createUserWithPermissions(email, [
+    PERMISSIONS.SERVICE_REQUEST_VIEW,
+    PERMISSIONS.NOTIFICATION_VIEW,
+  ]);
+  technicianSequence += 1;
+  const employee = await Employee.create({
+    employeeCode: `RM-${technicianSequence}`,
+    firstName: 'Тест',
+    lastName: 'Ажилтан',
+    registrationNumber: `РР${String(40_000_000 + technicianSequence)}`,
+    status: 'ACTIVE',
+    employeeType: 'FULL_TIME',
+    employmentStartDate: new Date('2024-01-01'),
+    systemUser: new Types.ObjectId(user.userId),
+  });
+  return { userId: user.userId, employeeId: employee._id };
+}
+
 function countOf(event: string): Promise<number> {
   return Notification.countDocuments({ event });
 }
@@ -111,6 +141,8 @@ describe('Reminder sweep', () => {
     await createUserWithPermissions('watcher@test.mn', [
       PERMISSIONS.PLANNED_WORK_VIEW,
       PERMISSIONS.INVOICE_VIEW,
+      // The SLA sweep addresses the dispatch desk, not every holder of a read key.
+      PERMISSIONS.DISPATCH_VIEW,
       PERMISSIONS.SERVICE_REQUEST_VIEW,
       PERMISSIONS.NOTIFICATION_VIEW,
     ]);
@@ -314,6 +346,49 @@ describe('Reminder sweep', () => {
       const result = await runReminderSweep();
 
       expect(result.slaBreached).toBe(0);
+    });
+
+    /**
+     * WHOSE deadline it is.
+     *
+     * `service_request.view` is a TECHNICIAN key, so an SLA warning addressed to it reached
+     * every technician in the company about every clock in the company. The two cases below
+     * are the same sweep read from two inboxes: the crew carrying the job hear it because
+     * they are named, and a technician holding the same read key and no assignment hears
+     * nothing at all.
+     */
+    it('warns the crew carrying the job, by name', async () => {
+      const crew = await makeAssignableTechnician('sla-crew@test.mn');
+      await makeServiceRequest({
+        slaStartedAt: new Date(Date.now() - 10 * HOUR),
+        slaDueAt: new Date(Date.now() - HOUR),
+        assignedEmployees: [crew.employeeId],
+      });
+
+      await runReminderSweep();
+
+      expect(
+        await Notification.countDocuments({
+          recipient: new Types.ObjectId(crew.userId),
+          event: 'SLA_BREACHED',
+        }),
+      ).toBe(1);
+    });
+
+    it('says nothing to a technician who is not on the job', async () => {
+      const bystander = await makeAssignableTechnician('sla-bystander@test.mn');
+      await makeServiceRequest({
+        slaStartedAt: new Date(Date.now() - 10 * HOUR),
+        slaDueAt: new Date(Date.now() - HOUR),
+      });
+
+      const result = await runReminderSweep();
+
+      // The sweep did fire; it simply was not addressed to them.
+      expect(result.slaBreached).toBe(1);
+      expect(
+        await Notification.countDocuments({ recipient: new Types.ObjectId(bystander.userId) }),
+      ).toBe(0);
     });
   });
 

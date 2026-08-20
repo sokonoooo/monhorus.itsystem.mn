@@ -2,8 +2,9 @@ import {
   PERMISSIONS,
   type ServiceRequestAttachmentDto,
   type ServiceRequestDetailDto,
+  type WorkReportDto,
 } from '@monhorus/shared';
-import { screen, within } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -216,5 +217,109 @@ describe('ServiceRequestDetailPage plan position', () => {
     expect(screen.queryByText('План дээрх байрлал')).not.toBeInTheDocument();
     // Nothing to draw, so the plan is not fetched either.
     expect(getPlan).not.toHaveBeenCalled();
+  });
+});
+
+
+/**
+ * A conclusion in whatever state the test needs. Only the fields the panel reads matter;
+ * the rest are filled in so the DTO is a whole one.
+ */
+function makeReport(overrides: Partial<WorkReportDto> = {}): WorkReportDto {
+  return {
+    id: '507f1f77bcf86cd799439501',
+    serviceRequestId: REQUEST_ID,
+    status: 'SUBMITTED',
+    score: 78,
+    riskLevel: 'ATTENTION',
+    conclusion: 'Холболт сул байсныг чангаллаа.',
+    recommendation: null,
+    actionTaken: null,
+    repairRequired: false,
+    revisitRequired: false,
+    revisitDate: null,
+    beforePhotos: [],
+    afterPhotos: [],
+    materials: [],
+    objects: [],
+    objectAssessments: [],
+    missing: [],
+    isComplete: true,
+    createdByName: 'Б. Энхтөр',
+    submittedByName: 'Б. Энхтөр',
+    submittedAt: '2026-08-02T00:00:00.000Z',
+    approvedByName: null,
+    approvedAt: null,
+    returnedByName: null,
+    returnedAt: null,
+    returnReason: null,
+    createdAt: '2026-08-01T00:00:00.000Z',
+    updatedAt: '2026-08-02T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+/** The page as somebody who may move the request sees it. */
+function renderAsDispatcher() {
+  return renderWithAuth(<ServiceRequestDetailPage />, {
+    permissions: [PERMISSIONS.SERVICE_REQUEST_VIEW, PERMISSIONS.SERVICE_REQUEST_CHANGE_STATUS],
+    route: `/service-requests/${REQUEST_ID}`,
+    path: '/service-requests/:requestId',
+  });
+}
+
+/**
+ * The status card offers what the transition matrix allows and nothing else — including
+ * after something OTHER than the card itself has moved the request.
+ */
+describe('ServiceRequestDetailPage status actions', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(workReportService, 'get').mockRejectedValue(new Error('no report'));
+  });
+
+  it('offers no status action at all on a COMPLETED request', async () => {
+    vi.spyOn(serviceRequestService, 'getById').mockResolvedValue(
+      makeRequest({ status: 'COMPLETED' }),
+    );
+
+    renderAsDispatcher();
+
+    // Waited on a section the page always draws, so the assertions below are about the
+    // absence of the buttons rather than about the page not having loaded yet.
+    await screen.findByText('Төлөвийн түүх');
+    expect(screen.queryByText('Төлөв өөрчлөх')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Дууссан' })).not.toBeInTheDocument();
+  });
+
+  it('stops offering "Дууссан" once approving the conclusion has completed the request', async () => {
+    // Approval completes the request on the backend (`advanceOnConclusion`), so the
+    // second read is a different record from the first.
+    const getById = vi
+      .spyOn(serviceRequestService, 'getById')
+      .mockResolvedValueOnce(makeRequest({ status: 'REPORT_SUBMITTED' }))
+      .mockResolvedValue(makeRequest({ status: 'COMPLETED' }));
+    vi.spyOn(workReportService, 'get').mockResolvedValue(makeReport());
+    const approve = vi
+      .spyOn(workReportService, 'approve')
+      .mockResolvedValue(makeReport({ status: 'APPROVED', approvedByName: 'Д. Болор' }));
+    const changeStatus = vi.spyOn(serviceRequestService, 'changeStatus');
+
+    renderAsDispatcher();
+
+    // REPORT_SUBMITTED does offer it, which is what makes the button after approval a trap.
+    expect(await screen.findByRole('button', { name: 'Дууссан' })).toBeInTheDocument();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Ажлын дүгнэлт' }));
+    await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Батлах' }));
+
+    await waitFor(() => expect(approve).toHaveBeenCalledTimes(1));
+    // The page re-reads rather than guessing where the request went.
+    await waitFor(() => expect(getById).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Дууссан' })).not.toBeInTheDocument(),
+    );
+    // Nothing was asked of the transition endpoint, so there is no refusal to show.
+    expect(changeStatus).not.toHaveBeenCalled();
   });
 });

@@ -1976,6 +1976,14 @@ export async function recordAssessment(
    * again when the conclusion asks for a repair or a revisit. The band comparison uses the
    * resolved level rather than a hardcoded score, so a re-banding in settings moves the
    * trigger with it.
+   *
+   * ADDRESSED TO `dispatch.view`, NOT `object_master.view`. The latter is held by
+   * TECHNICIAN, so every technician in the company was told about every assessment recorded
+   * anywhere in the company — including the ones they had just recorded themselves on the
+   * next object along. Nothing here is addressable to an individual: an assessment names no
+   * assignee, and the finding is not a job until somebody schedules one. The people it
+   * concerns are therefore exactly the people who WOULD schedule it, which is the desk
+   * behind `dispatch.view` — ADMIN, MANAGEMENT and DISPATCH by default, plus head_admin.
    */
   if (riskLevel !== 'NORMAL') {
     await notify({
@@ -1985,7 +1993,7 @@ export async function recordAssessment(
       entityType: 'Object',
       entityId: object._id,
       linkPath: object.floor ? `/floors/${String(object.floor)}/objects/${String(object._id)}` : null,
-      permission: 'object_master.view',
+      permission: 'dispatch.view',
       excludeUserId: actor.userId,
     });
   }
@@ -2000,7 +2008,7 @@ export async function recordAssessment(
       entityType: 'Object',
       entityId: object._id,
       linkPath: object.floor ? `/floors/${String(object.floor)}/objects/${String(object._id)}` : null,
-      permission: 'object_master.view',
+      permission: 'dispatch.view',
       excludeUserId: actor.userId,
     });
   }

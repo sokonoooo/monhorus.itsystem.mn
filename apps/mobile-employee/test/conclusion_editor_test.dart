@@ -1219,6 +1219,46 @@ void main() {
 
     expect(tester.takeException(), isNull);
   });
+
+  // -- The request follows the conclusion --------------------------------------
+  //
+  // `submitWorkReport` calls `advanceOnConclusion` on the backend, which moves the REQUEST
+  // to REPORT_SUBMITTED. The answer carries only the conclusion, so a screen holding the
+  // request keeps the status it read before submitting — and goes on offering the moves
+  // that status allowed. Tapping one asks the server to make a move the request has already
+  // made, and the refusal reads as «... төлвөөс ... шилжих боломжгүй» to somebody whose
+  // screen still says the request is somewhere else.
+
+  test('submitting the conclusion re-reads the request it just moved', () async {
+    int detailReads = 0;
+    final _ReportRepository repository = _ReportRepository();
+    final ProviderContainer container = ProviderContainer(
+      overrides: <Override>[
+        currentUserProvider.overrideWithValue(_author),
+        workRepositoryProvider.overrideWithValue(repository),
+        // Counted rather than asserted against a spy, because what matters is that the
+        // read happens AGAIN — a cached first answer is exactly the stale status.
+        serviceRequestDetailProvider(kRequestId).overrideWith((Ref ref) async {
+          detailReads += 1;
+          return _detail();
+        }),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    await container.read(serviceRequestDetailProvider(kRequestId).future);
+    expect(detailReads, 1);
+
+    const ConclusionRef ref = (requestId: kRequestId, buildingId: kBuildingId);
+    await container.read(conclusionEditorProvider(ref).future);
+    expect(await container.read(conclusionEditorProvider(ref).notifier).submit(), isNull);
+    expect(repository.submits, 1);
+
+    // Still the cached ON_SITE record without the invalidation, which is what left a live
+    // «"Дүгнэлт илгээсэн" болгох» button on a request that had already got there.
+    await container.read(serviceRequestDetailProvider(kRequestId).future);
+    expect(detailReads, 2);
+  });
 }
 
 /// Every read fails, for the error-state check.

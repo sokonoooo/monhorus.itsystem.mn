@@ -1168,10 +1168,23 @@ type ReportPane = 'none' | 'report' | 'edit' | 'return';
 export function WorkReportPanel({
   requestId,
   buildingId = null,
+  onRequestMoved,
 }: {
   requestId: string;
   /** Where the call was. Null leaves the equipment picker unusable and says so. */
   buildingId?: string | null;
+  /**
+   * Called when an action here has ALSO moved the request itself.
+   *
+   * Submitting a conclusion advances the request to REPORT_SUBMITTED and approving one
+   * completes it — `advanceOnConclusion` on the backend, called from `submitWorkReport`
+   * and `approveWorkReport`. Neither response carries the request, so a page holding one
+   * keeps a status that went stale the moment either button was pressed, and goes on
+   * offering the transitions the OLD status allowed. Pressing one of those produces
+   * «"COMPLETED" төлвөөс "COMPLETED" төлөв рүү шилжих боломжгүй» — a refusal the reader
+   * cannot make sense of, because their screen still says the request is somewhere else.
+   */
+  onRequestMoved?: () => void;
 }): ReactElement {
   const { can } = useAuth();
   const { notify } = useToast();
@@ -1202,10 +1215,21 @@ export function WorkReportPanel({
     void load();
   }, [load]);
 
-  async function run(action: () => Promise<WorkReportDto>, message: string): Promise<void> {
+  /**
+   * Runs one conclusion action.
+   *
+   * `movesRequest` is passed by the two call sites whose action also advances the request,
+   * rather than inferred here, so that a new action has to state which it is.
+   */
+  async function run(
+    action: () => Promise<WorkReportDto>,
+    message: string,
+    movesRequest = false,
+  ): Promise<void> {
     setBusy(true);
     try {
       setReport(await action());
+      if (movesRequest) onRequestMoved?.();
       notify(message, 'success');
     } catch (caught) {
       notify(caught instanceof ApiError ? caught.message : 'Гүйцэтгэж чадсангүй.', 'error');
@@ -1255,7 +1279,11 @@ export function WorkReportPanel({
                 loading={busy}
                 disabled={!report.isComplete}
                 onClick={() =>
-                  void run(() => workReportService.submit(requestId), 'Хянуулахаар илгээлээ.')
+                  void run(
+                    () => workReportService.submit(requestId),
+                    'Хянуулахаар илгээлээ.',
+                    true,
+                  )
                 }
               >
                 Хянуулахаар илгээх
@@ -1265,7 +1293,9 @@ export function WorkReportPanel({
               <>
                 <Button
                   loading={busy}
-                  onClick={() => void run(() => workReportService.approve(requestId), 'Батлагдлаа.')}
+                  onClick={() =>
+                    void run(() => workReportService.approve(requestId), 'Батлагдлаа.', true)
+                  }
                 >
                   Батлах
                 </Button>

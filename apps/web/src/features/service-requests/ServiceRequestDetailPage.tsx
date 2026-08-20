@@ -6,7 +6,7 @@ import {
   type ServiceRequestDetailDto,
   type ServiceRequestStatus,
 } from '@monhorus/shared';
-import { useEffect, useState, type ReactElement, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, type ReactElement, type ReactNode } from 'react';
 import { useParams } from 'react-router-dom';
 
 import { Button } from '../../components/ui/Button';
@@ -74,6 +74,34 @@ export function ServiceRequestDetailPage(): ReactElement {
       cancelled = true;
     };
   }, [requestId]);
+
+  /**
+   * Re-reads the request after something OTHER than the status card moved it.
+   *
+   * The conclusion panel is the one such thing: submitting a conclusion advances the
+   * request and approving one completes it, both on the backend and neither reported in
+   * the answer the panel gets. Without this the status card here goes on offering the
+   * transitions the pre-conclusion status allowed — the buttons the reader then presses
+   * are refused, because the request has already moved.
+   *
+   * Read rather than patched from a guess: the panel knows the request moved, not where
+   * to, and inventing a status here would be a second opinion about the same record.
+   */
+  const reloadRequest = useCallback((): void => {
+    if (!requestId) return;
+
+    void serviceRequestService
+      .getById(requestId)
+      .then((result) => setRequest(result))
+      .catch((caught: unknown) => {
+        // The conclusion action itself succeeded, so this must not be reported as its
+        // failure. Say only that the page is behind, which is the actionable half.
+        notify(
+          caught instanceof ApiError ? caught.message : 'Хүсэлтийн төлөвийг шинэчилж чадсангүй.',
+          'error',
+        );
+      });
+  }, [requestId, notify]);
 
   async function applyStatus(status: ServiceRequestStatus, reason: string): Promise<void> {
     if (!requestId) return;
@@ -207,7 +235,11 @@ export function ServiceRequestDetailPage(): ReactElement {
         </div>
 
         <div className="space-y-4 lg:col-span-2">
-          <WorkReportPanel requestId={request.id} buildingId={request.building?.id ?? null} />
+          <WorkReportPanel
+            requestId={request.id}
+            buildingId={request.building?.id ?? null}
+            onRequestMoved={reloadRequest}
+          />
 
           <Card title="Байршил">
             <Row label="Харилцагч" value={request.customer?.name} />

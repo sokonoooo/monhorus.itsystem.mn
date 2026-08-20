@@ -25,6 +25,7 @@ import type { RequestMeta } from '../../common/utils/request-meta.util';
 import { logger } from '../../config/logger';
 import { recordAudit } from '../audit/audit.service';
 import { notify } from '../notification/notification.service';
+import { userIdsForEmployees } from '../notification/recipient.util';
 import {
   ObjectRecord,
   type IObjectTypeAttribute,
@@ -693,6 +694,27 @@ export async function submitWorkReport(
 }
 
 /**
+ * The user accounts of whoever is on the job this conclusion belongs to.
+ *
+ * WHY A CONCLUSION EVENT NEEDS THIS AT ALL. `REPORT_APPROVED` and `REPORT_RETURNED` were
+ * addressed to `service_request.view` and nothing else. TECHNICIAN holds that key, so every
+ * technician in the company was told about every conclusion on every request — which is
+ * what "I always get the same notification" means from the inbox side. The crew are named
+ * here instead, exactly as `service-request.notify.ts` names them for a status change, and
+ * the blanket key narrows to the desk that owns the request's flow.
+ *
+ * An empty list is a perfectly ordinary answer: an office-written conclusion on an
+ * unassigned request has no crew, and the dispatch fan-out still carries it.
+ */
+async function crewUserIds(serviceRequestId: Types.ObjectId): Promise<Types.ObjectId[]> {
+  const request = await ServiceRequest.findById(serviceRequestId)
+    .select('assignedEmployees')
+    .lean();
+  if (!request) return [];
+  return userIdsForEmployees(request.assignedEmployees.map(String));
+}
+
+/**
  * Sends an approved conclusion to the central report store and on to its equipment.
  *
  * ONE report per request, keyed on (customer, SERVICE_REQUEST, request id): a conclusion
@@ -867,7 +889,10 @@ export async function approveWorkReport(
     entityType: 'Work',
     entityId: report.serviceRequest,
     linkPath: `/service-requests/${String(report.serviceRequest)}`,
-    permission: 'service_request.view',
+    // The crew whose work this is, plus the desk that owns the request. NOT
+    // `service_request.view`: see `crewUserIds`.
+    permission: 'dispatch.view',
+    userIds: await crewUserIds(report.serviceRequest),
     excludeUserId: actor.userId,
   });
 
@@ -914,6 +939,19 @@ export async function returnWorkReport(
     newValue: { status: 'RETURNED' },
   });
 
+  /*
+   * THE SUBMITTER IS NAMED, and they are the whole point of this message.
+   *
+   * A return is work handed back to a particular person: they wrote it, they are the one
+   * who has to fix it, and until now nothing addressed them as such — they heard about
+   * their own returned conclusion only by being caught in the `service_request.view` net
+   * along with every other technician in the company. Naming them also survives the case
+   * the blanket key hid: an author taken off the request between submitting and the return
+   * is no longer in the crew, and would otherwise never be told.
+   */
+  const returnedTo = new Set<string>((await crewUserIds(report.serviceRequest)).map(String));
+  if (report.submittedBy) returnedTo.add(String(report.submittedBy));
+
   await notify({
     event: 'REPORT_RETURNED',
     title: 'Дүгнэлт засварлуулахаар буцаагдлаа',
@@ -921,7 +959,8 @@ export async function returnWorkReport(
     entityType: 'Work',
     entityId: report.serviceRequest,
     linkPath: `/service-requests/${String(report.serviceRequest)}`,
-    permission: 'service_request.view',
+    permission: 'dispatch.view',
+    userIds: [...returnedTo],
     excludeUserId: actor.userId,
   });
 
