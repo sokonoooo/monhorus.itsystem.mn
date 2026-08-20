@@ -1,6 +1,6 @@
 import { PERMISSIONS } from '@monhorus/shared';
 import type { ReactElement, ReactNode } from 'react';
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
+import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 
 import { AppShell } from './components/layout/AppShell';
 import { PermissionGuard } from './components/PermissionGuard';
@@ -62,10 +62,21 @@ import { PortalRequestListPage } from './features/portal/PortalRequestListPage';
 import { PortalSiteDetailPage } from './features/portal/PortalSiteDetailPage';
 import { PortalSurveyPage } from './features/portal/PortalSurveyPage';
 import { PortalSitesPage } from './features/portal/PortalSitesPage';
+import { isPathHiddenFrom } from './config/navigation';
 import { homePathFor } from './lib/home-path';
 import { ProtectedRoute } from './routes/ProtectedRoute';
 
-/** Authenticated page inside the shell, gated by an any-of permission list. */
+/**
+ * Authenticated page inside the shell, gated by an any-of permission list AND by the
+ * caller's account tier.
+ *
+ * The tier half is not a second copy of the menu rule — it IS the menu rule, read from the
+ * same `hiddenFromTiers` declaration in `navigation.ts` by the same function the sidebar
+ * uses. Hiding an entry is not access control: a technician who types /reports, or follows
+ * a link a colleague pasted, has to meet the refusal rather than the page. Deriving it from
+ * the entry instead of listing routes here is what stops the two surfaces drifting apart —
+ * the property that whole file exists to hold.
+ */
 function Page({
   anyOf,
   children,
@@ -76,10 +87,31 @@ function Page({
   return (
     <ProtectedRoute>
       <AppShell>
-        <PermissionGuard anyOf={anyOf}>{children}</PermissionGuard>
+        <WithinTier>
+          <PermissionGuard anyOf={anyOf}>{children}</PermissionGuard>
+        </WithinTier>
       </AppShell>
     </ProtectedRoute>
   );
+}
+
+/**
+ * Refuses a route that the caller's TIER is not given, whatever permissions they hold.
+ *
+ * Reads the current path rather than taking the restriction as a prop, so a route acquires
+ * its gate by being declared in `navigation.ts` and there is no second list to keep in step.
+ * Wrapping outside `PermissionGuard` means a refused caller never mounts the page, so the
+ * screen's own data fetches never fire.
+ *
+ * Both guards render the same `ForbiddenState`, on purpose: "not for you" is one answer in
+ * this app, and a caller has no business being told which of the two rules stopped them.
+ */
+export function WithinTier({ children }: { children: ReactNode }): ReactElement {
+  const { user } = useAuth();
+  const { pathname } = useLocation();
+
+  if (isPathHiddenFrom(pathname, user?.role)) return <ForbiddenState />;
+  return <>{children}</>;
 }
 
 /**

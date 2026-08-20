@@ -2,7 +2,12 @@ import { PERMISSIONS, USER_ROLE_LABELS } from '@monhorus/shared';
 import { useEffect, useState, type ReactElement, type ReactNode } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 
-import { NAVIGATION, TOP_NAV_ITEMS, type NavSection } from '../../config/navigation';
+import {
+  NAVIGATION,
+  TOP_NAV_ITEMS,
+  isNavItemHiddenFrom,
+  type NavSection,
+} from '../../config/navigation';
 import { useAuth } from '../../contexts/auth-context';
 import { HelpPanel } from '../../features/help/HelpPanel';
 import { HELP_CONTENT, resolveHelp } from '../../features/help/help-content';
@@ -142,8 +147,15 @@ export function AppShell({ children }: { children: ReactNode }): ReactElement {
     .filter((section) => !section.tiers || (user ? section.tiers.includes(user.role) : false))
     .map((section) => ({
       ...section,
+      // Then the same two questions per entry. An item may be withheld from a tier that
+      // legitimately HOLDS its permission — a technician keeps `material.view` for the
+      // mobile app and is still not given the back-office catalogue — so the tier check is
+      // not something the permission filter could have covered. Sections left empty by it
+      // are dropped by the filter below, exactly as an all-unpermitted section already was.
       items: section.items.filter(
-        (item) => item.permissions.length === 0 || canAny(...item.permissions),
+        (item) =>
+          (item.permissions.length === 0 || canAny(...item.permissions)) &&
+          !isNavItemHiddenFrom(item, user?.role),
       ),
     }))
     .filter((section) => section.items.length > 0);
@@ -269,7 +281,9 @@ export function AppShell({ children }: { children: ReactNode }): ReactElement {
               entry, so a caller who may not read either source never sees the calendar.
             */}
             <nav aria-label="Түргэн холбоос" className="flex items-center gap-1">
-              {TOP_NAV_ITEMS.filter((item) => canSee(item.permissions)).map((item) => {
+              {TOP_NAV_ITEMS.filter(
+                (item) => canSee(item.permissions) && !isNavItemHiddenFrom(item, user?.role),
+              ).map((item) => {
                 const active = location.pathname.startsWith(item.path);
                 return (
                   <button
