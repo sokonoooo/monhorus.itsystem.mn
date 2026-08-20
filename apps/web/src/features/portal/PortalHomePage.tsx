@@ -3,6 +3,7 @@ import {
   PLANNED_WORK_STATUS_LABELS,
   type BuildingDto,
   type ServiceRequestListItemDto,
+  type SurveyPendingItemDto,
 } from '@monhorus/shared';
 import { useCallback, useEffect, useState, type ReactElement } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
@@ -58,11 +59,13 @@ export function PortalHomePage(): ReactElement {
   const canCreate = can(PERMISSIONS.PORTAL_SERVICE_REQUEST_CREATE);
   const canSeeSites = can(PERMISSIONS.PORTAL_BUILDING_VIEW);
   const canRequestWork = can(PERMISSIONS.PORTAL_PLANNED_WORK_CREATE);
+  const canSubmitSurvey = can(PERMISSIONS.PORTAL_SURVEY_SUBMIT);
 
   const [recent, setRecent] = useState<ServiceRequestListItemDto[] | null>(null);
   const [openCount, setOpenCount] = useState(0);
   const [buildings, setBuildings] = useState<BuildingDto[] | null>(null);
   const [workTotals, setWorkTotals] = useState<Record<string, number> | null>(null);
+  const [pendingSurveys, setPendingSurveys] = useState<SurveyPendingItemDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -133,6 +136,42 @@ export function PortalHomePage(): ReactElement {
     };
   }, [canRequestWork]);
 
+  /**
+   * The requests still waiting on this customer's verdict.
+   *
+   * Behind the permission because the endpoint is: `/surveys/pending` requires
+   * `portal.survey.submit`, so an account without it would be answered 403 and the prompt
+   * would render an error where there is no problem. A failure is silent for the same
+   * reason the charts' are — the page's job is the request list, and a prompt that cannot
+   * load should leave no trace rather than an error.
+   *
+   * Filtered on an OUTSTANDING technician rather than on the item's presence: the list is a
+   * snapshot and the phone may have answered since, and a prompt shown to somebody with
+   * nothing left to answer is worse than no prompt.
+   */
+  useEffect(() => {
+    if (!canSubmitSurvey) return undefined;
+    let cancelled = false;
+    portalService
+      .pendingSurveys()
+      .then((items) => {
+        if (cancelled) return;
+        setPendingSurveys(
+          items.filter((item) =>
+            item.employees.some((entry) => !entry.isRated && !entry.isSkipped),
+          ),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setPendingSurveys([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [canSubmitSurvey]);
+
+  const firstSurvey = pendingSurveys[0];
+
   return (
     <>
       <PageHeader
@@ -146,6 +185,34 @@ export function PortalHomePage(): ReactElement {
       />
 
       <div className="space-y-4">
+        {/*
+          The survey prompt, first because it is the only thing on this page that asks
+          something OF the customer rather than telling them something. It names one request
+          and links straight to its form; the rest are counted, not listed, because a home
+          screen that turns into a queue of chores is one nobody opens twice.
+
+          Not an `Alert`: this is a standing invitation on a landing page, not a notice about
+          a failure, and the two should not look alike.
+        */}
+        {firstSurvey && (
+          <div className="rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
+            <p className="text-sm font-semibold text-slate-900">Үйлчилгээгээ үнэлнэ үү</p>
+            <p className="mt-1 text-sm text-slate-700">
+              {pendingSurveys.length === 1
+                ? `${firstSurvey.buildingName ?? firstSurvey.requestNumber} дэх ажил дууслаа. Ажилтныг үнэлээрэй.`
+                : `${firstSurvey.buildingName ?? firstSurvey.requestNumber} болон бусад ${pendingSurveys.length - 1} ажил үнэлгээ хүлээж байна.`}
+            </p>
+            <Button
+              className="mt-3"
+              onClick={() =>
+                navigate(`/portal/requests/${firstSurvey.serviceRequestId}/survey`)
+              }
+            >
+              Үнэлгээ өгөх
+            </Button>
+          </div>
+        )}
+
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <div className="rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
             <p className="text-xs font-medium text-slate-500">Хүлээгдэж буй хүсэлт</p>

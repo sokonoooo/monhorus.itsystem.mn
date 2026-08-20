@@ -1,15 +1,18 @@
 import {
+  PERMISSIONS,
   RISK_LEVEL_LABELS,
   type CustomerWorkReportDto,
   type ServiceRequestDetailDto,
+  type SurveyPendingItemDto,
 } from '@monhorus/shared';
 import { useCallback, useEffect, useState, type ReactElement } from 'react';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 
 import { Alert } from '../../components/ui/Alert';
 import { Button } from '../../components/ui/Button';
 import { PageHeader } from '../../components/ui/PageHeader';
 import { ErrorState, Skeleton } from '../../components/ui/States';
+import { useAuth } from '../../contexts/auth-context';
 import { ApiError } from '../../lib/api-client';
 import { portalService } from '../../services/portal.service';
 import { PortalStatusBadge } from './PortalBadges';
@@ -46,8 +49,12 @@ function Row({ label, value }: { label: string; value: string }): ReactElement {
  */
 export function PortalRequestDetailPage(): ReactElement {
   const { requestId } = useParams<{ requestId: string }>();
+  const navigate = useNavigate();
+  const { can } = useAuth();
+  const canSubmitSurvey = can(PERMISSIONS.PORTAL_SURVEY_SUBMIT);
 
   const [request, setRequest] = useState<ServiceRequestDetailDto | null>(null);
+  const [survey, setSurvey] = useState<SurveyPendingItemDto | null>(null);
   const [report, setReport] = useState<CustomerWorkReportDto | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -92,6 +99,47 @@ export function PortalRequestDetailPage(): ReactElement {
   useEffect(() => {
     void load();
   }, [load]);
+
+  /**
+   * Whether this request is still waiting on the customer's own verdict.
+   *
+   * DECIDED FROM `GET /surveys/pending`, NOT by asking for the form. `ServiceRequestDetailDto`
+   * carries no survey flag — there is no `hasOutstandingSurvey` to read, and adding one is a
+   * backend change — so the outstanding-ness has to come from somewhere, and the pending list
+   * is the endpoint that answers it. The form endpoint deliberately 404s for every request
+   * with no open survey, which is most of them, so calling it to find out would make every
+   * request detail fire a request it expects to fail. Exactly the rule `hasApprovedReport`
+   * already enforces for the work conclusion, one line up.
+   *
+   * An item may be listed with nobody outstanding — the list is a snapshot and the phone may
+   * have answered since — so the check is on an outstanding technician rather than on the
+   * item's presence.
+   *
+   * A failure here is silent. The endpoint needs `portal.survey.submit`, so an account
+   * without it is answered 403, and a survey prompt that cannot be offered is a missing card
+   * rather than an error on a page whose own content loaded.
+   */
+  useEffect(() => {
+    if (!requestId || !canSubmitSurvey) return undefined;
+    let cancelled = false;
+    portalService
+      .pendingSurveys()
+      .then((items) => {
+        if (cancelled) return;
+        const match = items.find(
+          (item) =>
+            item.serviceRequestId === requestId &&
+            item.employees.some((entry) => !entry.isRated && !entry.isSkipped),
+        );
+        setSurvey(match ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setSurvey(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [canSubmitSurvey, requestId]);
 
   if (loading) {
     return (
@@ -148,6 +196,31 @@ export function PortalRequestDetailPage(): ReactElement {
             </p>
           </div>
         </div>
+
+        {/*
+          The customer's own turn to speak about this job.
+
+          Only rendered once the pending list has NAMED this request, so the survey page it
+          links to opens a form it has already been told exists. Nothing here prints a
+          duration, a deadline or a response window: the customer surfaces carry no SLA, and
+          a satisfaction prompt is not the place to introduce one.
+        */}
+        {survey && (
+          <div className="rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
+            <p className="text-sm font-semibold text-slate-900">Ажил дууслаа. Үнэлгээ өгөөрэй.</p>
+            <p className="mt-1 text-sm text-slate-700">
+              Энэ дуудлагад ажилласан{' '}
+              {survey.employees.filter((entry) => !entry.isRated && !entry.isSkipped).length}{' '}
+              ажилтныг тус тусад нь үнэлнэ. Уулзаагүй ажилтныг үнэлэх шаардлагагүй.
+            </p>
+            <Button
+              className="mt-3"
+              onClick={() => navigate(`/portal/requests/${requestId ?? ''}/survey`)}
+            >
+              Үнэлгээ өгөх
+            </Button>
+          </div>
+        )}
 
         <div className="rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
           <p className="mb-2 text-sm font-semibold text-slate-900">Дүгнэлт</p>
