@@ -163,6 +163,13 @@ async function sweepPlannedWorkDueSoon(now: Date): Promise<number> {
 /**
  * Service requests approaching or past their SLA deadline.
  *
+ * WHO IS TOLD, and why it is not `service_request.view`. That key is held by TECHNICIAN, so
+ * addressing an SLA warning to it told every technician in the company about every clock in
+ * the company — the same broadcast `service-request.notify.ts` was written to end, and one
+ * of the reasons a technician's inbox reads as the same notification over and over. A
+ * deadline concerns the crew carrying the job, who are named through `userIds`, and the
+ * dispatch desk, who are the only people who can extend it or move somebody onto it.
+ *
  * Near-breach fires on threshold *crossing*, not on the narrow NEAR_BREACH band that
  * `evaluateSla` reports. The ladder there checks the at-risk ratio first, so a request that
  * consumes its window between two ticks reports AT_RISK and never passes through
@@ -178,7 +185,7 @@ async function sweepSla(now: Date): Promise<{ near: number; breached: number }> 
   })
     .select(
       '_id requestNumber description status isUrgent slaStartedAt slaDueAt completedAt ' +
-        'slaNearBreachNotifiedFor slaBreachNotifiedFor',
+        'assignedEmployees slaNearBreachNotifiedFor slaBreachNotifiedFor',
     )
     .limit(SWEEP_LIMIT);
 
@@ -216,7 +223,8 @@ async function sweepSla(now: Date): Promise<{ near: number; breached: number }> 
         entityType: 'Work',
         entityId: request._id,
         linkPath: `/service-requests/${String(request._id)}`,
-        permission: 'service_request.view',
+        permission: 'dispatch.view',
+        userIds: await recipientsForWork(request.assignedEmployees),
       });
       breached += 1;
       continue;
@@ -244,7 +252,8 @@ async function sweepSla(now: Date): Promise<{ near: number; breached: number }> 
         entityType: 'Work',
         entityId: request._id,
         linkPath: `/service-requests/${String(request._id)}`,
-        permission: 'service_request.view',
+        permission: 'dispatch.view',
+        userIds: await recipientsForWork(request.assignedEmployees),
       });
       near += 1;
     }

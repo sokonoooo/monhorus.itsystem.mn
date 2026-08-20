@@ -6,6 +6,7 @@ import '../../../../../core/network/api_result.dart';
 import '../../../../../core/network/paginated_data.dart';
 import '../../../../auth/domain/entities/app_user.dart';
 import '../../../../auth/presentation/providers/auth_provider.dart';
+import '../../../home/presentation/providers/home_providers.dart';
 import '../../../project/data/models/object_models.dart';
 import '../../../project/domain/entities/object_enums.dart';
 import '../../../project/data/models/project_models.dart';
@@ -718,6 +719,17 @@ class ConclusionEditor extends FamilyAsyncNotifier<ConclusionEditorState, Conclu
     return result.when(
       success: (WorkReportModel submitted) {
         _set(_hydrate(submitted).copyWith(message: 'Хянуулахаар илгээлээ.'));
+        // THE REQUEST MOVED TOO. `submitWorkReport` calls `advanceOnConclusion` on the
+        // backend, which advances the request to REPORT_SUBMITTED; the answer here carries
+        // only the conclusion. Left alone, the detail screen keeps the status it read
+        // before — and keeps offering «"Дүгнэлт илгээсэн" болгох» off it, a button whose
+        // only outcome now is the server refusing a move the request has already made.
+        // The reads the status also appears in are refreshed for the same reason
+        // `ServiceRequestActionController` refreshes them.
+        ref
+          ..invalidate(serviceRequestDetailProvider(arg.requestId))
+          ..invalidate(assignedRequestsProvider)
+          ..invalidate(homeOverviewProvider);
         return null;
       },
       failure: (Failure failure) {

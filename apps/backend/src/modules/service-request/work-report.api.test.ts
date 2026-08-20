@@ -1608,3 +1608,113 @@ describe('the customer hears that their request was resolved', () => {
     ).toBe(0);
   });
 });
+
+/**
+ * WHO hears that a conclusion moved.
+ *
+ * `REPORT_APPROVED` and `REPORT_RETURNED` were addressed to `service_request.view` alone.
+ * TECHNICIAN holds that key, so every technician in the company was told about every
+ * conclusion on every request — which is what "the employees always get the same
+ * notification" turns out to mean when you read one of their inboxes. These cases pin the
+ * recipient rather than the wording: a conclusion concerns the crew on that request, the
+ * person who submitted it, and the desk that owns the request's flow.
+ */
+describe('conclusion notification recipients', () => {
+  let recipientSequence = 0;
+
+  /** A technician holding the OLD blanket key, on purpose: they must now hear nothing. */
+  async function makeTechnician(
+    email: string,
+  ): Promise<{ token: string; userId: string; employeeId: Types.ObjectId }> {
+    const user = await createUserWithPermissions(email, [
+      PERMISSIONS.SERVICE_REQUEST_VIEW,
+      PERMISSIONS.SERVICE_REQUEST_UPDATE,
+      PERMISSIONS.NOTIFICATION_VIEW,
+    ]);
+    recipientSequence += 1;
+    const employee = await Employee.create({
+      employeeCode: `WR-N-${recipientSequence}`,
+      firstName: 'Тест',
+      lastName: 'Хүлээн авагч',
+      registrationNumber: `УУ${String(30_000_000 + recipientSequence)}`,
+      status: 'ACTIVE',
+      employeeType: 'FULL_TIME',
+      employmentStartDate: new Date('2024-01-01'),
+      systemUser: new Types.ObjectId(user.userId),
+    });
+    return {
+      token: await login(user.email, user.password),
+      userId: user.userId,
+      employeeId: employee._id,
+    };
+  }
+
+  async function assign(requestId: string, employeeIds: Types.ObjectId[]): Promise<void> {
+    await ServiceRequest.updateOne(
+      { _id: new Types.ObjectId(requestId) },
+      { $set: { assignedEmployees: employeeIds } },
+    );
+  }
+
+  function inboxOf(userId: string, event: string) {
+    return Notification.find({ recipient: new Types.ObjectId(userId), event }).lean();
+  }
+
+  async function draftAndFill(requestId: string): Promise<void> {
+    await request(app)
+      .get(`${API}/service-requests/${requestId}/report`)
+      .set('Authorization', `Bearer ${token}`);
+    await fillReport(requestId);
+  }
+
+  function submit(requestId: string, bearer: string) {
+    return request(app)
+      .post(`${API}/service-requests/${requestId}/report/submit`)
+      .set('Authorization', `Bearer ${bearer}`);
+  }
+
+  it('tells the crew their conclusion was approved, and no technician outside the job', async () => {
+    const onTheJob = await makeTechnician('wr-approved-crew@test.mn');
+    const bystander = await makeTechnician('wr-approved-bystander@test.mn');
+    const requestId = await seedRequest();
+    await assign(requestId, [onTheJob.employeeId]);
+
+    await draftAndFill(requestId);
+    expect((await submit(requestId, onTheJob.token)).status).toBe(200);
+    await request(app)
+      .post(`${API}/service-requests/${requestId}/report/approve`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(await inboxOf(onTheJob.userId, 'REPORT_APPROVED')).toHaveLength(1);
+    // Assigned to nothing, holds only a read key. The broadcast reached them; nothing else
+    // about this request ever should.
+    expect(await inboxOf(bystander.userId, 'REPORT_APPROVED')).toHaveLength(0);
+  });
+
+  /**
+   * A return is work handed back to a PERSON, and that person was never addressed as one.
+   *
+   * The request is unassigned between the submission and the return on purpose: it is the
+   * case the blanket key hid. An author no longer on the crew is still the author, and
+   * anything that reaches them only through a permission fan-out stops reaching them here.
+   */
+  it('tells the author their conclusion came back, even once they are off the job', async () => {
+    const author = await makeTechnician('wr-returned-author@test.mn');
+    const bystander = await makeTechnician('wr-returned-bystander@test.mn');
+    const requestId = await seedRequest();
+    await assign(requestId, [author.employeeId]);
+
+    await draftAndFill(requestId);
+    expect((await submit(requestId, author.token)).status).toBe(200);
+    await assign(requestId, []);
+
+    const returned = await request(app)
+      .post(`${API}/service-requests/${requestId}/report/return`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ reason: 'Гэрэл зураг тодорхойгүй байна.' });
+    expect(returned.status).toBe(200);
+
+    expect(await inboxOf(author.userId, 'REPORT_RETURNED')).toHaveLength(1);
+    expect(await inboxOf(bystander.userId, 'REPORT_RETURNED')).toHaveLength(0);
+  });
+});

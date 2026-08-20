@@ -12,6 +12,7 @@ import {
 } from '../../test/helpers';
 import { hashPassword } from '../../utils/password.util';
 import { AuditLog } from '../audit/audit-log.model';
+import { Notification } from '../notification/notification.model';
 import { Customer, ObjectNode } from '../objects/object.models';
 import { Role } from '../rbac/role.model';
 import { Report, ReportItem } from '../report-record/report-record.model';
@@ -2535,5 +2536,58 @@ describe('plan placement', () => {
       .get(`${API}/objects-master/${objectId}`)
       .set('Authorization', `Bearer ${token}`);
     expect(reread.body.data.planPosition).toEqual({ x: 0.42, y: 0.58 });
+  });
+});
+
+/**
+ * WHO hears that a piece of equipment went out of band.
+ *
+ * `object_master.view` is a TECHNICIAN key, so an assessment escalation addressed to it
+ * told every technician in the company about every assessment recorded anywhere in the
+ * company — including the ones they had just recorded themselves on the next object along.
+ * That is one of the sources of "the employees always get the same notification".
+ *
+ * There is nobody to name individually here: an assessment carries no assignee, and a
+ * finding is not a job until somebody schedules one. So the whole fix is the audience —
+ * the people who would schedule it, which is the desk behind `dispatch.view`.
+ */
+describe('assessment escalation recipients', () => {
+  function inboxOf(userId: string) {
+    return Notification.find({ recipient: new Types.ObjectId(userId) }).lean();
+  }
+
+  it('raises a risk escalation to the dispatch desk and not to every technician', async () => {
+    // Both created before the first notification: `recipientsByPermission` caches for
+    // fifteen seconds, so an account minted later would miss the resolution under test.
+    const desk = await createUserWithPermissions('objm-desk@test.mn', [
+      PERMISSIONS.DISPATCH_VIEW,
+      PERMISSIONS.NOTIFICATION_VIEW,
+    ]);
+    const technician = await createUserWithPermissions('objm-tech@test.mn', [
+      // The key the old blanket fan-out used, held on purpose.
+      PERMISSIONS.OBJECT_MASTER_VIEW,
+      PERMISSIONS.NOTIFICATION_VIEW,
+    ]);
+    const chain = await buildChain();
+
+    // Well outside the green band, so the escalation fires.
+    const response = await recordAssessment(chain.equipment, {
+      newScore: 20,
+      conclusion: 'Тусгаарлагч шатсан.',
+      repairRequired: true,
+      recommendation: 'Яаралтай солих.',
+      // The red/black band refuses a score without one — see the band rules in
+      // object-master.service.ts. Omitting it makes this a 400 about the payload rather
+      // than a test of who gets notified.
+      actionTaken: 'Тусгаарлагчийг тусгаарлаж, тэжээлийг таслав.',
+    });
+    expect(response.status).toBe(201);
+
+    const deskRows = await inboxOf(desk.userId);
+    expect(deskRows.map((row) => row.event).sort()).toEqual([
+      'REPAIR_REQUIRED',
+      'RISK_ASSESSMENT_RAISED',
+    ]);
+    expect(await inboxOf(technician.userId)).toHaveLength(0);
   });
 });
