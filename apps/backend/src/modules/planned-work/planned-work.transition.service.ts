@@ -23,6 +23,8 @@ import { withTransaction } from '../../common/utils/transaction.util';
 import { logger } from '../../config/logger';
 import { hasPermission } from '../../middlewares/authorize.middleware';
 import { recordAudit } from '../audit/audit.service';
+import { notify } from '../notification/notification.service';
+import { userIdsForEmployees } from '../notification/recipient.util';
 import {
   writeReport,
   type ReportItemInput,
@@ -155,6 +157,89 @@ export interface TransitionResult {
   newStatus: PlannedWorkLifecycleStatus;
   /** True when a consolidated report was created as part of completion. */
   reportCreated: boolean;
+}
+
+/**
+ * The notifications one lifecycle action owes.
+ *
+ * ONE EVENT PER AUDIENCE, NOT ONE PER FACT. APPROVE is two entries in the event catalogue
+ * — the work becomes scheduled and a crew is put on it — but it is a single decision, taken
+ * once, about a single work. The crew is therefore told exactly one thing, that this job is
+ * theirs (`PLANNED_WORK_ASSIGNED`), and the customer exactly one thing, that their work is
+ * booked (`PLANNED_WORK_SCHEDULED`). Sending both events to the crew would put two rows
+ * carrying the same sentence in the same inbox, and a second row that adds nothing only
+ * teaches people to stop reading the first.
+ *
+ * The audience split is forced by the link in any case: staff need `/planned-work/<id>` and
+ * a customer following it gets a permission refusal, so these could never have been one
+ * call however the events were divided. START is the same event to both audiences and is
+ * split for that reason alone.
+ */
+async function notifyTransition(
+  work: Doc<IPlannedWork>,
+  action: PlannedWorkAction,
+  /**
+   * Passed in rather than read off `work`: APPROVE writes the crew with `updateOne`, so the
+   * loaded document still carries the pre-approval roster (empty) at this point.
+   */
+  crew: readonly Types.ObjectId[],
+  actor: AuthContext,
+): Promise<void> {
+  if (action !== 'APPROVE' && action !== 'START') return;
+
+  const id = String(work._id);
+  const staffLink = `/planned-work/${id}`;
+  const portalLink = `/portal/planned-work/${id}`;
+  const crewUserIds = await userIdsForEmployees(crew.map((employeeId) => String(employeeId)));
+
+  if (action === 'APPROVE') {
+    await notify({
+      event: 'PLANNED_WORK_ASSIGNED',
+      title: `${work.workNumber} төлөвлөгөөт ажилд томилогдлоо`,
+      body: work.title,
+      entityType: 'PlannedWork',
+      entityId: work._id,
+      linkPath: staffLink,
+      userIds: crewUserIds,
+      excludeUserId: actor.userId,
+    });
+
+    await notify({
+      event: 'PLANNED_WORK_SCHEDULED',
+      title: `${work.workNumber} төлөвлөгөөт ажил товлогдлоо`,
+      body: work.title,
+      entityType: 'PlannedWork',
+      entityId: work._id,
+      linkPath: portalLink,
+      customerId: work.customer,
+      excludeUserId: actor.userId,
+    });
+    return;
+  }
+
+  await notify({
+    event: 'PLANNED_WORK_STARTED',
+    title: `${work.workNumber} төлөвлөгөөт ажил эхэллээ`,
+    body: work.title,
+    entityType: 'PlannedWork',
+    entityId: work._id,
+    linkPath: staffLink,
+    userIds: crewUserIds,
+    // The technician who pressed start is normally on the crew, and telling somebody about
+    // their own keystroke is the fastest way to make the inbox worthless.
+    excludeUserId: actor.userId,
+  });
+
+  await notify({
+    event: 'PLANNED_WORK_STARTED',
+    title: `${work.workNumber} төлөвлөгөөт ажил эхэллээ`,
+    body: work.title,
+    entityType: 'PlannedWork',
+    entityId: work._id,
+    linkPath: portalLink,
+    customerId: work.customer,
+    excludeUserId: actor.userId,
+  });
 }
 
 /**
@@ -420,6 +505,22 @@ export async function transitionPlannedWork(
       );
     }
   }
+
+  /*
+   * Announced only once the transaction above has committed.
+   *
+   * `notify` writes through its own connection and is not part of the session, so a call
+   * placed inside `withTransaction` would survive a rollback that erased the status change
+   * it describes — leaving the inbox as the only record of a state the database never held.
+   * It swallows its own failures, so awaiting it here cannot turn a committed transition
+   * into a 500 for the caller.
+   */
+  await notifyTransition(
+    work,
+    input.action,
+    input.action === 'APPROVE' ? approvedCrew : work.assignedEmployees,
+    actor,
+  );
 
   return { previousStatus, newStatus, reportCreated };
 }

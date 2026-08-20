@@ -39,6 +39,8 @@ import { hasPermission } from '../../middlewares/authorize.middleware';
 import { recordAudit } from '../audit/audit.service';
 import { Employee } from '../employee/employee.model';
 import { MaterialItem } from '../material/material.models';
+import { notify } from '../notification/notification.service';
+import { userIdsForEmployees } from '../notification/recipient.util';
 import { ObjectRecord } from '../object-master/object-master.models';
 import { ObjectNode } from '../objects/object.models';
 import { Team } from '../org/org.models';
@@ -937,6 +939,15 @@ export async function updatePlannedWork(
     building: String(work.building),
   };
 
+  /**
+   * Who was already on the work, read before the crew field is overwritten.
+   *
+   * A crew edit almost always resends the people who are staying and changes one name. The
+   * announcement below is aimed at the change, so it needs the roster as it stood, not the
+   * one it is about to become.
+   */
+  const crewBefore = new Set(work.assignedEmployees.map((id) => String(id)));
+
   if (input.buildingId !== undefined) {
     const location = await resolveLocation(
       work.project ? String(work.project) : null,
@@ -1009,6 +1020,28 @@ export async function updatePlannedWork(
       building: String(work.building),
     },
   });
+
+  /**
+   * Told to the people who were genuinely added, and to nobody else.
+   *
+   * The whole roster is on hand and announcing to all of it would be one line shorter, but
+   * it would tell everybody still on the job something they learned at approval. An inbox
+   * that repeats itself on every unrelated edit is one people stop opening, and then the
+   * one notification that mattered goes unread too.
+   */
+  const crewAdded = work.assignedEmployees.filter((id) => !crewBefore.has(String(id)));
+  if (crewAdded.length > 0) {
+    await notify({
+      event: 'PLANNED_WORK_ASSIGNED',
+      title: `${work.workNumber} төлөвлөгөөт ажилд томилогдлоо`,
+      body: work.title,
+      entityType: 'PlannedWork',
+      entityId: work._id,
+      linkPath: `/planned-work/${String(work._id)}`,
+      userIds: await userIdsForEmployees(crewAdded.map((id) => String(id))),
+      excludeUserId: actor.userId,
+    });
+  }
 
   return getPlannedWorkById(plannedWorkId, actor);
 }
@@ -1226,7 +1259,37 @@ export async function createTask(
     },
   });
 
+  if (assignedEmployee) {
+    await notifyTaskAssignee(work, task, assignedEmployee, actor);
+  }
+
   return getPlannedWorkById(plannedWorkId, actor);
+}
+
+/**
+ * Tells one technician that a sub-task is theirs.
+ *
+ * The link goes to the parent work rather than the sub-task, because there is no sub-task
+ * screen to land on — the sheet is part of the work's detail page, so the work is the only
+ * address that resolves. `entityId` follows the link for the same reason: an inbox row that
+ * points at a record the reader cannot open is worse than one with no link at all.
+ */
+async function notifyTaskAssignee(
+  work: Pick<IPlannedWork, 'workNumber'> & { _id: Types.ObjectId },
+  task: Pick<IPlannedWorkTask, 'title'>,
+  assignee: Types.ObjectId,
+  actor: AuthContext,
+): Promise<void> {
+  await notify({
+    event: 'PLANNED_WORK_TASK_ASSIGNED',
+    title: `${work.workNumber} ажлын дэд ажилд томилогдлоо`,
+    body: task.title,
+    entityType: 'PlannedWork',
+    entityId: work._id,
+    linkPath: `/planned-work/${String(work._id)}`,
+    userIds: await userIdsForEmployees([String(assignee)]),
+    excludeUserId: actor.userId,
+  });
 }
 
 async function findTask(
@@ -1261,6 +1324,10 @@ export async function updateTask(
     plannedStartDate: task.plannedStartDate.toISOString(),
     plannedEndDate: task.plannedEndDate.toISOString(),
   };
+
+  // Read before the edit, because the sheet resends the assignee it loaded on every save:
+  // without this, retitling a sub-task would re-announce an assignment nothing changed.
+  const assigneeBefore = task.assignedEmployee ? String(task.assignedEmployee) : null;
 
   if (input.floorId !== undefined) {
     task.floor = input.floorId ? await assertFloorInBuilding(input.floorId, work.building) : null;
@@ -1320,6 +1387,13 @@ export async function updateTask(
       plannedEndDate: task.plannedEndDate.toISOString(),
     },
   });
+
+  // Only a genuine change of hands is news. Clearing the assignee tells nobody: there is
+  // no new owner to inform, and the person taken off learns it from the work itself.
+  const assigneeAfter = task.assignedEmployee;
+  if (assigneeAfter && String(assigneeAfter) !== assigneeBefore) {
+    await notifyTaskAssignee(work, task, assigneeAfter, actor);
+  }
 
   return getPlannedWorkById(plannedWorkId, actor);
 }
