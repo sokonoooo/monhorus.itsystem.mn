@@ -283,7 +283,7 @@ void main() {
     test('carry every status the shared constant declares', () {
       expect(ServiceRequestStatus.values.length, 14);
       expect(SlaState.values.length, 6);
-      expect(NotificationEvent.values.length, 17);
+      expect(NotificationEvent.values.length, 25);
     });
 
     test('terminal statuses are the two with no outgoing transition', () {

@@ -13,6 +13,7 @@ import '../models/notification_model.dart';
 import '../models/object_master_model.dart';
 import '../models/project_model.dart';
 import '../models/service_request_model.dart';
+import '../models/survey_model.dart';
 
 class CustomerPortalRepositoryImpl implements CustomerPortalRepository {
   const CustomerPortalRepositoryImpl(this._remote);
@@ -183,6 +184,37 @@ class CustomerPortalRepositoryImpl implements CustomerPortalRepository {
     CreateServiceRequestRequestModel request,
   ) {
     return _guard(() => _remote.createServiceRequest(request));
+  }
+
+  @override
+  Future<ApiResult<List<SurveyPendingItemModel>>> listPendingSurveys() {
+    return _guard(() => _remote.listPendingSurveys());
+  }
+
+  /// A 404 here is an answer, not a fault — the same rule [getCustomerWorkReport]
+  /// follows. The endpoint uses it for "no survey to answer" as well as for "not your
+  /// request", and both mean the same thing to the reader: there is nothing to rate.
+  /// Every other status still travels through [_mapException].
+  @override
+  Future<ApiResult<SurveyFormModel?>> getSurveyForm(String requestId) async {
+    try {
+      return Success<SurveyFormModel?>(await _remote.getSurveyForm(requestId));
+    } on ServerException catch (error) {
+      if (error.statusCode == 404) {
+        return const Success<SurveyFormModel?>(null);
+      }
+      return FailureResult<SurveyFormModel?>(_mapException(error));
+    } catch (error) {
+      return FailureResult<SurveyFormModel?>(_mapException(error));
+    }
+  }
+
+  @override
+  Future<ApiResult<void>> submitSurveyResponse(
+    String requestId,
+    SubmitSurveyResponseRequest request,
+  ) {
+    return _guard(() => _remote.submitSurveyResponse(requestId, request));
   }
 
   @override

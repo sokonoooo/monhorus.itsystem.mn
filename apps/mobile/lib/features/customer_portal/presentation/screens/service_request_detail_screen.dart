@@ -1,7 +1,10 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/models/service_request_model.dart';
+import '../../data/models/survey_model.dart';
 import '../../domain/entities/risk_level.dart';
 import '../../domain/entities/service_request_enums.dart';
 import '../format.dart';
@@ -11,15 +14,22 @@ import '../widgets/authenticated_image.dart';
 import '../widgets/customer_async_view.dart';
 import '../widgets/customer_ui.dart';
 import '../widgets/risk_widgets.dart';
+import '../widgets/survey_sheet.dart';
 import 'customer_shell_screen.dart';
 
-/// Which half of the request the screen is showing.
+/// Which part of the request the screen is showing.
 ///
 /// [progress] is everything the screen carried before the conclusion existed — the
-/// SLA, the location trail and the status timeline. [report] is the technician's
-/// approved conclusion, which is a different document about the same request rather
-/// than one more section of it, and is fetched separately.
-enum _RequestTab { progress, report }
+/// location trail and the status timeline. [report] is the technician's approved
+/// conclusion, which is a different document about the same request rather than one
+/// more section of it, and is fetched separately. [survey] is the customer's own turn
+/// to speak, and unlike the other two it is CONDITIONAL: it appears only while there
+/// is somebody left to rate.
+///
+/// Because it is conditional, the tab strip's index is no longer this enum's index.
+/// See the `visibleTabs` list in the build method: `_RequestTab.values[index]` would
+/// have selected the wrong tab the moment the survey one was absent.
+enum _RequestTab { progress, report, survey }
 
 /// s-request-detail: one request, its SLA, its location trail and its progress, plus
 /// the technician's conclusion once the office has approved one.
@@ -37,17 +47,59 @@ class _ServiceRequestDetailScreenState
     extends ConsumerState<ServiceRequestDetailScreen> {
   _RequestTab _tab = _RequestTab.progress;
 
+  /// The survey this request is still waiting on, or null when there is none.
+  ///
+  /// Read off [pendingSurveysProvider] rather than by asking for the form. Watching
+  /// [surveyFormProvider] is what issues `GET /surveys/requests/:id/form`, and that
+  /// endpoint 404s for every request with nothing to rate — which is most of them —
+  /// so the pending list, which the home screen loads anyway, is what decides whether
+  /// the tab exists. The same rule the report tab follows with `hasApprovedReport`:
+  /// do not fire a request already known to fail.
+  SurveyPendingItemModel? _pendingSurvey() {
+    if (!ref.watch(canSubmitSurveyProvider)) return null;
+
+    final List<SurveyPendingItemModel>? pending =
+        ref.watch(pendingSurveysProvider).valueOrNull;
+    if (pending == null) return null;
+
+    for (final SurveyPendingItemModel item in pending) {
+      if (item.serviceRequestId == widget.requestId && item.hasOutstanding) {
+        return item;
+      }
+    }
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
     final AsyncValue<ServiceRequestDetailModel> request =
         ref.watch(serviceRequestDetailProvider(widget.requestId));
+    final SurveyPendingItemModel? survey = _pendingSurvey();
+
+    // The strip's index is an index into THIS list, never into `_RequestTab.values`.
+    // The survey tab comes and goes, so the two stopped agreeing the moment it was
+    // added: with the survey absent, `values[1]` is report — correct by luck — but any
+    // further conditional tab would have selected a neighbour instead.
+    final List<_RequestTab> visibleTabs = <_RequestTab>[
+      _RequestTab.progress,
+      _RequestTab.report,
+      if (survey != null) _RequestTab.survey,
+    ];
+
+    // The survey tab can vanish under the customer — they answer the last technician
+    // and the list refreshes — so the selection is resolved against what is on screen
+    // rather than trusted. Falling back rather than clamping: the first tab is the one
+    // that always exists.
+    final _RequestTab tab =
+        visibleTabs.contains(_tab) ? _tab : _RequestTab.progress;
 
     return CustomerScaffold(
       navBar: CustomerNavBar(
         title: request.valueOrNull?.requestNumber ?? 'Хүсэлт',
-        subtitle: switch (_tab) {
+        subtitle: switch (tab) {
           _RequestTab.progress => 'Хүсэлтийн явц',
           _RequestTab.report => 'Техникчийн дүгнэлт',
+          _RequestTab.survey => 'Үйлчилгээний үнэлгээ',
         },
       ),
       // The tabs sit outside [CustomerAsyncView], as the floor screen puts them, so
@@ -55,10 +107,17 @@ class _ServiceRequestDetailScreenState
       body: Column(
         children: <Widget>[
           TabRow(
-            labels: const <String>['Хүсэлтийн явц', 'Тайлан'],
-            selectedIndex: _tab.index,
+            labels: <String>[
+              for (final _RequestTab visible in visibleTabs)
+                switch (visible) {
+                  _RequestTab.progress => 'Хүсэлтийн явц',
+                  _RequestTab.report => 'Тайлан',
+                  _RequestTab.survey => 'Үнэлгээ',
+                },
+            ],
+            selectedIndex: visibleTabs.indexOf(tab),
             onSelected: (int index) =>
-                setState(() => _tab = _RequestTab.values[index]),
+                setState(() => _tab = visibleTabs[index]),
           ),
           Expanded(
             child: CustomerAsyncView<ServiceRequestDetailModel>(
@@ -66,7 +125,7 @@ class _ServiceRequestDetailScreenState
               onRetry: () =>
                   ref.invalidate(serviceRequestDetailProvider(widget.requestId)),
               builder: (BuildContext ctx, ServiceRequestDetailModel data) =>
-                  _body(ctx, data),
+                  _body(ctx, data, tab, survey),
             ),
           ),
         ],
@@ -74,12 +133,18 @@ class _ServiceRequestDetailScreenState
     );
   }
 
-  Widget _body(BuildContext context, ServiceRequestDetailModel request) {
+  Widget _body(
+    BuildContext context,
+    ServiceRequestDetailModel request,
+    _RequestTab tab,
+    SurveyPendingItemModel? survey,
+  ) {
     return RefreshIndicator(
       onRefresh: () async {
         ref
           ..invalidate(serviceRequestDetailProvider(widget.requestId))
-          ..invalidate(customerWorkReportProvider(widget.requestId));
+          ..invalidate(customerWorkReportProvider(widget.requestId))
+          ..invalidate(pendingSurveysProvider);
       },
       child: ListView(
         padding: const EdgeInsets.only(top: 8, bottom: 24),
@@ -90,11 +155,17 @@ class _ServiceRequestDetailScreenState
                   .map((ObjectBreadcrumbModel node) => node.name)
                   .toList(growable: false),
             ),
-          switch (_tab) {
+          switch (tab) {
             _RequestTab.progress => _ProgressTab(request: request),
             _RequestTab.report => _ReportTab(
                 requestId: widget.requestId,
                 hasApprovedReport: request.hasApprovedReport,
+              ),
+            // Non-null whenever this tab is reachable: it is in `visibleTabs` only
+            // when the pending list named this request.
+            _RequestTab.survey => _SurveyTab(
+                requestId: widget.requestId,
+                pending: survey!,
               ),
           },
         ],
@@ -419,6 +490,86 @@ class _ReportBody extends StatelessWidget {
           for (final WorkReportPhotoModel photo in report.afterPhotos)
             _AttachmentCard(attachment: photo),
         ],
+      ],
+    );
+  }
+}
+
+/// The "Үнэлгээ" tab: the customer's own turn to speak about this job.
+///
+/// Only ever built when [pendingSurveysProvider] named this request, so it opens no
+/// request of its own and states nothing it has not been told. Every technician on the
+/// job is listed with their standing — answered, skipped, or still waiting — because a
+/// survey answered per person is not a form with a progress bar; it is several
+/// statements about several people, and the customer should see which they have made.
+///
+/// Nothing here prints a duration, a deadline or a response window. The customer
+/// surfaces of this app carry no SLA, and a satisfaction question is not the place to
+/// introduce one.
+class _SurveyTab extends StatelessWidget {
+  const _SurveyTab({required this.requestId, required this.pending});
+
+  final String requestId;
+  final SurveyPendingItemModel pending;
+
+  @override
+  Widget build(BuildContext context) {
+    final int outstanding = pending.outstandingEmployees.length;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      mainAxisSize: MainAxisSize.min,
+      children: <Widget>[
+        PanelCard(
+          accent: CustomerTokens.accent,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              Text(
+                'Ажил дууслаа. Үнэлгээ өгөөрэй.',
+                style: CustomerTokens.cardTitle.copyWith(height: 1.3),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Энэ дуудлагад ажилласан $outstanding ажилтныг тус тусад нь '
+                'үнэлнэ. Уулзаагүй ажилтныг үнэлэх шаардлагагүй.',
+                style: CustomerTokens.body.copyWith(height: 1.6),
+              ),
+              const SizedBox(height: 14),
+              FilledButton(
+                onPressed: () => unawaited(
+                  SurveySheet.show(context, requestId: requestId),
+                ),
+                style: FilledButton.styleFrom(
+                  minimumSize: const Size.fromHeight(48),
+                ),
+                child: const Text('Үнэлгээ өгөх'),
+              ),
+            ],
+          ),
+        ),
+
+        const SectionCaption('Ажилласан ажилтан'),
+        PanelCard(
+          padding: EdgeInsets.zero,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              for (final SurveyPendingEmployeeModel entry in pending.employees)
+                DetailRow(
+                  label: entry.employee.displayName,
+                  value: switch (entry) {
+                    SurveyPendingEmployeeModel(isRated: true) => 'Үнэлсэн',
+                    SurveyPendingEmployeeModel(isSkipped: true) =>
+                      'Харилцаагүй',
+                    _ => 'Хүлээгдэж байна',
+                  },
+                  labelWidth: 150,
+                ),
+            ],
+          ),
+        ),
       ],
     );
   }

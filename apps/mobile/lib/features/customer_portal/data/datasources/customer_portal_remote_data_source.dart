@@ -13,6 +13,7 @@ import '../models/notification_model.dart';
 import '../models/object_master_model.dart';
 import '../models/project_model.dart';
 import '../models/service_request_model.dart';
+import '../models/survey_model.dart';
 
 /// Transport for the customer portal. Throws [ServerException] or
 /// [NetworkException]; the repository converts those into failures.
@@ -331,6 +332,61 @@ class CustomerPortalRemoteDataSource {
       data: request.toJson(),
       decoder: (Object? json) =>
           ServiceRequestDetailModel.fromJson(json! as Map<String, dynamic>),
+    );
+  }
+
+  // -- Survey -----------------------------------------------------------------
+
+  /// GET /surveys/pending.
+  ///
+  /// The requests this customer has been asked to rate and has not finished rating.
+  /// Scoped server-side to the caller, like `/notifications`, so it takes no customer
+  /// parameter. Needs `portal.survey.submit`; the UI only asks when `GET /auth/me`
+  /// reported that key, so the list is not fetched in order to be refused.
+  Future<List<SurveyPendingItemModel>> listPendingSurveys() {
+    return _client.request<List<SurveyPendingItemModel>>(
+      path: '/surveys/pending',
+      method: 'GET',
+      decoder: (Object? json) => (json! as List<dynamic>)
+          .map((dynamic item) =>
+              SurveyPendingItemModel.fromJson(item as Map<String, dynamic>))
+          .toList(growable: false),
+    );
+  }
+
+  /// GET /surveys/requests/:requestId/form.
+  ///
+  /// The question catalogue as it stands, plus the technicians on this job and what
+  /// the customer has already said about each. Answers **404** when there is no survey
+  /// to answer — none was raised, it is already finished, or the request is not this
+  /// customer's — and those three are deliberately indistinguishable.
+  ///
+  /// That 404 is a legitimate answer rather than a fault, so the repository turns it
+  /// into a null; the precedent is [getCustomerWorkReport].
+  Future<SurveyFormModel> getSurveyForm(String requestId) {
+    return _client.request<SurveyFormModel>(
+      path: '/surveys/requests/$requestId/form',
+      method: 'GET',
+      decoder: (Object? json) =>
+          SurveyFormModel.fromJson(json! as Map<String, dynamic>),
+    );
+  }
+
+  /// POST /surveys/requests/:requestId/responses — ONE technician per call.
+  ///
+  /// The survey is answered per technician, so a job two people attended is two calls
+  /// and the caller loops. Nothing is handed back: the response body is the stored
+  /// record, and the phone's next question is who is still outstanding, which
+  /// `/surveys/pending` and the form endpoint answer.
+  Future<void> submitSurveyResponse(
+    String requestId,
+    SubmitSurveyResponseRequest request,
+  ) {
+    return _client.request<void>(
+      path: '/surveys/requests/$requestId/responses',
+      method: 'POST',
+      data: request.toJson(),
+      decoder: (Object? _) {},
     );
   }
 

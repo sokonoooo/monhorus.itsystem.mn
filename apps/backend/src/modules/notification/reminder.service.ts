@@ -8,6 +8,7 @@ import { PlannedWork } from '../planned-work/planned-work.models';
 import { ServiceRequest } from '../service-request/service-request.model';
 import { evaluateSla } from '../service-request/sla.service';
 import { getSlaConfig } from '../settings/settings.service';
+import { SurveyInvitation } from '../survey/survey.models';
 import { notify } from './notification.service';
 import { userIdsForEmployees } from './recipient.util';
 
@@ -47,6 +48,14 @@ import { userIdsForEmployees } from './recipient.util';
 
 export const PLANNED_WORK_DUE_SOON_MS = 24 * 60 * 60 * 1000;
 export const INVOICE_DUE_SOON_MS = 3 * 24 * 60 * 60 * 1000;
+/**
+ * How long an unanswered satisfaction survey waits before its single nudge.
+ *
+ * Three days, chosen on the same footing as the two above and stated rather than buried. Long
+ * enough that a customer who simply had a busy week is not badgered the morning after the job,
+ * short enough that they still remember the visit well enough to rate it.
+ */
+export const SURVEY_REMINDER_AFTER_MS = 3 * 24 * 60 * 60 * 1000;
 
 /** One pass handles at most this many rows per category, so a backlog cannot stall a tick. */
 const SWEEP_LIMIT = 500;
@@ -58,6 +67,7 @@ export interface ReminderSweepResult {
   slaBreached: number;
   invoiceDueSoon: number;
   invoiceOverdue: number;
+  surveyReminder: number;
 }
 
 async function recipientsForWork(
@@ -326,6 +336,67 @@ async function sweepInvoices(now: Date): Promise<{ dueSoon: number; overdue: num
 }
 
 /**
+ * Satisfaction surveys still unanswered three days after they were asked for.
+ *
+ * ONE REMINDER, THEN SILENCE. Unlike the deadline sweeps above, there is nothing here that
+ * expires and nothing that escalates: a customer who has not rated a visit within three days
+ * has decided not to, and chasing them again would cost more goodwill than the answer is
+ * worth. The invitation simply stays open in the portal in case they change their mind.
+ *
+ * The stake follows the house idiom exactly even though `issuedAt` never moves, so this reads
+ * like every other sweep in the file: the marker holds the `issuedAt` it was sent for, the
+ * conditional update is what decides whether this pass is the one that sends, and
+ * `modifiedCount === 0` means another pass got there first. `closedAt: null` is re-asserted
+ * inside that update because a customer may answer the last technician between the find and
+ * the write, and nudging somebody about a survey they have just completed is the one failure
+ * this whole shape exists to prevent.
+ */
+async function sweepSurveyReminders(now: Date): Promise<number> {
+  const cutoff = new Date(now.getTime() - SURVEY_REMINDER_AFTER_MS);
+
+  const candidates = await SurveyInvitation.find({
+    closedAt: null,
+    reminderSentFor: null,
+    issuedAt: { $lte: cutoff },
+  })
+    .select('_id serviceRequest customer requestNumber buildingName issuedAt reminderSentFor')
+    .limit(SWEEP_LIMIT);
+
+  let sent = 0;
+  for (const invitation of candidates) {
+    const issuedAt = invitation.issuedAt;
+    if (invitation.reminderSentFor?.getTime() === issuedAt.getTime()) continue;
+
+    const staked = await SurveyInvitation.updateOne(
+      {
+        _id: invitation._id,
+        issuedAt,
+        closedAt: null,
+        $or: [{ reminderSentFor: null }, { reminderSentFor: { $ne: issuedAt } }],
+      },
+      { $set: { reminderSentFor: issuedAt } },
+    );
+    if (staked.modifiedCount === 0) continue;
+
+    const where = invitation.buildingName ? `${invitation.buildingName}. ` : '';
+    await notify({
+      event: 'SURVEY_REMINDER',
+      title: `${invitation.requestNumber} үйлчилгээний үнэлгээ хүлээгдэж байна`,
+      body: `${where}Хэдхэн минут зарцуулж үнэлгээгээ өгнө үү.`,
+      // 'Work', not 'SurveyInvitation': the Flutter notification sheet deep-links on this
+      // entity type, and a different one would open nothing.
+      entityType: 'Work',
+      entityId: invitation.serviceRequest,
+      linkPath: `/portal/requests/${String(invitation.serviceRequest)}/survey`,
+      customerId: invitation.customer,
+    });
+    sent += 1;
+  }
+
+  return sent;
+}
+
+/**
  * One pass over every deadline category.
  *
  * Categories run in sequence rather than concurrently: this is a background sweep with no
@@ -337,6 +408,7 @@ export async function runReminderSweep(now: Date = new Date()): Promise<Reminder
   const plannedWorkDueSoon = await sweepPlannedWorkDueSoon(now);
   const sla = await sweepSla(now);
   const invoices = await sweepInvoices(now);
+  const surveyReminder = await sweepSurveyReminders(now);
 
   const result: ReminderSweepResult = {
     plannedWorkOverdue,
@@ -345,6 +417,7 @@ export async function runReminderSweep(now: Date = new Date()): Promise<Reminder
     slaBreached: sla.breached,
     invoiceDueSoon: invoices.dueSoon,
     invoiceOverdue: invoices.overdue,
+    surveyReminder,
   };
 
   if (Object.values(result).some((count) => count > 0)) {

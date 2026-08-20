@@ -7,6 +7,7 @@ import '../../data/models/notification_model.dart';
 import '../../data/models/object_master_model.dart';
 import '../../data/models/project_model.dart';
 import '../../data/models/service_request_model.dart';
+import '../../data/models/survey_model.dart';
 import '../entities/customer_scope.dart';
 import '../entities/service_request_enums.dart';
 
@@ -87,6 +88,31 @@ abstract interface class CustomerPortalRepository {
 
   Future<ApiResult<ServiceRequestDetailModel>> createServiceRequest(
     CreateServiceRequestRequestModel request,
+  );
+
+  /// Surveys this customer has been asked to fill in and has not finished.
+  ///
+  /// Scoped to the caller server-side, so it takes no scope. An empty list is the
+  /// ordinary answer and is not an absence of data: it means there is nothing to ask.
+  Future<ApiResult<List<SurveyPendingItemModel>>> listPendingSurveys();
+
+  /// The survey form for one request, or **null** when there is not one.
+  ///
+  /// Nullable rather than failing, for the same reason [getCustomerWorkReport] is:
+  /// `GET /surveys/requests/:requestId/form` answers 404 for every state that is not
+  /// an open survey — none raised, already finished, somebody else's request — and
+  /// "there is nothing to rate" is not an error the customer can act on. A genuine
+  /// fault still comes back as a [Failure].
+  Future<ApiResult<SurveyFormModel?>> getSurveyForm(String requestId);
+
+  /// One technician's answers, or the statement that the customer never met them.
+  ///
+  /// One call per technician, because that is what the endpoint takes; the caller
+  /// loops. Returns nothing on success — what changed is server-side state the caller
+  /// re-reads through [listPendingSurveys] and [getSurveyForm].
+  Future<ApiResult<void>> submitSurveyResponse(
+    String requestId,
+    SubmitSurveyResponseRequest request,
   );
 
   /// Already scoped to the caller server-side, so this one takes no scope.

@@ -174,6 +174,22 @@ export const PERMISSIONS = {
    * work for yourself, which a technician must be able to do without being handed the
    * power to reassign a colleague's job.
    */
+  /**
+   * The satisfaction survey.
+   *
+   * Three keys, split by three different acts. Writing the questions is admin
+   * configuration; reading the results is a performance review of named employees, which
+   * management needs and dispatch does not; and submitting is a customer act, so it is a
+   * `portal.*` key and never a staff one.
+   *
+   * TECHNICIAN holds NONE of these. A response identifies the request and therefore the
+   * customer who scored them, so letting somebody read their own would hand them the
+   * complaint and its author together. If self-view is wanted later it is a fourth key and
+   * a scoped query, not a loosening of `survey.view_results`.
+   */
+  SURVEY_MANAGE_QUESTIONS: 'survey.manage_questions',
+  SURVEY_VIEW_RESULTS: 'survey.view_results',
+  PORTAL_SURVEY_SUBMIT: 'portal.survey.submit',
   MATERIAL_VIEW: 'material.view',
   MATERIAL_MANAGE: 'material.manage',
   SERVICE_REQUEST_CLAIM: 'service_request.claim',
@@ -298,6 +314,7 @@ export const PERMISSION_MODULES = [
   'user',
   'rbac',
   'portal',
+  'survey',
 ] as const;
 export type PermissionModule = (typeof PERMISSION_MODULES)[number];
 
@@ -321,6 +338,7 @@ export const PERMISSION_MODULE_LABELS: Record<PermissionModule, string> = {
   user: 'Хэрэглэгчийн бүртгэл',
   rbac: 'Хэрэглэгчийн эрх',
   portal: 'Харилцагчийн хандалт',
+  survey: 'Үйлчилгээний үнэлгээ',
 };
 
 export const PERMISSION_LABELS: Record<PermissionKey, string> = {
@@ -384,6 +402,9 @@ export const PERMISSION_LABELS: Record<PermissionKey, string> = {
   'report.export': 'Тайлан татаж авах',
   'report.approve': 'Тайлан батлах, буцаах',
   'report.publish': 'Тайлан нийтлэх',
+  'survey.manage_questions': 'Асуулга тохируулах',
+  'survey.view_results': 'Асуулгын дүн харах',
+  'portal.survey.submit': 'Үйлчилгээний үнэлгээ өгөх',
   'material.view': 'Материалын жагсаалт харах',
   'material.manage': 'Материалын жагсаалт удирдах',
   'service_request.claim': 'Нээлттэй ажил өөртөө авах',
@@ -484,6 +505,7 @@ export const SYSTEM_ROLE_DEFAULT_PERMISSIONS: Record<SystemRoleKey, readonly Per
 
   ADMIN: [
     P.DASHBOARD_VIEW, P.DASHBOARD_CUSTOMISE,
+    P.SURVEY_MANAGE_QUESTIONS, P.SURVEY_VIEW_RESULTS,
     // The account-provisioning half of what this role already did through the legacy tier
     // gate on /users. Seeded so tightening that router to require a permission takes
     // nothing away from an administrator who could already do it.
@@ -513,6 +535,7 @@ export const SYSTEM_ROLE_DEFAULT_PERMISSIONS: Record<SystemRoleKey, readonly Per
 
   MANAGEMENT: [
     P.DASHBOARD_VIEW,
+    P.SURVEY_VIEW_RESULTS,
     P.EMPLOYEE_VIEW, P.EMPLOYEE_CREATE, P.EMPLOYEE_UPDATE, P.EMPLOYEE_CHANGE_STATUS,
     P.EMPLOYEE_MANAGE_DOCUMENTS, P.EMPLOYEE_VIEW_AUDIT, P.EMPLOYEE_PRINT_CERTIFICATE,
     P.ORG_VIEW,
@@ -705,6 +728,7 @@ export const SYSTEM_ROLE_DEFAULT_PERMISSIONS: Record<SystemRoleKey, readonly Per
     P.PORTAL_PROFILE_VIEW,
     P.PORTAL_PLANNED_WORK_VIEW,
     P.PORTAL_PLANNED_WORK_CREATE,
+    P.PORTAL_SURVEY_SUBMIT,
     P.NOTIFICATION_VIEW,
   ],
 };

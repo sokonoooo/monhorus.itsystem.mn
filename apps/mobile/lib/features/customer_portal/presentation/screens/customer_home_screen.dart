@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -5,6 +7,7 @@ import '../../../auth/domain/entities/app_user.dart';
 import '../../../auth/presentation/providers/auth_provider.dart';
 import '../../data/models/project_model.dart';
 import '../../data/models/service_request_model.dart';
+import '../../data/models/survey_model.dart';
 import '../../domain/entities/customer_scope.dart';
 import '../../domain/entities/risk_level.dart';
 import '../providers/customer_portal_providers.dart';
@@ -14,6 +17,7 @@ import '../widgets/customer_async_view.dart';
 import '../widgets/customer_ui.dart';
 import '../widgets/notifications_sheet.dart';
 import '../widgets/service_request_card.dart';
+import '../widgets/survey_sheet.dart';
 import 'building_detail_screen.dart';
 import 'service_request_detail_screen.dart';
 
@@ -223,6 +227,48 @@ class _HeroNotificationBell extends ConsumerWidget {
   }
 }
 
+/// The prompt that appears while a finished job is still waiting to be rated.
+///
+/// Silent in every other state, and deliberately silent on failure too: an account
+/// without `portal.survey.submit` would be answered 403, and an error card for a
+/// question nobody asked would be worse than no card. It draws only when the API said
+/// there is something to answer.
+///
+/// Tapping it opens the survey for the OLDEST outstanding request — the first entry the
+/// server sent — rather than a list, because the sheet already walks technician by
+/// technician and a list of forms in front of that is a menu of chores.
+class _SurveyPrompt extends ConsumerWidget {
+  const _SurveyPrompt();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    if (!ref.watch(canSubmitSurveyProvider)) return const SizedBox.shrink();
+
+    final List<SurveyPendingItemModel>? pending =
+        ref.watch(pendingSurveysProvider).valueOrNull;
+    if (pending == null) return const SizedBox.shrink();
+
+    final List<SurveyPendingItemModel> outstanding = pending
+        .where((SurveyPendingItemModel item) => item.hasOutstanding)
+        .toList(growable: false);
+    if (outstanding.isEmpty) return const SizedBox.shrink();
+
+    final SurveyPendingItemModel first = outstanding.first;
+    final String where = first.buildingName ?? first.requestNumber;
+
+    return BlueprintCta(
+      title: 'Үйлчилгээгээ үнэлнэ үү',
+      subtitle: outstanding.length == 1
+          ? '$where дэх ажил дууслаа. Ажилтныг үнэлээрэй.'
+          : '$where болон бусад ${outstanding.length - 1} ажил үнэлгээ хүлээж '
+              'байна.',
+      onTap: () => unawaited(
+        SurveySheet.show(context, requestId: first.serviceRequestId),
+      ),
+    );
+  }
+}
+
 class _HomeBody extends StatelessWidget {
   const _HomeBody({required this.summary, required this.onOpenTab});
 
@@ -261,6 +307,7 @@ class _HomeBody extends StatelessWidget {
       padding: EdgeInsets.zero,
       physics: const AlwaysScrollableScrollPhysics(),
       children: <Widget>[
+        const _SurveyPrompt(),
         SectionHead(
           kicker: 'БҮХ БАРИЛГА · ЭРСДЭЛЭЭР',
           actionLabel: 'Бүгдийг харах',

@@ -12,6 +12,7 @@ import '../../data/models/notification_model.dart';
 import '../../data/models/object_master_model.dart';
 import '../../data/models/project_model.dart';
 import '../../data/models/service_request_model.dart';
+import '../../data/models/survey_model.dart';
 import '../../data/repositories/customer_portal_repository_impl.dart';
 import '../../domain/entities/customer_scope.dart';
 import '../../domain/entities/risk_level.dart';
@@ -298,6 +299,56 @@ final FutureProviderFamily<CustomerWorkReportModel?, String>
   final CustomerPortalRepository repository =
       ref.watch(customerPortalRepositoryProvider);
   return _unwrap(await repository.getCustomerWorkReport(requestId));
+});
+
+// -- Survey ------------------------------------------------------------------
+
+/// The requests this customer has been asked to rate and has not finished rating.
+///
+/// Scoped to the caller by the server, so it takes no [ResolvedCustomerScope] — the
+/// same arrangement `/notifications` has. An empty list is the ordinary answer and the
+/// screens say nothing at all when it comes back that way; a survey prompt shown to
+/// somebody with nothing to answer is worse than no prompt.
+///
+/// Only watched behind [canSubmitSurveyProvider]. The endpoint needs
+/// `portal.survey.submit`, so an account without it would be answered 403 and the
+/// prompt would render an error where there is no problem.
+final FutureProvider<List<SurveyPendingItemModel>> pendingSurveysProvider =
+    FutureProvider<List<SurveyPendingItemModel>>((Ref ref) async {
+  final CustomerPortalRepository repository =
+      ref.watch(customerPortalRepositoryProvider);
+  return _unwrap(await repository.listPendingSurveys());
+});
+
+/// The survey form for one request, or null when there is nothing to rate.
+///
+/// Deliberately NOT watched unconditionally by the request screen. Watching it is what
+/// issues `GET /surveys/requests/:id/form`, and that endpoint answers 404 for every
+/// request with no open survey — which is most of them — so the screen reads
+/// [pendingSurveysProvider] first and only asks for a form it has been told exists.
+/// The same rule the report tab follows with `hasApprovedReport`.
+final FutureProviderFamily<SurveyFormModel?, String> surveyFormProvider =
+    FutureProvider.family<SurveyFormModel?, String>(
+        (Ref ref, String requestId) async {
+  final CustomerPortalRepository repository =
+      ref.watch(customerPortalRepositoryProvider);
+  return _unwrap(await repository.getSurveyForm(requestId));
+});
+
+/// Whether the API would accept a survey response from this account.
+///
+/// Read straight from the caller's effective permission set, exactly as
+/// [canCreateServiceRequestProvider] is. One key only: `DEFAULT_ROLE_PERMISSIONS`
+/// grants `portal.survey.submit` to the customer role, and the two staff survey keys
+/// (`survey.manage_questions`, `survey.view_results`) configure and read the survey
+/// rather than answer it, so neither belongs here.
+///
+/// The permission set is empty until the first `/auth/me`, so this reads false until
+/// then and the prompt stays hidden rather than being shown and refused.
+final Provider<bool> canSubmitSurveyProvider = Provider<bool>((Ref ref) {
+  final AppUser? user = ref.watch(currentUserProvider);
+  if (user == null) return false;
+  return user.has(PermissionKeys.portalSurveySubmit);
 });
 
 // -- Notifications -----------------------------------------------------------

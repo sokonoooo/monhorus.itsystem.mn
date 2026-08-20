@@ -221,6 +221,16 @@ export const NAVIGATION: readonly NavSection[] = [
         permissions: [PERMISSIONS.INVOICE_VIEW],
         icon: 'INVOICE',
       },
+      {
+        // Customer satisfaction analytics. REPORT rather than a glyph of its own: this is
+        // the same kind of thing as Тайлан — figures read, never edited — and a new icon
+        // would mean a new NavIcon member and a new case in NavGlyph for no gain.
+        key: 'surveys',
+        label: 'Үйлчилгээний үнэлгээ',
+        path: '/surveys',
+        permissions: [PERMISSIONS.SURVEY_VIEW_RESULTS],
+        icon: 'REPORT',
+      },
     ],
   },
   {
@@ -273,6 +283,19 @@ export const NAVIGATION: readonly NavSection[] = [
         path: '/audit',
         permissions: [PERMISSIONS.AUDIT_VIEW],
         icon: 'AUDIT',
+      },
+      {
+        /*
+          The survey question catalogue. Administration rather than Бизнес, because it is
+          reference data an administrator maintains — the same kind of thing as the
+          equipment-type registry — while the results it produces are read next door under
+          Бизнес by a much wider audience.
+        */
+        key: 'survey-questions',
+        label: 'Судалгааны асуулт',
+        path: '/surveys/questions',
+        permissions: [PERMISSIONS.SURVEY_MANAGE_QUESTIONS],
+        icon: 'CATALOGUE',
       },
       {
         key: 'settings',

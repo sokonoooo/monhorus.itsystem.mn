@@ -4,6 +4,7 @@ import { Types } from 'mongoose';
 import type { AuthContext } from '../../common/types/express';
 import { logger } from '../../config/logger';
 import { notify } from '../notification/notification.service';
+import { issueSurveyInvitation } from '../survey/survey.invitation';
 import { notifyStatusChanged } from './service-request.notify';
 import { ServiceRequest } from './service-request.model';
 
@@ -85,7 +86,18 @@ export async function advanceOnConclusion(
 
     // COMPLETED is deliberately NOT in the customer-visible set above: this message says
     // more than a status line does, and two notifications for one event is worse than one.
-    if (to === 'COMPLETED') await notifyCustomerResolved(request);
+    if (to === 'COMPLETED') {
+      await notifyCustomerResolved(request);
+      /*
+       * The common completion path, and therefore the one that issues most invitations.
+       *
+       * The manual path in `changeServiceRequestStatus` issues it too. Both are needed: a
+       * request finished by hand would otherwise never be surveyed, and the miss would be
+       * silent. The emitter itself is idempotent, so a request that reaches COMPLETED down
+       * both paths still gets one invitation and one notification.
+       */
+      await issueSurveyInvitation(request._id);
+    }
   } catch (error) {
     // Same contract as the notification writer: a bookkeeping failure must not turn a
     // successful conclusion into a 500.

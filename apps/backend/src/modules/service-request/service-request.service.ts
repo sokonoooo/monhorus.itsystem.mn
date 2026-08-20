@@ -33,6 +33,7 @@ import { recordAudit } from '../audit/audit.service';
 import { notify } from '../notification/notification.service';
 import { ObjectType } from '../object-master/object-master.models';
 import { resolveAssignedWorkFilter } from '../planned-work/planned-work.scope';
+import { issueSurveyInvitation } from '../survey/survey.invitation';
 import { assertReportAllows, hasApprovedWorkReport } from './work-report.service';
 import { assertSelfProgressAllowed } from './self-progress.policy';
 import { userIdsForEmployees } from '../notification/recipient.util';
@@ -987,6 +988,16 @@ export async function changeServiceRequestStatus(
     reason: input.reason ?? null,
     actorUserId: actor.userId,
   });
+
+  /*
+   * The MANUAL completion path also earns the customer a survey.
+   *
+   * The common route to COMPLETED is a conclusion being approved, handled in
+   * `advanceOnConclusion`. This is the other one, and issuing from only the first would miss
+   * every hand-finished request without anything anywhere reporting the miss. The emitter is
+   * idempotent and never throws, so calling it from both is safe.
+   */
+  if (to === 'COMPLETED') await issueSurveyInvitation(request._id);
 
   return getServiceRequestById(requestId, scope, actor);
 }

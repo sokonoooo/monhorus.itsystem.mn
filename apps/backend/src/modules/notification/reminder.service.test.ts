@@ -340,6 +340,7 @@ describe('Reminder sweep', () => {
       'plannedWorkOverdue',
       'slaBreached',
       'slaNearBreach',
+      'surveyReminder',
     ]);
   });
 });
