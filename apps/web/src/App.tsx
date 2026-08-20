@@ -47,6 +47,7 @@ import { ProjectListPage } from './features/projects/ProjectListPage';
 import { ReportsPage } from './features/reports/ReportsPage';
 import { ServiceRequestCreatePage } from './features/service-requests/ServiceRequestCreatePage';
 import { ServiceRequestDetailPage } from './features/service-requests/ServiceRequestDetailPage';
+import { OpenServiceRequestsPage } from './features/service-requests/OpenServiceRequestsPage';
 import { ServiceRequestListPage } from './features/service-requests/ServiceRequestListPage';
 import { SettingsPage } from './features/settings/SettingsPage';
 import { SurveyQuestionsPage } from './features/surveys/SurveyQuestionsPage';
@@ -418,6 +419,22 @@ export default function App(): ReactElement {
             element={
               <Page anyOf={[PERMISSIONS.SERVICE_REQUEST_CREATE]}>
                 <ServiceRequestCreatePage />
+              </Page>
+            }
+          />
+          {/*
+            Gated on `service_request.claim`, NOT on `service_request.view`.
+            This is the key the claim endpoint itself enforces, so the page and the only
+            action on it agree about who may act: nobody reaches a queue of buttons the
+            server would refuse, and no technician who may claim is kept off the queue.
+            Declared before `/:requestId` so "open" is read as this page rather than as a
+            request id.
+          */}
+          <Route
+            path="/service-requests/open"
+            element={
+              <Page anyOf={[PERMISSIONS.SERVICE_REQUEST_CLAIM]}>
+                <OpenServiceRequestsPage />
               </Page>
             }
           />

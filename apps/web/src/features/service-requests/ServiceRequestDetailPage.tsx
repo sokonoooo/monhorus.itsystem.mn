@@ -50,6 +50,7 @@ export function ServiceRequestDetailPage(): ReactElement {
   const [error, setError] = useState<string | null>(null);
   const [pendingStatus, setPendingStatus] = useState<ServiceRequestStatus | null>(null);
   const [slaDialogOpen, setSlaDialogOpen] = useState(false);
+  const [claiming, setClaiming] = useState(false);
 
   useEffect(() => {
     if (!requestId) return undefined;
@@ -138,6 +139,34 @@ export function ServiceRequestDetailPage(): ReactElement {
     }
   }
 
+  /**
+   * Takes this request for the caller.
+   *
+   * Offered here as well as on the open queue because the unclaimed notification links
+   * straight to `/service-requests/<id>`: a technician following it lands on this page, and
+   * without the action here their only way to act would be to navigate back out to a list
+   * and find the row again.
+   *
+   * The answer is used rather than re-read. Claiming returns the updated request, so the
+   * assignee card and the status both refresh from the server's own view of the record —
+   * and the button disappears, because the request it applied to is no longer unclaimed.
+   */
+  async function claim(): Promise<void> {
+    if (!requestId || claiming) return;
+
+    setClaiming(true);
+    try {
+      const updated = await serviceRequestService.claim(requestId);
+      setRequest(updated);
+      notify(`${updated.requestNumber} ажлыг өөртөө авлаа.`, 'success');
+    } catch (caught) {
+      // Whether a claim wins is the server's call, and it explains a loss in its own words.
+      notify(caught instanceof ApiError ? caught.message : 'Ажил авч чадсангүй.', 'error');
+    } finally {
+      setClaiming(false);
+    }
+  }
+
   if (loading) {
     return (
       <div className="space-y-3">
@@ -155,6 +184,19 @@ export function ServiceRequestDetailPage(): ReactElement {
   const allowedTransitions = SERVICE_REQUEST_TRANSITIONS[request.status];
   const canChangeStatus = can(PERMISSIONS.SERVICE_REQUEST_CHANGE_STATUS);
 
+  /*
+   * Whether to offer "Өөртөө авах" at all.
+   *
+   * BOTH HALVES OF "UNCLAIMED" ARE TESTED, matching the pair the claim endpoint re-asserts
+   * atomically — `{ assignedEmployees: { $size: 0 }, assignedTeam: null }`. A request that
+   * names only a TEAM already belongs to somebody, so offering the button on it would put a
+   * refusal behind a click. Status is left to the server: it is the authority on what is
+   * still claimable, and a request that moves between this render and the press is refused
+   * there rather than pre-judged here.
+   */
+  const isUnclaimed = request.assignedEmployees.length === 0 && request.assignedTeam === null;
+  const canClaim = can(PERMISSIONS.SERVICE_REQUEST_CLAIM) && isUnclaimed;
+
   return (
     <>
       <PageHeader
@@ -167,11 +209,18 @@ export function ServiceRequestDetailPage(): ReactElement {
           { label: request.requestNumber },
         ]}
         actions={
-          can(PERMISSIONS.DISPATCH_EXTEND_SLA) && request.status !== 'COMPLETED' ? (
-            <Button variant="secondary" onClick={() => setSlaDialogOpen(true)}>
-              SLA сунгах
-            </Button>
-          ) : null
+          <>
+            {canClaim && (
+              <Button loading={claiming} onClick={() => void claim()}>
+                Өөртөө авах
+              </Button>
+            )}
+            {can(PERMISSIONS.DISPATCH_EXTEND_SLA) && request.status !== 'COMPLETED' && (
+              <Button variant="secondary" onClick={() => setSlaDialogOpen(true)}>
+                SLA сунгах
+              </Button>
+            )}
+          </>
         }
       />
 

@@ -1,5 +1,6 @@
 import {
   PERMISSIONS,
+  type PermissionKey,
   type ServiceRequestAttachmentDto,
   type ServiceRequestDetailDto,
   type WorkReportDto,
@@ -8,6 +9,7 @@ import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { ApiError } from '../../lib/api-client';
 import * as fileUrl from '../../lib/file-url';
 import { projectService } from '../../services/project.service';
 import { serviceRequestService, workReportService } from '../../services/service-request.service';
@@ -321,5 +323,110 @@ describe('ServiceRequestDetailPage status actions', () => {
     );
     // Nothing was asked of the transition endpoint, so there is no refusal to show.
     expect(changeStatus).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Claiming from the detail page.
+ *
+ * The unclaimed-work notification links straight to `/service-requests/<id>`, so this is
+ * where a technician following it lands. Without the action here their only way to take the
+ * job would be to navigate back out to the open queue and find the row again.
+ */
+describe('ServiceRequestDetailPage claim action', () => {
+  const CLAIMER = [PERMISSIONS.SERVICE_REQUEST_VIEW, PERMISSIONS.SERVICE_REQUEST_CLAIM];
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(workReportService, 'get').mockRejectedValue(new Error('no report'));
+  });
+
+  function renderAsClaimer(permissions: readonly PermissionKey[] = CLAIMER) {
+    return renderWithAuth(<ServiceRequestDetailPage />, {
+      permissions,
+      route: `/service-requests/${REQUEST_ID}`,
+      path: '/service-requests/:requestId',
+    });
+  }
+
+  it('takes the request and shows the server’s updated record', async () => {
+    vi.spyOn(serviceRequestService, 'getById').mockResolvedValue(makeRequest());
+    const claim = vi.spyOn(serviceRequestService, 'claim').mockResolvedValue(
+      makeRequest({
+        status: 'ASSIGNED',
+        assignedEmployees: [
+          { id: 'e1', employeeCode: 'EMP-001', firstName: 'Энхтөр', lastName: 'Б', photoUrl: null },
+        ],
+      }),
+    );
+
+    renderAsClaimer();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Өөртөө авах' }));
+
+    expect(claim).toHaveBeenCalledWith(REQUEST_ID);
+    expect(await screen.findByText('SR-202608-0001 ажлыг өөртөө авлаа.')).toBeInTheDocument();
+    // The answer is used rather than re-read, and the request is no longer claimable.
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Өөртөө авах' })).not.toBeInTheDocument(),
+    );
+    expect(serviceRequestService.getById).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the server’s refusal when somebody else won the race', async () => {
+    vi.spyOn(serviceRequestService, 'getById').mockResolvedValue(makeRequest());
+    vi.spyOn(serviceRequestService, 'claim').mockRejectedValue(
+      new ApiError('Энэ ажлыг өөр ажилтан аль хэдийн авсан байна.', 'DUPLICATE_KEY', 409),
+    );
+
+    renderAsClaimer();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Өөртөө авах' }));
+
+    expect(
+      await screen.findByText('Энэ ажлыг өөр ажилтан аль хэдийн авсан байна.'),
+    ).toBeInTheDocument();
+  });
+
+  it('offers nothing to a caller without service_request.claim', async () => {
+    vi.spyOn(serviceRequestService, 'getById').mockResolvedValue(makeRequest());
+
+    renderAsClaimer([PERMISSIONS.SERVICE_REQUEST_VIEW]);
+
+    await screen.findByText('Төлөвийн түүх');
+    expect(screen.queryByRole('button', { name: 'Өөртөө авах' })).not.toBeInTheDocument();
+  });
+
+  it('offers nothing on a request that already names an employee', async () => {
+    vi.spyOn(serviceRequestService, 'getById').mockResolvedValue(
+      makeRequest({
+        status: 'ASSIGNED',
+        assignedEmployees: [
+          { id: 'e1', employeeCode: 'EMP-001', firstName: 'Энхтөр', lastName: 'Б', photoUrl: null },
+        ],
+      }),
+    );
+
+    renderAsClaimer();
+
+    await screen.findByText('Төлөвийн түүх');
+    expect(screen.queryByRole('button', { name: 'Өөртөө авах' })).not.toBeInTheDocument();
+  });
+
+  /**
+   * The half most easily got wrong. A request carrying only a TEAM names no individual, but
+   * it is already somebody's work — the claim endpoint's atomic filter requires
+   * `assignedTeam: null` alongside the empty employee list, so offering the button here would
+   * put a refusal behind a click.
+   */
+  it('offers nothing on a request that carries only a team', async () => {
+    vi.spyOn(serviceRequestService, 'getById').mockResolvedValue(
+      makeRequest({ status: 'UNASSIGNED', assignedTeam: { id: 't1', name: 'Баг А' } }),
+    );
+
+    renderAsClaimer();
+
+    await screen.findByText('Төлөвийн түүх');
+    expect(screen.queryByRole('button', { name: 'Өөртөө авах' })).not.toBeInTheDocument();
   });
 });

@@ -72,6 +72,27 @@ export const serviceRequestService = {
     );
   },
 
+  /**
+   * Нээлттэй ажил — the caller takes an open request for themselves.
+   *
+   * Deliberately not `assign` with the caller's own id. Assigning is `dispatch.assign`, the
+   * authority to put SOMEBODY ELSE on a job; this is `service_request.claim`, which a
+   * technician holds, and it can only ever write the caller onto work that currently has
+   * nobody. There is no body for the same reason — the claimer is the session, so there is
+   * no parameter through which one employee could be put on a job by another.
+   *
+   * The server decides whether a claim wins. Two technicians tapping at the same moment are
+   * ordered by one atomic write there, and the loser is answered 409; nothing here may
+   * anticipate that outcome.
+   */
+  async claim(requestId: string): Promise<ServiceRequestDetailDto> {
+    return unwrap(
+      await apiClient.post<ApiResponse<ServiceRequestDetailDto>>(
+        `/service-requests/${requestId}/claim`,
+      ),
+    );
+  },
+
   async changeStatus(
     requestId: string,
     payload: ChangeServiceRequestStatusInput,
