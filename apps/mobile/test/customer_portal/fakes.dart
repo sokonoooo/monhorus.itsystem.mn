@@ -15,6 +15,7 @@ import 'package:monhorus_mobile/features/customer_portal/data/models/notificatio
 import 'package:monhorus_mobile/features/customer_portal/data/models/object_master_model.dart';
 import 'package:monhorus_mobile/features/customer_portal/data/models/project_model.dart';
 import 'package:monhorus_mobile/features/customer_portal/data/models/service_request_model.dart';
+import 'package:monhorus_mobile/features/customer_portal/data/models/survey_model.dart';
 import 'package:monhorus_mobile/features/customer_portal/domain/entities/customer_scope.dart';
 import 'package:monhorus_mobile/features/customer_portal/domain/entities/service_request_enums.dart';
 import 'package:monhorus_mobile/features/customer_portal/domain/repositories/customer_portal_repository.dart';
@@ -73,6 +74,24 @@ AppUser customerWithCreateRight() => AppUser(
       customerId: testCustomer.customerId,
       customerName: testCustomer.customerName,
       permissions: const <String>{PermissionKeys.portalServiceRequestCreate},
+    );
+
+/// The default customer role also grants `portal.survey.submit`, which is the one key
+/// that opens the satisfaction survey — the two staff survey keys configure and read
+/// it rather than answer it, so neither appears here.
+AppUser customerWithSurveyRight() => AppUser(
+      id: testCustomer.id,
+      fullName: testCustomer.fullName,
+      email: testCustomer.email,
+      phone: testCustomer.phone,
+      role: testCustomer.role,
+      status: testCustomer.status,
+      customerId: testCustomer.customerId,
+      customerName: testCustomer.customerName,
+      permissions: const <String>{
+        PermissionKeys.portalServiceRequestCreate,
+        PermissionKeys.portalSurveySubmit,
+      },
     );
 
 /// A customer account that also holds the staff `object_master.view`, which is what
@@ -534,6 +553,122 @@ CallableObjectTypeModel callableObjectTypeFixture({
   return CallableObjectTypeModel(id: id, name: name, callSlaHours: callSlaHours);
 }
 
+// -- Survey fixtures ---------------------------------------------------------
+
+/// The two technicians the survey fixtures ask about. The first is the one the
+/// service-request fixture already assigns, so a survey and its request agree.
+const String surveyEmployeeId = '720000000000000000000007';
+const String surveySecondEmployeeId = '720000000000000000000008';
+
+const String surveyRatingQuestionId = '750000000000000000000001';
+const String surveyTextQuestionId = '750000000000000000000002';
+const String surveyChoiceQuestionId = '750000000000000000000003';
+
+/// One entry of `employees`, shaped as `SurveyPendingEmployeeDto` sends it.
+Map<String, dynamic> surveyEmployeeJson({
+  String id = surveyEmployeeId,
+  String employeeCode = 'EMP-014',
+  String firstName = 'Энхтөр',
+  String lastName = 'Батбаяр',
+  bool isRated = false,
+  bool isSkipped = false,
+}) {
+  return <String, dynamic>{
+    'employee': <String, dynamic>{
+      'id': id,
+      'employeeCode': employeeCode,
+      'firstName': firstName,
+      'lastName': lastName,
+      'photoUrl': null,
+    },
+    'isRated': isRated,
+    'isSkipped': isSkipped,
+  };
+}
+
+/// One question, shaped as `SurveyQuestionDto` sends it.
+///
+/// `sortOrder` is nullable here on purpose: the DTO declares it, but a fixture can
+/// omit it to prove a missing number stays null rather than becoming a zero that would
+/// silently sort the question to the top.
+Map<String, dynamic> surveyQuestionJson({
+  String id = surveyRatingQuestionId,
+  String text = 'Ажилтны ур чадварыг үнэлнэ үү',
+  String? helpText,
+  String type = 'RATING_1_5',
+  List<Map<String, dynamic>> options = const <Map<String, dynamic>>[],
+  bool isRequired = true,
+  bool isOverallScore = true,
+  bool isActive = true,
+  int? sortOrder = 1,
+  bool hasAnswers = false,
+}) {
+  return <String, dynamic>{
+    'id': id,
+    'text': text,
+    'helpText': helpText,
+    'type': type,
+    'options': options,
+    'isRequired': isRequired,
+    'isOverallScore': isOverallScore,
+    'isActive': isActive,
+    'sortOrder': sortOrder,
+    'hasAnswers': hasAnswers,
+  };
+}
+
+/// One outstanding survey, as `GET /surveys/pending` lists it.
+SurveyPendingItemModel surveyPendingFixture({
+  String serviceRequestId = '710000000000000000000006',
+  String requestNumber = 'SR-202607-0012',
+  String? buildingName = 'Төв цамхаг',
+  List<Map<String, dynamic>>? employees,
+}) {
+  return SurveyPendingItemModel.fromJson(<String, dynamic>{
+    'serviceRequestId': serviceRequestId,
+    'requestNumber': requestNumber,
+    'buildingName': buildingName,
+    'completedAt': '2026-07-28T02:15:00.000Z',
+    'employees': employees ?? <Map<String, dynamic>>[surveyEmployeeJson()],
+  });
+}
+
+/// The form for one request, as `GET /surveys/requests/:id/form` returns it.
+///
+/// One required rating and one optional free-text question by default — the smallest
+/// catalogue that still exercises a required answer, an optional one and two different
+/// value fields on the wire.
+SurveyFormModel surveyFormFixture({
+  String serviceRequestId = '710000000000000000000006',
+  String requestNumber = 'SR-202607-0012',
+  List<Map<String, dynamic>>? questions,
+  List<Map<String, dynamic>>? employees,
+}) {
+  return SurveyFormModel.fromJson(<String, dynamic>{
+    'serviceRequestId': serviceRequestId,
+    'requestNumber': requestNumber,
+    'questions': questions ??
+        <Map<String, dynamic>>[
+          surveyQuestionJson(),
+          surveyQuestionJson(
+            id: surveyTextQuestionId,
+            text: 'Нэмэлт сэтгэгдэл',
+            type: 'TEXT',
+            isRequired: false,
+            isOverallScore: false,
+            sortOrder: 2,
+          ),
+        ],
+    'employees': employees ?? <Map<String, dynamic>>[surveyEmployeeJson()],
+  });
+}
+
+/// One recorded call to `POST /surveys/requests/:id/responses`.
+typedef RecordedSurveyResponse = ({
+  String requestId,
+  SubmitSurveyResponseRequest request,
+});
+
 class FakeCustomerPortalRepository implements CustomerPortalRepository {
   FakeCustomerPortalRepository({
     List<CallableObjectTypeModel>? callableObjectTypes,
@@ -545,13 +680,17 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
     ObjectDetailModel? objectDetail,
     ServiceRequestDetailModel? requestDetail,
     Uint8List? fileBytes,
+    List<SurveyPendingItemModel>? pendingSurveys,
     this.floorPlan,
     this.objectHistory,
     this.workReport,
+    this.surveyForm,
     this.failure,
     this.uploadFailure,
+    this.surveySubmitFailure,
     this.buildingPageSize = 100,
   })  : fileBytes = fileBytes ?? Uint8List(0),
+        pendingSurveys = pendingSurveys ?? const <SurveyPendingItemModel>[],
         callableObjectTypes =
             callableObjectTypes ?? <CallableObjectTypeModel>[callableObjectTypeFixture()],
         buildings = buildings ?? <BuildingModel>[buildingFixture()],
@@ -610,6 +749,34 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
   /// when `hasApprovedReport` is false — not firing that request is the entire reason
   /// the flag is on the detail response.
   final List<String> workReportRequestedFor = <String>[];
+
+  /// What `GET /surveys/pending` answers with.
+  ///
+  /// EMPTY by default, which is the ordinary state: almost no request is waiting on a
+  /// rating at any moment, and a fake that offered one unconditionally would grow a
+  /// survey tab on every request-detail test that was written before the survey
+  /// existed.
+  final List<SurveyPendingItemModel> pendingSurveys;
+
+  /// The form `GET /surveys/requests/:id/form` answers with.
+  ///
+  /// Null — the default — stands for the endpoint's 404, which the repository turns
+  /// into a null rather than a failure: no survey was raised, it is already finished,
+  /// or the request belongs to somebody else.
+  final SurveyFormModel? surveyForm;
+
+  /// Request ids the form endpoint was asked for. A test asserts this stays EMPTY when
+  /// nothing is pending — not firing a request known to 404 is the whole reason the
+  /// tab reads the pending list first.
+  final List<String> surveyFormRequestedFor = <String>[];
+
+  /// Every response posted, in order, with the request it was posted against. One
+  /// entry per technician, because that is what the endpoint takes.
+  final List<RecordedSurveyResponse> submittedSurveys = <RecordedSurveyResponse>[];
+
+  /// When set, submitting a survey response fails with it while every read still
+  /// succeeds, so a test can exercise the server-refusal path on its own.
+  final Failure? surveySubmitFailure;
 
   /// When set, every read fails with it.
   final Failure? failure;
@@ -775,6 +942,27 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
   ) async {
     created.add(request);
     return _result(requestDetail);
+  }
+
+  @override
+  Future<ApiResult<List<SurveyPendingItemModel>>> listPendingSurveys() async =>
+      _result(pendingSurveys);
+
+  @override
+  Future<ApiResult<SurveyFormModel?>> getSurveyForm(String requestId) async {
+    surveyFormRequestedFor.add(requestId);
+    return _result<SurveyFormModel?>(surveyForm);
+  }
+
+  @override
+  Future<ApiResult<void>> submitSurveyResponse(
+    String requestId,
+    SubmitSurveyResponseRequest request,
+  ) async {
+    submittedSurveys.add((requestId: requestId, request: request));
+    final Failure? error = surveySubmitFailure;
+    if (error != null) return FailureResult<void>(error);
+    return _result<void>(null);
   }
 
   @override

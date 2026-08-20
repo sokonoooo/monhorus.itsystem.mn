@@ -55,6 +55,9 @@ export const NOTIFICATION_EVENTS = [
   'PLANNED_WORK_TASK_ASSIGNED',
   'PLANNED_WORK_SCHEDULED',
   'PLANNED_WORK_STARTED',
+  // Ажил дууссаны дараа үнэлгээ өгөх урилга, сануулга -> хэрэглэгч
+  'SURVEY_REQUESTED',
+  'SURVEY_REMINDER',
   // Invoice үүссэн/төлөх хугацаа дөхсөн/overdue -> админ
   'INVOICE_ISSUED',
   'INVOICE_DUE_SOON',
@@ -83,6 +86,8 @@ export const NOTIFICATION_EVENT_LABELS: Record<NotificationEvent, string> = {
   PLANNED_WORK_TASK_ASSIGNED: 'Дэд ажил хуваарилагдсан',
   PLANNED_WORK_SCHEDULED: 'Төлөвлөгөөт ажил товлогдсон',
   PLANNED_WORK_STARTED: 'Төлөвлөгөөт ажил эхэлсэн',
+  SURVEY_REQUESTED: 'Үйлчилгээгээ үнэлнэ үү',
+  SURVEY_REMINDER: 'Үйлчилгээний үнэлгээ хүлээгдэж байна',
   INVOICE_ISSUED: 'Нэхэмжлэл илгээгдсэн',
   INVOICE_DUE_SOON: 'Нэхэмжлэлийн төлөх хугацаа дөхсөн',
   INVOICE_OVERDUE: 'Нэхэмжлэл хугацаа хэтэрсэн',
@@ -119,6 +124,8 @@ export const NOTIFICATION_EVENT_SEVERITIES: Record<NotificationEvent, Notificati
   PLANNED_WORK_TASK_ASSIGNED: 'INFO',
   PLANNED_WORK_SCHEDULED: 'INFO',
   PLANNED_WORK_STARTED: 'INFO',
+  SURVEY_REQUESTED: 'INFO',
+  SURVEY_REMINDER: 'INFO',
   INVOICE_ISSUED: 'INFO',
   INVOICE_DUE_SOON: 'WARNING',
   INVOICE_OVERDUE: 'CRITICAL',

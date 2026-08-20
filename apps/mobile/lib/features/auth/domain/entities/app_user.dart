@@ -67,6 +67,14 @@ class PermissionKeys {
   /// `service_request.create`.
   static const String portalServiceRequestView = 'portal.service_request.view';
   static const String portalServiceRequestCreate = 'portal.service_request.create';
+
+  /// Rating the technicians who attended a finished job.
+  ///
+  /// A portal key with no staff counterpart, deliberately: `survey.view_results` and
+  /// `survey.manage_questions` are the staff keys and neither of them submits a
+  /// response. A customer is the only party who can say what dealing with somebody was
+  /// like, so this is the only key that opens the form.
+  static const String portalSurveySubmit = 'portal.survey.submit';
 }
 
 class AppUser extends Equatable {

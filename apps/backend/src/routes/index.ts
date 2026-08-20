@@ -32,6 +32,7 @@ import { serviceAgreementRouter } from '../modules/service-agreement/service-agr
 import { settingsRouter } from '../modules/settings/settings.routes';
 import { serviceRequestRouter } from '../modules/service-request/service-request.routes';
 import { fileRouter } from '../modules/storage/storage.routes';
+import { surveyRouter } from '../modules/survey/survey.routes';
 import { userRouter } from '../modules/user/user.routes';
 
 export const apiRouter = Router();
@@ -61,6 +62,7 @@ apiRouter.use('/reports', reportRouter);
 // The registry holds the reports themselves; /reports stays the derived 15.2 catalogue.
 apiRouter.use('/reports-registry', reportRegistryRouter);
 apiRouter.use('/notifications', notificationRouter);
+apiRouter.use('/surveys', surveyRouter);
 apiRouter.use('/settings', settingsRouter);
 apiRouter.use('/audit', auditRouter);
 apiRouter.use('/files', fileRouter);

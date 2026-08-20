@@ -49,6 +49,8 @@ import { ServiceRequestCreatePage } from './features/service-requests/ServiceReq
 import { ServiceRequestDetailPage } from './features/service-requests/ServiceRequestDetailPage';
 import { ServiceRequestListPage } from './features/service-requests/ServiceRequestListPage';
 import { SettingsPage } from './features/settings/SettingsPage';
+import { SurveyQuestionsPage } from './features/surveys/SurveyQuestionsPage';
+import { SurveyResultsPage } from './features/surveys/SurveyResultsPage';
 import { PortalFloorPage } from './features/portal/PortalFloorPage';
 import { PortalHomePage } from './features/portal/PortalHomePage';
 import { PortalObjectDetailPage } from './features/portal/PortalObjectDetailPage';
@@ -365,6 +367,30 @@ export default function App(): ReactElement {
             element={
               <Page anyOf={[PERMISSIONS.REPORT_VIEW]}>
                 <ReportsPage />
+              </Page>
+            }
+          />
+
+          {/*
+            The satisfaction survey, split by what the two screens are for: reading the
+            results is analytics and reaches for `survey.view_results`, while the question
+            catalogue is administration and reaches for `survey.manage_questions`. The
+            questions endpoint is gated on the latter alone, so listing this route under
+            both would put a reader on a screen whose first request 403s.
+          */}
+          <Route
+            path="/surveys"
+            element={
+              <Page anyOf={[PERMISSIONS.SURVEY_VIEW_RESULTS]}>
+                <SurveyResultsPage />
+              </Page>
+            }
+          />
+          <Route
+            path="/surveys/questions"
+            element={
+              <Page anyOf={[PERMISSIONS.SURVEY_MANAGE_QUESTIONS]}>
+                <SurveyQuestionsPage />
               </Page>
             }
           />
