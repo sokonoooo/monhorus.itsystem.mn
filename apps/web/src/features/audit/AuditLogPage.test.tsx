@@ -118,14 +118,19 @@ describe('AuditLogPage', () => {
     expect(screen.queryByRole('menuitem', { name: /Устгах/ })).not.toBeInTheDocument();
   });
 
-  it('warns a caller without salary permission that some rows are withheld', async () => {
+  /**
+   * The withheld-rows notice moved to the Help panel. The log itself now says nothing about
+   * it either way, which is the point of the change: the page carries records, not caveats.
+   */
+  it('carries no salary notice on the page, with or without the permission', async () => {
     vi.spyOn(auditService, 'list').mockResolvedValue(makePage([makeEntry()]));
 
     renderWithAuth(<AuditLogPage />, { permissions: [PERMISSIONS.AUDIT_VIEW] });
 
+    await screen.findByRole('table');
     expect(
-      await screen.findByText(/Цалинтай холбоотой бүртгэлийг харахын тулд/),
-    ).toBeInTheDocument();
+      screen.queryByText(/Цалинтай холбоотой бүртгэлийг харахын тулд/),
+    ).not.toBeInTheDocument();
   });
 
   it('omits the salary notice when the permission is held', async () => {

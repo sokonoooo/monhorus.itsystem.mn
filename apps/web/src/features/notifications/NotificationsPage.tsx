@@ -1,5 +1,4 @@
 import {
-  NOTIFICATION_CHANNEL_UNAPPROVED_NOTE,
   NOTIFICATION_EVENT_LABELS,
   type NotificationDto,
   type NotificationSeverity,
@@ -8,7 +7,6 @@ import {
 import { useCallback, useEffect, useState, type ReactElement } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-import { Alert } from '../../components/ui/Alert';
 import { Pagination } from '../../components/ui/DataTable';
 import { Button } from '../../components/ui/Button';
 import { PageHeader } from '../../components/ui/PageHeader';
@@ -150,10 +148,6 @@ export function NotificationsPage(): ReactElement {
           </>
         }
       />
-
-      <div className="mb-4">
-        <Alert variant="info">{NOTIFICATION_CHANNEL_UNAPPROVED_NOTE}</Alert>
-      </div>
 
       {loading ? (
         <Skeleton className="h-96 w-full" />

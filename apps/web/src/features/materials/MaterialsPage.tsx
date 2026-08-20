@@ -145,14 +145,6 @@ function MaterialDrawer({
       <div className="space-y-4">
         {formError && <Alert variant="error">{formError}</Alert>}
 
-        {!isNew && (
-          <Alert variant="info">
-            Нэр, хэмжих нэгжийг өөрчлөхөд өмнө нь төлөвлөгөөт ажилд бүртгэсэн мөрүүд
-            хэвээр үлдэнэ. Тэдгээр нь бүртгэх үедээ нэр, нэгжээ хуулж авсан бөгөөд ажлын
-            бүртгэл хойшид өөрчлөгдөхгүй байх ёстой.
-          </Alert>
-        )}
-
         <Field
           label="Код"
           required

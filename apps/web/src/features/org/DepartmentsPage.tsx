@@ -112,13 +112,6 @@ function DepartmentDrawer({
       <div className="space-y-4">
         {formError && <Alert variant="error">{formError}</Alert>}
 
-        {!isNew && (
-          <Alert variant="info">
-            Байгууллагыг үүсгэсний дараа өөрчлөхгүй. Тухайн хэлтэст бүртгэлтэй ажилтнуудын
-            бүтэц алдагдахаас сэргийлж байна.
-          </Alert>
-        )}
-
         <Field label="Байгууллага" required error={fieldErrors.companyId}>
           <SelectInput
             value={companyId}

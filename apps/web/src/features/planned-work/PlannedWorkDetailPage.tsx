@@ -429,16 +429,6 @@ export function PlannedWorkDetailPage(): ReactElement {
           </Alert>
         )}
 
-        {work.completionBlockers.length > 0 && !isClosed && (
-          <Alert variant="info" title="Дуусгахад дараах нь шаардлагатай">
-            <ul className="ml-4 list-disc space-y-0.5">
-              {work.completionBlockers.map((blocker) => (
-                <li key={blocker}>{blocker}</li>
-              ))}
-            </ul>
-          </Alert>
-        )}
-
         <div className="rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
           <div className="mb-4 flex flex-wrap items-center gap-2">
             <PlannedWorkStatusBadge status={work.effectiveStatus} />

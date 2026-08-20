@@ -281,7 +281,12 @@ describe('FloorDetailPage', () => {
     expect(within(table).getByText('Бүрэн бус')).toBeInTheDocument();
   });
 
-  it('reports unattached equipment as excluded from the floor total', async () => {
+  /**
+   * The blue box naming the unattached equipment was removed; the fact that such equipment
+   * sits outside the floor total is now stated in the page's help panel instead. The load
+   * card itself must stay quiet about it.
+   */
+  it('says nothing on the load card about unattached equipment', async () => {
     vi.spyOn(projectService, 'getFloor').mockResolvedValue(makeFloor());
     vi.spyOn(projectService, 'getFloorPlan').mockResolvedValue(makeFloorPlan());
     vi.spyOn(projectService, 'floorLoad').mockResolvedValue(
@@ -293,8 +298,9 @@ describe('FloorDetailPage', () => {
 
     renderFloor([PERMISSIONS.OBJECT_VIEW, PERMISSIONS.OBJECT_MASTER_VIEW]);
 
-    expect(await screen.findByText('Хэлхээнд холбогдоогүй тоноглол')).toBeInTheDocument();
-    expect(screen.getByText(/давхрын нийт ачаалалд ороогүй/)).toBeInTheDocument();
+    await screen.findByText('Давхрын нийт ачаалал');
+    expect(screen.queryByText('Хэлхээнд холбогдоогүй тоноглол')).not.toBeInTheDocument();
+    expect(screen.queryByText(/давхрын нийт ачаалалд ороогүй/)).not.toBeInTheDocument();
   });
 
   /** Section 19.2 leaves the aggregation method unapproved, so only counts are shown. */

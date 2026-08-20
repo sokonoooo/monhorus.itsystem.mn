@@ -1260,12 +1260,12 @@ export function FloorPlanPanel({
               <div className="space-y-2">
                 {typesError && <Alert variant="warning">{typesError}</Alert>}
 
-                {canPlace && !typesError && placeableTypes.length === 0 ? (
-                  <Alert variant="info">
-                    План дээр байрлуулах тоноглолын төрөл тохируулагдаагүй байна. Тоноглолын
-                    төрөл дээр "План дээр харуулах" сонголтыг идэвхжүүлнэ үү.
-                  </Alert>
-                ) : (
+                {/*
+                  Nothing to say when placement is permitted but no type is configured for
+                  it: the hint below describes a plan that can be placed on, and there is
+                  none. Why no type is offered is explained in the page's help panel.
+                */}
+                {!(canPlace && !typesError && placeableTypes.length === 0) && (
                   <p className="text-xs text-slate-500">
                     {editing
                       ? 'Тэмдэглэгээг чирж байрлалыг өөрчилнө. Хадгалах хүртэл өөрчлөлт хадгалагдахгүй.'

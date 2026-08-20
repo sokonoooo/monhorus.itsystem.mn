@@ -428,16 +428,6 @@ export function PlannedWorkReportPage(): ReactElement {
           </Alert>
         )}
 
-        {canReview && report.status === 'SUBMITTED' && report.approvalBlockers.length > 0 && (
-          <Alert variant="info" title="Батлах боломжгүй">
-            <ul className="ml-4 list-disc space-y-0.5">
-              {report.approvalBlockers.map((blocker) => (
-                <li key={blocker}>{blocker}</li>
-              ))}
-            </ul>
-          </Alert>
-        )}
-
         <div className="rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
           <h2 className="mb-3 text-sm font-semibold text-slate-900">Нэгдсэн дүгнэлт ба зөвлөмж</h2>
 

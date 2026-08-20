@@ -118,11 +118,6 @@ export function FloorObjectPicker({
       <div className="space-y-4">
         {error && <Alert variant="error">{error}</Alert>}
 
-        <Alert variant="info">
-          Объектын мастер бүртгэлээс сонгоно. Сонгосон объект хуулагдахгүй, зөвхөн энэ
-          давхартай холбогдоно.
-        </Alert>
-
         <div className="flex flex-wrap gap-2">
           <div className="min-w-[160px] flex-1">
             <label htmlFor="pick-search" className={FILTER_LABEL}>

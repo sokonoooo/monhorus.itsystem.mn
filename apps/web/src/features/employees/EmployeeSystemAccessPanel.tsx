@@ -191,12 +191,6 @@ export function EmployeeSystemAccessPanel({
       />
       <Row label="Сүүлд нэвтэрсэн" value={access.lastLoginAt?.slice(0, 10)} />
 
-      {access.isSelf && (
-        <div className="mt-3">
-          <Alert variant="info">Өөрийн эрхийг энэ дэлгэцээс өөрчлөх боломжгүй.</Alert>
-        </div>
-      )}
-
       {canManage && (
         <div className="mt-3 flex flex-wrap gap-2">
           {!access.hasAccount && (
@@ -421,9 +415,6 @@ function CreateAccessDrawer({
     >
       <div className="space-y-4">
         {formError && <Alert variant="error">{formError}</Alert>}
-        <Alert variant="info">
-          Түр нууц үгийг ажилтанд өөрт нь дамжуулна. Эхний удаа нэвтрэхдээ заавал солино.
-        </Alert>
 
         {canPickUsers && (
           <Field label="Хэлбэр">

@@ -286,20 +286,21 @@ describe('BuildingDetailPage', () => {
     });
   });
 
-  /** The reasons are read after the content they refer to, not before it. */
-  it('reports why deletion is blocked in a box at the bottom of the page', async () => {
+  /**
+   * The blue box that used to list the reasons is gone; what remains is the missing button.
+   * Why a building with dependants cannot be deleted is now read in the help panel.
+   */
+  it('withholds delete while blockers exist, without a notice on the page', async () => {
     vi.spyOn(projectService, 'getBuilding').mockResolvedValue(
       makeBuilding({ deleteBlockers: ['4 давхар бүртгэлтэй.'] }),
     );
 
     renderBuilding();
 
-    const box = await screen.findByText('Устгах боломжгүй');
-    expect(screen.getByText('4 давхар бүртгэлтэй.')).toBeInTheDocument();
+    await screen.findByRole('heading', { name: 'Давхар' });
     expect(screen.queryByRole('button', { name: 'Устгах' })).not.toBeInTheDocument();
-
-    const floors = screen.getByRole('heading', { name: 'Давхар' });
-    expect(floors.compareDocumentPosition(box)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(screen.queryByText('Устгах боломжгүй')).not.toBeInTheDocument();
+    expect(screen.queryByText('4 давхар бүртгэлтэй.')).not.toBeInTheDocument();
   });
 
   it('shows the building description on the general card', async () => {

@@ -162,11 +162,6 @@ export function AgreementDrawer({
       <div className="space-y-4">
         {formError && <Alert variant="error">{formError}</Alert>}
 
-        <Alert variant="info">
-          Шинэ нөхцөл Ноорог төлөвтэй үүснэ. Зөвхөн Идэвхтэй болсны дараа calendar
-          болон нэхэмжлэл үүсэх боломжтой.
-        </Alert>
-
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field label="Эхлэх огноо" required error={fieldErrors.startDate}>
             <TextInput type="date" value={startDate} onChange={setStartDate} disabled={submitting} />

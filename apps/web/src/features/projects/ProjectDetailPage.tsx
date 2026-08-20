@@ -488,18 +488,6 @@ export function ProjectDetailPage(): ReactElement {
             />
           )}
         </div>
-
-        {/* The reasons deletion is blocked close the page: they explain an action that is
-            already absent from the header, so they are read last rather than first. */}
-        {project.deleteBlockers.length > 0 && canManage && (
-          <Alert variant="info" title="Устгах боломжгүй">
-            <ul className="ml-4 list-disc space-y-0.5">
-              {project.deleteBlockers.map((blocker) => (
-                <li key={blocker}>{blocker}</li>
-              ))}
-            </ul>
-          </Alert>
-        )}
       </div>
 
       <BuildingDrawer

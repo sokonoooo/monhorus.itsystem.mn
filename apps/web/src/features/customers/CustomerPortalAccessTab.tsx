@@ -543,11 +543,6 @@ function CreatePortalAccountModal({
       >
         {formError && <Alert variant="error">{formError}</Alert>}
 
-        <Alert variant="info">
-          Бүртгэл энэ харилцагч дээр үүснэ. Хэрэглэгч зөвхөн энэ байгууллагын хүсэлт, объект,
-          нэхэмжлэлийг харна.
-        </Alert>
-
         <Input
           label="Бүтэн нэр"
           required

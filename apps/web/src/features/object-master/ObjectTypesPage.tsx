@@ -375,13 +375,6 @@ function TypeDrawer({
       <div className="space-y-4">
         {formError && <Alert variant="error">{formError}</Alert>}
 
-        {!isNew && (
-          <Alert variant="info">
-            Код болон ангиллыг үүсгэсний дараа өөрчлөхгүй. Аль хэдийн бүртгэгдсэн объектууд
-            хүчингүй болохоос сэргийлж байна.
-          </Alert>
-        )}
-
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field label="Код" required={isNew} error={fieldErrors.code}>
             <TextInput

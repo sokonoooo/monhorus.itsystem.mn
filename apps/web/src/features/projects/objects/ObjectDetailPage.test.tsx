@@ -174,6 +174,10 @@ describe('ObjectDetailPage', () => {
     expect(await screen.findAllByText('Бүрэн бус')).not.toHaveLength(0);
   });
 
+  /**
+   * The missing button is the whole signal now: the blue box that explained why it was
+   * missing has been removed, and the reason is read in the page's help panel instead.
+   */
   it('offers the assessment action only when the type generates conclusions', async () => {
     vi.spyOn(objectMasterService, 'getById').mockResolvedValue(
       makeObjectDetail({ canAssess: false }),
@@ -181,8 +185,9 @@ describe('ObjectDetailPage', () => {
 
     renderDetail([PERMISSIONS.OBJECT_MASTER_VIEW, PERMISSIONS.OBJECT_MASTER_ASSESS]);
 
-    expect(await screen.findByText(/дүгнэлт үүсгэхээр тохируулагдаагүй/)).toBeInTheDocument();
+    await screen.findByText('Түгээх самбар 2A');
     expect(screen.queryByRole('button', { name: 'Үнэлгээ бүртгэх' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/дүгнэлт үүсгэхээр тохируулагдаагүй/)).not.toBeInTheDocument();
   });
 
   it('offers the assessment action to a permitted caller on an assessable type', async () => {

@@ -636,12 +636,6 @@ export function InspectionReportPage(): ReactElement {
           </Alert>
         )}
 
-        {report.status === 'FINALISED' && (
-          <Alert variant="info" title={`Эцэслэгдсэн тайлан. Хувилбар ${report.version}`}>
-            {INSPECTION_REPORT_VERSION_NOTE}
-          </Alert>
-        )}
-
         {report.isAutoDraft && (
           <Alert variant="warning" title="Системийн боловсруулсан бичвэр">
             Доорх дүгнэлт, зөвлөмж, тайлбарыг систем автоматаар боловсруулсан бөгөөд хараахан

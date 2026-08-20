@@ -679,16 +679,6 @@ export function FloorDetailPage(): ReactElement {
                       note stays because it names a value the page cannot compute. */}
                   <p className="mt-2 text-xs text-slate-500">{load.kvaNote}</p>
                 </div>
-
-                {load.unattachedEquipmentCount > 0 && (
-                  <div className="mt-4">
-                    <Alert variant="info" title="Хэлхээнд холбогдоогүй тоноглол">
-                      {load.unattachedEquipmentCount} тоноглол ямар ч самбарын хэлхээнд
-                      холбогдоогүй тул давхрын нийт ачаалалд ороогүй. Тэдгээрийн тооцоолсон
-                      ачаалал: <LoadValue value={load.unattachedEquipmentKw} />.
-                    </Alert>
-                  </div>
-                )}
               </>
             )}
           </div>

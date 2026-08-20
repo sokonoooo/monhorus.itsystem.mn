@@ -330,21 +330,6 @@ export function PlannedWorkFormPage({
       <div className="space-y-4 rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
         {formError && <Alert variant="error">{formError}</Alert>}
 
-        {isPortal && (
-          <Alert variant="info">
-            Энэ хүсэлт эхлээд «Ноорог» болж хадгалагдана — хадгалснаар илгээгдэхгүй. Дэд
-            ажлаа нэмж, мэдээллээ гүйцээсний дараа «Төлөвлөх» дарж батлуулахаар илгээнэ үү.
-            Огноог санал болгож буй хугацаа гэж үзнэ.
-          </Alert>
-        )}
-
-        {isEdit && (
-          <Alert variant="info">
-            Дуусах огноог энэ хэлбэрээр өөрчилж болохгүй. Хугацаа сунгах нь тусдаа эрх,
-            шалтгаан шаардах үйлдэл бөгөөд дэлгэрэнгүй хуудсаас хийгдэнэ.
-          </Alert>
-        )}
-
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
           {/* The organisation is implicit in the portal — it comes from the account. */}
           {!isPortal && (

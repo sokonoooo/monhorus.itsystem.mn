@@ -295,18 +295,19 @@ describe('raising planned work from the portal', () => {
   });
 
   /**
-   * The customer is told what saving actually does, because it does NOT submit. A form whose
-   * button says one thing and whose record does another is how a request sits unsent for a
-   * week while its author believes it is being reviewed.
+   * Saving does NOT submit, and that is the misconception that leaves a request unsent for a
+   * week while its author believes it is being reviewed. The form no longer states it in a
+   * banner of its own - the sentence lives in the help entry for this route, in
+   * `help/content/portal.ts` under `/portal/planned-work/new`, where the purpose and the
+   * first warning both carry it. What this test still holds is the form's own half of the
+   * promise: a button that says only what it does.
    */
-  it('says that saving stores a draft rather than submitting it', async () => {
+  it('offers a save button that does not pretend to submit', async () => {
     renderPortal(<PlannedWorkFormPage variant="portal" />, '/portal/planned-work/new');
 
-    expect(await screen.findByText(/эхлээд «Ноорог» болж хадгалагдана/)).toBeInTheDocument();
-    expect(screen.getByText(/«Төлөвлөх» дарж батлуулахаар илгээнэ үү/)).toBeInTheDocument();
-    // And the button promises only what it does.
-    expect(screen.getByRole('button', { name: 'Хадгалах' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Хадгалах' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Илгээх' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/эхлээд «Ноорог» болж хадгалагдана/)).not.toBeInTheDocument();
   });
 
   /** No crew field at all — the server forces it empty, and offering one would be a lie. */
@@ -594,13 +595,17 @@ describe('the customer breaks their own request down', () => {
     );
   });
 
-  it('invites a draft with no breakdown to add one', async () => {
+  /**
+   * A draft with no breakdown still offers the control that fixes it. The written invitation
+   * that used to sit beside the button now lives in this route's help entry instead.
+   */
+  it('offers the breakdown control on a draft that has none', async () => {
     vi.spyOn(portalService, 'getPlannedWork').mockResolvedValue(draftWork());
 
     openDetail();
 
     expect(await screen.findByRole('button', { name: 'Дэд ажил нэмэх' })).toBeInTheDocument();
-    expect(screen.getByText(/дэд ажил болгон задалж оруулна уу/)).toBeInTheDocument();
+    expect(screen.queryByText(/дэд ажил болгон задалж оруулна уу/)).not.toBeInTheDocument();
   });
 
   /**

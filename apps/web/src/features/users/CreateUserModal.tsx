@@ -289,12 +289,6 @@ export function CreateUserModal({ open, onClose, onCreated }: CreateUserModalPro
             Шинээр үүсгэх
           </button>
         </div>
-
-        {actor?.role === 'admin' && (
-          <Alert variant="info">
-            Админ болон ерөнхий админ эрхтэй хэрэглэгчийг зөвхөн ерөнхий админ үүсгэнэ.
-          </Alert>
-        )}
       </form>
     </Modal>
   );

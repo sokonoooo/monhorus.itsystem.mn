@@ -269,14 +269,6 @@ export function AssessmentDrawer({
           <div className="space-y-4">
             {formError && <Alert variant="error">{formError}</Alert>}
 
-            <Alert variant="info">
-              Үнэлгээний түүх устгагдахгүй. Шинэ үнэлгээ бүр өмнөх оноог хадгалж, дээр нь
-              нэмэгдэнэ.
-              {object.latestAssessment
-                ? ` Одоогийн оноо: ${object.latestAssessment.score}.`
-                : ' Энэ нь анхны үнэлгээ болно.'}
-            </Alert>
-
             <div>
               <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
                 <span className="text-xs font-medium text-slate-600">Нотлох зураг*</span>

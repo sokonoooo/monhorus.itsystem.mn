@@ -180,7 +180,9 @@ describe('SettingsPage', () => {
     expect(await screen.findByLabelText('Яаралтай дуудлагын хугацаа')).toBeDisabled();
     expect(screen.queryByRole('button', { name: /Хадгалах/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Анхны утга' })).not.toBeInTheDocument();
-    expect(screen.getByText(/зөвхөн харах горимд/)).toBeInTheDocument();
+    // The read-only banner is gone from the page; the reason now lives in the help panel.
+    // The locked controls above are the assertion that carries the behaviour.
+    expect(screen.queryByText(/зөвхөн харах горимд/)).not.toBeInTheDocument();
   });
 
   it('shows an error state when the catalogue cannot be loaded', async () => {

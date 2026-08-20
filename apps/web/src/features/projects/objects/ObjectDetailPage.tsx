@@ -392,12 +392,6 @@ export function ObjectDetailPage(): ReactElement {
       />
 
       <div className="space-y-4">
-        {!object.canAssess && (
-          <Alert variant="info">
-            Энэ тоноглолын төрөл дүгнэлт үүсгэхээр тохируулагдаагүй тул үнэлгээ бүртгэхгүй.
-          </Alert>
-        )}
-
         <div className="rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
           <div className="mb-4 flex flex-wrap items-center gap-2">
             <ObjectCategoryBadge category={object.category} />

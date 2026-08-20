@@ -180,13 +180,6 @@ function QuestionDrawer({
       <div className="space-y-4">
         {formError && <Alert variant="error">{formError}</Alert>}
 
-        {existing?.hasAnswers && (
-          <Alert variant="info">
-            Энэ асуултад хариулт бүртгэгдсэн байна. Асуултын үг өөрчлөгдөхөд өмнөх хариултууд
-            хуучин үгээрээ хадгалагдана: хэн нэгнээс юу асуусныг дараа нь дахин бичихгүй.
-          </Alert>
-        )}
-
         <Field label="Асуулт" required error={fieldErrors.text}>
           <TextInput value={text} onChange={setText} disabled={submitting} />
         </Field>

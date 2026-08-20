@@ -1,6 +1,5 @@
 import {
   OBJECT_CATEGORIES,
-  OBJECT_CATEGORY_DESCRIPTIONS,
   OBJECT_CATEGORY_LABELS,
   PERMISSIONS,
   createObjectAssessmentSchema,
@@ -816,15 +815,6 @@ export function ObjectFormPage(): ReactElement {
           <Alert variant="success" title="Объект бүртгэгдлээ">
             {lastCreated.code} · {lastCreated.name}. Дараагийн тоноглолыг шууд бүртгэнэ үү.
           </Alert>
-        )}
-
-        {isEdit ? (
-          <Alert variant="info">
-            Код болон ангиллыг өөрчлөхгүй. Ангилал өөрчлөгдвөл хадгалагдсан техникийн
-            талбарууд болон ачааллын тооцоо хүчингүй болно.
-          </Alert>
-        ) : (
-          <Alert variant="info">{OBJECT_CATEGORY_DESCRIPTIONS[category]}</Alert>
         )}
 
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">

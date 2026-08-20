@@ -1,7 +1,6 @@
 import {
   INVOICE_BILLING_TYPES,
   INVOICE_BILLING_TYPE_LABELS,
-  TAX_UNSET_NOTE,
   createInvoiceSchema,
   type CustomerDto,
   type InvoiceBillingType,
@@ -176,7 +175,6 @@ export function InvoiceFormDrawer({
     >
       <div className="space-y-4">
         {formError && <Alert variant="error">{formError}</Alert>}
-        {taxPercent === 0 && <Alert variant="info">{TAX_UNSET_NOTE}</Alert>}
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field label="Харилцагч" required error={fieldErrors.customerId}>

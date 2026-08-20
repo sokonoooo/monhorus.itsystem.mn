@@ -641,10 +641,7 @@ export function AccessPage(): ReactElement {
           <EmptyState title="Role байхгүй" />
         ) : (
           <>
-            <Alert variant="info">
-              Оноосон role-уудын permission нэгтгэгдэж, хэрэглэгчийн эрх болно.
-            </Alert>
-            <ul className="mt-3 space-y-1.5">
+            <ul className="space-y-1.5">
               {roles.map((role) => (
                 <li key={role.id}>
                   <label className="flex items-start gap-2 rounded-lg p-2 ring-1 ring-slate-200 hover:bg-slate-50">

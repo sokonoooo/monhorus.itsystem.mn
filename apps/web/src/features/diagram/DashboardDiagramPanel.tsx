@@ -5,7 +5,6 @@ import {
 } from '@monhorus/shared';
 import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
 
-import { Alert } from '../../components/ui/Alert';
 import { Button } from '../../components/ui/Button';
 import { EmptyState, ErrorState, Skeleton } from '../../components/ui/States';
 import { useToast } from '../../components/ui/ToastProvider';
@@ -202,12 +201,6 @@ export function DashboardDiagramPanel(): ReactElement {
           </div>
         )}
       </div>
-
-      {!canEdit && (
-        <Alert variant="info">
-          Зөвхөн харах эрхтэй. Timeline алхам сонгож төлөвийг харж болно.
-        </Alert>
-      )}
 
       <DiagramCanvas
         state={state}
