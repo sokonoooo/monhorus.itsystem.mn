@@ -19,11 +19,14 @@ import type {
   ServiceRequestDetailDto,
   ServiceRequestListItemDto,
   ServiceRequestListQuery,
+  SubmitSurveyResponseInput,
+  SurveyFormDto,
+  SurveyPendingItemDto,
   UpdatePlannedWorkInput,
   UpdatePlannedWorkTaskInput,
 } from '@monhorus/shared';
 
-import { apiClient, unwrap } from '../lib/api-client';
+import { ApiError, apiClient, unwrap } from '../lib/api-client';
 
 function toParams(query: Record<string, unknown>): Record<string, string | number> {
   const params: Record<string, string | number> = {};
@@ -355,6 +358,69 @@ export const portalService = {
       await apiClient.get<ApiResponse<PaginatedData<BuildingDto>>>('/buildings', {
         params: toParams({ projectId, page: 1, limit: 100 }),
       }),
+    );
+  },
+
+  // -- Satisfaction survey ----------------------------------------------------
+
+  /**
+   * The requests still waiting on the customer's own verdict.
+   *
+   * Read by the screens that OFFER the survey rather than by the survey itself, and that
+   * is the whole reason it exists as a separate call: `surveyForm` answers 404 for every
+   * request with no open survey — which is most of them — so a detail page that asked for
+   * the form to find out would fire a request it expects to fail on every job the customer
+   * ever opens. This one answers the question with a list, the same way
+   * `hasApprovedReport` answers it for the work conclusion.
+   *
+   * An item may be listed with nobody left outstanding: the list is a snapshot and another
+   * device may have answered since, so callers ask what is outstanding rather than treating
+   * the item's presence as the answer.
+   */
+  async pendingSurveys(): Promise<SurveyPendingItemDto[]> {
+    return unwrap(await apiClient.get<ApiResponse<SurveyPendingItemDto[]>>('/surveys/pending'));
+  },
+
+  /**
+   * The questions and the technicians for one request, or null when there is nothing left
+   * to answer.
+   *
+   * THE 404 IS AN ANSWER, NOT A FAILURE. The endpoint replies that way for a request with
+   * no open survey — never completed, already answered, not this customer's — and it is
+   * deliberately the same reply in every one of those cases so that none can be told apart
+   * by asking. Mapping it to null here keeps that a normal outcome the screens render as
+   * "nothing to rate"; every other status still throws, so a genuine outage is not silently
+   * shown as an empty survey.
+   */
+  async surveyForm(requestId: string): Promise<SurveyFormDto | null> {
+    try {
+      return unwrap(
+        await apiClient.get<ApiResponse<SurveyFormDto>>(`/surveys/requests/${requestId}/form`),
+      );
+    } catch (caught) {
+      if (caught instanceof ApiError && caught.status === 404) return null;
+      throw caught;
+    }
+  },
+
+  /**
+   * One technician's verdict, or the statement that the customer never dealt with them.
+   *
+   * ONE EMPLOYEE PER CALL, which is the endpoint's shape and not a convenience: the survey
+   * exists to say something about a person, and a single score for a job two people
+   * attended cannot be attributed to either. The caller loops.
+   *
+   * `skipped` and `answers` are mutually exclusive — `submitSurveyResponseSchema` refuses
+   * the two together — because a skip records no rating anywhere, so nothing the customer
+   * did not observe reaches that technician's average.
+   */
+  async submitSurveyResponse(
+    requestId: string,
+    payload: SubmitSurveyResponseInput,
+  ): Promise<void> {
+    await apiClient.post<ApiResponse<null>>(
+      `/surveys/requests/${requestId}/responses`,
+      payload,
     );
   },
 };

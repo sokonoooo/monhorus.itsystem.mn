@@ -60,6 +60,7 @@ import { PortalRequestCreatePage } from './features/portal/PortalRequestCreatePa
 import { PortalRequestDetailPage } from './features/portal/PortalRequestDetailPage';
 import { PortalRequestListPage } from './features/portal/PortalRequestListPage';
 import { PortalSiteDetailPage } from './features/portal/PortalSiteDetailPage';
+import { PortalSurveyPage } from './features/portal/PortalSurveyPage';
 import { PortalSitesPage } from './features/portal/PortalSitesPage';
 import { homePathFor } from './lib/home-path';
 import { ProtectedRoute } from './routes/ProtectedRoute';
@@ -586,6 +587,26 @@ export default function App(): ReactElement {
             element={
               <PortalPage anyOf={[PERMISSIONS.PORTAL_SERVICE_REQUEST_VIEW]}>
                 <PortalRequestDetailPage />
+              </PortalPage>
+            }
+          />
+          {/*
+            The satisfaction survey, at the path the backend already links to.
+
+            `survey.invitation.ts` sends the completion notification with
+            `linkPath: /portal/requests/:requestId/survey`, so this path is fixed by
+            something already shipped rather than chosen here: changing it would land every
+            push and in-app link on the not-found page.
+
+            Gated on `portal.survey.submit` alone. It is the key the three survey endpoints
+            require, and it is the only one that matters — the two staff survey keys
+            configure and read the survey rather than answer it.
+          */}
+          <Route
+            path="/portal/requests/:requestId/survey"
+            element={
+              <PortalPage anyOf={[PERMISSIONS.PORTAL_SURVEY_SUBMIT]}>
+                <PortalSurveyPage />
               </PortalPage>
             }
           />

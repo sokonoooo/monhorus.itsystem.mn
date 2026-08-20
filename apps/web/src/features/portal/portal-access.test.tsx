@@ -32,6 +32,7 @@ const CUSTOMER_PERMISSIONS: readonly PermissionKey[] = [
   PERMISSIONS.PORTAL_PROFILE_VIEW,
   PERMISSIONS.PORTAL_PLANNED_WORK_VIEW,
   PERMISSIONS.PORTAL_PLANNED_WORK_CREATE,
+  PERMISSIONS.PORTAL_SURVEY_SUBMIT,
   PERMISSIONS.NOTIFICATION_VIEW,
 ];
 
@@ -97,6 +98,8 @@ describe('a CUSTOMER inside the shell', () => {
     vi.restoreAllMocks();
     vi.spyOn(notificationService, 'unreadCount').mockResolvedValue({ unread: 0 });
     vi.spyOn(portalService, 'listRequests').mockResolvedValue(makePage([]));
+    // A customer holds `portal.survey.submit`, so the home page asks what is outstanding.
+    vi.spyOn(portalService, 'pendingSurveys').mockResolvedValue([]);
   });
 
   it('gets a sidebar with its own entries instead of an empty one', async () => {
