@@ -175,10 +175,14 @@ void main() {
     test('the session is the only place a scope is built', () {
       final List<String> builders = <String>[];
       for (final File file in libSources()) {
+        // Windows reports these paths with backslashes, which end with none of the
+        // forward-slash suffixes below: the skip would never fire and the entity that
+        // merely declares the constructor would count as a second construction site.
+        final String path = file.path.replaceAll(r'\', '/');
         // The entity declares the constructor; that is not a construction site.
-        if (file.path.endsWith('domain/entities/customer_scope.dart')) continue;
+        if (path.endsWith('domain/entities/customer_scope.dart')) continue;
         if (file.readAsStringSync().contains('ResolvedCustomerScope(')) {
-          builders.add(file.path);
+          builders.add(path);
         }
       }
 
