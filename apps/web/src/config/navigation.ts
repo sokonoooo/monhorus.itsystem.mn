@@ -42,6 +42,34 @@ export interface NavItem {
   path: string;
   permissions: readonly PermissionKey[];
   icon: NavIcon;
+  /**
+   * Account tiers this entry is withheld from ON THE WEB, whatever permissions they hold.
+   *
+   * A DENY-LIST, deliberately, where `NavSection.tiers` next door is an ALLOW-LIST. The two
+   * answer different questions and so fail in opposite directions on purpose:
+   *
+   *   - The portal section has a positively defined audience — it exists FOR the customer
+   *     tier — so naming that tier is the whole truth about it. An allow-list is right.
+   *   - These entries have no such audience. They are ordinary back-office modules whose
+   *     audience is "whoever holds the key", minus one tier we are subtracting. Writing
+   *     that as `tiers: ['admin', 'head_admin']` would restate the default for every tier
+   *     that exists today in order to remove one, and then be wrong the moment a fifth
+   *     tier is added: a dispatcher or a finance tier would be silently locked out of
+   *     Тайлан by a list written before they existed, and the symptom — a module that is
+   *     simply absent — is the hardest kind of bug to report or to find.
+   *
+   * The failure a deny-list chooses instead is that a future tier keeps SEEING a module it
+   * perhaps should not. That is the better failure here for two reasons. It is visible:
+   * someone says "why can I see this", which is a bug report, where the other direction
+   * produces silence. And it is not a security hole — this is presentation only; the
+   * permission filter beside it and the server's RBAC still decide what may actually be
+   * read, and none of that is loosened by a menu entry being shown.
+   *
+   * The rule that `head_admin` sees everything is enforced in `isNavItemHiddenFrom` rather
+   * than trusted to every list here, so no entry can withhold anything from the superuser
+   * by omission.
+   */
+  hiddenFromTiers?: readonly UserRole[];
 }
 
 export interface NavSection {
@@ -65,6 +93,24 @@ export interface NavSection {
    */
   tiers?: readonly UserRole[];
 }
+
+/**
+ * The web surface a field technician is not given.
+ *
+ * WHY A TIER AND NOT A PERMISSION. The obvious way to hide Материалын жагсаалт from a
+ * technician is to stop granting `material.view`, and it would be wrong: that key is what
+ * lets the employee MOBILE app read the catalogue when recording what a sub-task consumed,
+ * and `object_master.view` backs the same app's equipment and assessment screens. Both are
+ * load-bearing in the field. What is being said here is narrower than "may not read this
+ * data" — it is "does not work in the back office", which is a property of the tier, the
+ * same question `resolveCustomerScope` asks of the customer tier on the server.
+ *
+ * So this must never be re-expressed as a permission change. A test in
+ * `technician-scope.test.tsx` signs a technician in holding BOTH keys precisely so that
+ * anyone who later "simplifies" this by revoking one fails a test instead of breaking the
+ * mobile app.
+ */
+const HIDDEN_FROM_TECHNICIANS: readonly UserRole[] = ['technician'];
 
 export const NAVIGATION: readonly NavSection[] = [
   /**
@@ -180,6 +226,9 @@ export const NAVIGATION: readonly NavSection[] = [
         label: 'Материалын жагсаалт',
         path: '/materials',
         permissions: [PERMISSIONS.MATERIAL_VIEW],
+        // A technician HOLDS `material.view` — the mobile app reads the catalogue with it —
+        // so only the tier can withhold the back-office screen. See HIDDEN_FROM_TECHNICIANS.
+        hiddenFromTiers: HIDDEN_FROM_TECHNICIANS,
         // CATALOGUE rather than an icon of its own: this is the same kind of thing as the
         // equipment-type list — reference data a form picks from — and a new glyph would
         // mean a new NavIcon member and a new case in NavGlyph for no gain in legibility.
@@ -190,6 +239,9 @@ export const NAVIGATION: readonly NavSection[] = [
         label: 'Үзлэг ба дүгнэлт',
         path: '/inspections',
         permissions: [PERMISSIONS.OBJECT_MASTER_VIEW],
+        // Same shape as Материалын жагсаалт: `object_master.view` is the key the mobile
+        // app's assessment screens run on, so it cannot be taken away to close this page.
+        hiddenFromTiers: HIDDEN_FROM_TECHNICIANS,
         icon: 'INSPECTION',
       },
       {
@@ -199,6 +251,7 @@ export const NAVIGATION: readonly NavSection[] = [
         label: 'Тоноглолын төрөл',
         path: '/object-types',
         permissions: [PERMISSIONS.OBJECT_MASTER_VIEW],
+        hiddenFromTiers: HIDDEN_FROM_TECHNICIANS,
         icon: 'CATALOGUE',
       },
     ],
@@ -212,6 +265,14 @@ export const NAVIGATION: readonly NavSection[] = [
         label: 'Тайлан',
         path: '/reports',
         permissions: [PERMISSIONS.REPORT_VIEW],
+        /*
+          Belt and braces, and worth the line. The shipped TECHNICIAN preset holds no
+          `report.*` key, so the permission filter already hides this — but that is a
+          default a second role granted from the access screen can widen, and a technician
+          who is also a team lead should still not be reading company-wide SLA and revenue
+          figures in the back office. The tier says so independently of the grant.
+        */
+        hiddenFromTiers: HIDDEN_FROM_TECHNICIANS,
         icon: 'REPORT',
       },
       {
@@ -385,4 +446,37 @@ export function navItemByPath(pathname: string): NavItem | undefined {
   return NAV_ITEMS.find(
     (item) => pathname === item.path || pathname.startsWith(`${item.path}/`),
   );
+}
+
+/**
+ * Is this entry withheld from the signed-in tier?
+ *
+ * The single place `hiddenFromTiers` is read, so the menu and the route gate cannot come to
+ * different conclusions about the same entry — the property this whole file exists for.
+ *
+ * `head_admin` is answered here rather than in the lists: they are an unconditional
+ * superuser in `resolveEffectivePermissions`, and the same must hold on the web surface, so
+ * no deny-list can reach them however it is written. This does NOT touch `NavSection.tiers`
+ * — that allow-list keeps the portal shut to a superuser on purpose, and a blanket bypass
+ * would put the customer menu back inside the admin console.
+ *
+ * An unknown role — the mid-restore state, where `user` is still null — hides nothing. The
+ * shell renders during session restore, and refusing on an unread role would flash the
+ * forbidden panel at everyone before their own menu appeared.
+ */
+export function isNavItemHiddenFrom(item: NavItem, role: UserRole | null | undefined): boolean {
+  if (!item.hiddenFromTiers || role == null || role === 'head_admin') return false;
+  return item.hiddenFromTiers.includes(role);
+}
+
+/**
+ * The same question for a URL, so a typed address is answered by the entry it belongs to.
+ *
+ * Prefix-matched through `navItemByPath`, which means a restricted module's child routes
+ * are covered by its one declaration rather than needing their own. A path that belongs to
+ * no menu entry is not restricted by anything here.
+ */
+export function isPathHiddenFrom(pathname: string, role: UserRole | null | undefined): boolean {
+  const item = navItemByPath(pathname);
+  return item ? isNavItemHiddenFrom(item, role) : false;
 }

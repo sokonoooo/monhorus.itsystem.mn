@@ -1,4 +1,8 @@
-import { DEFAULT_DASHBOARD_LAYOUT, PERMISSIONS } from '@monhorus/shared';
+import {
+  DEFAULT_DASHBOARD_LAYOUT,
+  PERMISSIONS,
+  type DashboardSummaryDto,
+} from '@monhorus/shared';
 import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -122,12 +126,15 @@ describe('DashboardPage', () => {
   /** Blocks are omitted, not zeroed, so an absent section must simply not render. */
   it('renders only the blocks the payload carries', async () => {
     vi.spyOn(dashboardService, 'summary').mockResolvedValue({
+      isScoped: false,
       generatedAt: '2026-07-29T06:00:00.000Z',
     });
 
     render();
 
-    expect(await screen.findByRole('heading', { name: 'Хяналтын самбар' })).toBeInTheDocument();
+    expect(
+      await screen.findByRole('heading', { name: 'Байгууллагын хяналтын самбар' }),
+    ).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Өнөөдрийн ажил' })).not.toBeInTheDocument();
     expect(screen.queryByRole('img', { name: /Төхөөрөмжийн эрсдэл/ })).not.toBeInTheDocument();
   });
@@ -209,7 +216,7 @@ describe('DashboardPage', () => {
 
     render();
 
-    await screen.findByRole('heading', { name: 'Хяналтын самбар' });
+    await screen.findByRole('heading', { name: 'Байгууллагын хяналтын самбар' });
     expect(screen.queryByText('Цахилгааны схем')).not.toBeInTheDocument();
   });
 
@@ -225,6 +232,113 @@ describe('DashboardPage', () => {
 
     const list = screen.getByRole('list', { name: 'Өнөөдрийн ажлын жагсаалт' });
     expect(within(list).getAllByRole('listitem')).toHaveLength(2);
+  });
+});
+
+/**
+ * WHOSE FIGURES ARE THESE.
+ *
+ * The board used to say "Хяналтын самбар" over both payloads, which was accurate for an
+ * administrator and a quiet untruth for a technician: identical wording over one person's
+ * work and over the whole company's. The backend now bounds a technician's summary and
+ * declares which of the two it sent; these cases assert the page repeats that answer to
+ * the reader instead of keeping it to itself.
+ *
+ * A scoped payload is built by hand rather than from `makeDashboardSummary`, because the
+ * fixture carries blocks a scoped caller is never sent — the API omits `customers`,
+ * `employees`, `workload`, `risk` and `finance` rather than scoping them — and a fixture
+ * that carried them would be testing a response the server cannot produce.
+ */
+describe('DashboardPage scope', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(dashboardService, 'layout').mockResolvedValue({
+      widgets: DEFAULT_DASHBOARD_LAYOUT,
+      customWidgets: [],
+      isCustomised: false,
+    });
+  });
+
+  /** As the API sends it to a bounded caller: the personal blocks and nothing else. */
+  function scopedSummary(): DashboardSummaryDto {
+    const full = makeDashboardSummary();
+    return {
+      isScoped: true,
+      generatedAt: full.generatedAt,
+      requests: full.requests,
+      requestsByStatus: full.requestsByStatus,
+      trend: full.trend,
+      plannedWork: full.plannedWork,
+      today: full.today,
+    };
+  }
+
+  it('heads a technician board as their own work', async () => {
+    vi.spyOn(dashboardService, 'summary').mockResolvedValue(scopedSummary());
+
+    render();
+
+    expect(
+      await screen.findByRole('heading', { name: 'Миний хяналтын самбар' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Зөвхөн танд болон таны багт хуваарилагдсан ажил/)).toBeInTheDocument();
+  });
+
+  it("heads an administrator board as the organisation's", async () => {
+    vi.spyOn(dashboardService, 'summary').mockResolvedValue(makeDashboardSummary());
+
+    render();
+
+    expect(
+      await screen.findByRole('heading', { name: 'Байгууллагын хяналтын самбар' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('heading', { name: 'Миний хяналтын самбар' }),
+    ).not.toBeInTheDocument();
+  });
+
+  /**
+   * The heading alone is not enough: a tile still labelled as everybody's, sitting under a
+   * personal heading, is the same untruth moved down the page.
+   */
+  it('marks the scoped blocks as the reader\u2019s own, not the whole estate\u2019s', async () => {
+    vi.spyOn(dashboardService, 'summary').mockResolvedValue(scopedSummary());
+
+    render();
+
+    expect(await screen.findByRole('heading', { name: 'Миний өнөөдрийн ажил' })).toBeInTheDocument();
+    expect(screen.getByText('Зөвхөн танд хуваарилагдсан хүсэлт.')).toBeInTheDocument();
+    // "Бүх" claims every request in the company; it must not appear over a bounded donut.
+    expect(screen.getByText('Танд хуваарилагдсан хүсэлтийн төлвийн хуваарилалт.')).toBeInTheDocument();
+    expect(screen.queryByText('Бүх хүсэлтийн төлвийн хуваарилалт.')).not.toBeInTheDocument();
+  });
+
+  /**
+   * The organisation-wide blocks are absent from a scoped payload, so they must simply not
+   * draw. This is the UI half of an omission the API already made — the page is not what
+   * withholds them, and this only proves it does not invent a frame for what it was not sent.
+   */
+  it('draws no organisation-wide block on a scoped board', async () => {
+    vi.spyOn(dashboardService, 'summary').mockResolvedValue(scopedSummary());
+
+    render();
+
+    await screen.findByRole('heading', { name: 'Миний хяналтын самбар' });
+    expect(screen.queryByRole('img', { name: /Төхөөрөмжийн эрсдэл/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('img', { name: /Нэхэмжлэлийн төлөв/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('img', { name: /Ажилтны ачаалал/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Санхүүгийн үзүүлэлт' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Нөөц ба бүртгэл' })).not.toBeInTheDocument();
+  });
+
+  /** The unbounded board keeps every one of them. */
+  it('keeps the organisation-wide blocks on an unscoped board', async () => {
+    vi.spyOn(dashboardService, 'summary').mockResolvedValue(makeDashboardSummary());
+
+    render();
+
+    expect(await screen.findByRole('img', { name: /Төхөөрөмжийн эрсдэл/ })).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: /Нэхэмжлэлийн төлөв/ })).toBeInTheDocument();
   });
 });
 

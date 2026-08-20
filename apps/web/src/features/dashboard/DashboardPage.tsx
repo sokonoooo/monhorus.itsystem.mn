@@ -273,11 +273,20 @@ export function DashboardPage(): ReactElement {
 
     switch (key) {
       case 'TODAY':
-        return summary.today ? <TodayPanel today={summary.today} /> : null;
+        return summary.today ? (
+          <TodayPanel today={summary.today} isScoped={summary.isScoped} />
+        ) : null;
 
       case 'REQUEST_METRICS':
         return summary.requests ? (
-          <WidgetCard title={DASHBOARD_WIDGET_LABELS.REQUEST_METRICS} hint="Одоогийн байдлаар.">
+          <WidgetCard
+            title={DASHBOARD_WIDGET_LABELS.REQUEST_METRICS}
+            hint={
+              summary.isScoped
+                ? 'Зөвхөн танд хуваарилагдсан хүсэлт.'
+                : 'Одоогийн байдлаар.'
+            }
+          >
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <MetricLink to="/service-requests?status=NEW">
                 <StatTile label="Шинэ хүсэлт" value={summary.requests.newRequests} />
@@ -309,7 +318,11 @@ export function DashboardPage(): ReactElement {
         return summary.trend ? (
           <LineChart
             title="Хүсэлтийн урсгал"
-            hint="Сүүлийн 14 хоногийн шинэ ба дууссан хүсэлт."
+            hint={
+              summary.isScoped
+                ? 'Сүүлийн 14 хоногт танд хуваарилагдсан шинэ ба дууссан хүсэлт.'
+                : 'Сүүлийн 14 хоногийн шинэ ба дууссан хүсэлт.'
+            }
             hero
             labels={summary.trend.map((point) => point.date)}
             series={[
@@ -344,7 +357,13 @@ export function DashboardPage(): ReactElement {
         return summary.requestsByStatus ? (
           <DonutChart
             title="Хүсэлт төлвөөр"
-            hint="Бүх хүсэлтийн төлвийн хуваарилалт."
+            hint={
+              // "Бүх" — every request — is the one word that must not survive onto a
+              // bounded board: the donut beside it is drawn from the caller's own work.
+              summary.isScoped
+                ? 'Танд хуваарилагдсан хүсэлтийн төлвийн хуваарилалт.'
+                : 'Бүх хүсэлтийн төлвийн хуваарилалт.'
+            }
             data={statusData}
             centreLabel="хүсэлт"
           />
@@ -371,7 +390,7 @@ export function DashboardPage(): ReactElement {
         return summary.plannedWork ? (
           <ProgressChart
             title="Төлөвлөгөөт ажлын гүйцэтгэл"
-            hint={`Нийт ${summary.plannedWork.total}, явцтай ${summary.plannedWork.inProgress}, хугацаа хэтэрсэн ${summary.plannedWork.overdue}.`}
+            hint={`${summary.isScoped ? 'Танд хуваарилагдсан. ' : ''}Нийт ${summary.plannedWork.total}, явцтай ${summary.plannedWork.inProgress}, хугацаа хэтэрсэн ${summary.plannedWork.overdue}.`}
             percent={summary.plannedWork.averageProgress}
             caption={`${summary.plannedWork.completed} дууссан`}
           />
@@ -464,8 +483,20 @@ export function DashboardPage(): ReactElement {
   return (
     <>
       <PageHeader
-        title="Хяналтын самбар"
-        description={`Шинэчлэгдсэн: ${new Date(summary.generatedAt).toLocaleString('mn-MN', {
+        /**
+         * The heading names whose figures these are, in both directions.
+         *
+         * Naming the organisation out loud on the unbounded board is the deliberate half:
+         * a bounded caller and an unbounded one otherwise read the identical word over
+         * two quite different sets of numbers, and the reader has no way to tell which
+         * they are looking at. The employee app settled this the same way.
+         */
+        title={summary.isScoped ? 'Миний хяналтын самбар' : 'Байгууллагын хяналтын самбар'}
+        description={`${
+          summary.isScoped
+            ? 'Зөвхөн танд болон таны багт хуваарилагдсан ажил.'
+            : 'Байгууллагын нийт үзүүлэлт.'
+        } Шинэчлэгдсэн: ${new Date(summary.generatedAt).toLocaleString('mn-MN', {
           timeZone: 'Asia/Ulaanbaatar',
         })}`}
         actions={

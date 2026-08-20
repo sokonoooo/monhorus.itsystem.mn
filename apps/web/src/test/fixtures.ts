@@ -805,6 +805,10 @@ export function makeDashboardSummary(
   overrides: Partial<DashboardSummaryDto> = {},
 ): DashboardSummaryDto {
   return {
+    // The organisation-wide payload is the default because it is the one carrying every
+    // block: a scoped fixture would have to omit five of them, so a caller wanting the
+    // bounded shape passes `isScoped: true` along with the omissions it implies.
+    isScoped: false,
     generatedAt: '2026-07-29T06:00:00.000Z',
     requests: {
       newRequests: 2,
