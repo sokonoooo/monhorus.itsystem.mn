@@ -422,6 +422,26 @@ export const SERVICE_REQUEST_TABS: readonly SubNavItem[] = [
     permissions: [PERMISSIONS.SERVICE_REQUEST_VIEW],
     exact: true,
   },
+  /*
+   * A TAB, NOT A SIDEBAR ENTRY — for the reason the dispatch board is one.
+   *
+   * Taking open work is a way of WORKING the service-request queue rather than a separate
+   * domain, so it belongs to that module exactly as the board does. A top-level sidebar
+   * entry would also read as a second inbox sitting alongside "Үйлчилгээний хүсэлт", when
+   * it is the same records under a different question.
+   *
+   * Reachable for the people it is for: the technician role holds `service_request.view`,
+   * so the sidebar's request entry is already visible to them and this tab sits on it. The
+   * two keys differ on purpose — a dispatcher who may view but not claim sees the module
+   * without this tab, and SubNav hides a lone remaining tab rather than showing one.
+   */
+  {
+    key: 'open',
+    label: 'Нээлттэй ажил',
+    path: '/service-requests/open',
+    permissions: [PERMISSIONS.SERVICE_REQUEST_CLAIM],
+    exact: true,
+  },
   {
     key: 'dispatch',
     label: 'Dispatch board',
