@@ -17,6 +17,7 @@ import {
 } from '../../test/helpers';
 import { AuditLog } from '../audit/audit-log.model';
 import { Employee } from '../employee/employee.model';
+import { Notification } from '../notification/notification.model';
 import { Customer, ObjectNode } from '../objects/object.models';
 import { User } from '../user/user.model';
 import { ServiceRequest } from './service-request.model';
@@ -884,5 +885,303 @@ describe('dispatch board', () => {
       .set('Authorization', `Bearer ${viewerToken}`);
 
     expect(response.status).toBe(403);
+  });
+});
+
+/**
+ * WHO is told, which is the half that was wrong.
+ *
+ * These assertions read the `Notification` collection directly rather than any endpoint,
+ * because the recipient is not visible from the response of the operation that causes it —
+ * every one of the changes below was invisible to the existing API tests, which is exactly
+ * how a status change came to be broadcast to every technician in the company.
+ *
+ * The through-line: a notification must reach the people the event concerns and nobody
+ * else, and a customer must never be handed a link they cannot open.
+ */
+describe('service request notification recipients', () => {
+  let technicianSequence = 0;
+
+  /** A technician: an employee card joined to the account they sign in with. */
+  async function makeTechnician(
+    email: string,
+    name: { first: string; last: string } = { first: 'Тест', last: 'Ажилтан' },
+  ): Promise<{ employeeId: string; userId: string }> {
+    technicianSequence += 1;
+    const user = await createUserWithPermissions(email, [
+      // The key the old blanket fan-out used. Held here on purpose: an unassigned holder of
+      // it must now hear nothing, and that is only a real assertion if they hold it.
+      PERMISSIONS.SERVICE_REQUEST_VIEW,
+      PERMISSIONS.NOTIFICATION_VIEW,
+    ]);
+    const employee = await Employee.create({
+      employeeCode: `EMP-N${technicianSequence}`,
+      firstName: name.first,
+      lastName: name.last,
+      company: org.companyId,
+      department: org.departmentId,
+      position: org.positionId,
+      employeeType: 'FULL_TIME',
+      employmentStartDate: new Date('2024-01-01'),
+      status: 'ACTIVE',
+      systemUser: new Types.ObjectId(user.userId),
+    });
+    return { employeeId: String(employee._id), userId: user.userId };
+  }
+
+  async function makeDispatcher(email: string): Promise<string> {
+    const user = await createUserWithPermissions(email, [
+      PERMISSIONS.DISPATCH_VIEW,
+      PERMISSIONS.NOTIFICATION_VIEW,
+    ]);
+    return user.userId;
+  }
+
+  async function createRequest(overrides: Record<string, unknown> = {}): Promise<string> {
+    const response = await request(app)
+      .post(`${API}/service-requests`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(validRequest(overrides));
+    expect(response.status).toBe(201);
+    return response.body.data.id as string;
+  }
+
+  async function assign(requestId: string, employeeIds: string[]): Promise<void> {
+    const response = await request(app)
+      .post(`${API}/service-requests/${requestId}/assign`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ employeeIds });
+    expect(response.status).toBe(200);
+  }
+
+  async function setStatus(requestId: string, status: string, reason?: string): Promise<void> {
+    const response = await request(app)
+      .post(`${API}/service-requests/${requestId}/status`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ status, ...(reason ? { reason } : {}) });
+    expect(response.status).toBe(200);
+  }
+
+  function inboxOf(userId: string, event?: string) {
+    return Notification.find({
+      recipient: new Types.ObjectId(userId),
+      ...(event ? { event } : {}),
+    })
+      .sort({ createdAt: 1 })
+      .lean();
+  }
+
+  describe('a status change', () => {
+    it('reaches the assigned technician and the dispatch desk, and nobody else', async () => {
+      // Created before the first notification: the permission-to-recipient resolution is
+      // cached for fifteen seconds, so a dispatcher minted later would miss the cache.
+      const dispatcherId = await makeDispatcher('sr-dispatch@test.mn');
+      const onTheJob = await makeTechnician('sr-assigned@test.mn');
+      const bystander = await makeTechnician('sr-bystander@test.mn');
+
+      const requestId = await createRequest();
+      await assign(requestId, [onTheJob.employeeId]);
+      await setStatus(requestId, 'ACCEPTED');
+
+      const assigned = await inboxOf(onTheJob.userId, 'SERVICE_REQUEST_STATUS_CHANGED');
+      expect(assigned).toHaveLength(1);
+      expect(assigned[0]!.linkPath).toBe(`/service-requests/${requestId}`);
+      expect(assigned[0]!.entityType).toBe('Work');
+      expect(String(assigned[0]!.entityId)).toBe(requestId);
+
+      expect(await inboxOf(dispatcherId, 'SERVICE_REQUEST_STATUS_CHANGED')).toHaveLength(1);
+
+      /*
+       * THE BUG THIS BLOCK EXISTS FOR. `service_request.view` used to be the whole audience,
+       * and TECHNICIAN holds it, so this account was told about every status change on
+       * every request in the company. It is assigned to nothing and must hear nothing.
+       */
+      expect(await inboxOf(bystander.userId)).toHaveLength(0);
+    });
+
+    it('still reaches a technician at the moment they are taken off the job', async () => {
+      const onTheJob = await makeTechnician('sr-unassigned@test.mn');
+      const requestId = await createRequest();
+      await assign(requestId, [onTheJob.employeeId]);
+
+      // UNASSIGNED empties the assignment as part of the move, so the recipient list has to
+      // be the one that stood when it moved rather than the one left behind afterwards.
+      await setStatus(requestId, 'UNASSIGNED');
+
+      const rows = await inboxOf(onTheJob.userId, 'SERVICE_REQUEST_STATUS_CHANGED');
+      expect(rows).toHaveLength(1);
+    });
+  });
+
+  describe('the customer', () => {
+    let customerUserId: string;
+
+    beforeEach(async () => {
+      const user = await createCustomerUser('sr-portal@test.mn', customerId);
+      customerUserId = user.userId;
+    });
+
+    it('is told their request was received, by number and with a portal link', async () => {
+      const requestId = await createRequest();
+
+      const rows = await inboxOf(customerUserId, 'SERVICE_REQUEST_CREATED');
+      expect(rows).toHaveLength(1);
+      const stored = await ServiceRequest.findById(requestId).select('requestNumber').lean();
+      expect(rows[0]!.title).toContain(stored!.requestNumber);
+      expect(rows[0]!.linkPath).toBe(`/portal/requests/${requestId}`);
+    });
+
+    it('is told who is handling it, by the name the portal already shows them', async () => {
+      const technician = await makeTechnician('sr-named@test.mn', {
+        first: 'Бат',
+        last: 'Дорж',
+      });
+      const requestId = await createRequest();
+
+      await assign(requestId, [technician.employeeId]);
+
+      const rows = await inboxOf(customerUserId, 'SERVICE_REQUEST_ASSIGNED');
+      expect(rows).toHaveLength(1);
+      // `narrowDetailForCustomer` keeps firstName and lastName on the request screen, so
+      // naming them here reveals nothing the portal did not already reveal.
+      expect(rows[0]!.body).toContain('Дорж');
+      expect(rows[0]!.body).toContain('Бат');
+      expect(rows[0]!.linkPath).toBe(`/portal/requests/${requestId}`);
+    });
+
+    it('hears that somebody is coming, and not about the states in between', async () => {
+      const technician = await makeTechnician('sr-enroute@test.mn');
+      const requestId = await createRequest();
+      await assign(requestId, [technician.employeeId]);
+
+      await setStatus(requestId, 'ACCEPTED');
+      // An internal step: the customer's expectation has not changed, so nothing is sent.
+      expect(await inboxOf(customerUserId, 'SERVICE_REQUEST_STATUS_CHANGED')).toHaveLength(0);
+
+      await setStatus(requestId, 'ON_THE_WAY');
+      const enRoute = await inboxOf(customerUserId, 'SERVICE_REQUEST_STATUS_CHANGED');
+      expect(enRoute).toHaveLength(1);
+      expect(enRoute[0]!.linkPath).toBe(`/portal/requests/${requestId}`);
+
+      await setStatus(requestId, 'ON_SITE');
+      expect(await inboxOf(customerUserId, 'SERVICE_REQUEST_STATUS_CHANGED')).toHaveLength(2);
+    });
+
+    it('is never handed a staff link, whatever happened to the request', async () => {
+      const technician = await makeTechnician('sr-links@test.mn');
+      const requestId = await createRequest();
+      await assign(requestId, [technician.employeeId]);
+      await setStatus(requestId, 'ACCEPTED');
+      await setStatus(requestId, 'ON_THE_WAY');
+      await setStatus(requestId, 'ON_SITE');
+
+      const rows = await inboxOf(customerUserId);
+      expect(rows.length).toBeGreaterThan(0);
+      for (const row of rows) {
+        expect(row.linkPath).toMatch(/^\/portal\/requests\//);
+      }
+    });
+
+    it('says nothing to another organisation that happens to hold a portal account', async () => {
+      const outsider = await createCustomerUser('sr-outsider@test.mn', foreignCustomerId);
+
+      await createRequest();
+
+      expect(await inboxOf(outsider.userId)).toHaveLength(0);
+    });
+  });
+
+  /**
+   * The second call at a site somebody is already standing in.
+   *
+   * The whole value of the message is "you are already there", so it is addressed to people
+   * and never to a permission — a technician across town holding the same key learns nothing
+   * useful from it.
+   */
+  describe('a second call at a busy site', () => {
+    it('tells whoever is already working in that building', async () => {
+      const onSite = await makeTechnician('sr-busy-onsite@test.mn');
+      const elsewhere = await makeTechnician('sr-busy-elsewhere@test.mn');
+
+      const firstId = await createRequest();
+      await assign(firstId, [onSite.employeeId]);
+
+      const secondId = await createRequest({ description: 'Хоёр дахь дуудлага' });
+
+      const rows = await inboxOf(onSite.userId, 'SERVICE_REQUEST_SITE_BUSY');
+      expect(rows).toHaveLength(1);
+      // The link points at the NEW call, which is the thing being offered.
+      expect(rows[0]!.linkPath).toBe(`/service-requests/${secondId}`);
+      expect(String(rows[0]!.entityId)).toBe(secondId);
+      expect(rows[0]!.body).toContain('Main Tower');
+
+      expect(await inboxOf(elsewhere.userId, 'SERVICE_REQUEST_SITE_BUSY')).toHaveLength(0);
+    });
+
+    it('sends one message per person, however many open calls they hold there', async () => {
+      const onSite = await makeTechnician('sr-busy-dedupe@test.mn');
+
+      const firstId = await createRequest();
+      await assign(firstId, [onSite.employeeId]);
+      const secondId = await createRequest();
+      await assign(secondId, [onSite.employeeId]);
+
+      const thirdId = await createRequest({ description: 'Гурав дахь дуудлага' });
+
+      /*
+       * Scoped to the third call on purpose. Two open jobs at this address now name the
+       * same technician, so an undeduplicated implementation would tell them twice about
+       * the one new call. The earlier messages, one per NEW call, are correct and are not
+       * what this asserts.
+       */
+      const forTheNewCall = (await inboxOf(onSite.userId, 'SERVICE_REQUEST_SITE_BUSY')).filter(
+        (row) => String(row.entityId) === thirdId,
+      );
+      expect(forTheNewCall).toHaveLength(1);
+    });
+
+    it('says nothing when the open call at that building has no one on it', async () => {
+      const bystander = await makeTechnician('sr-busy-unassigned@test.mn');
+
+      await createRequest();
+      await createRequest({ description: 'Хоёр дахь дуудлага' });
+
+      // An unassigned request at the same address is a queue entry, not a person on site.
+      expect(await Notification.countDocuments({ event: 'SERVICE_REQUEST_SITE_BUSY' })).toBe(0);
+      expect(await inboxOf(bystander.userId, 'SERVICE_REQUEST_SITE_BUSY')).toHaveLength(0);
+    });
+
+    it('does not count a cancelled call as somebody being on site', async () => {
+      const wasOnSite = await makeTechnician('sr-busy-cancelled@test.mn');
+
+      const firstId = await createRequest();
+      await assign(firstId, [wasOnSite.employeeId]);
+      // Cancelling leaves the assignment on the document, so this only passes if the query
+      // filters on the terminal statuses rather than on there being an assignee.
+      await setStatus(firstId, 'CANCELLED', 'Харилцагч татгалзсан.');
+
+      await createRequest({ description: 'Хоёр дахь дуудлага' });
+
+      expect(await inboxOf(wasOnSite.userId, 'SERVICE_REQUEST_SITE_BUSY')).toHaveLength(0);
+    });
+
+    it('does not reach across to a different building', async () => {
+      const elsewhere = await makeTechnician('sr-busy-otherbuilding@test.mn');
+      const otherBuilding = await ObjectNode.create({
+        kind: 'BUILDING',
+        code: 'B2',
+        name: 'Хоёрдугаар барилга',
+        parent: null,
+        customer: new Types.ObjectId(customerId),
+        ancestors: [],
+      });
+
+      const firstId = await createRequest({ buildingId: String(otherBuilding._id) });
+      await assign(firstId, [elsewhere.employeeId]);
+
+      await createRequest({ description: 'Өөр барилгын дуудлага' });
+
+      expect(await inboxOf(elsewhere.userId, 'SERVICE_REQUEST_SITE_BUSY')).toHaveLength(0);
+    });
   });
 });

@@ -1,6 +1,5 @@
 import {
   type CallableObjectTypeDto,
-  SERVICE_REQUEST_STATUS_LABELS,
   canTransition,
   isReasonRequired,
   type AssignServiceRequestInput,
@@ -49,6 +48,12 @@ import {
   type IServiceRequest,
   CLAIMABLE_STATUSES,
 } from './service-request.model';
+import {
+  notifyCustomerAssigned,
+  notifyCustomerRequestReceived,
+  notifySiteBusy,
+  notifyStatusChanged,
+} from './service-request.notify';
 import { clearOpenForClaim, markOpenForClaim } from './unclaimed.service';
 
 type WithId<T> = T & { _id: Types.ObjectId };
@@ -597,6 +602,18 @@ export async function createServiceRequest(
     excludeUserId: actor.userId,
   });
 
+  /*
+   * The customer gets a receipt, and the site gets checked for company.
+   *
+   * Both sit here, after the document, the file ownership transfer and the audit entry are
+   * all committed. `notify` swallows its own failures, but the ORDER still matters: a
+   * notification written before the work it describes would be a lie if anything after it
+   * threw, and "your request is registered as SR-…" is precisely the kind of lie a caller
+   * would act on.
+   */
+  await notifyCustomerRequestReceived(request);
+  await notifySiteBusy(request, actor.userId);
+
   return getServiceRequestById(String(request._id), scope, actor);
 }
 
@@ -760,10 +777,20 @@ export async function assignServiceRequest(
     );
   }
 
+  /*
+   * Held outside the validation block so the customer notification can name them.
+   *
+   * The same read already had to happen to check that nobody inactive is being assigned, so
+   * naming them costs nothing extra; doing it in a second query below would.
+   */
+  let assignedNames: string[] = [];
+
   if (input.employeeIds.length > 0) {
     const employees = await Employee.find({
       _id: { $in: input.employeeIds.map((id) => new Types.ObjectId(id)) },
     }).select('status firstName lastName');
+
+    assignedNames = employees.map((employee) => `${employee.lastName} ${employee.firstName}`);
 
     if (employees.length !== input.employeeIds.length) {
       throw AppError.badRequest(ERROR_CODES.VALIDATION_ERROR, 'Сонгосон ажилтан олдсонгүй.', [
@@ -836,6 +863,11 @@ export async function assignServiceRequest(
     excludeUserId: actor.userId,
   });
 
+  // ...and the customer, who until now watched their request sit at "Шинэ" with no sign
+  // that anyone had picked it up. The schema refuses an assignment naming neither an
+  // employee nor a team, so reaching this line always means somebody is on it.
+  await notifyCustomerAssigned(request, assignedNames, previousEmployees.length > 0);
+
   return getServiceRequestById(requestId, scope, actor);
 }
 
@@ -850,6 +882,14 @@ export async function changeServiceRequestStatus(
 
   const from: ServiceRequestStatus = request.status;
   const to = input.status;
+  /*
+   * The assignment AS IT STOOD when the request moved.
+   *
+   * Captured before the UNASSIGNED branch below empties it, because being taken off a job
+   * is exactly the kind of change the person holding it must hear about — and reading the
+   * field after the mutation would address that message to nobody.
+   */
+  const assignedWhenChanged = [...request.assignedEmployees];
 
   /*
    * WHO the caller is allowed to be, before WHAT they are allowed to do.
@@ -936,15 +976,16 @@ export async function changeServiceRequestStatus(
     newValue: { status: to },
   });
 
-  await notify({
-    event: 'SERVICE_REQUEST_STATUS_CHANGED',
-    title: `${request.requestNumber} төлөв "${SERVICE_REQUEST_STATUS_LABELS[to]}" боллоо`,
-    body: input.reason ?? null,
-    entityType: 'Work',
-    entityId: request._id,
-    linkPath: `/service-requests/${String(request._id)}`,
-    permission: 'service_request.view',
-    excludeUserId: actor.userId,
+  await notifyStatusChanged({
+    request: {
+      _id: request._id,
+      requestNumber: request.requestNumber,
+      customer: request.customer,
+      assignedEmployees: assignedWhenChanged,
+    },
+    to,
+    reason: input.reason ?? null,
+    actorUserId: actor.userId,
   });
 
   return getServiceRequestById(requestId, scope, actor);

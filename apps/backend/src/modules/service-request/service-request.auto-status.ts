@@ -1,9 +1,10 @@
-import { canTransition, SERVICE_REQUEST_STATUS_LABELS, type ServiceRequestStatus } from '@monhorus/shared';
+import { canTransition, type ServiceRequestStatus } from '@monhorus/shared';
 import { Types } from 'mongoose';
 
 import type { AuthContext } from '../../common/types/express';
 import { logger } from '../../config/logger';
 import { notify } from '../notification/notification.service';
+import { notifyStatusChanged } from './service-request.notify';
 import { ServiceRequest } from './service-request.model';
 
 /**
@@ -67,17 +68,23 @@ export async function advanceOnConclusion(
     });
     await request.save();
 
-    await notify({
-      event: 'SERVICE_REQUEST_STATUS_CHANGED',
-      title: `${request.requestNumber} төлөв "${SERVICE_REQUEST_STATUS_LABELS[to]}" боллоо`,
-      body: null,
-      entityType: 'Work',
-      entityId: request._id,
-      linkPath: `/service-requests/${String(request._id)}`,
-      permission: 'service_request.view',
-      excludeUserId: actor.userId,
+    /*
+     * The same recipients as a hand-made status change, because it is the same event.
+     *
+     * A conclusion moving the request is an implementation detail of how it moved; the
+     * technician on the job and the dispatch desk care that it moved. `notifyStatusChanged`
+     * also decides on its own whether this status is one the customer should hear about,
+     * which is why COMPLETED needs no special case here — see below.
+     */
+    await notifyStatusChanged({
+      request,
+      to,
+      reason: null,
+      actorUserId: actor.userId,
     });
 
+    // COMPLETED is deliberately NOT in the customer-visible set above: this message says
+    // more than a status line does, and two notifications for one event is worse than one.
     if (to === 'COMPLETED') await notifyCustomerResolved(request);
   } catch (error) {
     // Same contract as the notification writer: a bookkeeping failure must not turn a

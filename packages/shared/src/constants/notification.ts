@@ -42,6 +42,19 @@ export const NOTIFICATION_EVENTS = [
   // Засвар/давтан үзлэг шаардлагатай -> хариуцагч, хэрэглэгч, админ
   'REPAIR_REQUIRED',
   'REVISIT_REQUIRED',
+  /**
+   * A second call at a site that already has unfinished work.
+   *
+   * Addressed to whoever is on the existing job rather than broadcast: the point is that
+   * somebody already standing there can pick it up, which is information only they can act
+   * on. A dispatcher learns the same thing from SERVICE_REQUEST_CREATED.
+   */
+  'SERVICE_REQUEST_SITE_BUSY',
+  // Төлөвлөгөөт ажил хуваарилагдсан/товлогдсон/эхэлсэн -> хариуцагч, хэрэглэгч
+  'PLANNED_WORK_ASSIGNED',
+  'PLANNED_WORK_TASK_ASSIGNED',
+  'PLANNED_WORK_SCHEDULED',
+  'PLANNED_WORK_STARTED',
   // Invoice үүссэн/төлөх хугацаа дөхсөн/overdue -> админ
   'INVOICE_ISSUED',
   'INVOICE_DUE_SOON',
@@ -65,6 +78,11 @@ export const NOTIFICATION_EVENT_LABELS: Record<NotificationEvent, string> = {
   RISK_ASSESSMENT_RAISED: 'Эрсдэлтэй үнэлгээ илэрсэн',
   REPAIR_REQUIRED: 'Засвар шаардлагатай',
   REVISIT_REQUIRED: 'Дахин үзлэг шаардлагатай',
+  SERVICE_REQUEST_SITE_BUSY: 'Ажиллаж буй байршилд шинэ дуудлага',
+  PLANNED_WORK_ASSIGNED: 'Төлөвлөгөөт ажил хуваарилагдсан',
+  PLANNED_WORK_TASK_ASSIGNED: 'Дэд ажил хуваарилагдсан',
+  PLANNED_WORK_SCHEDULED: 'Төлөвлөгөөт ажил товлогдсон',
+  PLANNED_WORK_STARTED: 'Төлөвлөгөөт ажил эхэлсэн',
   INVOICE_ISSUED: 'Нэхэмжлэл илгээгдсэн',
   INVOICE_DUE_SOON: 'Нэхэмжлэлийн төлөх хугацаа дөхсөн',
   INVOICE_OVERDUE: 'Нэхэмжлэл хугацаа хэтэрсэн',
@@ -96,6 +114,11 @@ export const NOTIFICATION_EVENT_SEVERITIES: Record<NotificationEvent, Notificati
   RISK_ASSESSMENT_RAISED: 'WARNING',
   REPAIR_REQUIRED: 'WARNING',
   REVISIT_REQUIRED: 'WARNING',
+  SERVICE_REQUEST_SITE_BUSY: 'INFO',
+  PLANNED_WORK_ASSIGNED: 'INFO',
+  PLANNED_WORK_TASK_ASSIGNED: 'INFO',
+  PLANNED_WORK_SCHEDULED: 'INFO',
+  PLANNED_WORK_STARTED: 'INFO',
   INVOICE_ISSUED: 'INFO',
   INVOICE_DUE_SOON: 'WARNING',
   INVOICE_OVERDUE: 'CRITICAL',

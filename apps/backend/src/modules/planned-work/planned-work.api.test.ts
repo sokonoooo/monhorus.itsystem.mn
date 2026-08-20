@@ -1,5 +1,6 @@
 import { PERMISSIONS } from '@monhorus/shared';
 import type { Express } from 'express';
+import { Types } from 'mongoose';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
@@ -16,8 +17,10 @@ import {
 } from '../../test/helpers';
 import { AuditLog } from '../audit/audit-log.model';
 import { Employee } from '../employee/employee.model';
+import { Notification } from '../notification/notification.model';
 import { Customer, ObjectNode } from '../objects/object.models';
 import { MaterialItem } from '../material/material.models';
+import { User } from '../user/user.model';
 import { PlannedWork, PlannedWorkTask } from './planned-work.models';
 import { runOverdueReconciliation } from './planned-work.overdue.service';
 
@@ -41,6 +44,8 @@ let app: Express;
 let org: OrgFixture;
 let objects: ObjectFixture;
 let token: string;
+/** The user behind `token`, needed by the cases that assert somebody was NOT notified. */
+let actorUserId: string;
 /** The crew APPROVE is given whenever a fixture just needs *some* valid employee. */
 let crewEmployeeId: string;
 
@@ -203,6 +208,7 @@ beforeEach(async () => {
   org = await createOrgFixture();
   objects = await createObjectFixture();
   const user = await createUserWithPermissions('pw@test.mn', ALL_PLANNED_WORK);
+  actorUserId = user.userId;
   token = await login(user.email, user.password);
   crewEmployeeId = await activeEmployee();
 });
@@ -1897,5 +1903,243 @@ describe('GET /planned-work', () => {
 
     expect(response.status).toBe(200);
     expect(response.body.data.total).toBe(1);
+  });
+});
+
+/**
+ * The notifications the planned-work lifecycle owes.
+ *
+ * Every case reads the Notification collection directly rather than the inbox endpoint,
+ * because what is under test is WHO the row was addressed to, and the endpoint only ever
+ * shows the caller their own. `recipient` is the assertion that matters: an event firing
+ * into the wrong inbox is the failure these guard against, not an event failing to fire.
+ */
+describe('planned-work notifications', () => {
+  /**
+   * An employee with a sign-in account.
+   *
+   * `userIdsForEmployees` drops an employee whose `systemUser` is null, so the plain
+   * `activeEmployee` fixture is unreachable by design and every case here needs the link.
+   */
+  async function employeeWithAccount(
+    email: string,
+    code: string,
+  ): Promise<{ employeeId: string; userId: string }> {
+    const user = await createUserWithPermissions(email, [PERMISSIONS.PLANNED_WORK_VIEW]);
+    const employeeId = await activeEmployee(code);
+    await Employee.updateOne(
+      { _id: new Types.ObjectId(employeeId) },
+      { $set: { systemUser: new Types.ObjectId(user.userId) } },
+    );
+    return { employeeId, userId: user.userId };
+  }
+
+  /** A portal account for the fixture's customer, the only way `customerId` resolves. */
+  async function portalAccount(email: string): Promise<string> {
+    const user = await createUserWithPermissions(email, [PERMISSIONS.PLANNED_WORK_VIEW]);
+    await User.updateOne(
+      { _id: new Types.ObjectId(user.userId) },
+      { $set: { role: 'customer', customer: new Types.ObjectId(objects.customerId) } },
+    );
+    return user.userId;
+  }
+
+  interface NotificationRow {
+    recipient: Types.ObjectId;
+    linkPath: string | null;
+    entityId: Types.ObjectId | null;
+    entityType: string | null;
+  }
+
+  async function rowsFor(event: string): Promise<NotificationRow[]> {
+    return Notification.find({ event }).lean<NotificationRow[]>();
+  }
+
+  function recipientsOf(rows: readonly NotificationRow[]): string[] {
+    return rows.map((row) => String(row.recipient)).sort();
+  }
+
+  it('tells the approved crew they are on the work, and nobody else', async () => {
+    const first = await employeeWithAccount('crew1@test.mn', 'EMP-N1');
+    const second = await employeeWithAccount('crew2@test.mn', 'EMP-N2');
+    const bystander = await createUserWithPermissions('bystander@test.mn', [
+      PERMISSIONS.PLANNED_WORK_VIEW,
+    ]);
+
+    const workId = await createWork();
+    await planAndApprove(workId, [first.employeeId, second.employeeId]);
+
+    const rows = await rowsFor('PLANNED_WORK_ASSIGNED');
+    expect(recipientsOf(rows)).toEqual([first.userId, second.userId].sort());
+    // A permission holder who is not on the crew is deliberately not a recipient.
+    expect(recipientsOf(rows)).not.toContain(bystander.userId);
+    expect(rows[0]?.entityType).toBe('PlannedWork');
+    expect(String(rows[0]?.entityId)).toBe(workId);
+    expect(rows[0]?.linkPath).toBe(`/planned-work/${workId}`);
+  });
+
+  it('drops a crew member with no sign-in account rather than failing the approval', async () => {
+    const linked = await employeeWithAccount('crew3@test.mn', 'EMP-N3');
+    const unlinked = await activeEmployee('EMP-N4');
+
+    const workId = await createWork();
+    await planAndApprove(workId, [linked.employeeId, unlinked]);
+
+    // One recipient, not two and not an error: an employee with no account is nobody to notify.
+    expect(recipientsOf(await rowsFor('PLANNED_WORK_ASSIGNED'))).toEqual([linked.userId]);
+  });
+
+  /**
+   * The assign-versus-schedule split. APPROVE raises both events, but each audience gets
+   * exactly one of them, so no inbox holds two rows saying the same thing.
+   */
+  it('tells the customer the work is scheduled, on the portal link, and the crew not at all', async () => {
+    const crew = await employeeWithAccount('crew4@test.mn', 'EMP-N5');
+    const portalUserId = await portalAccount('portal1@test.mn');
+
+    const workId = await createWork();
+    await planAndApprove(workId, [crew.employeeId]);
+
+    const scheduled = await rowsFor('PLANNED_WORK_SCHEDULED');
+    expect(recipientsOf(scheduled)).toEqual([portalUserId]);
+    // A customer following the staff path is refused, so this link must be the portal one.
+    expect(scheduled[0]?.linkPath).toBe(`/portal/planned-work/${workId}`);
+
+    // And the reverse: the crew is told once, as assigned, never a second time as scheduled.
+    expect(recipientsOf(await rowsFor('PLANNED_WORK_ASSIGNED'))).toEqual([crew.userId]);
+  });
+
+  it('tells the crew and the customer when the work starts, each on their own link', async () => {
+    const crew = await employeeWithAccount('crew5@test.mn', 'EMP-N6');
+    const portalUserId = await portalAccount('portal2@test.mn');
+
+    const workId = await createWork();
+    await planAndApprove(workId, [crew.employeeId]);
+    expect((await transition(workId, 'START')).status).toBe(200);
+
+    const rows = await rowsFor('PLANNED_WORK_STARTED');
+    expect(recipientsOf(rows)).toEqual([crew.userId, portalUserId].sort());
+
+    const staffRow = rows.find((row) => String(row.recipient) === crew.userId);
+    const portalRow = rows.find((row) => String(row.recipient) === portalUserId);
+    expect(staffRow?.linkPath).toBe(`/planned-work/${workId}`);
+    expect(portalRow?.linkPath).toBe(`/portal/planned-work/${workId}`);
+  });
+
+  it('does not tell the technician about the start they pressed themselves', async () => {
+    // The acting user IS on the crew, which is the normal case: a technician starts their
+    // own job. `excludeUserId` is what keeps that out of their own inbox.
+    const employeeId = await activeEmployee('EMP-N7');
+    await Employee.updateOne(
+      { _id: new Types.ObjectId(employeeId) },
+      { $set: { systemUser: new Types.ObjectId(actorUserId) } },
+    );
+    const mate = await employeeWithAccount('crew6@test.mn', 'EMP-N8');
+
+    const workId = await createWork();
+    await planAndApprove(workId, [employeeId, mate.employeeId]);
+    expect((await transition(workId, 'START')).status).toBe(200);
+
+    const recipients = recipientsOf(await rowsFor('PLANNED_WORK_STARTED'));
+    expect(recipients).toContain(mate.userId);
+    expect(recipients).not.toContain(actorUserId);
+  });
+
+  it('tells only the newly added employee when the crew is changed later', async () => {
+    const original = await employeeWithAccount('crew7@test.mn', 'EMP-N9');
+    const added = await employeeWithAccount('crew8@test.mn', 'EMP-N10');
+
+    const workId = await createWork();
+    await planAndApprove(workId, [original.employeeId]);
+    await Notification.deleteMany({});
+
+    const response = await request(app)
+      .patch(`${API}/planned-work/${workId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ assignedEmployeeIds: [original.employeeId, added.employeeId] });
+    expect(response.status).toBe(200);
+
+    // The employee already on the work is not told again: nothing changed for them.
+    expect(recipientsOf(await rowsFor('PLANNED_WORK_ASSIGNED'))).toEqual([added.userId]);
+  });
+
+  it('says nothing when a crew edit changes no member', async () => {
+    const crew = await employeeWithAccount('crew9@test.mn', 'EMP-N11');
+
+    const workId = await createWork();
+    await planAndApprove(workId, [crew.employeeId]);
+    await Notification.deleteMany({});
+
+    const response = await request(app)
+      .patch(`${API}/planned-work/${workId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ title: 'Шинэ нэр', assignedEmployeeIds: [crew.employeeId] });
+    expect(response.status).toBe(200);
+
+    expect(await rowsFor('PLANNED_WORK_ASSIGNED')).toHaveLength(0);
+  });
+
+  it('tells the assignee when a sub-task is created for them', async () => {
+    const crew = await employeeWithAccount('crew10@test.mn', 'EMP-N12');
+
+    const workId = await createWork();
+    await planAndApprove(workId, [crew.employeeId]);
+    await Notification.deleteMany({});
+
+    await addTask(workId, { assignedEmployeeId: crew.employeeId, title: 'Шүүлтүүр солих' });
+
+    const rows = await rowsFor('PLANNED_WORK_TASK_ASSIGNED');
+    expect(recipientsOf(rows)).toEqual([crew.userId]);
+    // No sub-task screen exists, so the row points at the parent work.
+    expect(rows[0]?.linkPath).toBe(`/planned-work/${workId}`);
+    expect(String(rows[0]?.entityId)).toBe(workId);
+  });
+
+  it('says nothing when a sub-task is created with nobody on it', async () => {
+    const crew = await employeeWithAccount('crew11@test.mn', 'EMP-N13');
+
+    const workId = await createWork();
+    await planAndApprove(workId, [crew.employeeId]);
+    await Notification.deleteMany({});
+
+    await addTask(workId);
+
+    expect(await rowsFor('PLANNED_WORK_TASK_ASSIGNED')).toHaveLength(0);
+  });
+
+  it('tells the new assignee when a sub-task changes hands, and not the old one', async () => {
+    const first = await employeeWithAccount('crew12@test.mn', 'EMP-N14');
+    const second = await employeeWithAccount('crew13@test.mn', 'EMP-N15');
+
+    const workId = await createWork();
+    await planAndApprove(workId, [first.employeeId, second.employeeId]);
+    const taskId = await addTask(workId, { assignedEmployeeId: first.employeeId });
+    await Notification.deleteMany({});
+
+    const response = await request(app)
+      .patch(`${API}/planned-work/${workId}/tasks/${taskId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ assignedEmployeeId: second.employeeId });
+    expect(response.status).toBe(200);
+
+    expect(recipientsOf(await rowsFor('PLANNED_WORK_TASK_ASSIGNED'))).toEqual([second.userId]);
+  });
+
+  it('does not re-announce a sub-task edit that resends the same assignee', async () => {
+    const crew = await employeeWithAccount('crew14@test.mn', 'EMP-N16');
+
+    const workId = await createWork();
+    await planAndApprove(workId, [crew.employeeId]);
+    const taskId = await addTask(workId, { assignedEmployeeId: crew.employeeId });
+    await Notification.deleteMany({});
+
+    // Exactly what the sheet sends when only the title was touched.
+    const response = await request(app)
+      .patch(`${API}/planned-work/${workId}/tasks/${taskId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ title: 'Шинэчилсэн дэд ажил', assignedEmployeeId: crew.employeeId });
+    expect(response.status).toBe(200);
+
+    expect(await rowsFor('PLANNED_WORK_TASK_ASSIGNED')).toHaveLength(0);
   });
 });
