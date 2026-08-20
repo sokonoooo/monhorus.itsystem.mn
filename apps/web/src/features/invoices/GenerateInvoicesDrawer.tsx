@@ -1,5 +1,4 @@
 import {
-  TAX_UNSET_NOTE,
   generateMonthlyInvoicesSchema,
   type InvoiceGenerationCandidateDto,
 } from '@monhorus/shared';
@@ -49,7 +48,6 @@ export function GenerateInvoicesDrawer({
   const [dueDate, setDueDate] = useState(() => addDays(30));
 
   const [candidates, setCandidates] = useState<InvoiceGenerationCandidateDto[]>([]);
-  const [taxPercent, setTaxPercent] = useState(0);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -89,7 +87,6 @@ export function GenerateInvoicesDrawer({
       .then((preview) => {
         if (cancelled) return;
         setCandidates(preview.candidates as InvoiceGenerationCandidateDto[]);
-        setTaxPercent(preview.taxPercent);
         // Anything already invoiced starts unselected: it cannot be created again.
         setSelected(
           new Set(
@@ -177,13 +174,6 @@ export function GenerateInvoicesDrawer({
     >
       <div className="space-y-4">
         {error && <Alert variant="error">{error}</Alert>}
-        {taxPercent === 0 && <Alert variant="info">{TAX_UNSET_NOTE}</Alert>}
-
-        <Alert variant="info">
-          Идэвхтэй үйлчилгээний нөхцөлтэй харилцагч бүрд сарын тогтмол төлбөрөөр нэхэмжлэл
-          үүснэ.
-        </Alert>
-
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <Field label="Тайлант үе" required>
             <TextInput type="month" value={billingPeriod} onChange={setBillingPeriod} disabled={submitting} />

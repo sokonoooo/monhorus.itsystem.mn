@@ -595,18 +595,21 @@ describe('FloorPlanPanel placement', () => {
    * without it is neither offered nor drawn even when a position was stored.
    */
   it('draws nothing for a type that is not marked as shown on the plan', async () => {
-    vi.spyOn(objectTypeService, 'list').mockResolvedValue(
-      makePage([makeObjectType({ id: TYPE_ID, showOnPlan: false })]),
-    );
+    const list = vi
+      .spyOn(objectTypeService, 'list')
+      .mockResolvedValue(makePage([makeObjectType({ id: TYPE_ID, showOnPlan: false })]));
 
     renderPanel({
       objects: [placedObject({ objectType: { ...PLACEABLE_INLINE, showOnPlan: false } })],
     });
     await readyCanvas();
+    await waitFor(() => expect(list).toHaveBeenCalled());
 
+    // The blue box that used to name the missing setting was removed; the panel now says
+    // nothing at all here, and the instruction lives in the floor page's help panel.
     expect(
-      await screen.findByText(/План дээр байрлуулах тоноглолын төрөл тохируулагдаагүй/),
-    ).toBeInTheDocument();
+      screen.queryByText(/План дээр байрлуулах тоноглолын төрөл тохируулагдаагүй/),
+    ).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'EQ-01 · Гэрэл' })).not.toBeInTheDocument();
   });
 

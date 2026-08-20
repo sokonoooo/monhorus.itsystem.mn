@@ -431,11 +431,6 @@ export function TaskFormDrawer({
       <div className="space-y-4">
         {formError && <Alert variant="error">{formError}</Alert>}
 
-        <Alert variant="info">
-          Дэд ажлын хугацаа эцэг ажлын хугацаанд байх ёстой. Төлөв нь биелэлт, баримтаас
-          автоматаар тодорхойлогдох тул гараар сонгохгүй.
-        </Alert>
-
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field label="Дэд ажлын нэр" required error={fieldErrors.title}>
             <TextInput value={title} onChange={setTitle} disabled={submitting} />

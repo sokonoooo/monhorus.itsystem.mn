@@ -217,13 +217,6 @@ export function PortalPlannedWorkDetailPage(): ReactElement {
           The states a customer acts on. Each says who is waiting on whom, rather than
           leaving them to infer it from a coloured chip.
         */}
-        {work.lifecycleStatus === 'DRAFT' && (
-          <Alert variant="info" title="Илгээгээгүй байна">
-            Энэ хүсэлт хараахан илгээгдээгүй. Мэдээллээ гүйцээж, дэд ажлуудаа оруулаад
-            «Төлөвлөх» дарж батлуулахаар илгээнэ үү.
-          </Alert>
-        )}
-
         {/*
           A returned request, with the objection it came back with. This is the one state
           where the customer is the person holding things up, so the reason is shown as the
@@ -323,17 +316,6 @@ export function PortalPlannedWorkDetailPage(): ReactElement {
               )}
             </div>
 
-            {/*
-              A pending request with no breakdown is the normal starting state, not an error.
-              It is also the state that stops the work being completed later, so it is said
-              plainly rather than left as an empty panel.
-            */}
-            {floorGroups.length === 0 && canEdit && (
-              <Alert variant="info">
-                Хийгдэх ажлуудаа дэд ажил болгон задалж оруулна уу. Батлагдсаны дараа
-                задаргааг өөрчлөх боломжгүй.
-              </Alert>
-            )}
             {floorGroups.map((group) => (
               <div
                 key={group.key}

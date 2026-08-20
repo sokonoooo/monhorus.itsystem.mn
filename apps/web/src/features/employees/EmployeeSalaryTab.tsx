@@ -12,7 +12,7 @@ import { useEffect, useState, type ReactElement } from 'react';
 
 import { Alert } from '../../components/ui/Alert';
 import { Button } from '../../components/ui/Button';
-import { Skeleton } from '../../components/ui/States';
+import { EmptyState, Skeleton } from '../../components/ui/States';
 import { useAuth } from '../../contexts/auth-context';
 import { ApiError } from '../../lib/api-client';
 import { employeeService } from '../../services/employee.service';
@@ -168,11 +168,7 @@ export function EmployeeSalaryTab({ employeeId }: { employeeId: string | null })
   }
 
   if (!employeeId) {
-    return (
-      <Alert variant="info">
-        Цалингийн мэдээллийг ажилтныг үүсгэсний дараа бүртгэнэ.
-      </Alert>
-    );
+    return <EmptyState title="Цалингийн мэдээллийг ажилтныг үүсгэсний дараа бүртгэнэ." />;
   }
 
   if (loading) {
@@ -183,12 +179,6 @@ export function EmployeeSalaryTab({ employeeId }: { employeeId: string | null })
     <div className="space-y-6">
       {error && <Alert variant="error">{error}</Alert>}
       {notice && <Alert variant="success">{notice}</Alert>}
-
-      <Alert variant="info">
-        Цалингийн түүх хүчин төгөлдөр огноогоор хадгалагдана. Шинэ утга оруулахад өмнөх
-        бичлэг устахгүй, харин хугацаа нь хаагдана.
-        {history.length > 0 && ' Талбарууд одоогийн бичлэгээс дүүргэгдсэн: өөрчлөөгүй утга хэвээр шилжинэ.'}
-      </Alert>
 
       <Section title="Цалингийн мэдээлэл">
         <Field label="Цалингийн зэрэглэл" error={fieldErrors.grade}>

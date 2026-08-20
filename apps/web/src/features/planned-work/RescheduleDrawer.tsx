@@ -7,7 +7,6 @@ import { Drawer } from '../../components/ui/Drawer';
 import { useToast } from '../../components/ui/ToastProvider';
 import { FIELD_TEXTAREA, FILTER_LABEL } from '../../components/ui/control-styles';
 import { ApiError } from '../../lib/api-client';
-import { formatMinutes } from '../../lib/duration';
 import { plannedWorkService } from '../../services/planned-work.service';
 import { Field, TextInput } from '../employees/FormControls';
 
@@ -108,14 +107,6 @@ export function RescheduleDrawer({
           Хугацаа сунгах нь audit log-д бүртгэгдэх ажиллагаа. Эх хугацаа{' '}
           {work.originalPlannedEndDate.slice(0, 10)} хэвээр хадгалагдана.
         </Alert>
-
-        {work.totalPausedMinutes > 0 && (
-          <Alert variant="info">
-            Түр зогссон нийт хугацаа: {formatMinutes(work.totalPausedMinutes)}. Түр зогсолт
-            хугацааг автоматаар сунгадаггүй тул шаардлагатай бол доор
-            шинэ огноог оруулна.
-          </Alert>
-        )}
 
         <Field
           label="Одоогийн дуусах огноо"

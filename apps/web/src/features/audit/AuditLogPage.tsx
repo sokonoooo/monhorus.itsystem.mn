@@ -1,8 +1,7 @@
-import { PERMISSIONS, type PaginatedData } from '@monhorus/shared';
+import { type PaginatedData } from '@monhorus/shared';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
-import { Alert } from '../../components/ui/Alert';
 import { Button } from '../../components/ui/Button';
 import { ColumnPicker } from '../../components/ui/ColumnPicker';
 import { DataTable, Pagination, type Column } from '../../components/ui/DataTable';
@@ -16,7 +15,6 @@ import {
   FILTER_LABEL,
   FILTER_SELECT,
 } from '../../components/ui/control-styles';
-import { useAuth } from '../../contexts/auth-context';
 import { useTableColumns } from '../../hooks/use-table-columns';
 import { ApiError } from '../../lib/api-client';
 import {
@@ -87,7 +85,6 @@ function JsonBlock({ label, value }: { label: string; value: unknown }): ReactEl
  * employee.view_salary.
  */
 export function AuditLogPage(): ReactElement {
-  const { can } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
 
   const query = useMemo<AuditQuery>(() => {
@@ -233,14 +230,6 @@ export function AuditLogPage(): ReactElement {
         title="Audit log"
         breadcrumbs={[{ label: 'Нүүр', to: '/dashboard' }, { label: 'Audit log' }]}
       />
-
-      {!can(PERMISSIONS.EMPLOYEE_VIEW_SALARY) && (
-        <div className="mb-4">
-          <Alert variant="info">
-            Цалинтай холбоотой бүртгэлийг харахын тулд цалингийн эрх шаардлагатай.
-          </Alert>
-        </div>
-      )}
 
       <div className={FILTER_BAR}>
         <div className="min-w-[200px] flex-1">

@@ -403,12 +403,6 @@ export function SettingsPage(): ReactElement {
       <div className="space-y-4">
         {formError && <Alert variant="error">{formError}</Alert>}
 
-        {readOnly && (
-          <Alert variant="info">
-            Танд тохиргоо өөрчлөх эрх байхгүй тул зөвхөн харах горимд байна.
-          </Alert>
-        )}
-
         {data.groups.map((group) => (
           <section
             key={group.group}

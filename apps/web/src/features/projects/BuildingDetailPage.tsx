@@ -275,9 +275,6 @@ function FloorDrawer({
     >
       <div className="space-y-4">
         {formError && <Alert variant="error">{formError}</Alert>}
-        <Alert variant="info">
-          План зургийг давхар үүсгэсний дараа дэлгэрэнгүй хуудсаас нь хавсаргана.
-        </Alert>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field label="Давхрын нэр" required error={fieldErrors.name}>
             <TextInput value={name} onChange={setName} disabled={submitting} />
@@ -619,18 +616,6 @@ export function BuildingDetailPage(): ReactElement {
             />
           )}
         </div>
-
-        {/* The reasons deletion is blocked close the page: they explain an action that is
-            already absent from the header, so they are read last rather than first. */}
-        {building.deleteBlockers.length > 0 && canManage && (
-          <Alert variant="info" title="Устгах боломжгүй">
-            <ul className="ml-4 list-disc space-y-0.5">
-              {building.deleteBlockers.map((blocker) => (
-                <li key={blocker}>{blocker}</li>
-              ))}
-            </ul>
-          </Alert>
-        )}
       </div>
 
       <BuildingEditDrawer

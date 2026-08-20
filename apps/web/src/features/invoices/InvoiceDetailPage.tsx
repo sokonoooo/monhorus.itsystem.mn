@@ -139,10 +139,6 @@ function PaymentDrawer({
     >
       <div className="space-y-4">
         {formError && <Alert variant="error">{formError}</Alert>}
-        <Alert variant="info">
-          Төлбөр нэхэмжлэлийг бүрэн хаана. Хэсэгчлэн төлөлт V1-д байхгүй.
-        </Alert>
-
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field label="Төлсөн огноо" required error={fieldErrors.paidAt}>
             <TextInput type="date" value={paidAt} onChange={setPaidAt} disabled={submitting} />
@@ -352,17 +348,6 @@ export function InvoiceDetailPage(): ReactElement {
         {invoice.status === 'CANCELLED' && invoice.cancelReason && (
           <Alert variant="error" title="Цуцалсан">
             {invoice.cancelReason}
-          </Alert>
-        )}
-
-        {invoice.replacesInvoiceNumber && (
-          <Alert variant="info">
-            Энэ нэхэмжлэл {invoice.replacesInvoiceNumber} нэхэмжлэлийг орлуулж үүссэн.
-          </Alert>
-        )}
-        {invoice.replacedByInvoiceNumber && (
-          <Alert variant="info">
-            Энэ нэхэмжлэлийг {invoice.replacedByInvoiceNumber} нэхэмжлэл орлуулсан.
           </Alert>
         )}
 

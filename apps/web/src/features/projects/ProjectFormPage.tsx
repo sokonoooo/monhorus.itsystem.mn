@@ -173,13 +173,6 @@ export function ProjectFormPage(): ReactElement {
       <div className="space-y-4 rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
         {formError && <Alert variant="error">{formError}</Alert>}
 
-        {isEdit && (
-          <Alert variant="info">
-            Байгууллагыг өөрчлөхгүй. Доор бүртгэгдсэн барилга, давхар, объектууд тухайн
-            байгууллагад хамаарна.
-          </Alert>
-        )}
-
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
           <Field label="Байгууллага" required error={fieldErrors.customerId}>
             <SelectInput

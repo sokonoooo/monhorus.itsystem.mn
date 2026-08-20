@@ -45,13 +45,19 @@ describe('NotificationsPage', () => {
    * whose phone is buzzing is worse than saying nothing. What still needs saying is the two
    * real limits — an iPhone gets no push, and nothing is emailed.
    */
-  it('states which channels do and do not deliver', async () => {
+  /**
+   * The channel limit moved to the Help panel when the blue notices were withdrawn. It is
+   * still the only place the product admits push never reaches an iPhone, so what is pinned
+   * here is that the PAGE no longer claims it — not that the fact was dropped.
+   */
+  it('no longer carries the channel notice on the page itself', async () => {
     vi.spyOn(notificationService, 'list').mockResolvedValue(makePage([]));
 
     renderWithAuth(<NotificationsPage />, { permissions: [PERMISSIONS.NOTIFICATION_VIEW] });
 
-    expect(await screen.findByText(/Android/)).toBeInTheDocument();
-    expect(screen.getByText(/iPhone/)).toBeInTheDocument();
+    await screen.findByRole('heading', { name: 'Мэдэгдэл' });
+    expect(screen.queryByText(/Android/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/iPhone/)).not.toBeInTheDocument();
   });
 
   it('marks a notification read when it is opened', async () => {

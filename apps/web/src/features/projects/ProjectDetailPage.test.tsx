@@ -277,23 +277,25 @@ describe('ProjectDetailPage delete blockers', () => {
     vi.spyOn(projectService, 'listBuildings').mockResolvedValue(makePage([]));
   });
 
-  /** The reasons are read after the content they refer to, not before it. */
-  it('reports why deletion is blocked in a box at the bottom of the page', async () => {
+  /**
+   * The blue box that used to list the reasons is gone; what remains is the missing button.
+   * Why a project with dependants cannot be deleted is now read in the help panel, so the
+   * page must not grow the notice back.
+   */
+  it('withholds delete while blockers exist, without a notice on the page', async () => {
     vi.spyOn(projectService, 'getProject').mockResolvedValue(
       makeProject({ deleteBlockers: ['1 барилга бүртгэлтэй.'] }),
     );
 
     renderProject();
 
-    const box = await screen.findByText('Устгах боломжгүй');
-    expect(screen.getByText('1 барилга бүртгэлтэй.')).toBeInTheDocument();
+    await screen.findByRole('heading', { name: 'Барилга' });
     expect(screen.queryByRole('button', { name: 'Устгах' })).not.toBeInTheDocument();
-
-    const buildings = screen.getByRole('heading', { name: 'Барилга' });
-    expect(buildings.compareDocumentPosition(box)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(screen.queryByText('Устгах боломжгүй')).not.toBeInTheDocument();
+    expect(screen.queryByText('1 барилга бүртгэлтэй.')).not.toBeInTheDocument();
   });
 
-  it('shows no blocker box to a caller who cannot manage the project', async () => {
+  it('offers no delete or edit to a caller who cannot manage the project', async () => {
     vi.spyOn(projectService, 'getProject').mockResolvedValue(
       makeProject({ deleteBlockers: ['1 барилга бүртгэлтэй.'] }),
     );
@@ -305,7 +307,9 @@ describe('ProjectDetailPage delete blockers', () => {
     });
 
     await screen.findByRole('heading', { name: 'Барилга' });
-    expect(screen.queryByText('Устгах боломжгүй')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Устгах' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Засах' })).not.toBeInTheDocument();
+    expect(screen.queryByText('1 барилга бүртгэлтэй.')).not.toBeInTheDocument();
   });
 });
 

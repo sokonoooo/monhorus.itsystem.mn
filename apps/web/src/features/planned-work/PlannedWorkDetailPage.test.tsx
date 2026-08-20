@@ -87,7 +87,13 @@ describe('PlannedWorkDetailPage', () => {
     vi.spyOn(objectMasterService, 'list').mockResolvedValue(makePage([]));
   });
 
-  it('shows the backend supplied progress and completion blockers', async () => {
+  /**
+   * Progress is the server's number and is still rendered. The list of completion blockers
+   * that used to be printed beside it is not: the reason a work cannot be completed is now
+   * given by the server when Дуусгах is pressed, and the standing rule is written in the
+   * help entry for this route.
+   */
+  it('shows the backend supplied progress without a blocker panel', async () => {
     vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(makePlannedWork());
 
     renderDetail([PERMISSIONS.PLANNED_WORK_VIEW]);
@@ -95,8 +101,12 @@ describe('PlannedWorkDetailPage', () => {
     expect(
       await screen.findByRole('heading', { name: 'Хагас жилийн урьдчилан сэргийлэх үзлэг' }),
     ).toBeInTheDocument();
-    expect(screen.getByText('Дуусгахад дараах нь шаардлагатай')).toBeInTheDocument();
-    expect(screen.getByText('"Самбарын үзлэг" биелэлт 40% байна.')).toBeInTheDocument();
+    expect(screen.getAllByRole('progressbar', { name: 'Биелэлт' })[0]).toHaveAttribute(
+      'aria-valuenow',
+      '45',
+    );
+    expect(screen.queryByText('Дуусгахад дараах нь шаардлагатай')).not.toBeInTheDocument();
+    expect(screen.queryByText('"Самбарын үзлэг" биелэлт 40% байна.')).not.toBeInTheDocument();
   });
 
   it('warns that a paused work still runs against its original deadline', async () => {

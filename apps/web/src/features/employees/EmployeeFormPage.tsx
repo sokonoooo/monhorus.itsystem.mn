@@ -654,11 +654,6 @@ export function EmployeeFormPage(): ReactElement {
                     <TextInput value={form.emergencyContactPhone} onChange={(v) => update('emergencyContactPhone', v)} disabled={submitting} />
                   </Field>
                 </Section>
-
-                <Alert variant="info">
-                  Боловсрол, өмнөх ажлын түүх, сертификатыг ажилтныг үүсгэсний дараа
-                  дэлгэрэнгүй хуудаснаас нэмнэ.
-                </Alert>
               </div>
             )}
 

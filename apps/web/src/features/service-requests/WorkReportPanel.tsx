@@ -413,11 +413,7 @@ function EquipmentAssessments({
 
   return (
     <div className="space-y-3">
-      {!buildingId ? (
-        <Alert variant="info">
-          Энэ хүсэлт барилга заагаагүй тул тоноглол сонгох боломжгүй.
-        </Alert>
-      ) : (
+      {buildingId ? (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field label="Давхар">
             <SelectInput
@@ -446,7 +442,7 @@ function EquipmentAssessments({
             />
           </Field>
         </div>
-      )}
+      ) : null}
 
       {rows.length === 0 ? (
         <p className="rounded-lg bg-slate-50 p-3 text-xs text-slate-500">
