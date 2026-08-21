@@ -40,12 +40,17 @@ async function seedCustomer(name = 'Central Tower ХХК'): Promise<string> {
   return String(customer._id);
 }
 
-async function seedAgreement(customer: string, monthlyFee = 1_500_000): Promise<string> {
+async function seedAgreement(
+  customer: string,
+  monthlyFee = 1_500_000,
+  /** Term overrides, for the billing-window cases. Defaults cover all of 2026. */
+  term: { startDate?: Date; endDate?: Date } = {},
+): Promise<string> {
   const agreement = await ServiceAgreement.create({
     agreementNumber: `AGR-${(seedSequence += 1)}`,
     customer,
-    startDate: new Date('2026-01-01'),
-    endDate: new Date('2026-12-31'),
+    startDate: term.startDate ?? new Date('2026-01-01'),
+    endDate: term.endDate ?? new Date('2026-12-31'),
     serviceType: 'Урьдчилан сэргийлэх үйлчилгээ',
     slaUrgentHours: 6,
     slaStandardHours: 24,
@@ -327,6 +332,73 @@ describe('Invoice API', () => {
     expect(generated.status).toBe(201);
     expect(generated.body.data.created).toHaveLength(1);
     expect(generated.body.data.created[0].total).toBe(1_200_000);
+  });
+
+  /**
+   * A finished contract must stop billing.
+   *
+   * `EXPIRED` is a declared agreement status that nothing in the backend ever writes, and
+   * there is no expiry sweep, so an agreement whose term ended is still sitting at ACTIVE.
+   * Generation filtered on status alone, so it kept producing a real monthly invoice for a
+   * contract that had finished — every month, indefinitely. The term is now part of the
+   * predicate, which does not depend on anyone remembering to run a sweep.
+   */
+  it('does not bill an agreement whose term ended before the billing period', async () => {
+    await seedAgreement(customerId, 1_200_000, {
+      startDate: new Date('2025-01-01'),
+      endDate: new Date('2025-12-31'),
+    });
+
+    const preview = await request(app)
+      .get(`${API}/invoices/generation-preview?billingPeriod=2026-07`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(preview.body.data.candidates).toHaveLength(0);
+
+    const generated = await request(app)
+      .post(`${API}/invoices/generate-monthly`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        billingPeriod: '2026-07',
+        issueDate: '2026-07-01T00:00:00.000Z',
+        dueDate: '2026-07-31T00:00:00.000Z',
+        customerIds: [customerId],
+      });
+
+    expect(generated.body.data.created).toHaveLength(0);
+    expect(generated.body.data.skipped).toHaveLength(1);
+    expect(generated.body.data.skipped[0].customerId).toBe(customerId);
+  });
+
+  it('does not bill an agreement whose term has not started by the billing period', async () => {
+    await seedAgreement(customerId, 1_200_000, {
+      startDate: new Date('2026-09-01'),
+      endDate: new Date('2027-08-31'),
+    });
+
+    const preview = await request(app)
+      .get(`${API}/invoices/generation-preview?billingPeriod=2026-07`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(preview.body.data.candidates).toHaveLength(0);
+  });
+
+  /**
+   * Overlap, not containment. A term that ends mid-month was in force for part of that
+   * month, so the month is still billable — the fix must not silently stop billing a
+   * contract in its final month.
+   */
+  it('still bills an agreement whose term ends inside the billing period', async () => {
+    await seedAgreement(customerId, 1_200_000, {
+      startDate: new Date('2026-01-01'),
+      endDate: new Date('2026-07-15'),
+    });
+
+    const preview = await request(app)
+      .get(`${API}/invoices/generation-preview?billingPeriod=2026-07`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(preview.body.data.candidates).toHaveLength(1);
+    expect(preview.body.data.candidates[0].monthlyFee).toBe(1_200_000);
   });
 
   it('skips a customer already invoiced for the period instead of failing the run', async () => {

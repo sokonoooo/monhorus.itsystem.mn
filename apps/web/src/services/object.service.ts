@@ -87,7 +87,7 @@ export const objectService = {
     );
   },
 
-  /** Direct children of a node. */
+  /** Direct children of a node — one whole level of the hierarchy. */
   async children(parentId: string): Promise<ObjectNodeDto[]> {
     if (!parentId) return [];
     return unwrap(

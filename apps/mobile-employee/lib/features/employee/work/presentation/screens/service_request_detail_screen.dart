@@ -4,6 +4,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../../core/error/failure.dart';
 import '../../../../../core/util/json_parse.dart';
 import '../../../presentation/theme/employee_tokens.dart';
+import '../../../project/data/models/project_models.dart';
+import '../../../project/presentation/providers/project_providers.dart';
+import '../../../project/presentation/widgets/authenticated_image.dart';
+import '../../../project/presentation/widgets/floor_plan_markers.dart';
 import '../../../shared/service_request_models.dart';
 import '../../../shared/service_request_vocabulary.dart';
 import '../format.dart';
@@ -90,7 +94,6 @@ class ServiceRequestDetailScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final ConclusionGrants grants = ref.watch(conclusionGrantsProvider);
     final AsyncValue<ServiceRequestDetailModel?> read =
         ref.watch(serviceRequestDetailProvider(requestId));
     final ServiceRequestDetailModel? detail = read.valueOrNull;
@@ -106,9 +109,9 @@ class ServiceRequestDetailScreen extends ConsumerWidget {
     final String? resolvedBuildingId = detail?.building?.id ?? buildingId;
     final String? resolvedBuildingName = detail?.building?.name ?? buildingName;
 
-    // The outcome of a transition or an approval, said once. Listened for here rather than
-    // inside the two sections because both watch the same controller, and a message shown
-    // by each of them would be the same sentence twice.
+    // The outcome of a transition, said once. Listened for at the screen's root rather than
+    // inside _ProgressSection so the toast survives that section rebuilding itself out of
+    // existence when the move it just made changes which transitions are legal.
     ref.listen<RequestActionState>(serviceRequestActionProvider(requestId),
         (RequestActionState? _, RequestActionState next) {
       final String? message = next.message;
@@ -192,6 +195,19 @@ class ServiceRequestDetailScreen extends ConsumerWidget {
                   ),
                 ),
 
+                // Between the fault and the contact, because it answers the question the
+                // description raises and the "Байршил" row above cannot: not which floor,
+                // but where on it.
+                if (detail.planPosition != null &&
+                    (detail.floor?.id.isNotEmpty ?? false)) ...<Widget>[
+                  const SizedBox(height: 16),
+                  const FieldLabel('Гэмтлийн байршил'),
+                  _FaultPinSection(
+                    floorId: detail.floor!.id,
+                    pin: detail.planPosition!,
+                  ),
+                ],
+
                 const SizedBox(height: 16),
                 const FieldLabel('Холбоо барих'),
                 WorkCard(
@@ -239,45 +255,115 @@ class ServiceRequestDetailScreen extends ConsumerWidget {
 
               const SizedBox(height: 16),
               const FieldLabel('Ажлын дүгнэлт'),
-
-              if (!grants.canAuthor)
-                const NoticeBanner(
-                  margin: EdgeInsets.zero,
-                  tone: EmployeeTokens.muted,
-                  icon: Icons.lock_outline,
-                  title: 'Бичих эрх байхгүй',
-                  text: 'Танд "service_request.update" эрх байхгүй тул дүгнэлт бичих '
-                      'боломжгүй. Бичигдсэн дүгнэлтийг харах боломжтой.',
-                )
-              else
-                const NoticeBanner(
-                  margin: EdgeInsets.zero,
-                  tone: EmployeeTokens.muted,
-                  icon: Icons.info_outline,
-                  text: 'Дүгнэлтийг тоноглол тус бүрээр бичнэ. Сонгосон тоноглол бүр '
-                      '"Үзлэг ба дүгнэлт" хэсэгт тусдаа мөр болж харагдана.',
-                ),
-
-              const SizedBox(height: 12),
-              // One full-width pill per line. Never a Row child: a WorkButton has no
-              // intrinsic width and cannot lay out unconstrained.
-              WorkButton(
-                label: grants.canAuthor ? 'Дүгнэлт бичих' : 'Дүгнэлт харах',
-                onPressed: () => Navigator.of(context).push(
-                  ConclusionEditorScreen.route(
-                    requestId: requestId,
-                    requestNumber: detail?.requestNumber ?? requestNumber,
-                    buildingId: resolvedBuildingId,
-                    buildingName: resolvedBuildingName,
-                  ),
-                ),
+              _ConclusionSection(
+                requestId: requestId,
+                requestNumber: detail?.requestNumber ?? requestNumber,
+                detail: detail,
+                stillReading: read.isLoading,
+                buildingId: resolvedBuildingId,
+                buildingName: resolvedBuildingName,
               ),
 
-              _ApprovalSection(requestId: requestId, detail: detail),
+              _ApprovalSection(detail: detail),
             ],
           ),
         ),
       ),
+    );
+  }
+}
+
+/// The floor's plan with the reporter's pin on it.
+///
+/// READ-ONLY, AND NOT NEGOTIABLE. The coordinate is the customer's own account of where
+/// their problem is, made on the intake form; there is no gesture, no drag and no clear
+/// control here, because a technician who could move it would be editing somebody
+/// else's statement of the fault.
+///
+/// The drawing is fetched separately from the request. `ServiceRequestDetailDto` carries
+/// the coordinate but not the picture — the picture belongs to the FLOOR — so this is a
+/// second read, [floorPlanProvider], guarded by `object.view`, which the TECHNICIAN role
+/// holds. It is deliberately not folded into the request read: a request whose floor has
+/// no plan must still render in full.
+///
+/// `AuthenticatedImage.sizedToImage` rather than the default constructor, and that is
+/// the whole reason the pin lands where the customer put it. The default letterboxes the
+/// picture inside a fixed-height box, so the painted rectangle is smaller than the
+/// widget's and a fraction of the widget would miss the drawing by the height of the
+/// bars. Sizing the box from the image makes the two one rectangle, and `x, y` then
+/// needs no arithmetic at all.
+///
+/// THREE WAYS THIS HAS NOTHING TO DRAW, each of which gets a sentence rather than an
+/// empty box: the floor has no plan, the plan is a PDF or another non-image, and the
+/// read itself failed. A fourth — the bytes arrive but will not decode — is
+/// [AuthenticatedImage]'s own and is already said there.
+class _FaultPinSection extends ConsumerWidget {
+  const _FaultPinSection({required this.floorId, required this.pin});
+
+  final String floorId;
+  final PlanPositionModel pin;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final AsyncValue<FloorPlanModel?> plan = ref.watch(floorPlanProvider(floorId));
+
+    return plan.when(
+      data: (FloorPlanModel? drawing) {
+        if (drawing == null) {
+          return const _PlanNotice(
+            'Захиалагч гэмтлийн байршлыг планд тэмдэглэсэн ч энэ давхарт план '
+            'зураг импортлогдоогүй тул харуулах боломжгүй байна.',
+          );
+        }
+        if (!drawing.isImage) {
+          return _PlanNotice(
+            '${drawing.fileName} нь зураг биш файл тул тэмдэглэгээг энд харуулах '
+            'боломжгүй байна.',
+          );
+        }
+
+        return WorkCard(
+          margin: EdgeInsets.zero,
+          padding: EdgeInsets.zero,
+          child: Container(
+            color: EmployeeTokens.white,
+            child: AuthenticatedImage.sizedToImage(
+              fileId: drawing.fileId,
+              overlay: FloorPlanPinLayer(pin: pin),
+            ),
+          ),
+        );
+      },
+      loading: () => const WorkCard(
+        margin: EdgeInsets.zero,
+        child: Center(
+          child: SizedBox(
+            width: 20,
+            height: 20,
+            child: CircularProgressIndicator(strokeWidth: 2.2),
+          ),
+        ),
+      ),
+      error: (Object error, StackTrace _) => _PlanNotice(
+        error is Failure
+            ? error.message
+            : 'План зургийг татаж чадсангүй. Дахин оролдоно уу.',
+      ),
+    );
+  }
+}
+
+/// One honest line where a drawing would have been.
+class _PlanNotice extends StatelessWidget {
+  const _PlanNotice(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return WorkCard(
+      margin: EdgeInsets.zero,
+      child: Text(text, style: EmployeeTokens.rowSub),
     );
   }
 }
@@ -496,49 +582,66 @@ class _ReasonSheetState extends State<_ReasonSheet> {
   }
 }
 
-/// Settling the conclusion, for the holder of `service_request.approve_report`.
+/// The one way into the conclusion editor, and the reason when there isn't one.
 ///
-/// OFFERED OFF THE REQUEST'S OWN STATUS, NOT THE CONCLUSION'S, and that is a deliberate
-/// constraint rather than an approximation. Reading the conclusion is
-/// `GET /service-requests/:id/report`, which is `getOrCreate`: it MINTS a draft attributed
-/// to the caller on first read. Fetching it here to find out whether it is SUBMITTED would
-/// make every technician who merely opened a request the author of an empty conclusion on
-/// it — the same reason the editor is behind an explicit tap. REPORT_SUBMITTED on the
-/// request is the same fact carried by a read that costs nothing, since submitting the
-/// conclusion is what puts the request there.
+/// THE TAP IS A WRITE, whatever the label on it says. `GET /service-requests/:id/report` is
+/// `getOrCreate`: it MINTS a draft and attributes it to the caller on first read, so merely
+/// arriving at [ConclusionEditorScreen] makes the person who opened it the author of a
+/// conclusion on this job. Hiding the control is therefore the gate itself — a disabled
+/// button would be equivalent, but a control that cannot be reached at all is the only one
+/// that cannot be reached by accident. There is no read-only route that skips that GET, so
+/// the view path is gated by the same three conditions rather than being let past them;
+/// where a conclusion exists to be read — REPORT_SUBMITTED, VERIFICATION, COMPLETED — all
+/// three hold anyway.
 ///
-/// APPROVE ONLY. There is no return control and there is no client method behind one:
-/// returning stays on `service_request.change_status`, because a return is a judgement
-/// passed on somebody else's work.
-class _ApprovalSection extends ConsumerWidget {
-  const _ApprovalSection({required this.requestId, required this.detail});
+/// THREE CONDITIONS, ALL OF WHICH MUST HOLD, and the section says which one failed rather
+/// than drawing nothing — the same doctrine as [_ProgressSection]:
+///
+///   1. The record is on screen. Assignment and arrival are both facts ABOUT the record,
+///      so without one there is nothing to check them against.
+///   2. The request is this employee's, or their team's — [resolveRequestAssignment], the
+///      same mirror the progress buttons use, not a second id comparison. Oversight and
+///      not-yet-known callers come back `unrestricted` and are not narrowed.
+///   3. The technician has ARRIVED — [ServiceRequestStatus.hasArrivedOnSite]. A conclusion
+///      is an account of a visit, and the visit has not happened yet.
+class _ConclusionSection extends ConsumerWidget {
+  const _ConclusionSection({
+    required this.requestId,
+    required this.requestNumber,
+    required this.detail,
+    required this.stillReading,
+    required this.buildingId,
+    required this.buildingName,
+  });
 
   final String requestId;
+  final String requestNumber;
   final ServiceRequestDetailModel? detail;
+
+  /// The detail read is in flight and has landed nothing yet.
+  final bool stillReading;
+
+  final String? buildingId;
+  final String? buildingName;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final ServiceRequestDetailModel? record = detail;
-    // Nothing to settle unless a conclusion has actually been handed in.
-    if (record == null || record.status != ServiceRequestStatus.reportSubmitted) {
-      return const SizedBox.shrink();
-    }
 
-    final ConclusionGrants grants = ref.watch(conclusionGrantsProvider);
-    if (!grants.isKnown) return const SizedBox.shrink();
+    if (record == null) {
+      // The spinner above the fold is already saying this. A second sentence under the
+      // heading, while the answer is still coming, would only be the same wait twice.
+      if (stillReading) return const SizedBox.shrink();
 
-    if (!grants.canApproveConclusion) {
-      return const Padding(
-        padding: EdgeInsets.only(top: 12),
-        child: NoticeBanner(
-          margin: EdgeInsets.zero,
-          tone: EmployeeTokens.muted,
-          icon: Icons.lock_outline,
-          title: 'Батлах эрх байхгүй',
-          text: 'Дүгнэлт хянуулахаар илгээгдсэн байна. Танд '
-              '"service_request.approve_report" эрх байхгүй тул батлах боломжгүй — '
-              'оффис хянаж батална.',
-        ),
+      // A 404 or a failed read, both already explained above. What is added here is the
+      // consequence: neither gate can be evaluated, so the way in is not offered.
+      return const NoticeBanner(
+        margin: EdgeInsets.zero,
+        tone: EmployeeTokens.yellow,
+        icon: Icons.lock_outline,
+        title: 'Дүгнэлт нээх боломжгүй',
+        text: 'Хүсэлтийн дэлгэрэнгүй уншигдаагүй тул энэ ажил тань эсэх, очсон эсэхийг '
+            'шалгах боломжгүй байна. Дахин ачаалж үзнэ үү.',
       );
     }
 
@@ -547,36 +650,136 @@ class _ApprovalSection extends ConsumerWidget {
       identity: ref.watch(workIdentityProvider).valueOrNull,
       grants: ref.watch(workGrantsProvider),
     );
-    if (assignment.blocksWrites) return const SizedBox.shrink();
 
-    final RequestActionState action = ref.watch(serviceRequestActionProvider(requestId));
+    // The same two cases [_ProgressSection] names, worded for this section rather than
+    // repeated verbatim: both banners are on screen at once when a technician opens
+    // somebody else's job, and the same sentence printed twice under two different
+    // headings reads as a rendering fault rather than as two withheld controls.
+    if (assignment.blocksWrites) {
+      return NoticeBanner(
+        margin: EdgeInsets.zero,
+        tone: EmployeeTokens.yellow,
+        icon: Icons.person_off_outlined,
+        title: record.isUnclaimed
+            ? 'Эхлээд ажлыг өөртөө авна уу'
+            : 'Танд оногдоогүй ажлын дүгнэлт',
+        text: record.isUnclaimed
+            ? 'Энэ хүсэлт хэн нэгэнд хуваарилагдаагүй байна. Дүгнэлт бичихийн тулд '
+                'эхлээд "Нээлттэй" жагсаалтаас өөртөө авна уу.'
+            : 'Энэ хүсэлт танд ч, таны багт ч хуваарилагдаагүй тул дүгнэлтийг нь нээх '
+                'боломжгүй. Дүгнэлтийг ажлыг хариуцсан ажилтан бичнэ.',
+      );
+    }
 
-    return Padding(
-      padding: const EdgeInsets.only(top: 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        mainAxisSize: MainAxisSize.min,
-        children: <Widget>[
+    final ServiceRequestStatus? status = record.status;
+    if (status == null || !status.hasArrivedOnSite) {
+      return NoticeBanner(
+        margin: EdgeInsets.zero,
+        tone: EmployeeTokens.muted,
+        icon: Icons.schedule_outlined,
+        title: 'Дүгнэлт хараахан нээгдээгүй',
+        text: 'Очсоны дараа дүгнэлт бичих боломжтой. Одоогийн төлөв '
+            '"${status?.label ?? kNoValue}" байна — "Ажлын явц" хэсэгт "Очсон" гэж '
+            'бүртгэсний дараа энэ хэсэг нээгдэнэ.',
+      );
+    }
+
+    final bool canAuthor = ref.watch(conclusionGrantsProvider).canAuthor;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      mainAxisSize: MainAxisSize.min,
+      children: <Widget>[
+        if (!canAuthor)
           const NoticeBanner(
             margin: EdgeInsets.zero,
-            tone: EmployeeTokens.yellow,
-            icon: Icons.rate_review_outlined,
-            title: 'Дүгнэлт хянуулахаар илгээгдсэн',
-            text: 'Батласнаар дүгнэлт тайлангийн санд бичигдэж, дурдсан тоноглолын '
-                'үнэлгээ шинэчлэгдэнэ. Буцаахыг зөвхөн оффис хийнэ.',
+            tone: EmployeeTokens.muted,
+            icon: Icons.lock_outline,
+            title: 'Бичих эрх байхгүй',
+            text: 'Танд "service_request.update" эрх байхгүй тул дүгнэлт бичих '
+                'боломжгүй. Бичигдсэн дүгнэлтийг харах боломжтой.',
+          )
+        else
+          const NoticeBanner(
+            margin: EdgeInsets.zero,
+            tone: EmployeeTokens.muted,
+            icon: Icons.info_outline,
+            text: 'Дүгнэлтийг тоноглол тус бүрээр бичнэ. Сонгосон тоноглол бүр '
+                '"Үзлэг ба дүгнэлт" хэсэгт тусдаа мөр болж харагдана.',
           ),
-          const SizedBox(height: 12),
-          WorkButton(
-            label: 'Дүгнэлт батлах',
-            icon: Icons.verified_outlined,
-            busy: action.pending == 'APPROVE',
-            onPressed: action.isBusy
-                ? null
-                : () => ref
-                    .read(serviceRequestActionProvider(requestId).notifier)
-                    .approveConclusion(),
+        const SizedBox(height: 12),
+        // One full-width pill per line. Never a Row child: a WorkButton has no
+        // intrinsic width and cannot lay out unconstrained.
+        WorkButton(
+          label: canAuthor ? 'Дүгнэлт бичих' : 'Дүгнэлт харах',
+          onPressed: () => Navigator.of(context).push(
+            ConclusionEditorScreen.route(
+              requestId: requestId,
+              requestNumber: requestNumber,
+              buildingId: buildingId,
+              buildingName: buildingName,
+            ),
           ),
-        ],
+        ),
+      ],
+    );
+  }
+}
+
+/// Where a handed-in conclusion has got to — a statement, never a control.
+///
+/// THERE IS NO "Дүгнэлт батлах" BUTTON ON THIS APP, AND THERE MUST NOT BE ONE. Approving a
+/// conclusion is an OFFICE act, performed on the web admin: it is the moment somebody other
+/// than the author accepts the work, writes it into the report store and moves every named
+/// piece of equipment's assessment. The field app is where the conclusion is WRITTEN, so an
+/// approve control here would let the same person who wrote a conclusion sign it off from
+/// the same screen — the app approving its own work — and no permission grant makes that a
+/// sensible thing for a phone in a plant room to offer.
+///
+/// SO THIS SECTION IS NOT PERMISSION-GATED, and the absence of a gate is the point. It used
+/// to branch on `service_request.approve_report`: the key drew the button, and its absence
+/// drew a "Батлах эрх байхгүй" apology naming the missing permission. Both branches are
+/// gone. A holder of `service_request.approve_report` — or of the office's whole
+/// `service_request.change_status` — sees exactly what a technician sees, because the
+/// button's absence is a decision about WHERE approval happens and not about who may do it.
+/// `POST /service-requests/:id/report/approve` still exists and the web admin still calls
+/// it; this app simply no longer has a client for it.
+///
+/// WHAT IS LEFT IS ONE NEUTRAL SENTENCE, off the REQUEST'S own status rather than the
+/// conclusion's, and that read is deliberate rather than approximate. Reading the conclusion
+/// is `GET /service-requests/:id/report`, which is `getOrCreate`: it MINTS a draft attributed
+/// to the caller on first read, so fetching it here to discover whether it is SUBMITTED
+/// would make every technician who merely opened a request the author of an empty conclusion
+/// on it — the same reason the editor sits behind an explicit tap. REPORT_SUBMITTED on the
+/// request is that same fact, carried by a read that has already happened.
+///
+/// Shown to everyone who can see the request, assigned or not: nothing is written from here,
+/// so there is nothing to withhold from a colleague or from a reader of the open pool. It is
+/// simply what has happened to this job.
+class _ApprovalSection extends StatelessWidget {
+  const _ApprovalSection({required this.detail});
+
+  final ServiceRequestDetailModel? detail;
+
+  @override
+  Widget build(BuildContext context) {
+    final ServiceRequestDetailModel? record = detail;
+    // Nothing to say unless a conclusion has actually been handed in. On every other status
+    // this is not a quieter notice, it is no notice: "waiting for the office" printed on a
+    // job nobody has written up yet is noise.
+    if (record == null || record.status != ServiceRequestStatus.reportSubmitted) {
+      return const SizedBox.shrink();
+    }
+
+    return const Padding(
+      padding: EdgeInsets.only(top: 12),
+      child: NoticeBanner(
+        margin: EdgeInsets.zero,
+        tone: EmployeeTokens.muted,
+        icon: Icons.schedule_outlined,
+        title: 'Дүгнэлт хянуулахаар илгээгдсэн',
+        text: 'Дүгнэлт илгээгдсэн бөгөөд оффис хянаж батална. Батлах, буцаах хоёрыг '
+            'аль алиныг нь оффис хийх тул энэ аппаас гүйцэтгэхгүй.',
       ),
     );
   }
@@ -611,7 +814,10 @@ class _SummaryCard extends StatelessWidget {
     final String where = resolved.isNotEmpty
         ? resolved
         : (location.isEmpty ? kNoValue : location);
-    final String? status = record?.status?.label ?? statusLabel;
+    // The stage first, for the same reason a list row prefers it: the header names
+    // where the job has got to, and that is the board's word for it. Falls back to the
+    // status label, then to whatever the list row handed over before the detail landed.
+    final String? status = record?.stepLabel ?? statusLabel;
     final String sla = record != null
         ? formatSlaRemaining(record.slaRemainingMinutes)
         : (slaLabel ?? kNoValue);
@@ -635,15 +841,15 @@ class _SummaryCard extends StatelessWidget {
           ],
           const SizedBox(height: 8),
           InfoRow(label: 'Байршил', value: where),
-          if (record?.requestType != null)
-            InfoRow(label: 'Төрөл', value: record!.requestType!.label),
           if (record?.branch != null)
             InfoRow(label: 'Салбар', value: record!.branch!),
           if (status != null)
             InfoRow(
               label: 'Төлөв',
               value: status,
-              tone: _toneOf(record?.status?.band),
+              tone: Tone.named(record?.stage?.colour)?.foreground ??
+                  Tone.named(record?.status?.stageColour)?.foreground ??
+                  _toneOf(record?.status?.band),
             ),
           if (record != null && record.assignedEmployees.isNotEmpty)
             InfoRow(

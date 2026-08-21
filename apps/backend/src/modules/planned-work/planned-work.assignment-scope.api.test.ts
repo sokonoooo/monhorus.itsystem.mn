@@ -44,11 +44,19 @@ const TECHNICIAN_KEYS = [
   PERMISSIONS.PLANNED_WORK_SUBMIT_REPORT,
 ] as const;
 
-/** A planner: the same doing keys plus one oversight key. */
+/**
+ * A planner: the same doing keys plus the oversight ones.
+ *
+ * `planned_work.approve` is here because every PLANNED work in this file is now reached by
+ * PLAN then APPROVE — see [planAndApprove] — and the supervisor is the fixture that drives
+ * setup. It widens nothing: `planned_work.update` already put this caller outside the
+ * assignment scope, which is the whole reason the supervisor exists here.
+ */
 const SUPERVISOR_KEYS = [
   ...TECHNICIAN_KEYS,
   PERMISSIONS.PLANNED_WORK_CREATE,
   PERMISSIONS.PLANNED_WORK_UPDATE,
+  PERMISSIONS.PLANNED_WORK_APPROVE,
 ] as const;
 
 /** A dispatcher as seeded: no planned-work write key beyond the doing ones. */
@@ -152,11 +160,12 @@ async function transition(
   action: string,
   bearer: string,
   reason?: string,
+  extra: Record<string, unknown> = {},
 ): Promise<request.Response> {
   return request(app)
     .post(`${API}/planned-work/${workId}/transition`)
     .set('Authorization', `Bearer ${bearer}`)
-    .send({ action, ...(reason ? { reason } : {}) });
+    .send({ action, ...(reason ? { reason } : {}), ...extra });
 }
 
 /**
@@ -225,10 +234,33 @@ beforeEach(async () => {
   ]);
 });
 
+/**
+ * Drives a draft to PLANNED, which now takes TWO actions rather than one.
+ *
+ * PLAN submits the work for approval (PENDING_APPROVAL) and APPROVE is what accepts it,
+ * naming the crew in the same call — approval is refused with an empty crew, so a PLANNED
+ * work always has somebody on it. Run as the supervisor, who is unscoped, so getting a work
+ * into position is never the thing under test.
+ *
+ * `crew` defaults to the assignee. A case about TEAM membership passes the same default and
+ * relies on its caller not being in it: being individually named is precisely what those
+ * cases need the admitted technician NOT to be.
+ */
+async function planAndApprove(
+  workId: string,
+  crew: readonly string[] = [assignedEmployeeId],
+): Promise<void> {
+  expect((await transition(workId, 'PLAN', supervisorToken)).status).toBe(200);
+  const approved = await transition(workId, 'APPROVE', supervisorToken, undefined, {
+    assignedEmployeeIds: [...crew],
+  });
+  expect(approved.status).toBe(200);
+}
+
 /** A PLANNED work assigned to `assignedEmployeeId` and to no team. */
 async function plannedWorkForAssignee(): Promise<string> {
   const workId = await createWork({ assignedEmployeeIds: [assignedEmployeeId] });
-  expect((await transition(workId, 'PLAN', supervisorToken)).status).toBe(200);
+  await planAndApprove(workId);
   return workId;
 }
 
@@ -244,7 +276,7 @@ describe('the proven hole: an unassigned technician driving the lifecycle', () =
     expect((await PlannedWork.findById(workId))!.status).toBe('DRAFT');
 
     // Drive it forward with the supervisor so each later action is genuinely available.
-    await transition(workId, 'PLAN', supervisorToken);
+    await planAndApprove(workId);
     expect((await transition(workId, 'START', strangerToken)).status).toBe(403);
 
     await transition(workId, 'START', supervisorToken);
@@ -274,14 +306,14 @@ describe('the proven hole: an unassigned technician driving the lifecycle', () =
 describe('team membership is a server-side fact', () => {
   it('admits a technician on the assigned team who is not named individually', async () => {
     const workId = await createWork({ assignedTeamId: org.teamId });
-    await transition(workId, 'PLAN', supervisorToken);
+    await planAndApprove(workId);
 
     expect((await transition(workId, 'START', teamMateToken)).status).toBe(200);
   });
 
   it('refuses a technician on a different team', async () => {
     const workId = await createWork({ assignedTeamId: org.teamId });
-    await transition(workId, 'PLAN', supervisorToken);
+    await planAndApprove(workId);
 
     expect((await transition(workId, 'START', strangerToken)).status).toBe(403);
   });
@@ -290,14 +322,14 @@ describe('team membership is a server-side fact', () => {
     await Employee.updateOne({ _id: strangerEmployeeId }, { $set: { team: null } });
     // assignedTeam is null and the caller's team is null; that must not read as equal.
     const workId = await createWork({ assignedEmployeeIds: [assignedEmployeeId] });
-    await transition(workId, 'PLAN', supervisorToken);
+    await planAndApprove(workId);
 
     expect((await transition(workId, 'START', strangerToken)).status).toBe(403);
   });
 
   it('follows a team change on the very next request, in both directions', async () => {
     const workId = await createWork({ assignedTeamId: org.teamId });
-    await transition(workId, 'PLAN', supervisorToken);
+    await planAndApprove(workId);
 
     // Moved onto the assigned team: admitted without a new token.
     await Employee.updateOne({ _id: strangerEmployeeId }, { $set: { team: org.teamId } });
@@ -310,7 +342,7 @@ describe('team membership is a server-side fact', () => {
 
   it('ignores a team claimed in the request body', async () => {
     const workId = await createWork({ assignedTeamId: org.teamId });
-    await transition(workId, 'PLAN', supervisorToken);
+    await planAndApprove(workId);
 
     const response = await request(app)
       .post(`${API}/planned-work/${workId}/transition`)
@@ -339,7 +371,7 @@ describe('progress, evidence and report writes', () => {
   async function startedWork(): Promise<{ workId: string; taskId: string }> {
     const workId = await createWork({ assignedEmployeeIds: [assignedEmployeeId] });
     const taskId = await addTask(workId);
-    await transition(workId, 'PLAN', supervisorToken);
+    await planAndApprove(workId);
     await transition(workId, 'START', supervisorToken);
     return { workId, taskId };
   }
@@ -490,7 +522,7 @@ describe('a task must belong to the work it is reported against', () => {
   it('refuses progress on another job’s task even from an assigned caller', async () => {
     const mine = await createWork({ assignedEmployeeIds: [assignedEmployeeId] });
     await addTask(mine);
-    await transition(mine, 'PLAN', supervisorToken);
+    await planAndApprove(mine);
     await transition(mine, 'START', supervisorToken);
 
     const theirs = await createWork({ title: 'Өөр ажил' });
@@ -543,7 +575,7 @@ describe('permission and data scope are independent', () => {
     // The stranger genuinely holds planned_work.change_status: prove it by showing the
     // same token succeeds on a work they ARE assigned to, and fails on this one.
     const ownWork = await createWork({ assignedEmployeeIds: [strangerEmployeeId] });
-    await transition(ownWork, 'PLAN', supervisorToken);
+    await planAndApprove(ownWork, [strangerEmployeeId]);
     expect((await transition(ownWork, 'START', strangerToken)).status).toBe(200);
 
     expect((await transition(workId, 'START', strangerToken)).status).toBe(403);

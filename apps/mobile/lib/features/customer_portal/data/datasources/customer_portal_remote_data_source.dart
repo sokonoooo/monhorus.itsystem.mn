@@ -8,11 +8,13 @@ import '../../../../core/network/dio_client.dart';
 import '../../../../core/network/paginated_data.dart';
 import '../../domain/entities/customer_scope.dart';
 import '../../domain/entities/object_master_enums.dart';
+import '../../domain/entities/server_vocabulary.dart';
 import '../../domain/entities/service_request_enums.dart';
 import '../models/notification_model.dart';
 import '../models/object_master_model.dart';
 import '../models/project_model.dart';
 import '../models/service_request_model.dart';
+import '../models/survey_model.dart';
 
 /// Transport for the customer portal. Throws [ServerException] or
 /// [NetworkException]; the repository converts those into failures.
@@ -56,13 +58,17 @@ class CustomerPortalRemoteDataSource {
     );
   }
 
-  /// GET /buildings.
+  /// GET /buildings. `buildingListQuerySchema` caps `limit` at 100, which is what
+  /// this asks for: the caller sums `riskSummary` across the answer, so a page that
+  /// stops short of the customer's buildings is a truncated sum. `total` on the
+  /// response says whether one page was enough, and the caller reads the rest when
+  /// it was not.
   Future<PaginatedData<BuildingModel>> listBuildings({
     required ResolvedCustomerScope scope,
     String? projectId,
     String? search,
     int page = 1,
-    int limit = 50,
+    int limit = 100,
   }) {
     return _client.request<PaginatedData<BuildingModel>>(
       path: '/buildings',
@@ -213,7 +219,6 @@ class CustomerPortalRemoteDataSource {
   Future<PaginatedData<ServiceRequestListItemModel>> listServiceRequests({
     required ResolvedCustomerScope scope,
     ServiceRequestStatus? status,
-    ServiceRequestType? requestType,
     bool? isUrgent,
     String? buildingId,
     String? projectId,
@@ -229,7 +234,6 @@ class CustomerPortalRemoteDataSource {
       queryParameters: <String, dynamic>{
         'customerId': scope.customerId,
         if (status != null) 'status': status.wireValue,
-        if (requestType != null) 'requestType': requestType.wireValue,
         if (isUrgent != null) 'isUrgent': isUrgent,
         if (buildingId != null) 'buildingId': buildingId,
         if (projectId != null) 'projectId': projectId,
@@ -252,6 +256,25 @@ class CustomerPortalRemoteDataSource {
       method: 'GET',
       decoder: (Object? json) =>
           ServiceRequestDetailModel.fromJson(json! as Map<String, dynamic>),
+    );
+  }
+
+  /// GET /service-requests/:requestId/report/customer.
+  ///
+  /// The customer-facing projection of the technician's conclusion: eleven fields, no
+  /// report id, no internal notes. Answers **404** when the request carries no report,
+  /// when the report is not APPROVED, and when the request is not this customer's —
+  /// the three are deliberately indistinguishable. It creates nothing.
+  ///
+  /// The 404 is a legitimate answer rather than a fault, so the repository turns it
+  /// into a null instead of a failure; see
+  /// [CustomerPortalRepository.getCustomerWorkReport].
+  Future<CustomerWorkReportModel> getCustomerWorkReport(String requestId) {
+    return _client.request<CustomerWorkReportModel>(
+      path: '/service-requests/$requestId/report/customer',
+      method: 'GET',
+      decoder: (Object? json) =>
+          CustomerWorkReportModel.fromJson(json! as Map<String, dynamic>),
     );
   }
 
@@ -283,6 +306,43 @@ class CustomerPortalRemoteDataSource {
     );
   }
 
+  /// GET /vocabulary.
+  ///
+  /// The third read on this class that takes no [ResolvedCustomerScope], and the only
+  /// one that is not about the caller at all: it answers what this installation calls
+  /// its workflow stages and risk bands, which is the same answer for everybody.
+  ///
+  /// Deliberately NOT `GET /settings`, which holds the same configuration and answers
+  /// 403 here - `settings.view` is admin, management and finance only, and a customer
+  /// reading the SLA thresholds and the finance keys in order to learn the word for
+  /// «Дууссан» is exactly what that route is closed against. `/vocabulary` needs
+  /// nothing but a session.
+  Future<ServerVocabulary> getVocabulary() {
+    return _client.request<ServerVocabulary>(
+      path: '/vocabulary',
+      method: 'GET',
+      decoder: (Object? json) => json is Map<String, dynamic>
+          ? ServerVocabulary.fromJson(json)
+          : ServerVocabulary.empty,
+    );
+  }
+
+  /// GET /service-requests/callable-object-types.
+  ///
+  /// Not the object-type catalogue: reading that needs `object_master.view`, which a
+  /// customer account does not hold. This endpoint is gated on being able to CREATE a
+  /// request instead, and answers the narrower question the call form actually asks.
+  Future<List<CallableObjectTypeModel>> listCallableObjectTypes() {
+    return _client.request<List<CallableObjectTypeModel>>(
+      path: '/service-requests/callable-object-types',
+      method: 'GET',
+      decoder: (Object? json) => (json! as List<dynamic>)
+          .map((dynamic item) =>
+              CallableObjectTypeModel.fromJson(item as Map<String, dynamic>))
+          .toList(growable: false),
+    );
+  }
+
   /// POST /service-requests. Guarded server-side by `service_request.create`, which
   /// the caller must hold; the UI only offers this when `GET /auth/me` reported it.
   Future<ServiceRequestDetailModel> createServiceRequest(
@@ -294,6 +354,61 @@ class CustomerPortalRemoteDataSource {
       data: request.toJson(),
       decoder: (Object? json) =>
           ServiceRequestDetailModel.fromJson(json! as Map<String, dynamic>),
+    );
+  }
+
+  // -- Survey -----------------------------------------------------------------
+
+  /// GET /surveys/pending.
+  ///
+  /// The requests this customer has been asked to rate and has not finished rating.
+  /// Scoped server-side to the caller, like `/notifications`, so it takes no customer
+  /// parameter. Needs `portal.survey.submit`; the UI only asks when `GET /auth/me`
+  /// reported that key, so the list is not fetched in order to be refused.
+  Future<List<SurveyPendingItemModel>> listPendingSurveys() {
+    return _client.request<List<SurveyPendingItemModel>>(
+      path: '/surveys/pending',
+      method: 'GET',
+      decoder: (Object? json) => (json! as List<dynamic>)
+          .map((dynamic item) =>
+              SurveyPendingItemModel.fromJson(item as Map<String, dynamic>))
+          .toList(growable: false),
+    );
+  }
+
+  /// GET /surveys/requests/:requestId/form.
+  ///
+  /// The question catalogue as it stands, plus the technicians on this job and what
+  /// the customer has already said about each. Answers **404** when there is no survey
+  /// to answer — none was raised, it is already finished, or the request is not this
+  /// customer's — and those three are deliberately indistinguishable.
+  ///
+  /// That 404 is a legitimate answer rather than a fault, so the repository turns it
+  /// into a null; the precedent is [getCustomerWorkReport].
+  Future<SurveyFormModel> getSurveyForm(String requestId) {
+    return _client.request<SurveyFormModel>(
+      path: '/surveys/requests/$requestId/form',
+      method: 'GET',
+      decoder: (Object? json) =>
+          SurveyFormModel.fromJson(json! as Map<String, dynamic>),
+    );
+  }
+
+  /// POST /surveys/requests/:requestId/responses — ONE technician per call.
+  ///
+  /// The survey is answered per technician, so a job two people attended is two calls
+  /// and the caller loops. Nothing is handed back: the response body is the stored
+  /// record, and the phone's next question is who is still outstanding, which
+  /// `/surveys/pending` and the form endpoint answer.
+  Future<void> submitSurveyResponse(
+    String requestId,
+    SubmitSurveyResponseRequest request,
+  ) {
+    return _client.request<void>(
+      path: '/surveys/requests/$requestId/responses',
+      method: 'POST',
+      data: request.toJson(),
+      decoder: (Object? _) {},
     );
   }
 

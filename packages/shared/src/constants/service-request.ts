@@ -34,7 +34,7 @@ export const SERVICE_REQUEST_STATUS_LABELS: Record<ServiceRequestStatus, string>
   ON_SITE: 'Очсон',
   IN_PROGRESS: 'Гүйцэтгэж байна',
   WAITING: 'Түр хүлээгдсэн',
-  REPORT_SUBMITTED: 'Тайлан илгээсэн',
+  REPORT_SUBMITTED: 'Дүгнэлт илгээсэн',
   VERIFICATION: 'Баталгаажуулах',
   COMPLETED: 'Дууссан',
   REVISIT_REQUIRED: 'Дахин очих',
@@ -55,10 +55,10 @@ export const SERVICE_REQUEST_TRANSITIONS: Record<
   ASSIGNED: ['ACCEPTED', 'UNASSIGNED', 'RETURNED', 'CANCELLED'],
   ACCEPTED: ['ON_THE_WAY', 'UNASSIGNED', 'RETURNED', 'CANCELLED'],
   ON_THE_WAY: ['ON_SITE', 'WAITING', 'RETURNED', 'CANCELLED'],
-  ON_SITE: ['IN_PROGRESS', 'WAITING', 'RETURNED', 'CANCELLED'],
+  ON_SITE: ['IN_PROGRESS', 'REPORT_SUBMITTED', 'WAITING', 'RETURNED', 'CANCELLED'],
   IN_PROGRESS: ['REPORT_SUBMITTED', 'WAITING', 'REVISIT_REQUIRED', 'CANCELLED'],
   WAITING: ['IN_PROGRESS', 'ON_SITE', 'RETURNED', 'CANCELLED'],
-  REPORT_SUBMITTED: ['VERIFICATION', 'RETURNED'],
+  REPORT_SUBMITTED: ['VERIFICATION', 'COMPLETED', 'RETURNED'],
   VERIFICATION: ['COMPLETED', 'RETURNED', 'REVISIT_REQUIRED'],
   COMPLETED: [],
   REVISIT_REQUIRED: ['ASSIGNED', 'UNASSIGNED', 'CANCELLED'],
@@ -119,6 +119,25 @@ export function selfProgressTransitionsFrom(
   return SERVICE_REQUEST_TRANSITIONS[from].filter(isSelfProgressStatus);
 }
 
+
+/**
+ * Statuses that can only be reached once the technician has arrived on site.
+ *
+ * WAITING IS DELIBERATELY ABSENT. The transition map admits `ON_THE_WAY -> WAITING`, so a
+ * technician can be waiting without ever having arrived — treating it as arrival would let a
+ * conclusion be written from the road, which is the thing this list exists to prevent.
+ *
+ * A status is only half the answer: a request that arrived and was later sent back to
+ * ASSIGNED has arrived even though its current status is not in this list. Callers that can
+ * see `statusHistory` should consult it as well — see `hasArrivedOnSite` on the backend.
+ */
+export const ARRIVED_STATUSES: readonly ServiceRequestStatus[] = [
+  'ON_SITE',
+  'IN_PROGRESS',
+  'REPORT_SUBMITTED',
+  'VERIFICATION',
+  'COMPLETED',
+];
 /** Transitions that require a free-text reason (requirements 8.3, 14.1, 14.4). */
 export const REASON_REQUIRED_STATUSES: readonly ServiceRequestStatus[] = [
   'WAITING',
@@ -187,24 +206,7 @@ export const DISPATCH_BOARD_COLUMNS = [
 export type DispatchBoardColumnId = (typeof DISPATCH_BOARD_COLUMNS)[number]['id'];
 
 /** Requirements section 8.1. */
-export const SERVICE_REQUEST_TYPES = [
-  'PLANNED_INSPECTION',
-  'REPAIR',
-  'STANDARD_CALL',
-  'URGENT_CALL',
-  'INSTALLATION',
-  'REVISIT',
-] as const;
-export type ServiceRequestType = (typeof SERVICE_REQUEST_TYPES)[number];
 
-export const SERVICE_REQUEST_TYPE_LABELS: Record<ServiceRequestType, string> = {
-  PLANNED_INSPECTION: 'Төлөвлөгөөт үзлэг',
-  REPAIR: 'Засвар үйлчилгээ',
-  STANDARD_CALL: 'Энгийн дуудлага',
-  URGENT_CALL: 'Яаралтай дуудлага',
-  INSTALLATION: 'Шинэ угсралт/өргөтгөл',
-  REVISIT: 'Давтан үзлэг',
-};
 
 /** Requirements section 8.4. */
 export const SLA_STATES = [
@@ -245,7 +247,33 @@ export const SLA_AT_RISK_RATIO = 0.9;
  * Device risk levels, requirements section 10. Score bands are configurable per
  * section 10.1 but these are the documented defaults. Never invent other bands.
  */
-export const RISK_LEVELS = ['NORMAL', 'ATTENTION', 'SCHEDULE_REPAIR', 'CRITICAL', 'OUT_OF_SERVICE'] as const;
+import type { RiskColour } from './risk-band';
+
+export const RISK_LEVELS = [
+  'NORMAL',
+  'ATTENTION',
+  'SCHEDULE_REPAIR',
+  'CRITICAL',
+  'OUT_OF_SERVICE',
+  /**
+   * Spare keys, reserved so the band count can change without a data migration.
+   *
+   * An administrator names and colours a band; this list is only the vocabulary a score
+   * can be *stored* as. Because six collections persist the value — two of them required,
+   * two indexed — widening it later would mean rewriting history and re-validating every
+   * assessment ever recorded. Reserving the room once costs nothing and means adding a
+   * sixth band is a settings change rather than a release.
+   *
+   * They carry no meaning of their own: an unconfigured spare is simply never assigned.
+   */
+  'BAND_6',
+  'BAND_7',
+  'BAND_8',
+] as const;
+
+/** How many bands an administrator may configure, bounded by the reserved keys above. */
+export const MAX_RISK_BANDS = RISK_LEVELS.length;
+export const MIN_RISK_BANDS = 2;
 export type RiskLevel = (typeof RISK_LEVELS)[number];
 
 export interface RiskBand {
@@ -253,15 +281,36 @@ export interface RiskBand {
   min: number;
   max: number;
   labelMn: string;
-  colour: 'green' | 'yellow' | 'orange' | 'red' | 'black';
+  colour: RiskColour;
+  /** What the band demands and does; see `risk-band.ts` for why this travels with it. */
+  requiresConclusion: boolean;
+  requiresRecommendation: boolean;
+  decommissions: boolean;
+  notifies: boolean;
 }
 
+/** Kept as the shape older readers expect; the configured ladder supersedes it. */
 export const RISK_BANDS: readonly RiskBand[] = [
-  { level: 'NORMAL', min: 81, max: 100, labelMn: 'Хэвийн', colour: 'green' },
-  { level: 'ATTENTION', min: 61, max: 80, labelMn: 'Анхаарах шаардлагатай', colour: 'yellow' },
-  { level: 'SCHEDULE_REPAIR', min: 41, max: 60, labelMn: 'Ойрын хугацаанд засварлах', colour: 'orange' },
-  { level: 'CRITICAL', min: 21, max: 40, labelMn: 'Ноцтой эрсдэлтэй', colour: 'red' },
-  { level: 'OUT_OF_SERVICE', min: 0, max: 20, labelMn: 'Ашиглах боломжгүй', colour: 'black' },
+  {
+    level: 'NORMAL', min: 81, max: 100, labelMn: 'Хэвийн', colour: 'green',
+    requiresConclusion: false, requiresRecommendation: false, decommissions: false, notifies: false,
+  },
+  {
+    level: 'ATTENTION', min: 61, max: 80, labelMn: 'Анхаарах шаардлагатай', colour: 'yellow',
+    requiresConclusion: false, requiresRecommendation: true, decommissions: false, notifies: true,
+  },
+  {
+    level: 'SCHEDULE_REPAIR', min: 41, max: 60, labelMn: 'Ойрын хугацаанд засварлах', colour: 'orange',
+    requiresConclusion: false, requiresRecommendation: true, decommissions: false, notifies: true,
+  },
+  {
+    level: 'CRITICAL', min: 21, max: 40, labelMn: 'Ноцтой эрсдэлтэй', colour: 'red',
+    requiresConclusion: true, requiresRecommendation: true, decommissions: false, notifies: true,
+  },
+  {
+    level: 'OUT_OF_SERVICE', min: 0, max: 20, labelMn: 'Ашиглах боломжгүй', colour: 'black',
+    requiresConclusion: true, requiresRecommendation: true, decommissions: true, notifies: true,
+  },
 ];
 
 export function riskLevelFromScore(score: number): RiskLevel {
@@ -275,4 +324,10 @@ export const RISK_LEVEL_LABELS: Record<RiskLevel, string> = {
   SCHEDULE_REPAIR: 'Ойрын хугацаанд засварлах',
   CRITICAL: 'Ноцтой эрсдэлтэй',
   OUT_OF_SERVICE: 'Ашиглах боломжгүй',
+  // Reserved keys carry a neutral name so a stored value always prints as something a
+  // reader understands. The administrator's own label supersedes this everywhere it is
+  // available; this is the answer only when no configuration has been loaded.
+  BAND_6: 'Түвшин 6',
+  BAND_7: 'Түвшин 7',
+  BAND_8: 'Түвшин 8',
 };

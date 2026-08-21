@@ -175,10 +175,14 @@ void main() {
     test('the session is the only place a scope is built', () {
       final List<String> builders = <String>[];
       for (final File file in libSources()) {
+        // Windows reports these paths with backslashes, which end with none of the
+        // forward-slash suffixes below: the skip would never fire and the entity that
+        // merely declares the constructor would count as a second construction site.
+        final String path = file.path.replaceAll(r'\', '/');
         // The entity declares the constructor; that is not a construction site.
-        if (file.path.endsWith('domain/entities/customer_scope.dart')) continue;
+        if (path.endsWith('domain/entities/customer_scope.dart')) continue;
         if (file.readAsStringSync().contains('ResolvedCustomerScope(')) {
-          builders.add(file.path);
+          builders.add(path);
         }
       }
 
@@ -282,9 +286,8 @@ void main() {
   group('service request enums', () {
     test('carry every status the shared constant declares', () {
       expect(ServiceRequestStatus.values.length, 14);
-      expect(ServiceRequestType.values.length, 6);
       expect(SlaState.values.length, 6);
-      expect(NotificationEvent.values.length, 17);
+      expect(NotificationEvent.values.length, 25);
     });
 
     test('terminal statuses are the two with no outgoing transition', () {
@@ -452,7 +455,6 @@ void main() {
 
       expect(request.requestNumber, 'SR-202607-0012');
       expect(request.status, ServiceRequestStatus.assigned);
-      expect(request.requestType, ServiceRequestType.urgentCall);
       expect(request.isUrgent, isTrue);
       expect(request.building?.name, 'Төв цамхаг');
       expect(request.room, isNull);
@@ -471,20 +473,19 @@ void main() {
           CreateServiceRequestRequestModel(
         customerId: 'c1',
         buildingId: 'b1',
+        objectTypeId: 'ot1',
         floorId: 'f1',
-        requestType: ServiceRequestType.repair,
         description: 'Гэрэл асахгүй байна.',
         contactName: 'Д. Оюунчимэг',
         contactPhone: '9911-2233',
-        isUrgent: true,
       );
 
       final Map<String, dynamic> json = request.toJson();
       expect(json['customerId'], 'c1');
       expect(json['buildingId'], 'b1');
+      // The server takes the SLA window from this, so it must always be on the wire.
+      expect(json['objectTypeId'], 'ot1');
       expect(json['floorId'], 'f1');
-      expect(json['requestType'], 'REPAIR');
-      expect(json['isUrgent'], isTrue);
       expect(json['attachmentIds'], isEmpty);
       // Optional keys are omitted rather than sent as null, which the strict
       // branches of the Zod schema would reject.

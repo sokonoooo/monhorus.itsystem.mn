@@ -13,6 +13,7 @@ import type {
   ObjectTypeDto,
   ObjectTypeListQuery,
   PaginatedData,
+  QuickPlaceObjectInput,
   UpdateObjectInput,
   UpdateObjectPositionInput,
   UpdateObjectTypeInput,
@@ -27,6 +28,24 @@ function toParams(query: Record<string, unknown>): Record<string, string | numbe
     params[key] = typeof value === 'boolean' ? String(value) : (value as string | number);
   }
   return params;
+}
+
+/**
+ * What `POST /files/object-type-icons` hands back.
+ *
+ * Declared here rather than imported: the shared package types the object-type registry
+ * itself, and the upload response is a stored-file envelope the endpoint owns. Only `id`
+ * is ever used — it becomes `iconFileId` on the type that claims the file — but the whole
+ * shape is stated so a change to the endpoint is a compile error rather than `undefined`.
+ */
+export interface ObjectTypeIconUploadDto {
+  id: string;
+  name: string;
+  downloadUrl: string;
+  mimeType: string;
+  sizeBytes: number;
+  uploadedByName: string | null;
+  uploadedAt: string;
 }
 
 /** Section 4.1 equipment type registry. */
@@ -52,6 +71,32 @@ export const objectTypeService = {
   async remove(objectTypeId: string): Promise<void> {
     await apiClient.delete(`/object-types/${objectTypeId}`);
   },
+
+  /**
+   * Uploads a custom SVG icon before the type that will carry it exists.
+   *
+   * Two-phase, exactly like a service-request attachment: the file is parked on the
+   * uploader and claimed by `create` or `update` through `iconFileId`, because a new type
+   * has no id to hang a file on at the moment the admin picks one.
+   *
+   * The server is the gate. It caps the request at MAX_OBJECT_TYPE_ICON_BYTES, refuses any
+   * content type but OBJECT_TYPE_ICON_MIME, and then PARSES the bytes — which is what
+   * actually establishes the thing is an SVG — sanitising it before a byte is stored.
+   * Whatever a form checks before calling this is a courtesy to the user, never a
+   * substitute for that.
+   */
+  async uploadIcon(file: File): Promise<ObjectTypeIconUploadDto> {
+    const form = new FormData();
+    form.append('file', file);
+
+    return unwrap(
+      await apiClient.post<ApiResponse<ObjectTypeIconUploadDto>>(
+        '/files/object-type-icons',
+        form,
+        { headers: { 'Content-Type': 'multipart/form-data' } },
+      ),
+    );
+  },
 };
 
 /**
@@ -73,6 +118,25 @@ export const objectMasterService = {
 
   async create(payload: CreateObjectInput): Promise<ObjectDetailDto> {
     return unwrap(await apiClient.post<ApiResponse<ObjectDetailDto>>('/objects-master', payload));
+  },
+
+  /**
+   * One tap on a floor plan, one object.
+   *
+   * Deliberately a different endpoint from `create` rather than a lenient call to it. The
+   * payload is `.strict()` on the server and carries no `code` and no `name`: both are
+   * allocated there, because a code is unique per customer against an index the browser
+   * cannot see and a name is numbered per floor per type — neither is something a client
+   * clicking ten times a second could compute without collisions. `category` is absent for
+   * the same reason: it is read from the chosen type.
+   *
+   * What comes back is a full detail row, so the marker for the new object can be drawn
+   * from the response and the floor need not be refetched between clicks.
+   */
+  async quickPlace(payload: QuickPlaceObjectInput): Promise<ObjectDetailDto> {
+    return unwrap(
+      await apiClient.post<ApiResponse<ObjectDetailDto>>('/objects-master/quick-place', payload),
+    );
   },
 
   /**

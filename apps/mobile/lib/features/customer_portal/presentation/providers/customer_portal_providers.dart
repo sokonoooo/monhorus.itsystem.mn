@@ -12,9 +12,11 @@ import '../../data/models/notification_model.dart';
 import '../../data/models/object_master_model.dart';
 import '../../data/models/project_model.dart';
 import '../../data/models/service_request_model.dart';
+import '../../data/models/survey_model.dart';
 import '../../data/repositories/customer_portal_repository_impl.dart';
 import '../../domain/entities/customer_scope.dart';
 import '../../domain/entities/risk_level.dart';
+import '../../domain/entities/server_vocabulary.dart';
 import '../../domain/repositories/customer_portal_repository.dart';
 
 // -- Dependency graph --------------------------------------------------------
@@ -89,6 +91,43 @@ final Provider<bool> canViewObjectHistoryProvider = Provider<bool>((Ref ref) {
   return user.has(PermissionKeys.objectMasterView);
 });
 
+// -- Vocabulary ---------------------------------------------------------------
+
+/// Reads `GET /vocabulary` once per session and installs the answer.
+///
+/// Riverpod caches the future, so the four tabs share one request. Watched by the
+/// shell, which is what starts it: there is nothing to fetch before somebody is signed
+/// in, and the endpoint is authenticated.
+///
+/// Keyed on the account id rather than on the whole [AppUser]. `/auth/me` is
+/// re-requested on mount to refresh the permission set and each answer is a new object;
+/// watching the object itself would re-fetch the vocabulary every time one landed, for
+/// words that cannot have changed.
+///
+/// **Every failure resolves to [ServerVocabulary.empty] on purpose.** A 401, a 403, a
+/// 500, a timeout, a phone with no signal, a body this binary could not parse - none of
+/// them is installed, and every label and colour in the portal stays the one it was
+/// compiled with. There is no error state to render and no retry to offer, because
+/// there is nothing for the reader to do about it and nothing missing from their
+/// screen: this call decides what the words are called, not whether there are any.
+/// Note the deliberate absence of [_unwrap]: unwrapping would throw the failure into
+/// `AsyncValue.error`, and an error is exactly what this must not become.
+final FutureProvider<ServerVocabulary> serverVocabularyProvider =
+    FutureProvider<ServerVocabulary>((Ref ref) async {
+  final String? userId =
+      ref.watch(currentUserProvider.select((AppUser? user) => user?.id));
+  if (userId == null) return ServerVocabulary.empty;
+
+  final ApiResult<ServerVocabulary> result =
+      await ref.watch(customerPortalRepositoryProvider).getVocabulary();
+
+  final ServerVocabulary? vocabulary = result.dataOrNull;
+  if (vocabulary == null) return ServerVocabulary.empty;
+
+  installServerVocabulary(vocabulary);
+  return vocabulary;
+});
+
 // -- Helpers -----------------------------------------------------------------
 
 /// Unwraps an [ApiResult] for an async provider, throwing the [Failure] so it lands
@@ -110,6 +149,44 @@ ResolvedCustomerScope _requireScope(Ref ref) {
   throw ServerFailure(unavailable.detail, code: 'CUSTOMER_SCOPE_UNAVAILABLE');
 }
 
+/// Every building the customer owns, not just the first page of them.
+///
+/// `buildingListQuerySchema` caps `limit` at 100, so no single request can be assumed
+/// to cover an organisation of any size. Both callers here sum or count over the
+/// result — the home hero prints how many buildings there are and adds up each one's
+/// `riskSummary` — and a first-page sum shown as the whole is a truncated figure with
+/// nothing on screen saying so. `PaginatedData.total` says whether one page was
+/// enough; when it was not, the remaining pages are read before anything is summed.
+///
+/// The returned page carries the server's own `total`, so a caller can still print
+/// the true count rather than the length of what it happened to receive.
+Future<PaginatedData<BuildingModel>> _allBuildings(
+  CustomerPortalRepository repository,
+  ResolvedCustomerScope scope,
+) async {
+  final PaginatedData<BuildingModel> first =
+      _unwrap(await repository.listBuildings(scope));
+  if (first.items.length >= first.total) return first;
+
+  final List<BuildingModel> all = List<BuildingModel>.of(first.items);
+  for (int page = first.page + 1; page <= first.totalPages; page++) {
+    final PaginatedData<BuildingModel> next =
+        _unwrap(await repository.listBuildings(scope, page: page));
+    // A page that came back empty means there is nothing further to read; carrying
+    // on would loop against a server that disagrees with its own `totalPages`.
+    if (next.items.isEmpty) break;
+    all.addAll(next.items);
+  }
+
+  return PaginatedData<BuildingModel>(
+    items: List<BuildingModel>.unmodifiable(all),
+    page: 1,
+    limit: first.limit,
+    total: first.total,
+    totalPages: first.totalPages,
+  );
+}
+
 // -- Buildings ---------------------------------------------------------------
 
 final FutureProvider<List<ProjectModel>> customerProjectsProvider =
@@ -126,7 +203,7 @@ final FutureProvider<List<BuildingModel>> customerBuildingsProvider =
   final CustomerPortalRepository repository =
       ref.watch(customerPortalRepositoryProvider);
   final PaginatedData<BuildingModel> page =
-      _unwrap(await repository.listBuildings(_requireScope(ref)));
+      await _allBuildings(repository, _requireScope(ref));
   return page.items;
 });
 
@@ -245,6 +322,73 @@ final FutureProviderFamily<ServiceRequestDetailModel, String>
   return _unwrap(await repository.getServiceRequest(requestId));
 });
 
+/// The technician's approved conclusion for one request, or null when there is none.
+///
+/// Deliberately NOT watched by the request detail screen unconditionally. The detail
+/// response carries `hasApprovedReport`, and the report tab reads that flag first:
+/// watching this provider is what issues the HTTP call, so a request with no approved
+/// conclusion never makes one. A null here therefore means the flag and the endpoint
+/// disagreed — a report un-approved between the two reads, or a race — and the screen
+/// shows the same not-ready state either way.
+final FutureProviderFamily<CustomerWorkReportModel?, String>
+    customerWorkReportProvider =
+    FutureProvider.family<CustomerWorkReportModel?, String>(
+        (Ref ref, String requestId) async {
+  final CustomerPortalRepository repository =
+      ref.watch(customerPortalRepositoryProvider);
+  return _unwrap(await repository.getCustomerWorkReport(requestId));
+});
+
+// -- Survey ------------------------------------------------------------------
+
+/// The requests this customer has been asked to rate and has not finished rating.
+///
+/// Scoped to the caller by the server, so it takes no [ResolvedCustomerScope] — the
+/// same arrangement `/notifications` has. An empty list is the ordinary answer and the
+/// screens say nothing at all when it comes back that way; a survey prompt shown to
+/// somebody with nothing to answer is worse than no prompt.
+///
+/// Only watched behind [canSubmitSurveyProvider]. The endpoint needs
+/// `portal.survey.submit`, so an account without it would be answered 403 and the
+/// prompt would render an error where there is no problem.
+final FutureProvider<List<SurveyPendingItemModel>> pendingSurveysProvider =
+    FutureProvider<List<SurveyPendingItemModel>>((Ref ref) async {
+  final CustomerPortalRepository repository =
+      ref.watch(customerPortalRepositoryProvider);
+  return _unwrap(await repository.listPendingSurveys());
+});
+
+/// The survey form for one request, or null when there is nothing to rate.
+///
+/// Deliberately NOT watched unconditionally by the request screen. Watching it is what
+/// issues `GET /surveys/requests/:id/form`, and that endpoint answers 404 for every
+/// request with no open survey — which is most of them — so the screen reads
+/// [pendingSurveysProvider] first and only asks for a form it has been told exists.
+/// The same rule the report tab follows with `hasApprovedReport`.
+final FutureProviderFamily<SurveyFormModel?, String> surveyFormProvider =
+    FutureProvider.family<SurveyFormModel?, String>(
+        (Ref ref, String requestId) async {
+  final CustomerPortalRepository repository =
+      ref.watch(customerPortalRepositoryProvider);
+  return _unwrap(await repository.getSurveyForm(requestId));
+});
+
+/// Whether the API would accept a survey response from this account.
+///
+/// Read straight from the caller's effective permission set, exactly as
+/// [canCreateServiceRequestProvider] is. One key only: `DEFAULT_ROLE_PERMISSIONS`
+/// grants `portal.survey.submit` to the customer role, and the two staff survey keys
+/// (`survey.manage_questions`, `survey.view_results`) configure and read the survey
+/// rather than answer it, so neither belongs here.
+///
+/// The permission set is empty until the first `/auth/me`, so this reads false until
+/// then and the prompt stays hidden rather than being shown and refused.
+final Provider<bool> canSubmitSurveyProvider = Provider<bool>((Ref ref) {
+  final AppUser? user = ref.watch(currentUserProvider);
+  if (user == null) return false;
+  return user.has(PermissionKeys.portalSurveySubmit);
+});
+
 // -- Notifications -----------------------------------------------------------
 
 final FutureProvider<List<NotificationModel>> customerNotificationsProvider =
@@ -283,15 +427,31 @@ final FutureProviderFamily<Uint8List, String> fileBytesProvider =
 /// Every number here is a sum of values the API supplied. Nothing is estimated: the
 /// per-band device counts come from each building's `riskSummary`, which the backend
 /// computes, and the request counts come from the request list.
+///
+/// The sums run over every one of the customer's buildings, read across pages by
+/// [_allBuildings], and [buildingTotal] carries the server's own count. Before that
+/// the sums covered whatever the first page of 50 held, which past 50 buildings made
+/// the hero stair and the headline partial figures presented as complete.
 class CustomerHomeSummary {
   const CustomerHomeSummary({
     required this.buildings,
+    required this.buildingTotal,
     required this.requests,
     required this.riskCounts,
     required this.unassessedCount,
   });
 
   final List<BuildingModel> buildings;
+
+  /// How many buildings the customer has, as `GET /buildings` reported it in
+  /// `total` — not how many records happened to arrive.
+  ///
+  /// [buildings] is read across every page, so the two agree; this stays the figure
+  /// the screens print because it is the server's own count, and because a
+  /// disagreement between them is exactly the truncation this field exists to make
+  /// impossible to show silently. See [coversEveryBuilding].
+  final int buildingTotal;
+
   final List<ServiceRequestListItemModel> requests;
 
   /// Device counts per band, summed across the customer's buildings.
@@ -299,6 +459,15 @@ class CustomerHomeSummary {
   final int unassessedCount;
 
   int countOf(RiskLevel level) => riskCounts[level] ?? 0;
+
+  /// True when [riskCounts] and [unassessedCount] were summed over every building
+  /// the server says the customer has.
+  ///
+  /// False only if the server's own `total` outran what paging could fetch, and it
+  /// is the guard the band figures are drawn behind: a per-band count summed over
+  /// some of the buildings is not a smaller version of the real answer, it is a
+  /// different one, and the hero stair has no way to caveat itself.
+  bool get coversEveryBuilding => buildings.length >= buildingTotal;
 
   int get assessedTotal =>
       riskCounts.values.fold(0, (int sum, int count) => sum + count);
@@ -343,7 +512,7 @@ final FutureProvider<CustomerHomeSummary> customerHomeSummaryProvider =
   final ResolvedCustomerScope scope = _requireScope(ref);
 
   final PaginatedData<BuildingModel> buildingPage =
-      _unwrap(await repository.listBuildings(scope));
+      await _allBuildings(repository, scope);
   final PaginatedData<ServiceRequestListItemModel> requestPage =
       _unwrap(await repository.listServiceRequests(scope, limit: 100));
 
@@ -360,8 +529,22 @@ final FutureProvider<CustomerHomeSummary> customerHomeSummaryProvider =
 
   return CustomerHomeSummary(
     buildings: buildingPage.items,
+    buildingTotal: buildingPage.total,
     requests: requestPage.items,
     riskCounts: counts,
     unassessedCount: unassessed,
   );
+});
+
+/// The equipment types a call may be raised against.
+///
+/// Not scoped to the customer: the catalogue is global, and which types are callable is an
+/// administrator's decision rather than a per-organisation one. Kept a plain FutureProvider
+/// so the sheet gets the same `.when(data/loading/error)` shape as the building list beside
+/// it.
+final FutureProvider<List<CallableObjectTypeModel>> callableObjectTypesProvider =
+    FutureProvider<List<CallableObjectTypeModel>>((Ref ref) async {
+  final CustomerPortalRepository repository =
+      ref.watch(customerPortalRepositoryProvider);
+  return _unwrap(await repository.listCallableObjectTypes());
 });

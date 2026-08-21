@@ -18,7 +18,6 @@ import '../../data/models/employee_link_model.dart';
 import '../../data/models/inspection_report_model.dart';
 import '../../data/models/planned_work_model.dart';
 import '../../data/models/task_material_model.dart';
-import '../../data/models/work_report_model.dart';
 import '../../data/repositories/work_repository_impl.dart';
 import '../../domain/entities/planned_work_enums.dart';
 import '../../domain/entities/work_identity.dart';
@@ -365,6 +364,10 @@ class PlannedWorkBoard {
           active.add(item);
         case PlannedWorkEffectiveStatus.planned:
         case PlannedWorkEffectiveStatus.draft:
+        // Neither has a crew yet — approval assigns one — so they sit with the
+        // drafts rather than in a technician's active queue.
+        case PlannedWorkEffectiveStatus.pendingApproval:
+        case PlannedWorkEffectiveStatus.rejected:
           upcoming.add(item);
         case PlannedWorkEffectiveStatus.completed:
         case PlannedWorkEffectiveStatus.archived:
@@ -719,8 +722,11 @@ PlannedWorkAssignment resolveRequestAssignment({
 class RequestActionState {
   const RequestActionState({this.pending, this.message, this.failed = false});
 
-  /// The wire value of the transition in flight, or `'APPROVE'` for the conclusion. Null
-  /// when nothing is running.
+  /// The wire value of the transition in flight, or null when nothing is running.
+  ///
+  /// It once also carried `'APPROVE'`, for the conclusion-approval button this screen used
+  /// to draw. That button is gone — approving is an office act done on the web admin — and
+  /// with it the only non-transition this state ever described.
   final String? pending;
 
   /// The outcome to show once it settles. Cleared by [ServiceRequestActionController.dismiss].
@@ -736,7 +742,13 @@ final NotifierProviderFamily<ServiceRequestActionController, RequestActionState,
   ServiceRequestActionController.new,
 );
 
-/// The two writes the detail screen offers: move the request on, and settle its conclusion.
+/// The one write the detail screen offers: move the request on.
+///
+/// It offered a second — approving a submitted conclusion — and no longer does. Approval is
+/// the office's act, performed on the web admin against the same
+/// `POST /service-requests/:id/report/approve` route, which is untouched; what is gone is
+/// this app's client for it, because a field app that can sign off the conclusion it just
+/// wrote is not a workflow, it is a rubber stamp.
 ///
 /// EVERY SUCCESS INVALIDATES THE SAME FOUR READS, and each one is load-bearing rather than
 /// defensive. The detail itself obviously moved. The reader's own request list carries the
@@ -770,27 +782,6 @@ class ServiceRequestActionController extends FamilyNotifier<RequestActionState, 
       // second store for it would be a second version of the same request.
       success: (ServiceRequestDetailModel _) {
         state = RequestActionState(message: 'Төлөв "${status.label}" боллоо.');
-        _refresh();
-        return null;
-      },
-      failure: (Failure failure) {
-        state = RequestActionState(message: _explainAction(failure), failed: true);
-        return _explainAction(failure);
-      },
-    );
-  }
-
-  /// Approves the submitted conclusion. Returns null on success.
-  Future<String?> approveConclusion() async {
-    if (state.isBusy) return null;
-    state = const RequestActionState(pending: 'APPROVE');
-
-    final ApiResult<WorkReportModel> result =
-        await ref.read(workRepositoryProvider).approveWorkReport(arg);
-
-    return result.when(
-      success: (WorkReportModel _) {
-        state = const RequestActionState(message: 'Дүгнэлт батлагдлаа.');
         _refresh();
         return null;
       },
@@ -1047,6 +1038,24 @@ class PlannedWorkDetailNotifier
   }) async {
     return _publish(
       await _repository.recordTaskProgress(
+        plannedWorkId: arg,
+        taskId: taskId,
+        request: request,
+      ),
+    );
+  }
+
+  /// Records what one sub-task consumed of one registered material.
+  ///
+  /// The quantity is absolute for the (sub-task, material) pair, and the endpoint
+  /// answers with the whole record — so [_publish] alone refreshes the work's
+  /// Зарцуулсан/Үлдсэн totals along with the sub-task's own rows. No second fetch.
+  Future<ApiResult<PlannedWorkModel>> recordMaterialUsage({
+    required String taskId,
+    required RecordTaskMaterialUsageRequest request,
+  }) async {
+    return _publish(
+      await _repository.recordTaskMaterialUsage(
         plannedWorkId: arg,
         taskId: taskId,
         request: request,

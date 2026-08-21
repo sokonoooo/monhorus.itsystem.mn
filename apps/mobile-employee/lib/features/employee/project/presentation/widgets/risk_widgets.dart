@@ -27,7 +27,7 @@ class RiskCountStrip extends StatelessWidget {
       spacing: 5,
       runSpacing: 5,
       children: <Widget>[
-        for (final RiskLevel level in RiskLevel.values)
+        for (final RiskLevel level in riskBandsInUse())
           if (summary.countOf(level) > 0)
             _CountChip(level: level, count: summary.countOf(level)),
         if (summary.unassessedCount > 0)
@@ -98,9 +98,11 @@ class RiskLegend extends StatelessWidget {
         spacing: 12,
         runSpacing: 6,
         children: <Widget>[
-          // The five bands, best-first, then the display state for an object that has
-          // never been scored. Sixth and last, and grey: it is not a good result.
-          for (final RiskLevel? level in <RiskLevel?>[...RiskLevel.values, null])
+          // The bands actually in use, best-first, then the display state for an
+          // object that has never been scored — last, and grey: it is not a good
+          // result. Not `RiskLevel.values`: three of those are reserved storage keys
+          // and listing them would name bands nobody configured.
+          for (final RiskLevel? level in <RiskLevel?>[...riskBandsInUse(), null])
             _LegendEntry(level: level),
         ],
       ),

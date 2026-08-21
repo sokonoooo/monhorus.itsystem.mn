@@ -32,7 +32,15 @@ import { writeCanonicalPlannedWorkReport } from './planned-work.transition.servi
 
 const API = '/api/v1';
 
-/** The employee-side role: can run the work and author the report, cannot approve. */
+/**
+ * The employee-side role: can run the work and author the report, cannot approve THE
+ * REPORT.
+ *
+ * `planned_work.approve` is here because getting a work to PLANNED now needs it — see
+ * [planAndApprove] — and it is a different key from `planned_work.approve_report`, which is
+ * what signing off the write-up needs and which this role deliberately still lacks. The
+ * approval-authority cases below rest on exactly that distinction.
+ */
 const AUTHOR_PERMISSIONS = [
   PERMISSIONS.PLANNED_WORK_VIEW,
   PERMISSIONS.PLANNED_WORK_CREATE,
@@ -40,6 +48,7 @@ const AUTHOR_PERMISSIONS = [
   PERMISSIONS.PLANNED_WORK_CHANGE_STATUS,
   PERMISSIONS.PLANNED_WORK_RECORD_PROGRESS,
   PERMISSIONS.PLANNED_WORK_SUBMIT_REPORT,
+  PERMISSIONS.PLANNED_WORK_APPROVE,
 ] as const;
 
 /** The reviewer-side role: may approve and return, and may also read. */
@@ -54,6 +63,8 @@ let objects: ObjectFixture;
 let author: TestUser;
 let authorToken: string;
 let approverToken: string;
+/** Somebody to staff an approved work with; approval refuses to run with an empty crew. */
+let crewEmployeeId: string;
 
 async function login(email: string, password: string): Promise<string> {
   const response = await request(app).post(`${API}/auth/login`).send({ email, password });
@@ -102,12 +113,30 @@ async function addTask(
   return tasks.find((task) => task.title === title)!.id;
 }
 
-async function transition(workId: string, action: string, reason?: string): Promise<void> {
+async function transition(
+  workId: string,
+  action: string,
+  reason?: string,
+  extra: Record<string, unknown> = {},
+): Promise<void> {
   const response = await request(app)
     .post(`${API}/planned-work/${workId}/transition`)
     .set('Authorization', `Bearer ${authorToken}`)
-    .send({ action, ...(reason ? { reason } : {}) });
+    .send({ action, ...(reason ? { reason } : {}), ...extra });
   expect(response.status).toBe(200);
+}
+
+/**
+ * Gets a draft to PLANNED, which now takes TWO actions rather than one.
+ *
+ * PLAN no longer lands on PLANNED — it submits the work for approval (PENDING_APPROVAL) —
+ * and APPROVE is what accepts it. Approval also names the crew in the same call and is
+ * refused with an empty one, so a PLANNED work always has somebody on it. Nothing in this
+ * file is about that gate; it is setup, and every case here acts as the unscoped author.
+ */
+async function planAndApprove(workId: string): Promise<void> {
+  await transition(workId, 'PLAN');
+  await transition(workId, 'APPROVE', undefined, { assignedEmployeeIds: [crewEmployeeId] });
 }
 
 async function completeTask(workId: string, taskId: string, quantity = 10): Promise<void> {
@@ -140,7 +169,7 @@ async function completeTask(workId: string, taskId: string, quantity = 10): Prom
 async function completedWork(overrides: Record<string, unknown> = {}): Promise<string> {
   const workId = await createWork(overrides);
   const taskId = await addTask(workId);
-  await transition(workId, 'PLAN');
+  await planAndApprove(workId);
   await transition(workId, 'START');
   await completeTask(workId, taskId);
   await transition(workId, 'COMPLETE');
@@ -191,6 +220,22 @@ beforeEach(async () => {
 
   const approver = await createUserWithPermissions('pwapprover@test.mn', APPROVER_PERMISSIONS);
   approverToken = await login(approver.email, approver.password);
+
+  // The crew APPROVE has to name. No `systemUser` link, so it grants nobody any access —
+  // it exists only so approval has an employee to staff the work with.
+  const crew = await Employee.create({
+    employeeCode: 'RPT-CREW-1',
+    firstName: 'Ганбат',
+    lastName: 'Сүх',
+    company: org.companyId,
+    department: org.departmentId,
+    position: org.positionId,
+    team: org.teamId,
+    employeeType: 'FULL_TIME',
+    employmentStartDate: new Date('2024-01-01'),
+    status: 'ACTIVE',
+  });
+  crewEmployeeId = String(crew._id);
 });
 
 describe('report creation', () => {
@@ -282,7 +327,7 @@ describe('report authored before completion', () => {
   it('opens the report in DRAFT on the first PATCH of a work in flight', async () => {
     const workId = await createWork();
     await addTask(workId);
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
 
     const response = await request(app)
@@ -308,7 +353,7 @@ describe('report authored before completion', () => {
 
   it('updates the one row rather than opening a second on a repeat PATCH', async () => {
     const workId = await createWork();
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
 
     const first = await request(app)
       .patch(`${API}/planned-work/${workId}/report`)
@@ -331,7 +376,7 @@ describe('report authored before completion', () => {
   it('completes a work whose draft already exists without duplicating the report', async () => {
     const workId = await createWork();
     const taskId = await addTask(workId);
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
 
     // The draft is opened by the technician mid-job, before COMPLETE ever runs.
@@ -357,7 +402,7 @@ describe('report authored before completion', () => {
 
   it('still refuses the first PATCH from a technician the work is not assigned to', async () => {
     const workId = await createWork();
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
 
     // A field-tier account: `planned_work.submit_report` and nothing that lifts the
     // assignment scope, with the employee card the policy resolves the caller from.
@@ -738,7 +783,7 @@ describe('canonical report write-through', () => {
     const taskId = await addTask(workId, 10, { relatedObjectIds: [objectA, objectB] });
     // A second sub-task naming no equipment must contribute no item.
     const bareTaskId = await addTask(workId, 5, { title: 'Бичиг баримт цэгцлэх' });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
     await completeTask(workId, taskId, 10);
     await completeTask(workId, bareTaskId, 5);
@@ -779,7 +824,7 @@ describe('canonical report write-through', () => {
 
     const workId = await createWork();
     const taskId = await addTask(workId, 10, { relatedObjectIds: [objectA] });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
     await completeTask(workId, taskId);
     await transition(workId, 'COMPLETE');
@@ -804,7 +849,7 @@ describe('canonical report write-through', () => {
 
     const workId = await createWork();
     const taskId = await addTask(workId, 10, { relatedObjectIds: [objectA] });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
     await completeTask(workId, taskId);
     await transition(workId, 'COMPLETE');
@@ -847,7 +892,7 @@ describe('canonical report write-through', () => {
 
     const workId = await createWork();
     const taskId = await addTask(workId, 10, { relatedObjectIds: [objectA] });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
     await completeTask(workId, taskId);
     await transition(workId, 'COMPLETE');
@@ -923,7 +968,7 @@ describe('canonical report write-through', () => {
 
     const workId = await createWork();
     const taskId = await addTask(workId, 10, { relatedObjectIds: [objectA] });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
 
     for (const kind of ['BEFORE', 'AFTER']) {
@@ -980,7 +1025,7 @@ describe('canonical report write-through', () => {
 
     const workId = await createWork();
     const taskId = await addTask(workId, 10, { relatedObjectIds: [objectA] });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
     await completeTask(workId, taskId);
     await transition(workId, 'COMPLETE');
@@ -1030,7 +1075,7 @@ describe('canonical report write-through', () => {
 
     const workId = await createWork();
     const taskId = await addTask(workId, 10, { relatedObjectIds: [objectA, objectB] });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
     await completeTask(workId, taskId);
     await transition(workId, 'COMPLETE');
@@ -1153,7 +1198,7 @@ describe('canonical report write-through', () => {
 
     const workId = await createWork();
     const taskId = await addTask(workId, 10, { relatedObjectIds: [objectA, objectB] });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
     await completeTask(workId, taskId, 10);
 
@@ -1203,5 +1248,74 @@ describe('archived work', () => {
       .set('Authorization', `Bearer ${authorToken}`);
 
     expect(detail.body.data.availableActions).toEqual([]);
+  });
+});
+
+/**
+ * The PDF export, exercised through the real route rather than through the renderer.
+ *
+ * The unit tests around `report-pdf` prove a document definition turns into bytes; this
+ * proves the whole path — permission gate, the same `buildReportPreview` the screen uses,
+ * the renderer, and the download headers — answers with a file a browser will save.
+ */
+describe('report PDF export', () => {
+  it('serves the consolidated report as a downloadable PDF', async () => {
+    const workId = await completedWork();
+    await fillReport(workId);
+
+    const response = await request(app)
+      .get(`${API}/planned-work/${workId}/report/pdf`)
+      .set('Authorization', `Bearer ${authorToken}`)
+      .buffer(true)
+      .parse((res, callback) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        res.on('end', () => callback(null, Buffer.concat(chunks)));
+      });
+
+    expect(response.status).toBe(200);
+    expect(response.headers['content-type']).toBe('application/pdf');
+    // An attachment, so the browser saves rather than renders it in a tab.
+    expect(response.headers['content-disposition']).toMatch(/^attachment; filename=".*\.pdf"$/);
+    // Actual PDF bytes, not a JSON envelope with a 200 on it.
+    const body = response.body as Buffer;
+    expect(body.subarray(0, 5).toString('latin1')).toBe('%PDF-');
+    expect(body.byteLength).toBeGreaterThan(5_000);
+  });
+
+  it('serves the inspection report as a downloadable PDF', async () => {
+    const workId = await completedWork();
+
+    const generated = await request(app)
+      .post(`${API}/planned-work/${workId}/inspection-report`)
+      .set('Authorization', `Bearer ${authorToken}`);
+    expect([200, 201]).toContain(generated.status);
+
+    const response = await request(app)
+      .get(`${API}/planned-work/${workId}/inspection-report/pdf`)
+      .set('Authorization', `Bearer ${authorToken}`)
+      .buffer(true)
+      .parse((res, callback) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        res.on('end', () => callback(null, Buffer.concat(chunks)));
+      });
+
+    expect(response.status).toBe(200);
+    expect(response.headers['content-type']).toBe('application/pdf');
+    expect((response.body as Buffer).subarray(0, 5).toString('latin1')).toBe('%PDF-');
+  });
+
+  /** A read key, because the file is a copy of a page the caller may already read. */
+  it('refuses a caller without planned_work.view', async () => {
+    const workId = await completedWork();
+    const outsider = await createUserWithPermissions('pdf-outsider@test.mn', []);
+    const token = await login(outsider.email, outsider.password);
+
+    const response = await request(app)
+      .get(`${API}/planned-work/${workId}/report/pdf`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(response.status).toBe(403);
   });
 });

@@ -1,8 +1,7 @@
-import { PERMISSIONS, type PaginatedData } from '@monhorus/shared';
+import { type PaginatedData } from '@monhorus/shared';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
-import { Alert } from '../../components/ui/Alert';
 import { Button } from '../../components/ui/Button';
 import { ColumnPicker } from '../../components/ui/ColumnPicker';
 import { DataTable, Pagination, type Column } from '../../components/ui/DataTable';
@@ -16,7 +15,6 @@ import {
   FILTER_LABEL,
   FILTER_SELECT,
 } from '../../components/ui/control-styles';
-import { useAuth } from '../../contexts/auth-context';
 import { useTableColumns } from '../../hooks/use-table-columns';
 import { ApiError } from '../../lib/api-client';
 import {
@@ -87,7 +85,6 @@ function JsonBlock({ label, value }: { label: string; value: unknown }): ReactEl
  * employee.view_salary.
  */
 export function AuditLogPage(): ReactElement {
-  const { can } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
 
   const query = useMemo<AuditQuery>(() => {
@@ -234,14 +231,6 @@ export function AuditLogPage(): ReactElement {
         breadcrumbs={[{ label: 'Нүүр', to: '/dashboard' }, { label: 'Audit log' }]}
       />
 
-      {!can(PERMISSIONS.EMPLOYEE_VIEW_SALARY) && (
-        <div className="mb-4">
-          <Alert variant="info">
-            Цалинтай холбоотой бүртгэлийг харахын тулд цалингийн эрх шаардлагатай.
-          </Alert>
-        </div>
-      )}
-
       <div className={FILTER_BAR}>
         <div className="min-w-[200px] flex-1">
           <label htmlFor="audit-search" className={FILTER_LABEL}>
@@ -339,6 +328,9 @@ export function AuditLogPage(): ReactElement {
           columns={columnState.visibleColumns}
           rows={data?.items ?? []}
           rowKey={(row) => row.id}
+          // Numbered off the response rather than the query, so a request in flight can
+          // never number the rows on screen against the page they did not come from.
+          numbering={{ page: data?.page ?? 1, limit: data?.limit ?? 25 }}
           loading={loading}
           error={error}
           onRetry={() => void load()}

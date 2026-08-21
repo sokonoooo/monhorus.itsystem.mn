@@ -1,13 +1,16 @@
+import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monhorus_mobile/core/error/failure.dart';
 import 'package:monhorus_mobile/core/media/photo_capture.dart';
+import 'package:monhorus_mobile/features/customer_portal/data/models/object_master_model.dart';
+import 'package:monhorus_mobile/features/customer_portal/data/models/project_model.dart';
 import 'package:monhorus_mobile/features/customer_portal/data/models/service_request_model.dart';
-import 'package:monhorus_mobile/features/customer_portal/domain/entities/service_request_enums.dart';
 import 'package:monhorus_mobile/features/customer_portal/presentation/screens/device_detail_screen.dart';
 import 'package:monhorus_mobile/features/customer_portal/presentation/widgets/create_request_sheet.dart';
+import 'package:monhorus_mobile/features/customer_portal/presentation/widgets/floor_plan_markers.dart';
 
 import 'fakes.dart';
 
@@ -126,9 +129,7 @@ void main() {
           body: CreateRequestSheet(
             scope: testScope,
             initialBuildingId: buildingFixture().id,
-            deviceId: '6e0000000000000000000003',
             deviceName: 'LDB-2F-02',
-            initialUrgent: true,
             pickPhoto: fakePick,
           ),
         ),
@@ -155,11 +156,10 @@ void main() {
     final CreateServiceRequestRequestModel sent = repository.created.single;
     expect(sent.customerId, testScope.customerId);
     expect(sent.buildingId, buildingFixture().id);
-    expect(sent.deviceId, '6e0000000000000000000003');
-    expect(sent.isUrgent, isTrue);
+    // Nothing this app holds can populate `deviceId`; see the device-page test below.
+    expect(sent.deviceId, isNull);
     // The urgent switch preselects the urgent call type, matching the SLA the
     // backend applies to it.
-    expect(sent.requestType, ServiceRequestType.urgentCall);
     expect(sent.contactPhone, '9911-2233');
     // The id the upload minted, claimed by this request.
     expect(sent.attachmentIds, hasLength(1));
@@ -334,5 +334,652 @@ void main() {
 
     expect(find.byType(CreateRequestSheet), findsNothing);
     expect(find.text('Засварын хүсэлт илгээх'), findsNothing);
+  });
+
+  // -- Байршил ---------------------------------------------------------------
+
+  /// Every `DropdownButtonFormField<String>` the sheet renders: building, floor, and the
+  /// equipment-type picker. The request-type chooser is a
+  /// `DropdownButtonFormField<ServiceRequestType>` and so is deliberately not in this list.
+  ///
+  /// Was named for the two location selectors; the equipment picker joined them when calls
+  /// started taking their SLA window from the type, and it is the same widget type.
+  Finder stringDropdowns() => find.byType(DropdownButtonFormField<String>);
+
+  /// Fills the parts of the form that are not what a test is about, attaches the
+  /// mandatory picture and sends it.
+  Future<void> completeAndSubmit(
+    WidgetTester tester, {
+    String description = 'Коридорын гэрэл анивчиж байна.',
+  }) async {
+    await tester.enterText(find.byType(TextFormField).last, description);
+    await tester.pumpAndSettle();
+    await addPhoto(tester);
+
+    final Finder submit = find.widgetWithText(FilledButton, 'Илгээх');
+    await tester.ensureVisible(submit);
+    await tester.pumpAndSettle();
+    await tester.tap(submit);
+    await tester.pumpAndSettle();
+  }
+
+  /// The zone (Өрөө/Бүс) picker this sheet used to carry, now deliberately absent.
+  ///
+  /// The Өрөө/Бүс register is the administrator's own hierarchy, and a customer
+  /// reporting a fault does not think in it — the location they can actually give is the
+  /// floor and, when there is a drawing, the spot on it. So the sheet must offer no zone
+  /// control at all, and the payload must name no room: a `roomId` still exists on
+  /// [CreateServiceRequestRequestModel] because the API contract has one and other
+  /// callers may set it, which is exactly why this asserts on what LEAVES the sheet
+  /// rather than on the field's existence.
+  testWidgets('the sheet offers no zone control and sends no roomId',
+      (WidgetTester tester) async {
+    final FloorModel floor = floorFixture();
+    final FakeCustomerPortalRepository repository = FakeCustomerPortalRepository();
+
+    await pumpPhone(
+      tester,
+      wrapCustomerScreen(
+        Scaffold(
+          body: CreateRequestSheet(
+            scope: testScope,
+            initialBuildingId: buildingFixture().id,
+            initialFloorId: floor.id,
+            pickPhoto: fakePick,
+          ),
+        ),
+        repository: repository,
+        user: customerWithCreateRight(),
+      ),
+    );
+
+    /*
+     * Building, floor, equipment type. The number is asserted rather than the absence of a
+     * zone picker alone, because a FOURTH would be the zone control returning - which is
+     * what this test exists to catch.
+     */
+    expect(stringDropdowns(), findsNWidgets(3));
+    expect(find.textContaining('Өрөө/Бүс'), findsNothing);
+    // The "unpick" entry the zone list carried, and the sentence a zoneless floor got.
+    expect(find.text('Сонгохгүй'), findsNothing);
+    expect(find.textContaining('өрөө/бүс бүртгэгдээгүй'), findsNothing);
+
+    await completeAndSubmit(tester);
+
+    expect(repository.created, hasLength(1));
+    final CreateServiceRequestRequestModel sent = repository.created.single;
+    expect(sent.floorId, floor.id);
+    expect(sent.roomId, isNull);
+    expect(sent.toJson().containsKey('roomId'), isFalse);
+  });
+
+  // -- Планд тэмдэглэх -------------------------------------------------------
+
+  FakeCustomerPortalRepository repositoryWithPlan() =>
+      FakeCustomerPortalRepository(
+        floorPlan: floorPlanFixture(),
+        fileBytes: planPngBytes,
+      );
+
+  /// Pumps a sheet whose floor has a drawing, with that drawing already decoded.
+  ///
+  /// Two facts make this necessary. The PNG is decoded by the real image codec, which
+  /// only runs inside [WidgetTester.runAsync]; and until it has, the sheet shows a
+  /// spinner, an animation `pumpAndSettle` waits on until it times out. But `runAsync`
+  /// cannot be used with the tree already built, because `google_fonts` would then get
+  /// a live event loop too and throw on its network fetch.
+  ///
+  /// So the decode happens BEFORE the first frame and lands in the global image cache.
+  /// `MemoryImage` keys on the identity of its byte list, and the fake hands out the
+  /// one [planPngBytes] instance, so the widget's own `resolve` is then a cache hit
+  /// that reports the size synchronously — the path `_IntrinsicallySizedImage` already
+  /// handles — and no spinner is ever built.
+  Future<void> pumpPhoneWithPlan(WidgetTester tester, Widget widget) async {
+    await tester.runAsync(() async {
+      final Completer<void> decoded = Completer<void>();
+      MemoryImage(planPngBytes).resolve(ImageConfiguration.empty).addListener(
+            ImageStreamListener(
+              (ImageInfo _, bool __) {
+                if (!decoded.isCompleted) decoded.complete();
+              },
+              onError: (Object error, StackTrace? _) {
+                if (!decoded.isCompleted) decoded.completeError(error);
+              },
+            ),
+          );
+      await decoded.future;
+    });
+
+    await pumpPhone(tester, widget);
+  }
+
+  /// Taps the plan at the given fraction of its painted rectangle.
+  ///
+  /// The rectangle is read off [FloorPlanPinLayer] itself, which is exactly the drawing
+  /// because `AuthenticatedImage.sizedToImage` sized the box from the image — so the
+  /// fraction tapped here is the fraction the sheet must send.
+  Future<void> tapPlanAt(WidgetTester tester, double fx, double fy) async {
+    final Finder layer = find.byType(FloorPlanPinLayer);
+    await tester.ensureVisible(layer);
+    await tester.pumpAndSettle();
+
+    final Rect rect = tester.getRect(layer);
+    await tester.tapAt(
+      Offset(rect.left + rect.width * fx, rect.top + rect.height * fy),
+    );
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('tapping the plan sends the normalised planPosition',
+      (WidgetTester tester) async {
+    final FakeCustomerPortalRepository repository = repositoryWithPlan();
+
+    await pumpPhoneWithPlan(
+      tester,
+      wrapCustomerScreen(
+        Scaffold(
+          body: CreateRequestSheet(
+            scope: testScope,
+            initialBuildingId: buildingFixture().id,
+            initialFloorId: floorFixture().id,
+            pickPhoto: fakePick,
+          ),
+        ),
+        repository: repository,
+        user: customerWithCreateRight(),
+      ),
+    );
+
+    expect(find.byType(FaultPin), findsNothing);
+    await tapPlanAt(tester, 0.25, 0.5);
+    expect(find.byType(FaultPin), findsOneWidget);
+
+    await completeAndSubmit(tester);
+
+    final PlanPositionModel? sent = repository.created.single.planPosition;
+    expect(sent, isNotNull);
+    // A hair of tolerance for the device-pixel rounding between the tap and the box.
+    expect(sent!.x, closeTo(0.25, 0.02));
+    expect(sent.y, closeTo(0.5, 0.02));
+  });
+
+  testWidgets('a plan the customer never touched sends no planPosition',
+      (WidgetTester tester) async {
+    final FakeCustomerPortalRepository repository = repositoryWithPlan();
+
+    await pumpPhoneWithPlan(
+      tester,
+      wrapCustomerScreen(
+        Scaffold(
+          body: CreateRequestSheet(
+            scope: testScope,
+            initialBuildingId: buildingFixture().id,
+            initialFloorId: floorFixture().id,
+            pickPhoto: fakePick,
+          ),
+        ),
+        repository: repository,
+        user: customerWithCreateRight(),
+      ),
+    );
+
+    // The control is there and unused, which must submit exactly as it did before the
+    // pin existed.
+    expect(find.byType(FloorPlanPinLayer), findsOneWidget);
+    expect(find.byType(FaultPin), findsNothing);
+
+    await completeAndSubmit(tester);
+
+    expect(repository.created.single.planPosition, isNull);
+    expect(find.text('Хүсэлт илгээгдлээ'), findsOneWidget);
+  });
+
+  testWidgets('clearing the mark removes the planPosition again',
+      (WidgetTester tester) async {
+    final FakeCustomerPortalRepository repository = repositoryWithPlan();
+
+    await pumpPhoneWithPlan(
+      tester,
+      wrapCustomerScreen(
+        Scaffold(
+          body: CreateRequestSheet(
+            scope: testScope,
+            initialBuildingId: buildingFixture().id,
+            initialFloorId: floorFixture().id,
+            pickPhoto: fakePick,
+          ),
+        ),
+        repository: repository,
+        user: customerWithCreateRight(),
+      ),
+    );
+
+    await tapPlanAt(tester, 0.6, 0.3);
+    expect(find.byType(FaultPin), findsOneWidget);
+
+    final Finder clear = find.widgetWithText(TextButton, 'Тэмдэглэгээг арилгах');
+    await tester.ensureVisible(clear);
+    await tester.pumpAndSettle();
+    await tester.tap(clear);
+    await tester.pumpAndSettle();
+
+    expect(find.byType(FaultPin), findsNothing);
+
+    await completeAndSubmit(tester);
+    expect(repository.created.single.planPosition, isNull);
+  });
+
+  testWidgets('a floor with no plan image offers no pin control',
+      (WidgetTester tester) async {
+    // `GET /floors/:floorId/plan` answers `data: null` for a floor with no drawing.
+    final FakeCustomerPortalRepository repository = FakeCustomerPortalRepository();
+
+    await pumpPhone(
+      tester,
+      wrapCustomerScreen(
+        Scaffold(
+          body: CreateRequestSheet(
+            scope: testScope,
+            initialBuildingId: buildingFixture().id,
+            initialFloorId: floorFixture().id,
+            pickPhoto: fakePick,
+          ),
+        ),
+        repository: repository,
+        user: customerWithCreateRight(),
+      ),
+    );
+
+    expect(find.byType(FloorPlanPinLayer), findsNothing);
+    expect(
+      find.textContaining('Энэ давхарт план зураг ачаалагдаагүй'),
+      findsOneWidget,
+    );
+
+    await completeAndSubmit(tester);
+    expect(repository.created.single.planPosition, isNull);
+  });
+
+  // -- The device-page defect ------------------------------------------------
+
+  /// The test the 400 got past.
+  ///
+  /// `object.id` is an object-MASTER id and `deviceId` names an `ObjectNode`, so every
+  /// request raised from a device page was refused with
+  /// `{"field":"deviceId","message":"Төхөөрөмж олдсонгүй."}` and a 400 — which is why
+  /// all fifteen requests in the development database carry no device. Nothing in the
+  /// suite noticed, because the fake repository accepts any id at all. Asserting on
+  /// what LEAVES the app is what closes that gap: the payload must carry no device id,
+  /// and the device must still be identifiable from the record.
+  testWidgets('a request raised from a device page sends no unresolvable deviceId',
+      (WidgetTester tester) async {
+    final FakeCustomerPortalRepository repository = FakeCustomerPortalRepository();
+
+    await pumpPhone(
+      tester,
+      wrapCustomerScreen(
+        DeviceDetailScreen(
+          objectId: objectFixture().id,
+          pickPhoto: fakePick,
+        ),
+        repository: repository,
+        user: customerWithCreateRight(),
+      ),
+    );
+
+    await tester.tap(find.text('Засварын хүсэлт илгээх'));
+    await tester.pumpAndSettle();
+    expect(find.byType(CreateRequestSheet), findsOneWidget);
+
+    // The description arrives pre-filled with the device's identity, so nothing is
+    // typed here: what the sheet opened with is what must reach the server.
+    await addPhoto(tester);
+    final Finder submit = find.widgetWithText(FilledButton, 'Илгээх');
+    await tester.ensureVisible(submit);
+    await tester.pumpAndSettle();
+    await tester.tap(submit);
+    await tester.pumpAndSettle();
+
+    expect(repository.created, hasLength(1));
+    final CreateServiceRequestRequestModel sent = repository.created.single;
+    expect(sent.deviceId, isNull);
+    // Still says which device, in the one field the dispatcher reads.
+    expect(sent.description, contains(objectFixture().name));
+    expect(sent.description, contains(objectFixture().code));
+    // And the assessor's own recommendation is carried through rather than dropped.
+    expect(
+      sent.description,
+      contains('Холбогч хэсгийг яаралтай шалгаж, ачааллыг салгана.'),
+    );
+  });
+
+  // -- The device's own pin --------------------------------------------------
+
+  /// The spot the register holds for the fixture device. Deliberately not a round
+  /// fraction of the plan, so a coordinate that survives to the payload cannot have
+  /// been produced by a tap the test made.
+  const PlanPositionModel registeredSpot = PlanPositionModel(x: 0.42, y: 0.61);
+
+  /// Opens the create sheet from the device page, with the plan already decoded.
+  Future<void> openSheetFromDevice(
+    WidgetTester tester,
+    FakeCustomerPortalRepository repository,
+  ) async {
+    await pumpPhoneWithPlan(
+      tester,
+      wrapCustomerScreen(
+        DeviceDetailScreen(objectId: objectFixture().id, pickPhoto: fakePick),
+        repository: repository,
+        user: customerWithCreateRight(),
+      ),
+    );
+
+    await tester.tap(find.text('Засварын хүсэлт илгээх'));
+    await tester.pumpAndSettle();
+    expect(find.byType(CreateRequestSheet), findsOneWidget);
+  }
+
+  /// A device that HAS been placed on its floor's drawing.
+  ///
+  /// The customer is standing in front of it; asking them to point at a plan to say
+  /// where a thing the register already located is would be asking for what the platform
+  /// knows. The coordinate is COPIED onto the request — no id, no reference — so the
+  /// record keeps saying where the fault was reported even if the object moves later.
+  testWidgets('a device with a registered position opens with its pin already placed',
+      (WidgetTester tester) async {
+    final FakeCustomerPortalRepository repository = FakeCustomerPortalRepository(
+      objectDetail: objectFixture(planPosition: registeredSpot),
+      floorPlan: floorPlanFixture(),
+      fileBytes: planPngBytes,
+    );
+
+    await openSheetFromDevice(tester, repository);
+
+    // Placed without a single tap, and said to be the register's rather than the
+    // reader's own mark.
+    expect(find.byType(FaultPin), findsOneWidget);
+    expect(
+      find.textContaining('Төхөөрөмжийн бүртгэлтэй байршлыг тэмдэглэлээ'),
+      findsOneWidget,
+    );
+
+    await completeAndSubmit(tester);
+
+    final PlanPositionModel? sent = repository.created.single.planPosition;
+    expect(sent, isNotNull);
+    // Exactly the register's value: copied, not re-derived from a rectangle.
+    expect(sent!.x, registeredSpot.x);
+    expect(sent.y, registeredSpot.y);
+    expect(repository.created.single.floorId, floorFixture().id);
+  });
+
+  /// The common case today — thirty-three of thirty-five objects are unplaced — so the
+  /// fallback is the ordinary path, not an edge. An empty plan under a device page reads
+  /// as a drawing that failed to load, so the absence is stated and a pin is asked for.
+  testWidgets('a device with no registered position says so and still accepts a pin',
+      (WidgetTester tester) async {
+    final FakeCustomerPortalRepository repository = FakeCustomerPortalRepository(
+      objectDetail: objectFixture(),
+      floorPlan: floorPlanFixture(),
+      fileBytes: planPngBytes,
+    );
+
+    await openSheetFromDevice(tester, repository);
+
+    expect(find.byType(FaultPin), findsNothing);
+    expect(
+      find.textContaining('Энэ төхөөрөмжийн байршил планд бүртгэгдээгүй'),
+      findsOneWidget,
+    );
+
+    // The general-request path is still fully available underneath.
+    await tapPlanAt(tester, 0.25, 0.5);
+    expect(find.byType(FaultPin), findsOneWidget);
+
+    await completeAndSubmit(tester);
+
+    final PlanPositionModel? sent = repository.created.single.planPosition;
+    expect(sent, isNotNull);
+    expect(sent!.x, closeTo(0.25, 0.02));
+    expect(sent.y, closeTo(0.5, 0.02));
+  });
+
+  /// The pin is placed, never locked. The register says where the equipment was
+  /// installed; the customer can see where it actually failed, and between the two the
+  /// person in the room wins.
+  testWidgets('the inherited pin can be moved and the moved spot is what is sent',
+      (WidgetTester tester) async {
+    final FakeCustomerPortalRepository repository = repositoryWithPlan();
+
+    await pumpPhoneWithPlan(
+      tester,
+      wrapCustomerScreen(
+        Scaffold(
+          body: CreateRequestSheet(
+            scope: testScope,
+            initialBuildingId: buildingFixture().id,
+            initialFloorId: floorFixture().id,
+            initialPlanPosition: registeredSpot,
+            deviceName: 'LDB-2F-02',
+            pickPhoto: fakePick,
+          ),
+        ),
+        repository: repository,
+        user: customerWithCreateRight(),
+      ),
+    );
+
+    expect(find.byType(FaultPin), findsOneWidget);
+
+    await tapPlanAt(tester, 0.8, 0.2);
+    expect(find.byType(FaultPin), findsOneWidget);
+    // The line stops claiming the register's authority once the reader has overruled it.
+    expect(
+      find.textContaining('Төхөөрөмжийн бүртгэлтэй байршлыг тэмдэглэлээ'),
+      findsNothing,
+    );
+
+    await completeAndSubmit(tester);
+
+    final PlanPositionModel? sent = repository.created.single.planPosition;
+    expect(sent, isNotNull);
+    expect(sent!.x, closeTo(0.8, 0.02));
+    expect(sent.y, closeTo(0.2, 0.02));
+    // And emphatically not the value it opened with.
+    expect(sent.x, isNot(closeTo(registeredSpot.x, 0.02)));
+  });
+
+  testWidgets('the inherited pin can be cleared and the request then carries none',
+      (WidgetTester tester) async {
+    final FakeCustomerPortalRepository repository = repositoryWithPlan();
+
+    await pumpPhoneWithPlan(
+      tester,
+      wrapCustomerScreen(
+        Scaffold(
+          body: CreateRequestSheet(
+            scope: testScope,
+            initialBuildingId: buildingFixture().id,
+            initialFloorId: floorFixture().id,
+            initialPlanPosition: registeredSpot,
+            deviceName: 'LDB-2F-02',
+            pickPhoto: fakePick,
+          ),
+        ),
+        repository: repository,
+        user: customerWithCreateRight(),
+      ),
+    );
+
+    final Finder clear = find.widgetWithText(TextButton, 'Тэмдэглэгээг арилгах');
+    await tester.ensureVisible(clear);
+    await tester.pumpAndSettle();
+    await tester.tap(clear);
+    await tester.pumpAndSettle();
+
+    expect(find.byType(FaultPin), findsNothing);
+
+    await completeAndSubmit(tester);
+    expect(repository.created.single.planPosition, isNull);
+  });
+
+  /// A coordinate with no drawing under it is meaningless, and the server refuses one
+  /// outright. A caller that hands the sheet a position but no floor must therefore get
+  /// no pin at all rather than a mark on whichever plan is picked next.
+  testWidgets('an inherited position with no floor places nothing',
+      (WidgetTester tester) async {
+    final FakeCustomerPortalRepository repository = repositoryWithPlan();
+
+    await pumpPhoneWithPlan(
+      tester,
+      wrapCustomerScreen(
+        Scaffold(
+          body: CreateRequestSheet(
+            scope: testScope,
+            initialBuildingId: buildingFixture().id,
+            initialPlanPosition: registeredSpot,
+            deviceName: 'LDB-2F-02',
+            pickPhoto: fakePick,
+          ),
+        ),
+        repository: repository,
+        user: customerWithCreateRight(),
+      ),
+    );
+
+    expect(find.byType(FloorPlanPinLayer), findsNothing);
+
+    await completeAndSubmit(tester);
+    expect(repository.created.single.planPosition, isNull);
+    expect(repository.created.single.floorId, isNull);
+  });
+
+  /// Opens the equipment-type picker. It is the third `DropdownButtonFormField<String>`
+  /// the sheet renders, after building and floor, and a closed dropdown shows none of its
+  /// options - so a test that wants to choose or read one has to open it.
+  Future<void> openEquipmentPicker(WidgetTester tester) async {
+    await tester.ensureVisible(stringDropdowns().at(2));
+    await tester.pumpAndSettle();
+    await tester.tap(stringDropdowns().at(2));
+    await tester.pumpAndSettle();
+  }
+
+  group('equipment type', () {
+    /// The whole point of the field: the id has to reach the server, because the deadline
+    /// is computed from it.
+    testWidgets('the chosen type reaches the request', (WidgetTester tester) async {
+      final FakeCustomerPortalRepository repository = FakeCustomerPortalRepository(
+        callableObjectTypes: <CallableObjectTypeModel>[
+          callableObjectTypeFixture(id: 'light-1', name: 'Гэрэл', callSlaHours: 24),
+          callableObjectTypeFixture(id: 'socket-1', name: 'Автомат залгуур', callSlaHours: 6),
+        ],
+      );
+
+      await pumpPhone(
+        tester,
+        wrapCustomerScreen(
+          Scaffold(
+            body: CreateRequestSheet(
+              scope: testScope,
+              initialBuildingId: buildingFixture().id,
+              pickPhoto: fakePick,
+            ),
+          ),
+          repository: repository,
+          user: customerWithCreateRight(),
+        ),
+      );
+
+      await openEquipmentPicker(tester);
+      await tester.tap(find.text('Автомат залгуур').last);
+      await tester.pumpAndSettle();
+
+      await completeAndSubmit(tester);
+
+      expect(repository.created, hasLength(1));
+      expect(repository.created.single.objectTypeId, 'socket-1');
+    });
+
+    /// Inverted when SLA windows were hidden from customers. The window is an internal
+    /// commitment between the company and its dispatchers; printing it on the portal turns
+    /// an operating target into a promise the customer will hold them to. The staff form
+    /// still shows it, which is where it belongs.
+    testWidgets('names the options without naming their hours', (WidgetTester tester) async {
+      final FakeCustomerPortalRepository repository = FakeCustomerPortalRepository(
+        callableObjectTypes: <CallableObjectTypeModel>[
+          callableObjectTypeFixture(name: 'Гэрэл', callSlaHours: 24),
+          callableObjectTypeFixture(id: 's', name: 'Автомат залгуур', callSlaHours: 6),
+        ],
+      );
+
+      await pumpPhone(
+        tester,
+        wrapCustomerScreen(
+          const Scaffold(
+            body: CreateRequestSheet(scope: testScope, pickPhoto: fakePick),
+          ),
+          repository: repository,
+          user: customerWithCreateRight(),
+        ),
+      );
+
+      await openEquipmentPicker(tester);
+
+      expect(find.text('Гэрэл'), findsWidgets);
+      expect(find.text('Автомат залгуур'), findsWidgets);
+      // No window anywhere on the sheet, in either option or hint.
+      expect(find.textContaining('цаг'), findsNothing);
+    });
+
+    /// One option is not a choice, and making somebody tap through it is friction with a
+    /// single possible outcome.
+    testWidgets('a lone type is chosen without asking', (WidgetTester tester) async {
+      final FakeCustomerPortalRepository repository = FakeCustomerPortalRepository(
+        callableObjectTypes: <CallableObjectTypeModel>[
+          callableObjectTypeFixture(id: 'only-1'),
+        ],
+      );
+
+      await pumpPhone(
+        tester,
+        wrapCustomerScreen(
+          Scaffold(
+            body: CreateRequestSheet(
+              scope: testScope,
+              initialBuildingId: buildingFixture().id,
+              pickPhoto: fakePick,
+            ),
+          ),
+          repository: repository,
+          user: customerWithCreateRight(),
+        ),
+      );
+
+      await completeAndSubmit(tester);
+
+      expect(repository.created.single.objectTypeId, 'only-1');
+    });
+
+    /// Nothing callable configured yet. Saying so is better than a dropdown with no
+    /// options and a validator the customer cannot satisfy.
+    testWidgets('an empty catalogue says so instead of blocking silently',
+        (WidgetTester tester) async {
+      final FakeCustomerPortalRepository repository = FakeCustomerPortalRepository(
+        callableObjectTypes: <CallableObjectTypeModel>[],
+      );
+
+      await pumpPhone(
+        tester,
+        wrapCustomerScreen(
+          const Scaffold(
+            body: CreateRequestSheet(scope: testScope, pickPhoto: fakePick),
+          ),
+          repository: repository,
+          user: customerWithCreateRight(),
+        ),
+      );
+
+      expect(find.textContaining('тохируулаагүй'), findsOneWidget);
+    });
   });
 }

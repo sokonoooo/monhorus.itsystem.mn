@@ -495,7 +495,10 @@ describe('InspectionReportPage', () => {
     const narrative = screen.getByRole('region', { name: 'Тайлангийн бичвэр' });
     expect(within(narrative).getByLabelText('Дүгнэлт')).toBeDisabled();
 
-    expect(screen.getByText('Эцэслэгдсэн тайлан. Хувилбар 2')).toBeInTheDocument();
+    // The version counter still names itself in the heading block; the banner that repeated
+    // it, and the version rule it carried, now live in this route's help entry.
+    expect(screen.getByText('Хувилбар 2')).toBeInTheDocument();
+    expect(screen.queryByText('Эцэслэгдсэн тайлан. Хувилбар 2')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Шинэ хувилбар үүсгэх' })).toBeInTheDocument();
   });
 

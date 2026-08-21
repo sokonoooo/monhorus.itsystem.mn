@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -5,6 +7,7 @@ import '../../../auth/domain/entities/app_user.dart';
 import '../../../auth/presentation/providers/auth_provider.dart';
 import '../../data/models/project_model.dart';
 import '../../data/models/service_request_model.dart';
+import '../../data/models/survey_model.dart';
 import '../../domain/entities/customer_scope.dart';
 import '../../domain/entities/risk_level.dart';
 import '../providers/customer_portal_providers.dart';
@@ -14,6 +17,7 @@ import '../widgets/customer_async_view.dart';
 import '../widgets/customer_ui.dart';
 import '../widgets/notifications_sheet.dart';
 import '../widgets/service_request_card.dart';
+import '../widgets/survey_sheet.dart';
 import 'building_detail_screen.dart';
 import 'service_request_detail_screen.dart';
 
@@ -53,22 +57,37 @@ class CustomerHomeScreen extends ConsumerWidget {
       body: Column(
         children: <Widget>[
           SteelHero(
-            title: 'soko',
+            // The organisation whose estate this is, never a brand.
+            //
+            // This read `'soko'` - the wordmark from the HTML mock the steel
+            // direction was transcribed from - so every customer was shown a name
+            // that is not theirs and belongs to nobody in this system.
+            // `UserDto.customerName` is populated by the backend from the linked
+            // customer and has been parsed by this app all along.
+            //
+            // The fallback is only reachable in the instant before `/auth/me`
+            // answers: past that, an account with no linked customer resolves no
+            // scope and this screen is replaced by `CustomerScopeUnavailableView`.
+            title: user?.customerName ?? 'Байгууллага',
+            // The server's own `total`, not the number of records that arrived.
             subtitle: summary == null
                 ? 'Сайн байна уу, ${user?.fullName ?? 'Хэрэглэгч'}'
-                : '${summary.buildings.length} БАРИЛГА · '
+                : '${summary.buildingTotal} БАРИЛГА · '
                     '${_formatDate(DateTime.now())}',
             headline: _headline(summary),
-            stair: summary == null
+            // No stair unless the bands were summed over every building. A column
+            // per band summed over some of them is a different answer, not a
+            // smaller one, and five numbers on a dark band cannot caveat themselves.
+            stair: summary == null || !summary.coversEveryBuilding
                 ? const <RiskStairStep>[]
                 : <RiskStairStep>[
-                    for (final RiskLevel level in RiskLevel.values)
+                    for (final RiskLevel level in riskBandsInUse())
                       (
                         band: level.solidBackground,
                         count: summary.countOf(level),
                         label: level.shortLabel.toUpperCase(),
                       ),
-                    // The five bands only ever account for the devices somebody has
+                    // The bands only ever account for the devices somebody has
                     // assessed. Without this column the figures on the hero sum to
                     // fewer devices than the customer owns, with nothing saying so.
                     // Added only when there are some, so the common case keeps the
@@ -88,8 +107,15 @@ class CustomerHomeScreen extends ConsumerWidget {
             child: summaryAsync == null
                 ? const CustomerScopeUnavailableView()
                 : RefreshIndicator(
-                    onRefresh: () async =>
-                        ref.invalidate(customerHomeSummaryProvider),
+                    /*
+                     * The badge is refreshed here too. Pulling to refresh invalidated only
+                     * the summary, so the one gesture a user reaches for when a screen looks
+                     * stale was the one that left the bell untouched.
+                     */
+                    onRefresh: () async => ref
+                      ..invalidate(customerHomeSummaryProvider)
+                      ..invalidate(unreadNotificationCountProvider)
+                      ..invalidate(customerNotificationsProvider),
                     child: CustomerAsyncView<CustomerHomeSummary>(
                       value: summaryAsync,
                       onRetry: () => ref.invalidate(customerHomeSummaryProvider),
@@ -112,6 +138,13 @@ class CustomerHomeScreen extends ConsumerWidget {
   /// available here: this is the largest type on the screen.
   String _headline(CustomerHomeSummary? summary) {
     if (summary == null) return 'Барилгын эрсдэлийн тойм';
+    // Same rule as the stair: a count of critical devices summed over part of the
+    // estate is not a fact about the estate, so the sentence says what it does know
+    // — how many buildings there are — instead of naming a figure it cannot stand
+    // behind.
+    if (!summary.coversEveryBuilding) {
+      return '${summary.buildingTotal} барилгын жагсаалт бүрэн ачаалагдсангүй';
+    }
     if (summary.criticalCount > 0) {
       return '${summary.criticalCount} төхөөрөмж яаралтай засвар шаардлагатай';
     }
@@ -194,6 +227,48 @@ class _HeroNotificationBell extends ConsumerWidget {
   }
 }
 
+/// The prompt that appears while a finished job is still waiting to be rated.
+///
+/// Silent in every other state, and deliberately silent on failure too: an account
+/// without `portal.survey.submit` would be answered 403, and an error card for a
+/// question nobody asked would be worse than no card. It draws only when the API said
+/// there is something to answer.
+///
+/// Tapping it opens the survey for the OLDEST outstanding request — the first entry the
+/// server sent — rather than a list, because the sheet already walks technician by
+/// technician and a list of forms in front of that is a menu of chores.
+class _SurveyPrompt extends ConsumerWidget {
+  const _SurveyPrompt();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    if (!ref.watch(canSubmitSurveyProvider)) return const SizedBox.shrink();
+
+    final List<SurveyPendingItemModel>? pending =
+        ref.watch(pendingSurveysProvider).valueOrNull;
+    if (pending == null) return const SizedBox.shrink();
+
+    final List<SurveyPendingItemModel> outstanding = pending
+        .where((SurveyPendingItemModel item) => item.hasOutstanding)
+        .toList(growable: false);
+    if (outstanding.isEmpty) return const SizedBox.shrink();
+
+    final SurveyPendingItemModel first = outstanding.first;
+    final String where = first.buildingName ?? first.requestNumber;
+
+    return BlueprintCta(
+      title: 'Үйлчилгээгээ үнэлнэ үү',
+      subtitle: outstanding.length == 1
+          ? '$where дэх ажил дууслаа. Ажилтныг үнэлээрэй.'
+          : '$where болон бусад ${outstanding.length - 1} ажил үнэлгээ хүлээж '
+              'байна.',
+      onTap: () => unawaited(
+        SurveySheet.show(context, requestId: first.serviceRequestId),
+      ),
+    );
+  }
+}
+
 class _HomeBody extends StatelessWidget {
   const _HomeBody({required this.summary, required this.onOpenTab});
 
@@ -216,8 +291,14 @@ class _HomeBody extends StatelessWidget {
   static int _criticalRank(BuildingModel building) =>
       building.riskSummary.hasCritical ? 1 : 0;
 
-  /// `RiskLevel.values` runs best-first, so a higher index is a worse band. An
+  /// The enum is declared best-first, so a higher index is a worse band. An
   /// unassessed building has no band at all and sorts below every one of them.
+  ///
+  /// The three reserved keys sit past OUT_OF_SERVICE in that order, so a configured
+  /// spare sorts as the worst thing present. That is the safe direction to be wrong in
+  /// — it surfaces the building rather than burying it — and this app has no way to
+  /// know where an administrator meant their band to sit: `/vocabulary` reports the
+  /// ladder's names and colours, not what each band demands.
   static int _severity(BuildingModel building) =>
       building.riskSummary.worstLevel?.index ?? -1;
 
@@ -232,6 +313,7 @@ class _HomeBody extends StatelessWidget {
       padding: EdgeInsets.zero,
       physics: const AlwaysScrollableScrollPhysics(),
       children: <Widget>[
+        const _SurveyPrompt(),
         SectionHead(
           kicker: 'БҮХ БАРИЛГА · ЭРСДЭЛЭЭР',
           actionLabel: 'Бүгдийг харах',

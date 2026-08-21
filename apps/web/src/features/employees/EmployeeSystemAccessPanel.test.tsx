@@ -35,6 +35,8 @@ function makeRole(overrides: Partial<RoleDto> = {}): RoleDto {
     description: null,
     permissions: [],
     isSystem: true,
+    // A seeded role has no creator, which is the case this fixture stands for.
+    createdByName: null,
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
     ...overrides,
@@ -98,10 +100,11 @@ describe('EmployeeSystemAccessPanel', () => {
   it('refuses to offer any action on the caller own account', async () => {
     renderPanel(makeAccess({ isSelf: true }));
 
-    expect(
-      await screen.findByText('Өөрийн эрхийг энэ дэлгэцээс өөрчлөх боломжгүй.'),
-    ).toBeInTheDocument();
+    // The panel says nothing about the refusal any more - that explanation moved to the
+    // page's help. What has to stay true is that no action is offered at all.
+    await screen.findByText('enkhtur@monhorus.mn');
     expect(screen.queryByRole('button', { name: 'Түр хаах' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Эрх өөрчлөх' })).not.toBeInTheDocument();
   });
 
   it('suspends the account after confirmation', async () => {
@@ -210,6 +213,7 @@ describe('EmployeeSystemAccessPanel', () => {
         customerName: null,
         lastLoginAt: null,
         createdBy: null,
+        createdByName: 'Б. Энхтөр',
         createdAt: '2026-01-01T00:00:00.000Z',
         updatedAt: '2026-08-02T00:00:00.000Z',
       },
@@ -258,9 +262,7 @@ describe('EmployeeSystemAccessPanel', () => {
   it('offers no passcode reset on the caller own account', async () => {
     renderPanel(makeAccess({ isSelf: true }), [...MANAGE, PERMISSIONS.USER_MANAGE]);
 
-    expect(
-      await screen.findByText('Өөрийн эрхийг энэ дэлгэцээс өөрчлөх боломжгүй.'),
-    ).toBeInTheDocument();
+    await screen.findByText('enkhtur@monhorus.mn');
     expect(screen.queryByRole('button', { name: 'Нууц үг шинэчлэх' })).not.toBeInTheDocument();
   });
 });

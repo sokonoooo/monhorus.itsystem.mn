@@ -23,11 +23,15 @@ import { Types, type FilterQuery, type HydratedDocument } from 'mongoose';
 import { AppError } from '../../common/errors/app-error';
 import { ERROR_CODES } from '../../common/errors/error-codes';
 import type { AuthContext } from '../../common/types/express';
+import { creatorName } from '../../common/utils/creator.util';
 import type { RequestMeta } from '../../common/utils/request-meta.util';
 import { recordAudit } from '../audit/audit.service';
 import { notify } from '../notification/notification.service';
 import { Customer } from '../objects/object.models';
-import { ServiceAgreement } from '../service-agreement/service-agreement.model';
+import {
+  ServiceAgreement,
+  type IServiceAgreement,
+} from '../service-agreement/service-agreement.model';
 import { getSettings } from '../settings/settings.service';
 import { Invoice, nextInvoiceNumber, type IInvoice, type IInvoiceLine } from './invoice.model';
 
@@ -115,6 +119,7 @@ function toListItemDto(invoice: WithId<IInvoice>, now: Date): InvoiceListItemDto
     status: invoice.status,
     effectiveStatus: effectiveInvoiceStatus(invoice, now),
     overdueDays: overdueDaysOf(invoice, now),
+    createdByName: creatorName(invoice.createdBy, invoice.createdByName),
     createdAt: invoice.createdAt.toISOString(),
   };
 }
@@ -328,18 +333,61 @@ export async function getInvoice(invoiceId: string): Promise<InvoiceDetailDto> {
 // -- Generation preview -------------------------------------------------------
 
 /**
+ * The half-open UTC bounds of a `YYYY-MM` billing period.
+ *
+ * UTC rather than `APP_TIMEZONE` because a billing period is a calendar label, not an
+ * instant: "2026-08" is the same month for every reader, and pinning it to a zone would
+ * make the set of billable agreements depend on when the run happened to be started.
+ * `billingPeriod` is already regex-validated to `^\d{4}-(0[1-9]|1[0-2])$` by the schema
+ * and by the model, so this cannot receive a malformed value.
+ */
+function billingPeriodBounds(billingPeriod: string): { start: Date; end: Date } {
+  const year = Number(billingPeriod.slice(0, 4));
+  const month = Number(billingPeriod.slice(5, 7));
+  return {
+    start: new Date(Date.UTC(year, month - 1, 1)),
+    // First instant of the next month; compared with `$lt`, so the whole month is covered.
+    end: new Date(Date.UTC(year, month, 1)),
+  };
+}
+
+/**
+ * The agreements a monthly run may bill for a given period.
+ *
+ * ACTIVE is necessary but NOT sufficient, and that gap is what this exists to close.
+ * `EXPIRED` is a declared `ServiceAgreementStatus` that **nothing in the backend ever
+ * writes** — there is no expiry sweep — so an agreement whose term ended years ago is
+ * still sitting at ACTIVE. Filtering on status alone therefore kept generating a monthly
+ * invoice for it, for ever, and the customer received a real bill for a contract that had
+ * finished. Requirements 12.1 bills a *service period*, so the term has to be part of the
+ * predicate rather than a status anyone has to remember to maintain.
+ *
+ * The test is overlap, not containment: an agreement that ends mid-month was in force for
+ * part of that month and still bills it. Only an agreement whose term ended before the
+ * period opened — or had not started when it closed — is excluded.
+ */
+function billableAgreementFilter(billingPeriod: string): FilterQuery<IServiceAgreement> {
+  const { start, end } = billingPeriodBounds(billingPeriod);
+  return {
+    status: 'ACTIVE',
+    startDate: { $lt: end },
+    endDate: { $gte: start },
+  };
+}
+
+/**
  * What a monthly run would produce, requirements 12.1.
  *
- * Only an ACTIVE agreement is billable, matching the rule the agreement module already
- * enforces for calendar generation. A customer whose period is already invoiced is
- * returned with the clash attached rather than omitted, so the operator sees why.
+ * Only an ACTIVE agreement whose term covers the period is billable — see
+ * `billableAgreementFilter`. A customer whose period is already invoiced is returned with
+ * the clash attached rather than omitted, so the operator sees why.
  */
 export async function previewMonthlyInvoices(
   billingPeriod: string,
 ): Promise<InvoiceGenerationPreviewDto> {
   const { taxPercent } = await financeContext();
 
-  const agreements = await ServiceAgreement.find({ status: 'ACTIVE' })
+  const agreements = await ServiceAgreement.find(billableAgreementFilter(billingPeriod))
     .populate({ path: 'customer', select: 'name' })
     .sort({ agreementNumber: 1 })
     .lean();
@@ -481,12 +529,21 @@ export async function generateMonthlyInvoices(
 
   for (const customerId of input.customerIds) {
     const objectId = new Types.ObjectId(customerId);
-    const agreement = await ServiceAgreement.findOne({ customer: objectId, status: 'ACTIVE' })
+    // The same predicate the preview uses. Re-applied here rather than trusted from the
+    // preview because this endpoint takes a customer id list and is callable on its own,
+    // so a stale preview must not be able to bill a term that has since ended.
+    const agreement = await ServiceAgreement.findOne({
+      customer: objectId,
+      ...billableAgreementFilter(input.billingPeriod),
+    })
       .populate({ path: 'customer', select: 'name' })
       .lean();
 
     if (!agreement) {
-      skipped.push({ customerId, reason: 'Идэвхтэй үйлчилгээний нөхцөл олдсонгүй.' });
+      skipped.push({
+        customerId,
+        reason: 'Тухайн тайлант үед хүчинтэй үйлчилгээний нөхцөл олдсонгүй.',
+      });
       continue;
     }
 

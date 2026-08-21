@@ -1,4 +1,9 @@
-import { DISPATCH_BOARD_COLUMNS, PERMISSIONS, type PermissionKey } from '@monhorus/shared';
+import {
+  DEFAULT_SERVICE_REQUEST_STAGES,
+  PERMISSIONS,
+  stageOfStatus,
+  type PermissionKey,
+} from '@monhorus/shared';
 import type { Express } from 'express';
 import { Types } from 'mongoose';
 import request from 'supertest';
@@ -13,9 +18,11 @@ import {
   stopTestApp,
   type OrgFixture,
   type TestUser,
+  createCallableObjectType,
 } from '../../test/helpers';
 import { AuditLog } from '../audit/audit-log.model';
 import { Employee } from '../employee/employee.model';
+import { Notification } from '../notification/notification.model';
 import { Customer, ObjectNode } from '../objects/object.models';
 import { User } from '../user/user.model';
 import { ServiceRequest } from './service-request.model';
@@ -28,6 +35,7 @@ let token: string;
 let customerId: string;
 let projectId: string;
 let buildingId: string;
+let callableTypeId: string;
 let floorId: string;
 let foreignCustomerId: string;
 let foreignProjectId: string;
@@ -109,6 +117,8 @@ async function seedHierarchy(): Promise<void> {
   });
 
   customerId = String(customer._id);
+  // Calls take their SLA window from the equipment type, so every request needs one.
+  callableTypeId = await createCallableObjectType();
   projectId = String(project._id);
   buildingId = String(building._id);
   floorId = String(floor._id);
@@ -150,6 +160,7 @@ function validRequest(overrides: Record<string, unknown> = {}): Record<string, u
     customerId,
     buildingId,
     requestType: 'URGENT_CALL',
+    objectTypeId: callableTypeId,
     isUrgent: true,
     description: 'Самбар дээр богино холболт илэрсэн',
     contactName: 'Б. Болд',
@@ -175,7 +186,7 @@ beforeEach(async () => {
 });
 
 describe('service request creation', () => {
-  it('creates a request and sets a six hour SLA for an urgent call', async () => {
+  it('takes the SLA window from the equipment type, not from urgency', async () => {
     const response = await request(app)
       .post(`${API}/service-requests`)
       .set('Authorization', `Bearer ${token}`)
@@ -187,7 +198,12 @@ describe('service request creation', () => {
 
     const started = new Date(response.body.data.slaStartedAt).getTime();
     const due = new Date(response.body.data.slaDueAt).getTime();
-    expect(Math.round((due - started) / (60 * 60 * 1000))).toBe(6);
+    /*
+     * 24, not the global urgent 6. The call names an equipment type worth a day, and the
+     * urgent flag no longer moves the deadline - it orders the queue instead. The request
+     * IS urgent here, which is what makes the number meaningful.
+     */
+    expect(Math.round((due - started) / (60 * 60 * 1000))).toBe(24);
   });
 
   it('sets a twenty four hour SLA for a standard call', async () => {
@@ -228,6 +244,196 @@ describe('service request creation', () => {
 
     const entries = await AuditLog.find({ entityType: 'Work', action: 'Created' });
     expect(entries).toHaveLength(1);
+  });
+});
+
+/**
+ * The zone and the pin: the two ways a caller says WHERE the fault is.
+ *
+ * They are independent on purpose. The zone is a registered name under the floor; the pin is
+ * a point on that floor's drawing. Either, both or neither is a valid request — a caller can
+ * point at the spot before anybody has named a zone there, and can name a zone without
+ * pointing at anything.
+ */
+describe('service request zone and floor-plan pin', () => {
+  let zoneId: string;
+  let otherFloorZoneId: string;
+  let foreignZoneId: string;
+  let zoneName: string;
+
+  beforeEach(async () => {
+    const floor = await ObjectNode.findById(floorId);
+    const building = await ObjectNode.findById(buildingId);
+    if (!floor || !building) throw new Error('fixture missing');
+
+    zoneName = 'Сервер өрөө';
+    const zone = await ObjectNode.create({
+      kind: 'ROOM',
+      code: 'R1',
+      name: zoneName,
+      parent: floor._id,
+      customer: floor.customer,
+      ancestors: [...floor.ancestors, floor._id],
+    });
+
+    // A second floor in the SAME building, with its own zone: the chain rule has to refuse
+    // that zone when the request names the first floor.
+    const otherFloor = await ObjectNode.create({
+      kind: 'FLOOR',
+      code: 'F2',
+      name: '2 давхар',
+      parent: building._id,
+      customer: building.customer,
+      ancestors: [building._id],
+    });
+    const otherZone = await ObjectNode.create({
+      kind: 'ROOM',
+      code: 'R2',
+      name: 'Хоёрдугаар давхрын бүс',
+      parent: otherFloor._id,
+      customer: building.customer,
+      ancestors: [building._id, otherFloor._id],
+    });
+
+    const foreignFloor = await ObjectNode.findById(foreignFloorId);
+    if (!foreignFloor) throw new Error('fixture missing');
+    const foreignZone = await ObjectNode.create({
+      kind: 'ROOM',
+      code: 'R9',
+      name: 'Өөр харилцагчийн бүс',
+      parent: foreignFloor._id,
+      customer: foreignFloor.customer,
+      ancestors: [...foreignFloor.ancestors, foreignFloor._id],
+    });
+
+    zoneId = String(zone._id);
+    otherFloorZoneId = String(otherZone._id);
+    foreignZoneId = String(foreignZone._id);
+  });
+
+  it('saves a request with a zone and no pin', async () => {
+    const response = await request(app)
+      .post(`${API}/service-requests`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(validRequest({ floorId, roomId: zoneId }));
+
+    expect(response.status).toBe(201);
+    expect(response.body.data.room.id).toBe(zoneId);
+    expect(response.body.data.planPosition).toBeNull();
+  });
+
+  it('saves a request with a pin and no zone', async () => {
+    const response = await request(app)
+      .post(`${API}/service-requests`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(validRequest({ floorId, planPosition: { x: 0.25, y: 0.75 } }));
+
+    expect(response.status).toBe(201);
+    expect(response.body.data.room).toBeNull();
+    expect(response.body.data.planPosition).toEqual({ x: 0.25, y: 0.75 });
+  });
+
+  it('saves a request with both a zone and a pin', async () => {
+    const response = await request(app)
+      .post(`${API}/service-requests`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(validRequest({ floorId, roomId: zoneId, planPosition: { x: 0, y: 1 } }));
+
+    expect(response.status).toBe(201);
+    expect(response.body.data.room.id).toBe(zoneId);
+    expect(response.body.data.planPosition).toEqual({ x: 0, y: 1 });
+  });
+
+  it('saves a request with neither a zone nor a pin', async () => {
+    const response = await request(app)
+      .post(`${API}/service-requests`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(validRequest());
+
+    expect(response.status).toBe(201);
+    expect(response.body.data.room).toBeNull();
+    expect(response.body.data.planPosition).toBeNull();
+  });
+
+  it('rejects a pin with no floor to place it on', async () => {
+    const response = await request(app)
+      .post(`${API}/service-requests`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(validRequest({ planPosition: { x: 0.5, y: 0.5 } }));
+
+    expect(response.status).toBe(400);
+    expect(response.body.code).toBe('VALIDATION_ERROR');
+    expect(response.body.issues.map((issue: { field: string }) => issue.field)).toContain(
+      'planPosition',
+    );
+  });
+
+  it('rejects a pin outside the 0 to 1 range', async () => {
+    const response = await request(app)
+      .post(`${API}/service-requests`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(validRequest({ floorId, planPosition: { x: 1.4, y: -0.2 } }));
+
+    expect(response.status).toBe(400);
+    expect(response.body.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('rejects a zone that sits under a different floor', async () => {
+    const response = await request(app)
+      .post(`${API}/service-requests`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(validRequest({ floorId, roomId: otherFloorZoneId }));
+
+    expect(response.status).toBe(400);
+    expect(response.body.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('rejects a zone belonging to another customer', async () => {
+    const response = await request(app)
+      .post(`${API}/service-requests`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(validRequest({ floorId, roomId: foreignZoneId }));
+
+    expect(response.status).toBe(400);
+    expect(response.body.code).toBe('VALIDATION_ERROR');
+  });
+
+  /**
+   * The breadcrumb needed no change: `resolveLocationPath` takes the DEEPEST supplied ref
+   * and expands its materialised ancestors, so naming a zone is what makes the zone appear.
+   */
+  it('includes the zone in the location breadcrumb', async () => {
+    const response = await request(app)
+      .post(`${API}/service-requests`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(validRequest({ floorId, roomId: zoneId }));
+
+    const path = response.body.data.locationPath as Array<{ kind: string; name: string }>;
+    expect(path.map((entry) => entry.kind)).toEqual(['BUILDING', 'FLOOR', 'ROOM']);
+    expect(path[path.length - 1]?.name).toBe(zoneName);
+  });
+
+  it('leaves the breadcrumb at the floor when only a pin was dropped', async () => {
+    const response = await request(app)
+      .post(`${API}/service-requests`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(validRequest({ floorId, planPosition: { x: 0.5, y: 0.5 } }));
+
+    const path = response.body.data.locationPath as Array<{ kind: string }>;
+    expect(path.map((entry) => entry.kind)).toEqual(['BUILDING', 'FLOOR']);
+  });
+
+  it('carries the pin through the list endpoint', async () => {
+    await request(app)
+      .post(`${API}/service-requests`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(validRequest({ floorId, planPosition: { x: 0.1, y: 0.2 } }));
+
+    const response = await request(app)
+      .get(`${API}/service-requests`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(response.body.data.items[0].planPosition).toEqual({ x: 0.1, y: 0.2 });
   });
 });
 
@@ -658,6 +864,83 @@ describe('service request customer scope', () => {
   });
 });
 
+describe('service request stages', () => {
+  /**
+   * The stage is what a screen shows; the status is what the engine and the audit trail
+   * speak. Both travel together so a client never has to re-derive the grouping.
+   */
+  it('reports the stage a status belongs to alongside the raw status', async () => {
+    await request(app)
+      .post(`${API}/service-requests`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(validRequest());
+
+    const response = await request(app)
+      .get(`${API}/service-requests`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(response.status).toBe(200);
+    const items = response.body.data.items as {
+      status: string;
+      stage: { key: string; label: string; colour: string } | null;
+    }[];
+    expect(items.length).toBeGreaterThan(0);
+
+    for (const item of items) {
+      const expected = stageOfStatus(
+        item.status as never,
+        DEFAULT_SERVICE_REQUEST_STAGES,
+      );
+      expect(item.stage?.key).toBe(expected?.key);
+      expect(item.stage?.label).toBe(expected?.label);
+    }
+  });
+
+  it('filters by stage across every status the stage covers', async () => {
+    await request(app)
+      .post(`${API}/service-requests`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(validRequest());
+
+    const open = await request(app)
+      .get(`${API}/service-requests`)
+      .query({ stage: 'OPEN', limit: 100 })
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(open.status).toBe(200);
+    const statuses = (open.body.data.items as { status: string }[]).map((row) => row.status);
+    // NEW and UNASSIGNED are one stage to an operator, so the filter must return both.
+    expect(statuses.every((status) => ['NEW', 'UNASSIGNED'].includes(status))).toBe(true);
+  });
+
+  it('matches nothing for a stage key that is not configured', async () => {
+    const response = await request(app)
+      .get(`${API}/service-requests`)
+      .query({ stage: 'NOT_A_STAGE' })
+      .set('Authorization', `Bearer ${token}`);
+
+    // Widening to "everything" here is how one organisation sees another's work.
+    expect(response.status).toBe(200);
+    expect(response.body.data.items).toHaveLength(0);
+  });
+
+  it('lets an exact status win when both are sent', async () => {
+    await request(app)
+      .post(`${API}/service-requests`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(validRequest());
+
+    const response = await request(app)
+      .get(`${API}/service-requests`)
+      .query({ stage: 'COMPLETED', status: 'NEW', limit: 100 })
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(response.status).toBe(200);
+    const statuses = (response.body.data.items as { status: string }[]).map((row) => row.status);
+    expect(statuses.every((status) => status === 'NEW')).toBe(true);
+  });
+});
+
 describe('dispatch board', () => {
   it('returns one column per board column, opening with the merged unassigned column', async () => {
     const response = await request(app)
@@ -665,7 +948,13 @@ describe('dispatch board', () => {
       .set('Authorization', `Bearer ${token}`);
 
     expect(response.status).toBe(200);
-    expect(response.body.data.columns).toHaveLength(DISPATCH_BOARD_COLUMNS.length);
+    // One column per stage the administrator put on the board. Cancelled work is
+    // configured off it: still findable in a filter, but not a column of its own.
+    const boardStages = DEFAULT_SERVICE_REQUEST_STAGES.filter((stage) => stage.onBoard);
+    expect(response.body.data.columns).toHaveLength(boardStages.length);
+    expect(response.body.data.columns.map((column: { id: string }) => column.id)).toEqual(
+      boardStages.map((stage) => stage.key),
+    );
     expect(response.body.data.columns[0].id).toBe('OPEN');
     expect(response.body.data.columns[0].statuses).toEqual(['NEW', 'UNASSIGNED']);
     expect(response.body.data.columns.map((column: { id: string }) => column.id)).toContain(
@@ -684,5 +973,303 @@ describe('dispatch board', () => {
       .set('Authorization', `Bearer ${viewerToken}`);
 
     expect(response.status).toBe(403);
+  });
+});
+
+/**
+ * WHO is told, which is the half that was wrong.
+ *
+ * These assertions read the `Notification` collection directly rather than any endpoint,
+ * because the recipient is not visible from the response of the operation that causes it —
+ * every one of the changes below was invisible to the existing API tests, which is exactly
+ * how a status change came to be broadcast to every technician in the company.
+ *
+ * The through-line: a notification must reach the people the event concerns and nobody
+ * else, and a customer must never be handed a link they cannot open.
+ */
+describe('service request notification recipients', () => {
+  let technicianSequence = 0;
+
+  /** A technician: an employee card joined to the account they sign in with. */
+  async function makeTechnician(
+    email: string,
+    name: { first: string; last: string } = { first: 'Тест', last: 'Ажилтан' },
+  ): Promise<{ employeeId: string; userId: string }> {
+    technicianSequence += 1;
+    const user = await createUserWithPermissions(email, [
+      // The key the old blanket fan-out used. Held here on purpose: an unassigned holder of
+      // it must now hear nothing, and that is only a real assertion if they hold it.
+      PERMISSIONS.SERVICE_REQUEST_VIEW,
+      PERMISSIONS.NOTIFICATION_VIEW,
+    ]);
+    const employee = await Employee.create({
+      employeeCode: `EMP-N${technicianSequence}`,
+      firstName: name.first,
+      lastName: name.last,
+      company: org.companyId,
+      department: org.departmentId,
+      position: org.positionId,
+      employeeType: 'FULL_TIME',
+      employmentStartDate: new Date('2024-01-01'),
+      status: 'ACTIVE',
+      systemUser: new Types.ObjectId(user.userId),
+    });
+    return { employeeId: String(employee._id), userId: user.userId };
+  }
+
+  async function makeDispatcher(email: string): Promise<string> {
+    const user = await createUserWithPermissions(email, [
+      PERMISSIONS.DISPATCH_VIEW,
+      PERMISSIONS.NOTIFICATION_VIEW,
+    ]);
+    return user.userId;
+  }
+
+  async function createRequest(overrides: Record<string, unknown> = {}): Promise<string> {
+    const response = await request(app)
+      .post(`${API}/service-requests`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(validRequest(overrides));
+    expect(response.status).toBe(201);
+    return response.body.data.id as string;
+  }
+
+  async function assign(requestId: string, employeeIds: string[]): Promise<void> {
+    const response = await request(app)
+      .post(`${API}/service-requests/${requestId}/assign`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ employeeIds });
+    expect(response.status).toBe(200);
+  }
+
+  async function setStatus(requestId: string, status: string, reason?: string): Promise<void> {
+    const response = await request(app)
+      .post(`${API}/service-requests/${requestId}/status`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ status, ...(reason ? { reason } : {}) });
+    expect(response.status).toBe(200);
+  }
+
+  function inboxOf(userId: string, event?: string) {
+    return Notification.find({
+      recipient: new Types.ObjectId(userId),
+      ...(event ? { event } : {}),
+    })
+      .sort({ createdAt: 1 })
+      .lean();
+  }
+
+  describe('a status change', () => {
+    it('reaches the assigned technician and the dispatch desk, and nobody else', async () => {
+      // Created before the first notification: the permission-to-recipient resolution is
+      // cached for fifteen seconds, so a dispatcher minted later would miss the cache.
+      const dispatcherId = await makeDispatcher('sr-dispatch@test.mn');
+      const onTheJob = await makeTechnician('sr-assigned@test.mn');
+      const bystander = await makeTechnician('sr-bystander@test.mn');
+
+      const requestId = await createRequest();
+      await assign(requestId, [onTheJob.employeeId]);
+      await setStatus(requestId, 'ACCEPTED');
+
+      const assigned = await inboxOf(onTheJob.userId, 'SERVICE_REQUEST_STATUS_CHANGED');
+      expect(assigned).toHaveLength(1);
+      expect(assigned[0]!.linkPath).toBe(`/service-requests/${requestId}`);
+      expect(assigned[0]!.entityType).toBe('Work');
+      expect(String(assigned[0]!.entityId)).toBe(requestId);
+
+      expect(await inboxOf(dispatcherId, 'SERVICE_REQUEST_STATUS_CHANGED')).toHaveLength(1);
+
+      /*
+       * THE BUG THIS BLOCK EXISTS FOR. `service_request.view` used to be the whole audience,
+       * and TECHNICIAN holds it, so this account was told about every status change on
+       * every request in the company. It is assigned to nothing and must hear nothing.
+       */
+      expect(await inboxOf(bystander.userId)).toHaveLength(0);
+    });
+
+    it('still reaches a technician at the moment they are taken off the job', async () => {
+      const onTheJob = await makeTechnician('sr-unassigned@test.mn');
+      const requestId = await createRequest();
+      await assign(requestId, [onTheJob.employeeId]);
+
+      // UNASSIGNED empties the assignment as part of the move, so the recipient list has to
+      // be the one that stood when it moved rather than the one left behind afterwards.
+      await setStatus(requestId, 'UNASSIGNED');
+
+      const rows = await inboxOf(onTheJob.userId, 'SERVICE_REQUEST_STATUS_CHANGED');
+      expect(rows).toHaveLength(1);
+    });
+  });
+
+  describe('the customer', () => {
+    let customerUserId: string;
+
+    beforeEach(async () => {
+      const user = await createCustomerUser('sr-portal@test.mn', customerId);
+      customerUserId = user.userId;
+    });
+
+    it('is told their request was received, by number and with a portal link', async () => {
+      const requestId = await createRequest();
+
+      const rows = await inboxOf(customerUserId, 'SERVICE_REQUEST_CREATED');
+      expect(rows).toHaveLength(1);
+      const stored = await ServiceRequest.findById(requestId).select('requestNumber').lean();
+      expect(rows[0]!.title).toContain(stored!.requestNumber);
+      expect(rows[0]!.linkPath).toBe(`/portal/requests/${requestId}`);
+    });
+
+    it('is told who is handling it, by the name the portal already shows them', async () => {
+      const technician = await makeTechnician('sr-named@test.mn', {
+        first: 'Бат',
+        last: 'Дорж',
+      });
+      const requestId = await createRequest();
+
+      await assign(requestId, [technician.employeeId]);
+
+      const rows = await inboxOf(customerUserId, 'SERVICE_REQUEST_ASSIGNED');
+      expect(rows).toHaveLength(1);
+      // `narrowDetailForCustomer` keeps firstName and lastName on the request screen, so
+      // naming them here reveals nothing the portal did not already reveal.
+      expect(rows[0]!.body).toContain('Дорж');
+      expect(rows[0]!.body).toContain('Бат');
+      expect(rows[0]!.linkPath).toBe(`/portal/requests/${requestId}`);
+    });
+
+    it('hears that somebody is coming, and not about the states in between', async () => {
+      const technician = await makeTechnician('sr-enroute@test.mn');
+      const requestId = await createRequest();
+      await assign(requestId, [technician.employeeId]);
+
+      await setStatus(requestId, 'ACCEPTED');
+      // An internal step: the customer's expectation has not changed, so nothing is sent.
+      expect(await inboxOf(customerUserId, 'SERVICE_REQUEST_STATUS_CHANGED')).toHaveLength(0);
+
+      await setStatus(requestId, 'ON_THE_WAY');
+      const enRoute = await inboxOf(customerUserId, 'SERVICE_REQUEST_STATUS_CHANGED');
+      expect(enRoute).toHaveLength(1);
+      expect(enRoute[0]!.linkPath).toBe(`/portal/requests/${requestId}`);
+
+      await setStatus(requestId, 'ON_SITE');
+      expect(await inboxOf(customerUserId, 'SERVICE_REQUEST_STATUS_CHANGED')).toHaveLength(2);
+    });
+
+    it('is never handed a staff link, whatever happened to the request', async () => {
+      const technician = await makeTechnician('sr-links@test.mn');
+      const requestId = await createRequest();
+      await assign(requestId, [technician.employeeId]);
+      await setStatus(requestId, 'ACCEPTED');
+      await setStatus(requestId, 'ON_THE_WAY');
+      await setStatus(requestId, 'ON_SITE');
+
+      const rows = await inboxOf(customerUserId);
+      expect(rows.length).toBeGreaterThan(0);
+      for (const row of rows) {
+        expect(row.linkPath).toMatch(/^\/portal\/requests\//);
+      }
+    });
+
+    it('says nothing to another organisation that happens to hold a portal account', async () => {
+      const outsider = await createCustomerUser('sr-outsider@test.mn', foreignCustomerId);
+
+      await createRequest();
+
+      expect(await inboxOf(outsider.userId)).toHaveLength(0);
+    });
+  });
+
+  /**
+   * The second call at a site somebody is already standing in.
+   *
+   * The whole value of the message is "you are already there", so it is addressed to people
+   * and never to a permission — a technician across town holding the same key learns nothing
+   * useful from it.
+   */
+  describe('a second call at a busy site', () => {
+    it('tells whoever is already working in that building', async () => {
+      const onSite = await makeTechnician('sr-busy-onsite@test.mn');
+      const elsewhere = await makeTechnician('sr-busy-elsewhere@test.mn');
+
+      const firstId = await createRequest();
+      await assign(firstId, [onSite.employeeId]);
+
+      const secondId = await createRequest({ description: 'Хоёр дахь дуудлага' });
+
+      const rows = await inboxOf(onSite.userId, 'SERVICE_REQUEST_SITE_BUSY');
+      expect(rows).toHaveLength(1);
+      // The link points at the NEW call, which is the thing being offered.
+      expect(rows[0]!.linkPath).toBe(`/service-requests/${secondId}`);
+      expect(String(rows[0]!.entityId)).toBe(secondId);
+      expect(rows[0]!.body).toContain('Main Tower');
+
+      expect(await inboxOf(elsewhere.userId, 'SERVICE_REQUEST_SITE_BUSY')).toHaveLength(0);
+    });
+
+    it('sends one message per person, however many open calls they hold there', async () => {
+      const onSite = await makeTechnician('sr-busy-dedupe@test.mn');
+
+      const firstId = await createRequest();
+      await assign(firstId, [onSite.employeeId]);
+      const secondId = await createRequest();
+      await assign(secondId, [onSite.employeeId]);
+
+      const thirdId = await createRequest({ description: 'Гурав дахь дуудлага' });
+
+      /*
+       * Scoped to the third call on purpose. Two open jobs at this address now name the
+       * same technician, so an undeduplicated implementation would tell them twice about
+       * the one new call. The earlier messages, one per NEW call, are correct and are not
+       * what this asserts.
+       */
+      const forTheNewCall = (await inboxOf(onSite.userId, 'SERVICE_REQUEST_SITE_BUSY')).filter(
+        (row) => String(row.entityId) === thirdId,
+      );
+      expect(forTheNewCall).toHaveLength(1);
+    });
+
+    it('says nothing when the open call at that building has no one on it', async () => {
+      const bystander = await makeTechnician('sr-busy-unassigned@test.mn');
+
+      await createRequest();
+      await createRequest({ description: 'Хоёр дахь дуудлага' });
+
+      // An unassigned request at the same address is a queue entry, not a person on site.
+      expect(await Notification.countDocuments({ event: 'SERVICE_REQUEST_SITE_BUSY' })).toBe(0);
+      expect(await inboxOf(bystander.userId, 'SERVICE_REQUEST_SITE_BUSY')).toHaveLength(0);
+    });
+
+    it('does not count a cancelled call as somebody being on site', async () => {
+      const wasOnSite = await makeTechnician('sr-busy-cancelled@test.mn');
+
+      const firstId = await createRequest();
+      await assign(firstId, [wasOnSite.employeeId]);
+      // Cancelling leaves the assignment on the document, so this only passes if the query
+      // filters on the terminal statuses rather than on there being an assignee.
+      await setStatus(firstId, 'CANCELLED', 'Харилцагч татгалзсан.');
+
+      await createRequest({ description: 'Хоёр дахь дуудлага' });
+
+      expect(await inboxOf(wasOnSite.userId, 'SERVICE_REQUEST_SITE_BUSY')).toHaveLength(0);
+    });
+
+    it('does not reach across to a different building', async () => {
+      const elsewhere = await makeTechnician('sr-busy-otherbuilding@test.mn');
+      const otherBuilding = await ObjectNode.create({
+        kind: 'BUILDING',
+        code: 'B2',
+        name: 'Хоёрдугаар барилга',
+        parent: null,
+        customer: new Types.ObjectId(customerId),
+        ancestors: [],
+      });
+
+      const firstId = await createRequest({ buildingId: String(otherBuilding._id) });
+      await assign(firstId, [elsewhere.employeeId]);
+
+      await createRequest({ description: 'Өөр барилгын дуудлага' });
+
+      expect(await inboxOf(elsewhere.userId, 'SERVICE_REQUEST_SITE_BUSY')).toHaveLength(0);
+    });
   });
 });

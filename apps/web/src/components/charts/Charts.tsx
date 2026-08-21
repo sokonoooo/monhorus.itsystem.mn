@@ -460,6 +460,20 @@ export interface LineSeries {
  * `hero` is for the one chart a page is built around: taller plot, bigger axis type, and
  * every category labelled instead of every second one.
  */
+/**
+ * An ISO-ish key as an axis tick.
+ *
+ * The series this chart draws are keyed by day (`YYYY-MM-DD`) or by month (`YYYY-MM`), and
+ * the two need different ticks: `08.20` reads as a date, while the same treatment on a
+ * month key leaves a bare `03` that a reader cannot tell from a day number. The shape
+ * decides, because the caller passing the key should not also have to pass its formatting.
+ */
+function axisTick(label: string): string {
+  const parts = label.split('-');
+  if (parts.length === 2) return `${Number(parts[1])}-р`;
+  return label.slice(5).replace('-', '.');
+}
+
 export function LineChart({
   title,
   hint,
@@ -635,7 +649,7 @@ export function LineChart({
                 className="fill-slate-500"
                 style={{ fontSize }}
               >
-                {label.slice(5).replace('-', '.')}
+                {axisTick(label)}
               </text>
             ) : null,
           )}
@@ -647,7 +661,13 @@ export function LineChart({
 
 // -- Progress ------------------------------------------------------------------
 
-/** A single percentage, for example planned-work completion. */
+/**
+ * A single percentage, for example planned-work completion.
+ *
+ * A null percentage is "nothing to report" and is drawn as a dash over an empty bar: the
+ * server sends null rather than zero precisely so this does not read as "everything is at
+ * 0%", and rendering it as zero here would put the claim back.
+ */
 export function ProgressChart({
   title,
   hint,
@@ -656,9 +676,27 @@ export function ProgressChart({
 }: {
   title: string;
   hint?: string;
-  percent: number;
+  percent: number | null;
   caption?: string;
 }): ReactElement {
+  if (percent === null) {
+    return (
+      <WidgetCard title={title} hint={hint}>
+        <div
+          className="flex flex-1 flex-col justify-center"
+          role="img"
+          aria-label={`${title}: мэдээлэл алга`}
+        >
+          <div className="mb-1.5 flex items-baseline justify-between">
+            <span className="text-3xl font-semibold tabular-nums text-slate-400">-</span>
+            {caption && <span className="text-xs text-slate-500">{caption}</span>}
+          </div>
+          <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-100" />
+        </div>
+      </WidgetCard>
+    );
+  }
+
   const clamped = Math.max(0, Math.min(100, percent));
   const tone =
     clamped >= 75 ? CHART_COLOURS.green : clamped >= 40 ? CHART_COLOURS.amber : CHART_COLOURS.red;

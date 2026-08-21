@@ -7,6 +7,12 @@
 /// on the device: a phone with a skewed clock would otherwise disagree with the
 /// dashboard about what is overdue, and a locally derived task status would let the
 /// UI claim a task is DONE while the evidence gate still refuses it.
+///
+/// The corollary is that a figure the answer did not carry stays null rather than
+/// being defaulted or reconstructed. `progressPercent` and a task's
+/// `remainingQuantity` are nullable for that reason: `?? 0` and
+/// `?? (total - completed)` were both the device answering a question the server had
+/// not, and the widgets omit the figure instead.
 library;
 
 import '../../domain/entities/planned_work_enums.dart';
@@ -94,6 +100,7 @@ class PlannedWorkTaskModel {
     required this.relatedObjects,
     required this.beforePhotos,
     required this.afterPhotos,
+    required this.materialUsage,
     required this.missingEvidence,
     this.floorId,
     this.floorName,
@@ -121,8 +128,20 @@ class PlannedWorkTaskModel {
   final MaterialUnit unit;
   final double totalQuantity;
   final double completedQuantity;
-  final double remainingQuantity;
-  final double progressPercent;
+
+  /// What is left, as the server computed it. Null when the answer did not carry it.
+  ///
+  /// Deliberately not `totalQuantity - completedQuantity`: this file's own rule is
+  /// that "Nothing is recalculated on the device", and the subtraction was a second
+  /// opinion about a figure the server owns — it would keep printing a confident
+  /// "Үлдсэн" and keep driving the quantity stepper's ceiling off a number nobody
+  /// sent.
+  final double? remainingQuantity;
+
+  /// 0-100, as the server derived it. Null when the answer did not carry it; the
+  /// figure is omitted rather than shown as 0%, which would read as untouched work.
+  final double? progressPercent;
+
   final PlannedWorkTaskStatus status;
   final String? assignedEmployeeId;
   final String? assignedEmployeeName;
@@ -165,6 +184,11 @@ class PlannedWorkTaskModel {
   final List<PlannedWorkPhotoModel> beforePhotos;
   final List<PlannedWorkPhotoModel> afterPhotos;
 
+  /// What this sub-task drew from the work's registered materials, one row per
+  /// material. Empty for a sub-task that consumed nothing, which is the ordinary case
+  /// for inspection work.
+  final List<TaskMaterialUsageModel> materialUsage;
+
   /// Mongolian labels of the evidence still missing before this task may be DONE.
   /// Rendered verbatim — these strings are the server's own explanation of the gate.
   final List<String> missingEvidence;
@@ -192,9 +216,8 @@ class PlannedWorkTaskModel {
       unit: MaterialUnit.fromWire(json['unit'] as String?),
       totalQuantity: total,
       completedQuantity: completed,
-      remainingQuantity:
-          parseDouble(json['remainingQuantity']) ?? (total - completed).clamp(0, total),
-      progressPercent: parseDoubleOr(json['progressPercent'], 0),
+      remainingQuantity: parseDouble(json['remainingQuantity']),
+      progressPercent: parseDouble(json['progressPercent']),
       status: PlannedWorkTaskStatus.fromWire(json['status'] as String?),
       // See parseObjectId: this field carries a stringified document when the
       // backend populates the relation, so anything that is not an id is dropped.
@@ -215,6 +238,10 @@ class PlannedWorkTaskModel {
           parseList<PlannedWorkPhotoModel>(json['beforePhotos'], PlannedWorkPhotoModel.fromJson),
       afterPhotos:
           parseList<PlannedWorkPhotoModel>(json['afterPhotos'], PlannedWorkPhotoModel.fromJson),
+      materialUsage: parseList<TaskMaterialUsageModel>(
+        json['materialUsage'],
+        TaskMaterialUsageModel.fromJson,
+      ),
       missingEvidence: parseStringList(json['missingEvidence']),
       completedAt: parseDate(json['completedAt']),
     );
@@ -238,7 +265,10 @@ class PlannedWorkFloorProgressModel {
   final double totalQuantity;
   final double completedQuantity;
   final double remainingQuantity;
-  final double progressPercent;
+
+  /// Null when the answer carried no figure; the row omits the percentage and its
+  /// rail rather than drawing an empty one.
+  final double? progressPercent;
 
   factory PlannedWorkFloorProgressModel.fromJson(Map<String, dynamic> json) {
     return PlannedWorkFloorProgressModel(
@@ -248,31 +278,113 @@ class PlannedWorkFloorProgressModel {
       totalQuantity: parseDoubleOr(json['totalQuantity'], 0),
       completedQuantity: parseDoubleOr(json['completedQuantity'], 0),
       remainingQuantity: parseDoubleOr(json['remainingQuantity'], 0),
-      progressPercent: parseDoubleOr(json['progressPercent'], 0),
+      progressPercent: parseDouble(json['progressPercent']),
     );
   }
 }
 
-/// A material on the work: a name, a quantity and a unit.
+/// A material registered on the work, and what its sub-tasks have drawn against it.
 ///
-/// Requirements 19.2 keeps V1 at "нэр/тоо". There is no catalogue behind the name and no
-/// stock ledger, so there is no code, no actual and no variance to carry.
+/// Catalogue-backed: [materialItemId] is the identity, and a material appears at most
+/// once per work. [name] and [unit] are frozen copies kept for display, so renaming the
+/// catalogue entry does not rewrite what this work says it used.
+///
+/// All three figures are server-sent, [remainingQuantity] included. That one is stored
+/// on the server rather than derived, so it is read here and never reconstructed as
+/// `quantity - consumedQuantity`: the over-consumption guard is a conditional update on
+/// the stored field, and a device that did its own subtraction would be offering a
+/// second opinion about the exact number the server refuses a write against. The
+/// invariant `consumedQuantity + remainingQuantity == quantity` is the server's to keep.
+///
+/// Unlike the nullable figures elsewhere in this file, these three are non-nullable: the
+/// API sends all of them on every material, so a zero here is the server's zero.
 class PlannedWorkMaterialModel {
   const PlannedWorkMaterialModel({
+    required this.materialItemId,
     required this.name,
     required this.quantity,
+    required this.consumedQuantity,
+    required this.remainingQuantity,
     required this.unit,
   });
 
+  /// The catalogue row this material points at — the id a usage entry is recorded
+  /// against, not a display field.
+  final String materialItemId;
+
   final String name;
+
+  /// Бүртгэсэн — what the plan allows to be drawn in total.
   final double quantity;
+
+  /// Зарцуулсан — the sum of every sub-task's usage, as the server totalled it.
+  final double consumedQuantity;
+
+  /// Үлдсэн — stored server-side, never `quantity - consumedQuantity` on the device.
+  final double remainingQuantity;
+
   final MaterialUnit unit;
 
   factory PlannedWorkMaterialModel.fromJson(Map<String, dynamic> json) {
     return PlannedWorkMaterialModel(
+      materialItemId: parseStringOr(json['materialItemId'], ''),
       name: parseStringOr(json['name'], '-'),
       quantity: parseDoubleOr(json['quantity'], 0),
+      consumedQuantity: parseDoubleOr(json['consumedQuantity'], 0),
+      remainingQuantity: parseDoubleOr(json['remainingQuantity'], 0),
       unit: MaterialUnit.fromWire(json['unit'] as String?),
+    );
+  }
+}
+
+/// One sub-task's draw against one material registered on the work.
+///
+/// A ledger row, not a running total: the totals live on [PlannedWorkMaterialModel],
+/// where the pool is shared across sub-tasks and the server can guard it atomically.
+/// This is the "which sub-task consumed what, and who said so" record.
+class TaskMaterialUsageModel {
+  const TaskMaterialUsageModel({
+    required this.id,
+    required this.taskId,
+    required this.materialItemId,
+    required this.materialName,
+    required this.quantity,
+    required this.unit,
+    this.recordedByName,
+    this.recordedAt,
+  });
+
+  final String id;
+  final String taskId;
+
+  /// Which registered material was drawn. The pair (taskId, materialItemId) is unique,
+  /// which is what makes a re-send of the same quantity a correction rather than a
+  /// second draw.
+  final String materialItemId;
+
+  /// Frozen with the row, so a renamed catalogue entry does not rewrite what was
+  /// recorded here.
+  final String materialName;
+
+  final double quantity;
+  final MaterialUnit unit;
+
+  /// Who recorded it. Null on the wire when the name could not be resolved, so the
+  /// readout omits the attribution rather than inventing one.
+  final String? recordedByName;
+
+  final DateTime? recordedAt;
+
+  factory TaskMaterialUsageModel.fromJson(Map<String, dynamic> json) {
+    return TaskMaterialUsageModel(
+      id: parseStringOr(json['id'], ''),
+      taskId: parseStringOr(json['taskId'], ''),
+      materialItemId: parseStringOr(json['materialItemId'], ''),
+      materialName: parseStringOr(json['materialName'], '-'),
+      quantity: parseDoubleOr(json['quantity'], 0),
+      unit: MaterialUnit.fromWire(json['unit'] as String?),
+      recordedByName: parseString(json['recordedByName']),
+      recordedAt: parseDate(json['recordedAt']),
     );
   }
 }
@@ -412,7 +524,11 @@ class PlannedWorkListItemModel {
   final double totalQuantity;
   final double completedQuantity;
   final double remainingQuantity;
-  final double progressPercent;
+
+  /// 0-100, as the server derived it. Null when the answer carried no figure, which
+  /// the card and the detail header render as an absent percentage rather than 0%.
+  final double? progressPercent;
+
   final int taskCount;
   final List<NamedRefModel> assignedEmployees;
   final NamedRefModel? assignedTeam;
@@ -449,7 +565,7 @@ class PlannedWorkListItemModel {
       totalQuantity: parseDoubleOr(json['totalQuantity'], 0),
       completedQuantity: parseDoubleOr(json['completedQuantity'], 0),
       remainingQuantity: parseDoubleOr(json['remainingQuantity'], 0),
-      progressPercent: parseDoubleOr(json['progressPercent'], 0),
+      progressPercent: parseDouble(json['progressPercent']),
       taskCount: parseIntOr(json['taskCount'], 0),
       assignedEmployees:
           parseList<NamedRefModel>(json['assignedEmployees'], NamedRefModel.fromJson),
@@ -648,7 +764,10 @@ class PlannedWorkReportTaskLineModel {
   final MaterialUnit unit;
   final double totalQuantity;
   final double completedQuantity;
-  final double progressPercent;
+
+  /// Null when the answer carried no figure; the line drops the percentage segment.
+  final double? progressPercent;
+
   final PlannedWorkTaskStatus status;
   final String? note;
   final int? score;
@@ -665,7 +784,7 @@ class PlannedWorkReportTaskLineModel {
       unit: MaterialUnit.fromWire(json['unit'] as String?),
       totalQuantity: parseDoubleOr(json['totalQuantity'], 0),
       completedQuantity: parseDoubleOr(json['completedQuantity'], 0),
-      progressPercent: parseDoubleOr(json['progressPercent'], 0),
+      progressPercent: parseDouble(json['progressPercent']),
       status: PlannedWorkTaskStatus.fromWire(json['status'] as String?),
       note: parseString(json['note']),
       score: parseInt(json['score']),
@@ -707,7 +826,10 @@ class PlannedWorkReportPreviewModel {
   final String buildingName;
   final double totalQuantity;
   final double completedQuantity;
-  final double progressPercent;
+
+  /// Null when the answer carried no figure; the summary row drops the percentage.
+  final double? progressPercent;
+
   final bool completedLate;
   final int? delayMinutes;
   final int totalPausedMinutes;
@@ -727,7 +849,7 @@ class PlannedWorkReportPreviewModel {
       buildingName: parseStringOr(json['buildingName'], '-'),
       totalQuantity: parseDoubleOr(json['totalQuantity'], 0),
       completedQuantity: parseDoubleOr(json['completedQuantity'], 0),
-      progressPercent: parseDoubleOr(json['progressPercent'], 0),
+      progressPercent: parseDouble(json['progressPercent']),
       completedLate: parseBool(json['completedLate']),
       delayMinutes: parseInt(json['delayMinutes']),
       totalPausedMinutes: parseIntOr(json['totalPausedMinutes'], 0),
@@ -814,6 +936,37 @@ class RecordTaskProgressRequest {
       if (conclusion != null) 'conclusion': conclusion,
       if (score != null) 'score': score,
       if (recommendation != null) 'recommendation': recommendation,
+    };
+  }
+}
+
+/// Body of `POST /planned-work/:id/tasks/:taskId/materials`.
+///
+/// [quantity] is the ABSOLUTE figure for this (sub-task, material) pair, not an
+/// increment. Sending 50 twice leaves 50 consumed, which is what makes a retry over a
+/// bad connection safe — and it is why the sheet pre-fills the existing entry: the
+/// write is a correction of the whole figure, not an addition to it.
+///
+/// `quantity: 0` deletes the entry and returns the material to the work's pool.
+///
+/// Built explicitly rather than spread, for the same reason as
+/// [RecordTaskProgressRequest]: the schema is strict and an unknown key is a 400.
+class RecordTaskMaterialUsageRequest {
+  const RecordTaskMaterialUsageRequest({
+    required this.materialItemId,
+    required this.quantity,
+  });
+
+  /// The catalogue id of a material REGISTERED ON THE WORK. The server refuses one
+  /// that is not, because only registered materials have a pool to draw from.
+  final String materialItemId;
+
+  final double quantity;
+
+  Map<String, dynamic> toJson() {
+    return <String, dynamic>{
+      'materialItemId': materialItemId,
+      'quantity': quantity,
     };
   }
 }

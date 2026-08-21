@@ -13,6 +13,7 @@ import {
   SAFETY_GRADES,
   createEmployeeSchema,
   type CreateEmployeeInput,
+  type UpdateEmployeeInput,
 } from '@monhorus/shared';
 import { useCallback, useEffect, useState, type FormEvent, type ReactElement } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
@@ -277,10 +278,34 @@ export function EmployeeFormPage(): ReactElement {
       emergencyContactName: nullable(form.emergencyContactName),
       emergencyContactRelation: nullable(form.emergencyContactRelation),
       emergencyContactPhone: nullable(form.emergencyContactPhone),
+      // A brand new employee genuinely has no anket records yet, so [] is honest here.
+      // It is NOT honest on an edit — see `toUpdatePayload` below.
       education: [],
       workHistory: [],
       certificates: [],
     };
+  }
+
+  /**
+   * The edit payload, with the three anket lists removed.
+   *
+   * This form has no UI for education, work history or certificates — they are entered
+   * elsewhere and read by the employee mobile app. `buildPayload` still has to supply them
+   * because `createEmployeeSchema` requires them, and even omitting them there would not
+   * help: `safeParse` re-injects `[]` from each field's `.default([])`.
+   *
+   * Sent on an update they are not "no change", they are "delete everything" — the backend
+   * applies any key that is present (`if (input.education !== undefined)`), so saving a
+   * phone-number correction wiped the employee's entire education, work history and
+   * certificate record, with nothing on screen to show it had happened.
+   *
+   * `updateEmployeeSchema` is `.partial()`, so an ABSENT key is left untouched server-side.
+   * Dropping the keys is therefore the whole fix, and it deliberately keeps an explicit []
+   * meaningful for a future screen that does manage these lists.
+   */
+  function toUpdatePayload(parsed: CreateEmployeeInput): UpdateEmployeeInput {
+    const { education: _education, workHistory: _workHistory, certificates: _certificates, ...rest } = parsed;
+    return rest;
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
@@ -308,7 +333,7 @@ export function EmployeeFormPage(): ReactElement {
     setSubmitting(true);
     try {
       const saved = isEdit && employeeId
-        ? await employeeService.update(employeeId, parsed.data)
+        ? await employeeService.update(employeeId, toUpdatePayload(parsed.data))
         : await employeeService.create(parsed.data);
       setDirty(false);
       navigate(`/employees/${saved.id}`, { replace: true });
@@ -629,11 +654,6 @@ export function EmployeeFormPage(): ReactElement {
                     <TextInput value={form.emergencyContactPhone} onChange={(v) => update('emergencyContactPhone', v)} disabled={submitting} />
                   </Field>
                 </Section>
-
-                <Alert variant="info">
-                  Боловсрол, өмнөх ажлын түүх, сертификатыг ажилтныг үүсгэсний дараа
-                  дэлгэрэнгүй хуудаснаас нэмнэ.
-                </Alert>
               </div>
             )}
 

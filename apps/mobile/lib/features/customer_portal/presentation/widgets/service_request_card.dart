@@ -20,7 +20,13 @@ class ServiceRequestCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final ServiceRequestStatus? status = request.status;
-    final AccentTone statusTone = status?.tone ?? AccentTone.neutral;
+    // The stage the server groups this request under, when it sent one: that is the
+    // word the office and the dispatch board print for the same job, and a list row's
+    // only job is to say where the work has got to. Falls back to the status, which
+    // carries an administrator's rename of its own where the two are one to one.
+    final String? step = request.stepLabel;
+    final AccentTone statusTone = request.stepTone;
+    final double? fraction = status?.progress;
     final Color railColor = request.isUrgent
         ? CustomerTokens.red
         : statusTone.foreground;
@@ -70,13 +76,7 @@ class ServiceRequestCard extends StatelessWidget {
                         tone: AccentTone.red,
                         showDot: true,
                       ),
-                    if (status != null)
-                      StatusPill(label: status.label, tone: statusTone),
-                    if (request.requestType != null)
-                      StatusPill(
-                        label: request.requestType!.label,
-                        tone: AccentTone.neutral,
-                      ),
+                    if (step != null) StatusPill(label: step, tone: statusTone),
                   ],
                 ),
                 const SizedBox(height: 6),
@@ -86,11 +86,15 @@ class ServiceRequestCard extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   style: CustomerTokens.rowSub,
                 ),
-                const SizedBox(height: 8),
-                ProgressRail(
-                  fraction: status?.progress ?? 0,
-                  color: railColor,
-                ),
+                // Drawn only when the status has a position on the workflow to
+                // report. A cancelled request — and any status off the linear path —
+                // gets no rail at all, because a rail is a fill and every fill this
+                // card could pick for one would be invented. The status pill above
+                // already says what happened.
+                if (fraction != null) ...<Widget>[
+                  const SizedBox(height: 8),
+                  ProgressRail(fraction: fraction, color: railColor),
+                ],
               ],
             ),
           ),
@@ -114,37 +118,3 @@ class ServiceRequestCard extends StatelessWidget {
   }
 }
 
-/// A one-line SLA read-out. Negative remaining minutes mean the window is overdue,
-/// which the backend reports rather than clamping, so it is shown as overdue here.
-class SlaLine extends StatelessWidget {
-  const SlaLine({super.key, required this.request});
-
-  final ServiceRequestListItemModel request;
-
-  @override
-  Widget build(BuildContext context) {
-    final SlaState? state = request.slaState;
-    final int? remaining = request.slaRemainingMinutes;
-
-    final String text;
-    if (remaining == null) {
-      text = state?.label ?? 'SLA мэдээлэлгүй';
-    } else if (remaining < 0) {
-      text = '${_hours(-remaining)} хугацаа хэтэрсэн';
-    } else {
-      text = '${_hours(remaining)} үлдсэн';
-    }
-
-    return StatusPill(
-      label: text,
-      tone: state?.tone ?? AccentTone.neutral,
-    );
-  }
-
-  static String _hours(int minutes) {
-    if (minutes < 60) return '$minutes мин';
-    final int hours = minutes ~/ 60;
-    final int rest = minutes % 60;
-    return rest == 0 ? '$hours ц' : '$hours ц $rest мин';
-  }
-}

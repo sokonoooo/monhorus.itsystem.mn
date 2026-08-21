@@ -70,13 +70,34 @@ export interface DashboardTrendPoint {
   completed: number;
 }
 
+/**
+ * One month of the request-count line.
+ *
+ * A separate shape from `DashboardTrendPoint` rather than a reused one: that carries two
+ * series over days and this carries one over months, and a type that served both would
+ * have to make `completed` optional — which is how a chart ends up drawing an absent
+ * series as a flat zero.
+ */
+export interface DashboardMonthPoint {
+  /** `YYYY-MM` in the configured timezone. */
+  month: string;
+  count: number;
+}
+
 export interface DashboardPlannedWorkSummary {
   total: number;
   inProgress: number;
   overdue: number;
   completed: number;
-  /** Quantity-weighted mean progress across non-archived work. */
-  averageProgress: number;
+  /**
+   * Quantity-weighted mean progress across non-archived work: summed completed quantity
+   * over summed total quantity, the same aggregation a single work's own percent uses.
+   *
+   * Null when there is nothing to weigh — no work, or no quantity recorded against any of
+   * it — following the convention `resolutionHours` uses for a figure that cannot yet be
+   * stated. Zero would assert that everything is at 0%.
+   */
+  averageProgress: number | null;
 }
 
 export interface DashboardFinanceSummary {
@@ -134,12 +155,29 @@ export interface DashboardSummaryDto {
   workload?: readonly DashboardWorkloadRow[];
   requests?: DashboardRequestSummary;
   requestsByStatus?: readonly DashboardSlice[];
-  requestsByType?: readonly DashboardSlice[];
   trend?: readonly DashboardTrendPoint[];
+  /** Six months of raised-request counts. Same scope rules as `trend`. */
+  monthlyTrend?: readonly DashboardMonthPoint[];
   plannedWork?: DashboardPlannedWorkSummary;
   risk?: DashboardRiskSummary;
   finance?: DashboardFinanceSummary;
   today?: DashboardTodaySummary;
+  /**
+   * True when every figure in this payload counts only the reader's own work — the
+   * records `resolveAssignedWorkFilter` admits: assigned to them, assigned to their
+   * team, or unclaimed and open for them to pick up.
+   *
+   * REQUIRED rather than optional, because an absent boolean reads as `false` at every
+   * call site and `false` is the dangerous default here. A screen that says "the
+   * organisation" over one person's figures is merely wrong; one that says "yours" over
+   * everybody's is a disclosure.
+   *
+   * A scoped caller is not sent `customers`, `employees`, `workload`, `risk` or
+   * `finance` at all. Those are organisation-wide by construction and cannot be narrowed
+   * to an assignment, so they are omitted rather than sent unscoped beneath a personal
+   * heading: the UI cannot leak what it was never given.
+   */
+  isScoped: boolean;
   generatedAt: string;
 }
 

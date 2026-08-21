@@ -4,7 +4,9 @@ import {
   LOAD_MEASUREMENT_UNIT_LABELS,
   RISK_LEVEL_LABELS,
   acceptsPhase,
+  mergeAttributeValues,
   riskLevelFor,
+  validateAttributeValues,
   type LoadMeasurementDto,
   type ObjectIcon,
   type CreateObjectAssessmentInput,
@@ -19,7 +21,9 @@ import {
   type ObjectListQueryInput,
   type ObjectPhotoDto,
   type ObjectRefDto,
+  type ObjectTypeAttributeDto,
   type PaginatedData,
+  type QuickPlaceObjectInput,
   type UpdateObjectInput,
   type UpdateObjectPositionInput,
 } from '@monhorus/shared';
@@ -27,12 +31,14 @@ import { Types, type FilterQuery, type HydratedDocument } from 'mongoose';
 
 import { AppError } from '../../common/errors/app-error';
 import { ERROR_CODES } from '../../common/errors/error-codes';
+import { Counter, nextSequenceValue } from '../../common/models/counter.model';
 import {
   customerScopeFilter,
   resolveOwnerCustomerId,
   type ResolvedCustomerScope,
 } from '../../common/security/customer-scope';
 import type { AuthContext } from '../../common/types/express';
+import { CREATOR_POPULATE, creatorName } from '../../common/utils/creator.util';
 import type { RequestMeta } from '../../common/utils/request-meta.util';
 import { logger } from '../../config/logger';
 import { AuditLog } from '../audit/audit-log.model';
@@ -48,6 +54,7 @@ import { getRiskBands } from '../settings/settings.service';
 import { StoredFile, type IStoredFile } from '../storage/stored-file.model';
 import { appendAssessmentHistory } from './assessment-history.service';
 import { loadFiguresOf } from './load.service';
+import { objectTypeIconUrl, toObjectTypeAttributeDtos } from './object-type.service';
 import {
   ObjectAssessment,
   ObjectRecord,
@@ -55,6 +62,8 @@ import {
   type ILoadMeasurement,
   type IObject,
   type IObjectAssessment,
+  type IObjectType,
+  type IObjectTypeAttribute,
 } from './object-master.models';
 
 type Doc<T> = HydratedDocument<T>;
@@ -67,8 +76,11 @@ function populatedType(
   code: string;
   name: string;
   icon: ObjectIcon;
+  iconFile?: Types.ObjectId | null;
   generatesConclusion?: boolean;
   showOnPlan?: boolean;
+  /** Only selected where a screen needs the definitions; absent everywhere else. */
+  attributes?: IObjectTypeAttribute[];
 } | null {
   if (typeof value !== 'object' || value === null || !('code' in value)) return null;
   return value as unknown as {
@@ -76,6 +88,7 @@ function populatedType(
     code: string;
     name: string;
     icon: ObjectIcon;
+    iconFile?: Types.ObjectId | null;
     generatesConclusion?: boolean;
     showOnPlan?: boolean;
   };
@@ -110,10 +123,26 @@ function named(value: unknown): string | null {
   return null;
 }
 
+/**
+ * What every object row needs off its type.
+ *
+ * `iconFile` is projected, not populated: the DTO needs the id to build a download path and
+ * nothing else about the file, so populating it would buy a lookup per row for data no client
+ * reads.
+ *
+ * `attributes` is here rather than only on the detail path because the screens that ASK the
+ * type's questions are list-driven — the Ажлын тайлан equipment rows and the employee app's
+ * Дүгнэлт editor both build from a picked list item. Fetching a detail per piece of equipment
+ * just to learn what to ask would be a round trip per tap.
+ */
+const OBJECT_TYPE_SELECT =
+  'code name icon iconFile generatesConclusion showOnPlan attributes';
+
 const LIST_POPULATE = [
-  { path: 'objectType', select: 'code name icon generatesConclusion showOnPlan' },
+  { path: 'objectType', select: OBJECT_TYPE_SELECT },
   { path: 'customer', select: 'name' },
   { path: 'floor', select: 'name parent' },
+  CREATOR_POPULATE,
 ] as const;
 
 const PHOTO_SELECT = 'originalName mimeType sizeBytes uploadedByName storageKey createdAt';
@@ -151,10 +180,16 @@ export async function toObjectListItemDto(
           code: type.code,
           name: type.name,
           icon: type.icon,
+          // The custom SVG when the registry has one, null to fall back to `icon` above.
+          // A projection that forgot the field reads as null, i.e. as the old behaviour.
+          iconUrl: objectTypeIconUrl(type.iconFile ?? null),
           // The registry's own answer to "may this appear on a plan". Defaulted rather
           // than asserted: a projection that forgot the field must read as "not on the
           // plan", never as a marker drawn on the strength of an undefined.
           showOnPlan: type.showOnPlan === true,
+          // What this type asks of its objects (4.1). Empty when the projection omitted it,
+          // which reads as "asks nothing" — the behaviour before the field existed.
+          attributes: toObjectTypeAttributeDtos(type.attributes),
         }
       : null,
     customerId: String(
@@ -186,9 +221,13 @@ export async function toObjectListItemDto(
           revisitDate: object.latestAssessment.revisitDate?.toISOString() ?? null,
         }
       : null,
+    // Spread rather than handed out: `attributeValues` is a `Mixed` path, so this is the
+    // loaded document's own object. `?? {}` covers every object written before it existed.
+    attributeValues: { ...(object.attributeValues ?? {}) },
     calculatedLoad: figures.calculated,
     measuredLoadKw: object.measuredLoadKw,
     loadVariance: figures.variance,
+    createdByName: creatorName(object.createdBy),
     createdAt: object.createdAt.toISOString(),
   };
 }
@@ -242,6 +281,79 @@ async function resolveObjectType(
     );
   }
   return type;
+}
+
+/**
+ * Refuses attribute values the object's type does not accept (requirements 4.1).
+ *
+ * The rule itself is `validateAttributeValues` in the shared package, which both the
+ * registration form and the Үнэлгээ бүртгэх form run before they submit. THIS IS THE
+ * ENFORCEMENT: their copies exist so a user is told without a round trip, and nothing here
+ * assumes either ran. One implementation, so the three cannot drift into refusing different
+ * things — the same arrangement as `rejectFloorlessPosition`.
+ *
+ * The issues come back already keyed `attributeValues.<key>`, which is the shape
+ * `validate.middleware.ts` produces from a `ZodError` and the shape every form's error map
+ * already reads, so a message lands under its own input with nothing translating it.
+ */
+function assertAttributeValues(
+  defs: readonly ObjectTypeAttributeDto[],
+  values: Readonly<Record<string, unknown>>,
+): void {
+  const issues = validateAttributeValues(defs, values);
+  if (issues.length > 0) {
+    throw AppError.badRequest(
+      ERROR_CODES.VALIDATION_ERROR,
+      'Тоноглолын төрлийн шаардсан үзүүлэлт дутуу эсвэл буруу байна.',
+      issues,
+    );
+  }
+}
+
+/**
+ * Applies attribute answers to one object, from a screen that is not the object's own form.
+ *
+ * THE ONE PLACE ANY OTHER MODULE WRITES `attributeValues`. The work report and the mobile
+ * conclusion editor both record findings against equipment and both ask the type's questions
+ * while doing it, so both need to store the answers — and neither should re-derive what a
+ * valid answer is, which is why this exists rather than each calling the validator itself.
+ *
+ * `fieldPrefix` is what lets a caller report the failure against the row the user is looking
+ * at: a work report keys its errors `objectAssessments.2.attributeValues.fuse`, because a
+ * report naming four pieces of equipment has four sets of these fields on screen at once.
+ *
+ * Absent values are not this function's business — a caller that was not asked does not call
+ * it at all. See the note on `saveWorkReportSchema`'s `attributeValues`.
+ */
+export async function applyObjectAttributeValues(
+  objectId: Types.ObjectId,
+  values: Readonly<Record<string, unknown>>,
+  fieldPrefix = '',
+): Promise<void> {
+  const object = await ObjectRecord.findById(objectId).populate({
+    path: 'objectType',
+    select: 'attributes',
+  });
+  if (!object) {
+    throw AppError.badRequest(ERROR_CODES.VALIDATION_ERROR, 'Тоноглол олдсонгүй.', [
+      { field: `${fieldPrefix}objectId`, message: 'Тоноглол олдсонгүй.' },
+    ]);
+  }
+
+  const defs = toObjectTypeAttributeDtos(populatedType(object.objectType)?.attributes);
+  const issues = validateAttributeValues(defs, values);
+  if (issues.length > 0) {
+    throw AppError.badRequest(
+      ERROR_CODES.VALIDATION_ERROR,
+      'Тоноглолын төрлийн шаардсан үзүүлэлт дутуу эсвэл буруу байна.',
+      issues.map((issue) => ({ field: `${fieldPrefix}${issue.field}`, message: issue.message })),
+    );
+  }
+
+  object.attributeValues = mergeAttributeValues(defs, object.attributeValues ?? {}, values);
+  // `Mixed` is not change-tracked; without this the assignment is invisible to `save()`.
+  object.markModified('attributeValues');
+  await object.save();
 }
 
 /** A floor must exist, be a FLOOR, be active, and belong to the object's customer. */
@@ -667,7 +779,11 @@ export async function createObject(
     ]);
   }
 
-  await resolveObjectType(input.objectTypeId, input.category);
+  const objectType = await resolveObjectType(input.objectTypeId, input.category);
+  const objectTypeAttributes = toObjectTypeAttributeDtos(objectType.attributes);
+  // Checked here, before the code-collision query and every reference lookup below, so a
+  // payload that was never going to be stored costs one round trip rather than five.
+  assertAttributeValues(objectTypeAttributes, input.attributeValues);
 
   const duplicate = await ObjectRecord.findOne({
     customer: customer._id,
@@ -710,6 +826,10 @@ export async function createObject(
     panel: null,
     circuit: null,
     equipment: null,
+    // Nothing is stored yet, so there is nothing to preserve: the merge is here rather than a
+    // plain assignment so trimming and the drop-the-blanks rule come from the same single
+    // implementation every other write path uses.
+    attributeValues: mergeAttributeValues(objectTypeAttributes, {}, input.attributeValues),
   };
 
   if (input.category === 'PANEL') {
@@ -804,6 +924,245 @@ export async function createObject(
   return getObjectById(String(object._id), scope);
 }
 
+// -- Quick placement ---------------------------------------------------------
+
+/**
+ * How many times an identifier may be re-drawn before the attempt is abandoned.
+ *
+ * Each retry advances an atomic counter, so the candidates never repeat and the loop is
+ * making real progress rather than spinning; the bound exists so a pathological collection
+ * — say a customer who hand-typed LAMP-001 through LAMP-020 — fails with a sentence instead
+ * of looping forever.
+ */
+const MAX_ALLOCATION_ATTEMPTS = 25;
+
+/** Codes are numbered per customer per type, because the unique index is per customer. */
+function codeCounterKey(customerId: Types.ObjectId, typeCode: string): string {
+  return `object-code:${String(customerId)}:${typeCode}`;
+}
+
+/** Names are numbered per floor per type: floor 1 and floor 2 both start at 1. */
+function nameCounterKey(floorId: Types.ObjectId, objectTypeId: Types.ObjectId): string {
+  return `object-name:${String(floorId)}:${String(objectTypeId)}`;
+}
+
+/**
+ * Brings a fresh name counter up to what the floor already shows.
+ *
+ * The dev data — and any floor filled in before quick placement existed — carries names
+ * somebody typed by hand, so a counter starting from zero would offer "Гэрэлтүүлэг 1" on a
+ * floor that already displays one. The scan runs once per (floor, type): after the counter
+ * document exists it is never repeated, so rapid clicking costs one atomic increment.
+ *
+ * `$max` rather than `$set` is what makes the seed safe against a concurrent allocation. If
+ * a click has already pushed the counter past the scanned maximum, `$max` leaves it alone;
+ * two seeds racing each other are idempotent for the same reason.
+ */
+async function seedNameCounter(
+  key: string,
+  floorId: Types.ObjectId,
+  typeName: string,
+): Promise<void> {
+  if (await Counter.exists({ key })) return;
+
+  const pattern = new RegExp(`^${escapeRegex(typeName)} (\\d+)$`);
+  const existing = await ObjectRecord.find({ floor: floorId, name: pattern }).select('name');
+
+  let highest = 0;
+  for (const row of existing) {
+    const match = pattern.exec(row.name);
+    const value = match ? Number(match[1]) : 0;
+    if (Number.isSafeInteger(value) && value > highest) highest = value;
+  }
+  if (highest === 0) return;
+
+  await Counter.updateOne({ key }, { $max: { value: highest } }, { upsert: true });
+}
+
+/**
+ * The next free `<type name> <n>` on this floor.
+ *
+ * RACE-FREE BY CONSTRUCTION. The number comes from the atomic counter, never from counting
+ * rows, so ten simultaneous clicks are handed ten different numbers. Counting would hand
+ * all ten the same one, and there is no unique index on `name` to catch it afterwards — the
+ * duplicates would simply be stored.
+ *
+ * The existence check on top of the counter covers what the counter cannot know about: a
+ * name typed by hand after the counter was seeded. A taken candidate is skipped rather than
+ * reused, and the skipped number is simply lost, which is the same gap behaviour deletion
+ * already produces and which invoice numbering already lives with.
+ */
+async function allocateObjectName(
+  typeName: string,
+  floorId: Types.ObjectId,
+  objectTypeId: Types.ObjectId,
+): Promise<string> {
+  const key = nameCounterKey(floorId, objectTypeId);
+  await seedNameCounter(key, floorId, typeName);
+
+  for (let attempt = 0; attempt < MAX_ALLOCATION_ATTEMPTS; attempt += 1) {
+    const sequence = await nextSequenceValue(key);
+    // The type name is used verbatim, slashes and all: "Хэлхээ/шугам 3" is what the
+    // administrator called the type, and rewriting it here would invent a second vocabulary
+    // for the same registry entry.
+    const candidate = `${typeName} ${sequence}`.slice(0, 200);
+    const taken = await ObjectRecord.exists({ floor: floorId, name: candidate });
+    if (!taken) return candidate;
+  }
+
+  throw AppError.conflict(
+    ERROR_CODES.DUPLICATE_KEY,
+    'Энэ давхарт чөлөөтэй нэр олдсонгүй. Нэрийг гараар оруулна уу.',
+  );
+}
+
+/**
+ * Places one object on a floor plan from a type and a coordinate alone.
+ *
+ * The identity is generated here rather than asked of the caller, because both halves of it
+ * are facts only the server holds: `code` is unique against a per-customer index the browser
+ * cannot see, and `name` is numbered against what the floor already shows.
+ *
+ * `category` and the attribute block come from the chosen type, so a caller cannot place a
+ * panel while claiming it is equipment. The blocks are created empty on purpose — every
+ * electrical field is optional and an object with none of them filled in is reported as
+ * "Бүрэн бус" by the load service rather than being rejected at entry, which is exactly the
+ * state a just-tapped pin should be in.
+ */
+export async function quickPlaceObject(
+  input: QuickPlaceObjectInput,
+  scope: ResolvedCustomerScope,
+  actor: AuthContext,
+  meta: RequestMeta,
+): Promise<ObjectDetailDto> {
+  // Same rule as `createObject`: the owner comes from the scope, and a customer naming
+  // another organisation is refused rather than quietly rewritten.
+  const ownerCustomerId = resolveOwnerCustomerId(scope, input.customerId);
+
+  const customer = await Customer.findById(ownerCustomerId).select('_id');
+  if (!customer) {
+    throw AppError.badRequest(ERROR_CODES.VALIDATION_ERROR, 'Харилцагч олдсонгүй.', [
+      { field: 'customerId', message: 'Харилцагч олдсонгүй.' },
+    ]);
+  }
+
+  const type = await ObjectType.findById(input.objectTypeId);
+  if (!type) {
+    throw AppError.badRequest(ERROR_CODES.VALIDATION_ERROR, 'Тоноглолын төрөл олдсонгүй.', [
+      { field: 'objectTypeId', message: 'Төрөл олдсонгүй.' },
+    ]);
+  }
+  if (!type.isActive) {
+    throw AppError.badRequest(
+      ERROR_CODES.VALIDATION_ERROR,
+      'Идэвхгүй болгосон төрлийг шинэ объектод сонгох боломжгүй.',
+      [{ field: 'objectTypeId', message: 'Төрөл идэвхгүй байна.' }],
+    );
+  }
+
+  // The same gate the full create uses: the floor must exist, be a FLOOR, be active, and
+  // belong to this customer.
+  const floorId = await assertFloorUsable(input.floorId, customer._id);
+
+  const name = await allocateObjectName(type.name, floorId, type._id);
+
+  /**
+   * THE TYPE'S ATTRIBUTES ARE NOT ASKED FOR HERE, AND THAT IS DELIBERATE.
+   *
+   * This endpoint exists so that picking a type once and tapping the drawing produces real
+   * objects with no form in the way — the payload carries only what a tap can express, and
+   * `code` and `name` are generated for the same reason. Demanding a required attribute would
+   * put a modal in front of every tap and destroy the one thing the flow is for.
+   *
+   * The object is therefore created with no values, exactly like every object registered
+   * before attributes existed, and the first report written against it is where they are
+   * asked. Enforcement is on the forms, never on the read.
+   */
+
+  const attributes: Record<string, unknown> = { panel: null, circuit: null, equipment: null };
+  if (type.category === 'PANEL') {
+    attributes.panel = { capacityKw: null, location: null, protection: null };
+  } else if (type.category === 'CIRCUIT') {
+    attributes.circuit = {
+      panel: null,
+      startPointObject: null,
+      endPointObject: null,
+      breakerRating: null,
+      cableType: null,
+      cableSectionMm2: null,
+      cableLengthM: null,
+      permittedCapacityKw: null,
+    };
+  } else {
+    attributes.equipment = {
+      circuit: null,
+      panel: null,
+      ratedPowerKw: null,
+      quantity: null,
+      usageCoefficient: null,
+      installedAt: null,
+      warrantyUntil: null,
+    };
+  }
+
+  /**
+   * THE COUNTER ALONE IS NOT ENOUGH.
+   *
+   * It guarantees two concurrent placements get different numbers, but it knows nothing
+   * about the codes already in the collection: a customer who registered LAMP-001 by hand
+   * before this endpoint existed owns a code the counter will offer as its first. So the
+   * insert itself is the test — a `11000` from the unique (customer, code) index means the
+   * candidate was taken, and the loop advances the counter and tries the next one. The
+   * pre-check spares the common case a thrown error; the catch is what makes it correct,
+   * including against another request inserting the same code between check and write.
+   */
+  let object: Doc<IObject> | null = null;
+  for (let attempt = 0; attempt < MAX_ALLOCATION_ATTEMPTS && !object; attempt += 1) {
+    const sequence = await nextSequenceValue(codeCounterKey(customer._id, type.code));
+    const code = `${type.code}-${String(sequence).padStart(3, '0')}`.slice(0, MAX_CODE_LENGTH);
+
+    if (await ObjectRecord.exists({ customer: customer._id, code })) continue;
+
+    try {
+      object = await ObjectRecord.create({
+        code,
+        name,
+        category: type.category,
+        objectType: type._id,
+        customer: customer._id,
+        floor: floorId,
+        planPosition: { x: input.planPosition.x, y: input.planPosition.y },
+        status: 'ACTIVE',
+        description: null,
+        notes: null,
+        ...attributes,
+        createdBy: new Types.ObjectId(actor.userId),
+      });
+    } catch (error) {
+      if ((error as { code?: number }).code !== 11000) throw error;
+    }
+  }
+
+  if (!object) {
+    throw AppError.conflict(
+      ERROR_CODES.DUPLICATE_KEY,
+      'Чөлөөтэй код олдсонгүй. Объектыг гараар бүртгэнэ үү.',
+    );
+  }
+
+  await recordAudit({
+    entityType: 'Object',
+    entityId: object._id,
+    action: 'Created',
+    actor: { id: actor.userId, role: actor.role, label: actor.fullName },
+    meta,
+    reason: 'quick placed on floor plan',
+    newValue: { code: object.code, name: object.name, category: object.category },
+  });
+
+  return getObjectById(String(object._id), scope);
+}
+
 export async function updateObject(
   objectId: string,
   input: UpdateObjectInput,
@@ -822,10 +1181,71 @@ export async function updateObject(
     floor: object.floor ? String(object.floor) : null,
   };
 
-  if (input.objectTypeId !== undefined) {
-    await resolveObjectType(input.objectTypeId, object.category);
-    object.objectType = new Types.ObjectId(input.objectTypeId);
+  /**
+   * The type the object will have when this update lands, or null when it is not changing.
+   *
+   * Held rather than discarded because the attribute rules below are the NEW type's rules:
+   * moving an object from Гэрэлтүүлэг to Автомат таслуур is a claim that it is a breaker, and
+   * a breaker is required to say whether it is fused.
+   */
+  const nextType =
+    input.objectTypeId !== undefined
+      ? await resolveObjectType(input.objectTypeId, object.category)
+      : null;
+  if (nextType) object.objectType = new Types.ObjectId(input.objectTypeId as string);
+
+  /**
+   * Attributes are re-checked when the values are sent, and when the type changes.
+   *
+   * NOT ON EVERY UPDATE. A rename or a status change is not an answer to "is this breaker
+   * fused", so it is not the moment to demand one — and demanding it there would make every
+   * object registered before the attribute existed uneditable until somebody happened to open
+   * a form that asks. That is the whole content of "enforced on write, not on read": the
+   * requirement bites when a human is in front of the fields, not when an unrelated field
+   * moves.
+   */
+  if (input.attributeValues !== undefined || nextType) {
+    const stored = object.attributeValues ?? {};
+    /**
+     * The type whose definitions apply.
+     *
+     * Loaded by id rather than through `resolveObjectType` when it is the type the object
+     * already has: that helper refuses a deactivated type, which is right for a new selection
+     * and wrong here. An object whose type was archived after it was registered must stay
+     * editable — deactivating a type retires it from the picker, it does not freeze the
+     * estate.
+     */
+    const effectiveType = nextType ?? (await ObjectType.findById(object.objectType));
+    if (!effectiveType) {
+      throw AppError.badRequest(ERROR_CODES.VALIDATION_ERROR, 'Тоноглолын төрөл олдсонгүй.', [
+        { field: 'objectTypeId', message: 'Төрөл олдсонгүй.' },
+      ]);
+    }
+    const defs = toObjectTypeAttributeDtos(effectiveType.attributes);
+    /**
+     * What to judge, when the caller sent nothing but the type moved.
+     *
+     * The answers the object already carries, rather than an empty set it was never asked
+     * for — but only those the NEW type declares. `validateAttributeValues` refuses an
+     * undeclared key, and rightly so for a PAYLOAD, where it means a stale or wrong client.
+     * Storage is different: a bag legitimately holds keys of a type the object has moved off,
+     * because removing a definition never erases what was recorded against it. Feeding those
+     * back in would refuse the move with a message about an attribute the user did not
+     * mention. They are not part of the question, and `mergeAttributeValues` carries them
+     * across untouched either way.
+     */
+    const incoming =
+      input.attributeValues ??
+      Object.fromEntries(
+        defs.filter((def) => def.key in stored).map((def) => [def.key, stored[def.key]]),
+      );
+    assertAttributeValues(defs, incoming);
+    object.attributeValues = mergeAttributeValues(defs, stored, incoming);
+    // `Mixed` is not change-tracked: mongoose cannot see into an untyped path, so an
+    // assignment to it is invisible to `save()` unless the path is marked by hand.
+    object.markModified('attributeValues');
   }
+
   if (input.name !== undefined) object.name = input.name;
   if (input.description !== undefined) object.description = input.description ?? null;
   if (input.notes !== undefined) object.notes = input.notes ?? null;
@@ -1239,6 +1659,14 @@ function assessmentDto(entry: Doc<IObjectAssessment>): ObjectAssessmentDto {
     measuredLoadKw: entry.measuredLoadKw,
     // Grandfathered rows predate the field and come back with an empty list, not a null.
     measurements: (entry.measurements ?? []).map(measurementDto),
+    // Frozen when the finding was written. Empty on every entry from before this existed,
+    // and nothing is back-filled — see the note on `IObjectAssessment.attributes`.
+    attributes: (entry.attributes ?? []).map((attribute) => ({
+      key: attribute.key,
+      label: attribute.label,
+      value: attribute.value,
+      display: attribute.display,
+    })),
     repairRequired: entry.repairRequired,
     revisitRequired: entry.revisitRequired,
     revisitDate: entry.revisitDate?.toISOString() ?? null,
@@ -1267,7 +1695,9 @@ export async function recordAssessment(
     ...customerScopeFilter(scope),
   }).populate({
     path: 'objectType',
-    select: 'generatesConclusion name',
+    // `attributes` rides along because this endpoint also answers them — see below. A wider
+    // projection of a populate already being performed, not another query.
+    select: 'generatesConclusion name attributes',
   });
   if (!object) throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Объект олдсонгүй.');
 
@@ -1310,6 +1740,24 @@ export async function recordAssessment(
     );
   }
 
+  /**
+   * The equipment's own attributes, answered on the report (requirements 4.1).
+   *
+   * THIS IS THE FORM THAT ASKS THEM: writing a report is when somebody is standing in front
+   * of the equipment and can actually look. Checked here, with the evidence and before
+   * anything is written, so a report that cannot be stored is refused whole rather than
+   * leaving an assessment on record beside attributes that were rejected.
+   *
+   * ABSENT MEANS "NOT ASKED", NOT "EMPTY". The employee mobile app sends no such key and must
+   * keep recording assessments exactly as it did, so nothing is enforced against it and
+   * nothing it stores is touched. Only a caller that offers the values invites the check —
+   * the same rule `updateObject` follows.
+   */
+  const attributeDefs = toObjectTypeAttributeDtos(populatedType(object.objectType)?.attributes);
+  if (input.attributeValues !== undefined) {
+    assertAttributeValues(attributeDefs, input.attributeValues);
+  }
+
   // Resolved once, before anything is written: every later use of the kW figure reads
   // `measuredLoadKw` from here rather than from `input`, so the reading list and the
   // summable head are decided in one place.
@@ -1323,22 +1771,39 @@ export async function recordAssessment(
   const conclusion = input.conclusion?.trim() ?? '';
   const recommendation = input.recommendation?.trim() ?? '';
 
-  if (riskLevel === 'CRITICAL' || riskLevel === 'OUT_OF_SERVICE') {
-    if (!conclusion) issues.push({ field: 'conclusion', message: 'Улаан/хар төлөвт дүгнэлт заавал.' });
-    if (!recommendation) {
-      issues.push({ field: 'recommendation', message: 'Улаан/хар төлөвт зөвлөмж заавал.' });
+  /**
+   * What a band demands travels with the band, not with its name.
+   *
+   * Written as `riskLevel === 'CRITICAL' || riskLevel === 'OUT_OF_SERVICE'` this rule
+   * silently meant "the two bands that happened to be called that", so renaming one moved
+   * the safety gate with the word. The flags say what the band *is*, which is what the
+   * requirement actually describes.
+   */
+  const band = bands.find((entry) => entry.level === riskLevel) ?? null;
+  const bandName = band?.labelMn ?? riskLevel;
+
+  if (band?.requiresConclusion) {
+    if (!conclusion) {
+      issues.push({ field: 'conclusion', message: `«${bandName}» түвшинд дүгнэлт заавал.` });
     }
     if (!input.actionTaken?.trim()) {
-      issues.push({ field: 'actionTaken', message: 'Улаан/хар төлөвт авах арга хэмжээ заавал.' });
+      issues.push({
+        field: 'actionTaken',
+        message: `«${bandName}» түвшинд авах арга хэмжээ заавал.`,
+      });
     }
-  } else if (riskLevel === 'ATTENTION' || riskLevel === 'SCHEDULE_REPAIR') {
+  }
+
+  if (band?.requiresRecommendation) {
     if (!recommendation) {
-      issues.push({ field: 'recommendation', message: 'Шар/улбар шар төлөвт зөвлөмж заавал.' });
+      issues.push({ field: 'recommendation', message: `«${bandName}» түвшинд зөвлөмж заавал.` });
     }
-    if (!input.revisitRequired && !input.repairRequired) {
+    // Only bands that do not already demand a written conclusion ask for a follow-up
+    // instead: a band that demands both would make the conclusion redundant.
+    if (!band.requiresConclusion && !input.revisitRequired && !input.repairRequired) {
       issues.push({
         field: 'revisitRequired',
-        message: 'Шар/улбар шар төлөвт засвар эсвэл давтан үзлэгийн огноо заавал.',
+        message: `«${bandName}» түвшинд засвар эсвэл давтан үзлэг заавал.`,
       });
     }
   }
@@ -1414,8 +1879,32 @@ export async function recordAssessment(
     object.measuredLoadKw = measuredLoadKw;
   }
 
-  // Rule 17.9: a black-band object must not remain in active use.
-  if (riskLevel === 'OUT_OF_SERVICE' && object.status === 'ACTIVE') {
+  /**
+   * The attributes answered on the report land on the OBJECT, not on the entry above.
+   *
+   * "This breaker is fused" is a fact about the equipment, true between visits; it is not an
+   * observation this visit made, so keeping a copy per assessment would create as many
+   * answers as there are reports and no way to say which is current. One set of values,
+   * corrected from wherever the technician happens to be — the same route `measuredLoadKw`
+   * takes three lines above.
+   *
+   * `mergeAttributeValues` is what keeps this safe to run from a second form: values whose
+   * definitions the type no longer declares are carried across untouched rather than being
+   * dropped by a form that never knew about them.
+   */
+  if (input.attributeValues !== undefined) {
+    object.attributeValues = mergeAttributeValues(
+      attributeDefs,
+      object.attributeValues ?? {},
+      input.attributeValues,
+    );
+    // `Mixed` is not change-tracked; without this the assignment is invisible to `save()`.
+    object.markModified('attributeValues');
+  }
+
+  // Rule 17.9: an object in the band that takes equipment out of service must not remain
+  // in active use. Which band that is, is configuration — exactly one may carry the flag.
+  if (band?.decommissions && object.status === 'ACTIVE') {
     object.status = 'DECOMMISSIONED';
   }
 
@@ -1505,8 +1994,18 @@ export async function recordAssessment(
    * again when the conclusion asks for a repair or a revisit. The band comparison uses the
    * resolved level rather than a hardcoded score, so a re-banding in settings moves the
    * trigger with it.
+   *
+   * ADDRESSED TO `dispatch.view`, NOT `object_master.view`. The latter is held by
+   * TECHNICIAN, so every technician in the company was told about every assessment recorded
+   * anywhere in the company — including the ones they had just recorded themselves on the
+   * next object along. Nothing here is addressable to an individual: an assessment names no
+   * assignee, and the finding is not a job until somebody schedules one. The people it
+   * concerns are therefore exactly the people who WOULD schedule it, which is the desk
+   * behind `dispatch.view` — ADMIN, MANAGEMENT and DISPATCH by default, plus head_admin.
    */
-  if (riskLevel !== 'NORMAL') {
+  // Every band except the healthy one reports. `!== 'NORMAL'` said the same thing only
+  // while the healthy band was called NORMAL.
+  if (band?.notifies) {
     await notify({
       event: 'RISK_ASSESSMENT_RAISED',
       title: `${object.name}: ${RISK_LEVEL_LABELS[riskLevel]} (${input.newScore}%)`,
@@ -1514,7 +2013,7 @@ export async function recordAssessment(
       entityType: 'Object',
       entityId: object._id,
       linkPath: object.floor ? `/floors/${String(object.floor)}/objects/${String(object._id)}` : null,
-      permission: 'object_master.view',
+      permission: 'dispatch.view',
       excludeUserId: actor.userId,
     });
   }
@@ -1529,7 +2028,7 @@ export async function recordAssessment(
       entityType: 'Object',
       entityId: object._id,
       linkPath: object.floor ? `/floors/${String(object.floor)}/objects/${String(object._id)}` : null,
-      permission: 'object_master.view',
+      permission: 'dispatch.view',
       excludeUserId: actor.userId,
     });
   }

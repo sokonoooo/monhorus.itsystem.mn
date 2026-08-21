@@ -58,6 +58,31 @@ export function PlannedWorkReportPage(): ReactElement {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
+
+  /**
+   * Renders the PDF and hands it to the browser.
+   *
+   * Its own busy flag rather than `busy`: that one gates the write buttons, and a
+   * download in flight is no reason a report cannot also be saved. Failures land in the
+   * page's existing error banner, because a download that silently does nothing is the
+   * worst outcome here — the user is left staring at a button that appears to work.
+   */
+  async function exportPdf(): Promise<void> {
+    if (preview === null) return;
+    setExporting(true);
+    setActionError(null);
+    try {
+      await plannedWorkService.downloadReportPdf(plannedWorkId!, preview.workNumber);
+    } catch (caught) {
+      setActionError(
+        caught instanceof ApiError ? caught.message : 'PDF үүсгэхэд алдаа гарлаа.',
+      );
+    } finally {
+      setExporting(false);
+    }
+  }
+
   const [returnOpen, setReturnOpen] = useState(false);
   const [approveOpen, setApproveOpen] = useState(false);
 
@@ -169,6 +194,14 @@ export function PlannedWorkReportPage(): ReactElement {
     },
   ];
 
+  /**
+   * Registered, used and left — the same three figures the work itself shows.
+   *
+   * The report is what gets signed off and exported, so it may not quietly print only what
+   * was planned: a plan of 100 metres against 12 metres drawn is a different report from a
+   * plan of 100 metres against 98. Үлдэгдэл is the server's stored figure, never a
+   * subtraction done here.
+   */
   const materialColumns: ReadonlyArray<Column<PlannedWorkMaterialDto>> = [
     {
       key: 'material',
@@ -177,11 +210,31 @@ export function PlannedWorkReportPage(): ReactElement {
     },
     {
       key: 'quantity',
-      header: 'Тоо',
+      header: 'Бүртгэсэн',
       align: 'right',
       render: (row) => (
         <span className="whitespace-nowrap font-medium text-slate-900">
           {row.quantity.toLocaleString('mn-MN')}
+        </span>
+      ),
+    },
+    {
+      key: 'consumed',
+      header: 'Зарцуулсан',
+      align: 'right',
+      render: (row) => (
+        <span className="whitespace-nowrap text-slate-700">
+          {row.consumedQuantity.toLocaleString('mn-MN')}
+        </span>
+      ),
+    },
+    {
+      key: 'remaining',
+      header: 'Үлдэгдэл',
+      align: 'right',
+      render: (row) => (
+        <span className="whitespace-nowrap text-slate-700">
+          {row.remainingQuantity.toLocaleString('mn-MN')}
         </span>
       ),
     },
@@ -248,6 +301,19 @@ export function PlannedWorkReportPage(): ReactElement {
         ]}
         actions={
           <>
+            {/*
+              Always offered, and deliberately not gated on the review state: a PDF is a
+              copy of what is already on the screen, so anyone who may read the report may
+              take it away. Gating it on APPROVED would stop a performer printing the draft
+              they are about to walk into a meeting with.
+            */}
+            <Button
+              variant="secondary"
+              onClick={() => void exportPdf()}
+              disabled={exporting}
+            >
+              {exporting ? 'PDF бэлдэж байна…' : 'PDF татах'}
+            </Button>
             {editable && (
               <Button
                 variant="secondary"
@@ -362,16 +428,6 @@ export function PlannedWorkReportPage(): ReactElement {
           </Alert>
         )}
 
-        {canReview && report.status === 'SUBMITTED' && report.approvalBlockers.length > 0 && (
-          <Alert variant="info" title="Батлах боломжгүй">
-            <ul className="ml-4 list-disc space-y-0.5">
-              {report.approvalBlockers.map((blocker) => (
-                <li key={blocker}>{blocker}</li>
-              ))}
-            </ul>
-          </Alert>
-        )}
-
         <div className="rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
           <h2 className="mb-3 text-sm font-semibold text-slate-900">Нэгдсэн дүгнэлт ба зөвлөмж</h2>
 
@@ -445,6 +501,10 @@ export function PlannedWorkReportPage(): ReactElement {
             columns={taskColumnState.visibleColumns}
             rows={preview.tasks}
             rowKey={(row) => row.id}
+            // NUMBERED BUT NOT PAGED, here and in the materials table below. This screen is
+            // the preview of a report that is exported whole; splitting it into pages would
+            // put rows behind a control that the exported PDF does not have.
+            numbering
             emptyTitle="Дэд ажил байхгүй"
           />
         </div>
@@ -457,7 +517,8 @@ export function PlannedWorkReportPage(): ReactElement {
           <DataTable
             columns={materialColumnState.visibleColumns}
             rows={preview.materials}
-            rowKey={(row) => row.name}
+            rowKey={(row) => row.materialItemId}
+            numbering
             emptyTitle="Материал бүртгэгдээгүй"
           />
         </div>

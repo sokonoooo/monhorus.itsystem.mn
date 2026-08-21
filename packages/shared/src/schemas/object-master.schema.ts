@@ -6,6 +6,11 @@ import {
   OBJECT_STATUSES,
 } from '../constants/object-master';
 import {
+  MAX_ATTRIBUTE_OPTIONS,
+  MAX_TYPE_ATTRIBUTES,
+  OBJECT_ATTRIBUTE_TYPES,
+} from '../constants/object-type-attribute';
+import {
   LOAD_MEASUREMENT_KINDS,
   LOAD_MEASUREMENT_KIND_LABELS,
   LOAD_MEASUREMENT_KIND_UNIT,
@@ -19,6 +24,110 @@ import { RISK_LEVELS } from '../constants/service-request';
 import { booleanQuerySchema, isoDateSchema, objectIdSchema, sortDirSchema } from './common.schema';
 
 // -- Section 4.1 type registry ----------------------------------------------
+
+/**
+ * One option of a SELECT attribute.
+ *
+ * The value is what is stored on the object; the label is what a human picks. Kept apart on
+ * purpose — a label is edited freely (a typo, a clearer wording) without touching anything
+ * already recorded, which would not be true if the stored value were the label.
+ */
+const objectAttributeOptionSchema = z
+  .object({
+    value: z
+      .string()
+      .trim()
+      .min(1, 'Сонголтын утга заавал.')
+      .max(60)
+      .regex(/^[A-Za-z0-9_-]+$/, 'Сонголтын утга зөвхөн үсэг, тоо, зураас агуулна.'),
+    label: z.string().trim().min(1, 'Сонголтын нэр заавал.').max(120),
+  })
+  .strict();
+
+/**
+ * One attribute an object type demands of its objects.
+ *
+ * `key` is constrained to a plain lower-camel identifier because it is simultaneously a Mongo
+ * path inside `attributeValues`, a segment of a dotted form-error key, and a React key. A dot
+ * or a `$` in any of those is a defect rather than a name.
+ */
+export const objectTypeAttributeSchema = z
+  .object({
+    key: z
+      .string()
+      .trim()
+      .min(1, 'Түлхүүр заавал.')
+      .max(40)
+      .regex(/^[a-z][a-zA-Z0-9_]*$/, 'Түлхүүр жижиг үсгээр эхэлж, үсэг/тоо/доогуур зураас агуулна.'),
+    label: z.string().trim().min(1, 'Үзүүлэлтийн нэр заавал.').max(120),
+    type: z.enum(OBJECT_ATTRIBUTE_TYPES, { required_error: 'Үзүүлэлтийн төрөл заавал.' }),
+    required: z.boolean().default(false),
+    options: z.array(objectAttributeOptionSchema).max(MAX_ATTRIBUTE_OPTIONS).default([]),
+  })
+  .strict()
+  .superRefine((attribute, ctx) => {
+    /**
+     * A SELECT is its option list, so an empty one is not a half-finished attribute — it is a
+     * field a user can never satisfy, and marking it required would make the type unusable.
+     */
+    if (attribute.type === 'SELECT' && attribute.options.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['options'],
+        message: 'Сонголт төрөлд дор хаяж нэг утга нэмнэ үү.',
+      });
+    }
+
+    // Refused rather than stripped: options on a text box are a mistake about what the
+    // attribute is, and silently dropping them hides the mistake until somebody looks.
+    if (attribute.type !== 'SELECT' && attribute.options.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['options'],
+        message: 'Зөвхөн "Сонголт" төрөл утгын жагсаалттай байна.',
+      });
+    }
+
+    const seen = new Set<string>();
+    attribute.options.forEach((option, index) => {
+      if (seen.has(option.value)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['options', index, 'value'],
+          message: 'Сонголтын утга давхардсан байна.',
+        });
+      }
+      seen.add(option.value);
+    });
+  });
+
+/**
+ * The attribute list of one type.
+ *
+ * THE ARRAY ORDER IS THE DISPLAY ORDER — there is deliberately no `sortOrder` field. A second
+ * representation of the same fact is a second thing that can disagree with the first, and
+ * reordering is then a renumbering rather than a move. Sending the array rearranged is the
+ * whole operation, which is also why adding, editing, deleting and reordering need no
+ * endpoint of their own.
+ */
+export const objectTypeAttributesSchema = z
+  .array(objectTypeAttributeSchema)
+  .max(MAX_TYPE_ATTRIBUTES, `Нэг төрөлд дээд тал нь ${MAX_TYPE_ATTRIBUTES} үзүүлэлт байна.`)
+  .superRefine((attributes, ctx) => {
+    // The key is the join between a definition and every value stored against it, so two
+    // definitions sharing one would make the stored value ambiguous rather than duplicated.
+    const seen = new Set<string>();
+    attributes.forEach((attribute, index) => {
+      if (seen.has(attribute.key)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [index, 'key'],
+          message: 'Түлхүүр давхардсан байна.',
+        });
+      }
+      seen.add(attribute.key);
+    });
+  });
 
 export const createObjectTypeSchema = z.object({
   code: z
@@ -35,6 +144,37 @@ export const createObjectTypeSchema = z.object({
   insidePanel: z.boolean().default(false),
   generatesConclusion: z.boolean().default(true),
   icon: z.enum(OBJECT_ICONS).default('OTHER'),
+  /**
+   * A previously uploaded SVG from `POST /files/object-type-icons`, or nothing.
+   *
+   * The upload happens first because the type does not exist yet at that point, exactly as
+   * a service-request attachment is uploaded before the request. `icon` stays required
+   * regardless: it is the fallback whenever this is absent.
+   */
+  iconFileId: objectIdSchema.nullish(),
+  /**
+   * The fields objects of this type must carry. Empty for every type that wants none, which
+   * is every type that exists today — so a caller written before attributes existed keeps
+   * working unchanged.
+   */
+  attributes: objectTypeAttributesSchema.default([]),
+  /**
+   * Whether a service call may be raised against equipment of this type.
+   *
+   * The catalogue holds structural types nobody calls about (a cable run, a circuit) next to
+   * the ones people do (a light, a socket). Rather than infer that from `category`, which
+   * means something else, an administrator states it per type, and the call form shows only
+   * what is marked here.
+   */
+  canCreateCall: z.boolean().default(false),
+  /**
+   * The SLA window, in hours, for a call raised against this type. Required exactly when
+   * `canCreateCall` is true - see the refinement below - and meaningless otherwise.
+   *
+   * Bounded at 720 hours to match `sla.urgent_hours` and `sla.standard_hours`, so the three
+   * places that express an SLA window agree on what is a plausible one.
+   */
+  callSlaHours: z.number().int().positive().max(720).nullish(),
 });
 
 export const updateObjectTypeSchema = z
@@ -45,7 +185,23 @@ export const updateObjectTypeSchema = z
     insidePanel: z.boolean().optional(),
     generatesConclusion: z.boolean().optional(),
     icon: z.enum(OBJECT_ICONS).optional(),
+    /**
+     * Set, replace, or clear the custom icon. Three-valued on purpose:
+     * absent leaves it alone, an id replaces it, `null` clears it back to the `icon` enum.
+     */
+    iconFileId: objectIdSchema.nullish(),
     isActive: z.boolean().optional(),
+    /**
+     * The whole attribute list, replaced wholesale — add, edit, delete and reorder are all
+     * "send the array as it should now be". Absent leaves the existing definitions alone.
+     *
+     * Editable, unlike `category` and `code` below, because it is safe to be: the values
+     * already stored against a removed attribute are kept rather than cascaded away, so an
+     * edit here changes what is asked for next time and never destroys what was recorded.
+     */
+    attributes: objectTypeAttributesSchema.optional(),
+    canCreateCall: z.boolean().optional(),
+    callSlaHours: z.number().int().positive().max(720).nullish(),
   })
   // Category and code are omitted on purpose: changing either would silently invalidate
   // every object already using the type.
@@ -57,6 +213,15 @@ export const objectTypeListQuerySchema = z.object({
   search: z.string().trim().max(200).optional(),
   category: z.enum(OBJECT_CATEGORIES).optional(),
   isActive: booleanQuerySchema.optional(),
+  /**
+   * Narrow the catalogue to the types a call may be raised against.
+   *
+   * Exists for the call forms, which must not offer a type the backend would then refuse.
+   * A filter rather than a separate endpoint: this is the same catalogue, asked a narrower
+   * question, and an administrator listing types still wants to see the ones that are not
+   * callable.
+   */
+  canCreateCall: booleanQuerySchema.optional(),
 });
 
 // -- Per-category attribute blocks -------------------------------------------
@@ -148,6 +313,22 @@ const baseObjectFields = {
   planPosition: planPositionSchema.nullish(),
   description: z.string().trim().max(2000).nullish(),
   notes: z.string().trim().max(2000).nullish(),
+  /**
+   * The values for whatever the chosen type declares (requirements 4.1).
+   *
+   * ON `baseObjectFields` RATHER THAN ON THE THREE BRANCHES, because an attribute is a fact
+   * about the type and means the same thing whichever category the type belongs to. Every
+   * branch below is `.strict()`, so a key not declared somewhere in the shared base is
+   * rejected outright — which is why this cannot simply be passed through.
+   *
+   * Only the primitive kinds are accepted here. WHICH keys are legal, whether each is
+   * required, and whether a SELECT value is one of its options are all questions about
+   * definitions held in the database, so zod cannot answer them: `validateAttributeValues`
+   * in `constants/object-type-attribute.ts` does, from the same code on both sides.
+   */
+  attributeValues: z
+    .record(z.union([z.string(), z.number(), z.boolean()]))
+    .default({}),
 };
 
 /**
@@ -155,8 +336,11 @@ const baseObjectFields = {
  *
  * Without the floor there is no plan to place the object on, so a position arriving without
  * one is rejected rather than stored as a coordinate pointing at nothing.
+ *
+ * Exported because the service request carries the same optional pin: one rule, one message,
+ * so a floorless coordinate is refused identically wherever it is offered.
  */
-function rejectFloorlessPosition(
+export function rejectFloorlessPosition(
   value: { floorId?: string | null; planPosition?: { x: number; y: number } | null },
   ctx: z.RefinementCtx,
 ): void {
@@ -206,6 +390,37 @@ export const createObjectSchema = z
   .superRefine(rejectFloorlessPosition);
 
 /**
+ * Placing equipment on a floor plan with one click.
+ *
+ * The user picks a type once and then taps the drawing; each tap must produce a real object
+ * without a form in the way. So the payload carries only what a tap can actually express —
+ * which tenant, which type, which floor, and where — and the identity of the thing (`code`
+ * and `name`) is generated by the backend.
+ *
+ * DELIBERATELY NOT A LOOSENED `createObjectSchema`. Making `code` and `name` optional there
+ * would let a nameless object in through the full form, which is the one path that has a
+ * human filling those fields in. Generation belongs on the server anyway: codes are unique
+ * per customer against an index the browser cannot see, so only the server can allocate one
+ * that will survive the insert.
+ *
+ * `category` is absent on purpose too — it is read from the chosen type, so a caller cannot
+ * claim a category the type does not have.
+ */
+export const quickPlaceObjectSchema = z
+  .object({
+    customerId: objectIdSchema,
+    objectTypeId: objectIdSchema,
+    /** Required here, unlike on the create form: a tap on a plan always has a plan. */
+    floorId: objectIdSchema,
+    /** Required for the same reason, and 0..1 by the same rule as everywhere else. */
+    planPosition: planPositionSchema,
+  })
+  .strict()
+  // The same floorless-pin rule as the create form, from the same function, so the two
+  // paths can never drift into disagreeing about it.
+  .superRefine(rejectFloorlessPosition);
+
+/**
  * Object update payload.
  *
  * `category` is absent: changing it would invalidate every attribute already stored and
@@ -223,6 +438,19 @@ export const updateObjectSchema = z
     panel: panelAttributesSchema.partial().optional(),
     circuit: circuitAttributesSchema.partial().optional(),
     equipment: equipmentAttributesSchema.partial().optional(),
+    /**
+     * The type's declared attributes, as they should now stand.
+     *
+     * NOT PARTIAL, unlike the three blocks above. A declared attribute absent here is
+     * cleared, because an absent key and a deliberately emptied one are indistinguishable on
+     * the wire and only one of the two readings lets a user ever remove a value they entered
+     * by mistake. What is preserved instead is the values of attributes the type no longer
+     * declares — see `mergeAttributeValues`.
+     *
+     * Optional as a whole, though: an update that never mentions it enforces nothing and
+     * changes nothing, so a rename is not the moment a required attribute is demanded.
+     */
+    attributeValues: z.record(z.union([z.string(), z.number(), z.boolean()])).optional(),
   })
   .strict()
   /**
@@ -355,6 +583,24 @@ export const createObjectAssessmentSchema = z
      * assessment that omits it behaves exactly as one recorded before the field existed.
      */
     measurements: z.array(loadMeasurementSchema).max(MAX_LOAD_MEASUREMENTS).optional(),
+    /**
+     * The object's per-type attributes, answered while the report is being written
+     * (requirements 4.1). THIS IS THE FORM THAT ASKS THEM.
+     *
+     * THEY ARE NOT PART OF THE ASSESSMENT. They are facts about the equipment — is this
+     * breaker fused — not observations about this visit, so they are written onto the OBJECT
+     * and this entry keeps none of them. A copy per report would create as many answers as
+     * there are reports with no way to say which is current. They travel on this payload
+     * because the moment somebody is standing in front of the equipment with a report open is
+     * the moment they can look and answer, and because doing it here is one call rather than
+     * two with a half-applied state in between. `measuredLoadKw` already reaches the object
+     * by the same route.
+     *
+     * OPTIONAL, AND ABSENT MEANS "NOT ASKED". A client that does not send them — the employee
+     * mobile app — records its assessment exactly as it did before, nothing is enforced
+     * against it, and nothing already stored is cleared. Sending them invites the check.
+     */
+    attributeValues: z.record(z.union([z.string(), z.number(), z.boolean()])).optional(),
     repairRequired: z.boolean().default(false),
     revisitRequired: z.boolean().default(false),
     revisitDate: isoDateSchema.nullish(),
@@ -460,11 +706,13 @@ export const objectAssessmentListQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(100).default(25),
 });
 
+export type ObjectTypeAttributeInput = z.infer<typeof objectTypeAttributeSchema>;
 export type CreateObjectTypeInput = z.infer<typeof createObjectTypeSchema>;
 export type UpdateObjectTypeInput = z.infer<typeof updateObjectTypeSchema>;
 export type ObjectTypeListQueryInput = z.infer<typeof objectTypeListQuerySchema>;
 export type PlanPositionInput = z.infer<typeof planPositionSchema>;
 export type CreateObjectInput = z.infer<typeof createObjectSchema>;
+export type QuickPlaceObjectInput = z.infer<typeof quickPlaceObjectSchema>;
 export type UpdateObjectInput = z.infer<typeof updateObjectSchema>;
 export type UpdateObjectPositionInput = z.infer<typeof updateObjectPositionSchema>;
 export type ObjectListQueryInput = z.infer<typeof objectListQuerySchema>;

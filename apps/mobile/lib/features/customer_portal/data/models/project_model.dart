@@ -134,13 +134,12 @@ class RiskSummaryModel {
 
   /// The worst band present, or null when nothing is assessed. Used to colour a row.
   RiskLevel? get worstLevel {
-    for (final RiskLevel level in <RiskLevel>[
-      RiskLevel.outOfService,
-      RiskLevel.critical,
-      RiskLevel.scheduleRepair,
-      RiskLevel.attention,
-      RiskLevel.normal,
-    ]) {
+    // The ladder in use, walked worst-first — `riskBandsInUse` is best-first. It was a
+    // hand-written list of the five documented bands, which answered the same thing
+    // until an administrator configured a spare: a building whose only graded devices
+    // sat in a sixth band read as having no worst band at all, so the roll-up went
+    // blank on exactly the equipment somebody had gone to the trouble of grading.
+    for (final RiskLevel level in riskBandsInUse().reversed) {
       if (countOf(level) > 0) return level;
     }
     return null;

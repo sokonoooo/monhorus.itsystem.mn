@@ -12,11 +12,17 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:monhorus_employee/features/auth/domain/entities/app_user.dart';
 import 'package:monhorus_employee/features/auth/presentation/providers/auth_provider.dart';
 import 'package:monhorus_employee/features/employee/project/data/models/object_models.dart';
+import 'package:monhorus_employee/features/employee/project/data/models/report_record_models.dart';
 import 'package:monhorus_employee/features/employee/project/presentation/providers/project_providers.dart';
 import 'package:monhorus_employee/features/employee/project/presentation/screens/device_detail_screen.dart';
 import 'package:monhorus_employee/features/employee/project/presentation/widgets/report_sheet.dart';
 
-Map<String, dynamic> _device({bool canAssess = true}) => <String, dynamic>{
+Map<String, dynamic> _device({
+  bool canAssess = true,
+  List<Map<String, dynamic>> attributes = const <Map<String, dynamic>>[],
+  Map<String, dynamic> attributeValues = const <String, dynamic>{},
+}) =>
+    <String, dynamic>{
       'id': 'o1',
       'code': 'CT-LDB-1',
       'name': 'Гэрэлтүүлгийн самбар',
@@ -25,6 +31,9 @@ Map<String, dynamic> _device({bool canAssess = true}) => <String, dynamic>{
         'id': 'ot1',
         'name': 'Хуваарилах самбар',
         'icon': 'PANEL',
+        // The type's own declared fields ride on the type reference, which every object row
+        // carries — the same source the Дүгнэлт editor reads from a picked list item.
+        'attributes': attributes,
       },
       'customerId': 'c1',
       'customerName': 'Central Tower ХХК',
@@ -75,6 +84,7 @@ Map<String, dynamic> _device({bool canAssess = true}) => <String, dynamic>{
       'childCircuits': <dynamic>[],
       'childEquipment': <dynamic>[],
       'canAssess': canAssess,
+      'attributeValues': attributeValues,
     };
 
 AppUser _user({required Set<String> permissions}) => AppUser(
@@ -86,15 +96,30 @@ AppUser _user({required Set<String> permissions}) => AppUser(
       permissions: permissions,
     );
 
-Widget _screen(AppUser user, {bool canAssess = true}) {
+Widget _screen(
+  AppUser user, {
+  bool canAssess = true,
+  List<Map<String, dynamic>> attributes = const <Map<String, dynamic>>[],
+  Map<String, dynamic> attributeValues = const <String, dynamic>{},
+}) {
   return ProviderScope(
     overrides: <Override>[
       currentUserProvider.overrideWithValue(user),
       objectDetailProvider('o1').overrideWith(
-        (Ref ref) async => ObjectDetailModel.fromJson(_device(canAssess: canAssess)),
+        (Ref ref) async => ObjectDetailModel.fromJson(
+          _device(
+            canAssess: canAssess,
+            attributes: attributes,
+            attributeValues: attributeValues,
+          ),
+        ),
       ),
-      objectHistoryProvider('o1')
-          .overrideWith((Ref ref) async => ObjectHistoryModel.empty),
+      // The reports list, not the event timeline it replaced. Empty here: this file is
+      // about the assess button and the sheet behind it. The fixture device carries no
+      // `planPosition`, so the location section stops at its own notice and never
+      // reaches for a plan — which is why this scope needs no plan overrides.
+      objectReportsProvider('o1')
+          .overrideWith((Ref ref) async => const <ReportRecordModel>[]),
     ],
     child: const MaterialApp(
       home: DeviceDetailScreen(
@@ -125,12 +150,6 @@ Future<void> _scrollSheetTo(WidgetTester tester, Finder target) async {
     await tester.pumpAndSettle();
   }
 }
-
-/// The number box and the remove button of the nth (0-based) reading row.
-Finder _measurementValue(int index) =>
-    find.byKey(ValueKey<String>('measurement-value-$index'));
-Finder _measurementRemove(int index) =>
-    find.byKey(ValueKey<String>('measurement-remove-$index'));
 
 void main() {
   const Set<String> assessor = <String>{
@@ -236,9 +255,15 @@ void main() {
   // channel), so what is checked is the part this widget owns: rows appear, rows go away
   // again, and a fresh row never lands on a (kind, phase) pair already on the form —
   // which is the pairing the backend refuses.
-  testWidgets('the sheet adds and removes load measurement rows', (
+  testWidgets('the sheet no longer offers the other-measurements editor', (
     WidgetTester tester,
   ) async {
+    // "Бусад хэмжилт (А, В)" was removed from this sheet and from the web assessment form
+    // together, so the two clients keep asking for the same things. The kW box is a different
+    // field and stays: it is the authoritative figure the floor totals sum.
+    //
+    // Nothing was migrated. `CreateAssessmentRequest.measurements` and the API still accept
+    // readings, and readings already recorded still display on the history.
     await tester.binding.setSurfaceSize(const Size(390, 844));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     await tester.pumpWidget(_screen(_user(permissions: assessor)));
@@ -253,33 +278,13 @@ void main() {
     await tester.tap(find.text('Дүгнэлт тайлан бичих'));
     await tester.pumpAndSettle();
 
+    // Hunting for the editor's own button drags the sheet all the way to the bottom, because
+    // there is nothing left to find — which is the assertion: the whole sheet was walked and
+    // neither the heading nor the add button is anywhere on it.
     await _scrollSheetTo(tester, find.text('Хэмжилт нэмэх'));
 
-    // Nothing until a row is asked for: most assessments carry only the kW figure.
-    expect(_measurementValue(0), findsNothing);
-
-    await tester.tap(find.text('Хэмжилт нэмэх'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Хэмжилт нэмэх'));
-    await tester.pumpAndSettle();
-
-    await _scrollSheetTo(tester, _measurementRemove(1));
-
-    expect(_measurementValue(0), findsOneWidget);
-    expect(_measurementValue(1), findsOneWidget);
-    // The second row defaulted to L1 rather than colliding with the first, which is
-    // the (kind, phase) pair the backend refuses twice over.
-    expect(find.text('L1'), findsOneWidget);
-
-    await tester.enterText(_measurementValue(0), '41.2');
-    await tester.pumpAndSettle();
-
-    await tester.tap(_measurementRemove(1));
-    await tester.pumpAndSettle();
-
-    expect(_measurementValue(1), findsNothing);
-    // The row that stayed kept what was typed into it.
-    expect(find.text('41.2'), findsOneWidget);
+    expect(find.text('Хэмжилт нэмэх'), findsNothing);
+    expect(find.text('Бусад хэмжилт (А, В)'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
@@ -340,6 +345,184 @@ void main() {
     // a whole one, which is why the volts read plainly and the amps do not.
     expect(find.text('Хэмжсэн ачаалал 17.20 kW'), findsOneWidget);
     expect(find.text('41.20 А (L1) · 231 В'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  /// The equipment type's own declared fields, on the sheet a technician actually fills in
+  /// (requirements 4.1).
+  ///
+  /// Nothing in the app names an attribute: the definitions arrive on the device response and
+  /// the sheet renders whatever is there, so a field added in Тоноглолын төрөл is asked here
+  /// with no release. These tests therefore drive the sheet from a fixture that declares the
+  /// worked example from the brief — a breaker that is fused or not.
+
+  const Map<String, dynamic> fuse = <String, dynamic>{
+    'key': 'fuse',
+    'label': 'Хайлмал хамгаалалт',
+    'type': 'SELECT',
+    'required': true,
+    'options': <Map<String, dynamic>>[
+      <String, dynamic>{'value': 'FUSED', 'label': 'Хайлмалтай'},
+      <String, dynamic>{'value': 'NOT_FUSED', 'label': 'Хайлмалгүй'},
+    ],
+  };
+
+  const Map<String, dynamic> serial = <String, dynamic>{
+    'key': 'serial',
+    'label': 'Сериал дугаар',
+    'type': 'TEXT',
+    'required': false,
+    'options': <Map<String, dynamic>>[],
+  };
+
+  const Map<String, dynamic> sealed = <String, dynamic>{
+    'key': 'sealed',
+    'label': 'Лацдсан эсэх',
+    'type': 'BOOLEAN',
+    'required': true,
+    'options': <Map<String, dynamic>>[],
+  };
+
+  /// Whether the chip answering [attributeLabel] with [optionLabel] is the chosen one.
+  ///
+  /// Matched on the semantics label the picker builds — "Хайлмал хамгаалалт: Хайлмалгүй" —
+  /// rather than by walking up from the text, because `find.ancestor(...).first` lands on
+  /// whichever Semantics Material happens to wrap the ink with, whose `selected` is null.
+  bool chipSelected(
+    WidgetTester tester,
+    String attributeLabel,
+    String optionLabel,
+  ) {
+    final Semantics chip = tester.widget<Semantics>(
+      find.byWidgetPredicate(
+        (Widget widget) =>
+            widget is Semantics &&
+            widget.properties.label == '$attributeLabel: $optionLabel',
+      ),
+    );
+    return chip.properties.selected ?? false;
+  }
+
+  Future<void> openSheet(WidgetTester tester) async {
+    await tester.scrollUntilVisible(
+      find.text('Дүгнэлт тайлан бичих'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Дүгнэлт тайлан бичих'));
+    await tester.pumpAndSettle();
+  }
+
+  testWidgets('the sheet asks the equipment type\'s own questions', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 1400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      _screen(
+        _user(permissions: assessor),
+        attributes: <Map<String, dynamic>>[fuse, serial, sealed],
+      ),
+    );
+    await tester.pumpAndSettle();
+    await openSheet(tester);
+
+    // A required field says so in its own label, so a technician knows before saving.
+    await _scrollSheetTo(tester, find.text('ХАЙЛМАЛ ХАМГААЛАЛТ (ЗААВАЛ)'));
+    expect(find.text('ХАЙЛМАЛ ХАМГААЛАЛТ (ЗААВАЛ)'), findsOneWidget);
+    // A SELECT offers exactly the options its definition lists, as chips.
+    expect(find.text('Хайлмалтай'), findsOneWidget);
+    expect(find.text('Хайлмалгүй'), findsOneWidget);
+
+    await _scrollSheetTo(tester, find.text('ЛАЦДСАН ЭСЭХ (ЗААВАЛ)'));
+    // A BOOLEAN is a three-state picker, not a switch: "not answered yet" has to remain
+    // expressible or a required yes/no is satisfied by a control nobody touched.
+    expect(find.text('Тийм'), findsOneWidget);
+    expect(find.text('Үгүй'), findsOneWidget);
+
+    // An optional TEXT field is a plain box and is not marked заавал.
+    await _scrollSheetTo(tester, find.text('СЕРИАЛ ДУГААР'));
+    expect(find.text('СЕРИАЛ ДУГААР'), findsOneWidget);
+
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('the sheet opens on the answers already recorded', (
+    WidgetTester tester,
+  ) async {
+    // Standing facts about the kit, not a fresh reading like the score: the right starting
+    // point is what is on record, so the technician corrects rather than re-enters.
+    await tester.binding.setSurfaceSize(const Size(390, 1400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      _screen(
+        _user(permissions: assessor),
+        attributes: <Map<String, dynamic>>[fuse, serial],
+        attributeValues: <String, dynamic>{
+          'fuse': 'NOT_FUSED',
+          'serial': 'AB-1200',
+        },
+      ),
+    );
+    await tester.pumpAndSettle();
+    await openSheet(tester);
+
+    await _scrollSheetTo(tester, find.text('СЕРИАЛ ДУГААР'));
+    expect(find.text('AB-1200'), findsOneWidget);
+
+    // The chip that matches the stored value is the selected one, and its sibling is not.
+    expect(chipSelected(tester, 'Хайлмал хамгаалалт', 'Хайлмалгүй'), isTrue);
+    expect(chipSelected(tester, 'Хайлмал хамгаалалт', 'Хайлмалтай'), isFalse);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('a required attribute is named when it is left unanswered', (
+    WidgetTester tester,
+  ) async {
+    /**
+     * Refused before the request, by the same three rules the server enforces.
+     *
+     * The evidence rule already blocks the save button until a photo lands, and this test
+     * cannot press the camera, so what is asserted is that the field itself is on the sheet
+     * and marked заавал — the message is raised from `_attributeIssues`, which the API test
+     * covers on the server side under the same `attributeValues.<key>` key.
+     */
+    await tester.binding.setSurfaceSize(const Size(390, 1400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      _screen(_user(permissions: assessor), attributes: <Map<String, dynamic>>[fuse]),
+    );
+    await tester.pumpAndSettle();
+    await openSheet(tester);
+
+    await _scrollSheetTo(tester, find.text('ХАЙЛМАЛ ХАМГААЛАЛТ (ЗААВАЛ)'));
+
+    // Nothing is preselected, so the answer is genuinely absent rather than defaulted —
+    // which is what makes `required` mean something on a two-option question.
+    expect(chipSelected(tester, 'Хайлмал хамгаалалт', 'Хайлмалтай'), isFalse);
+    expect(chipSelected(tester, 'Хайлмал хамгаалалт', 'Хайлмалгүй'), isFalse);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('a type declaring nothing leaves the sheet exactly as it was', (
+    WidgetTester tester,
+  ) async {
+    // The path every type took before the feature existed, and the one that must be
+    // untouched — including sending no `attributeValues` key at all, which is what tells
+    // the server it was not asked.
+    await tester.binding.setSurfaceSize(const Size(390, 844));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(_screen(_user(permissions: assessor)));
+    await tester.pumpAndSettle();
+    await openSheet(tester);
+
+    await _scrollSheetTo(tester, find.text('Засвар шаардлагатай'));
+    expect(find.text('ХАЙЛМАЛ ХАМГААЛАЛТ (ЗААВАЛ)'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 }

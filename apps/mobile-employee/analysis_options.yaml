@@ -1,6 +1,17 @@
 include: package:flutter_lints/flutter.yaml
 
 analyzer:
+  #
+  # Build output is not source. Nothing here is written by this project, and since
+  # firebase_messaging arrived, `build/ios/SourcePackages` holds the full sources of
+  # fetched packages - including their own test files, which are written against
+  # dependency versions this project does not have. Ninety-seven errors appeared in code
+  # nobody here can edit, burying the real ones.
+  # `.dart_tool` is excluded for the same reason: generated, not authored.
+  #
+  exclude:
+    - build/**
+    - .dart_tool/**
   language:
     strict-casts: true
     strict-inference: true

@@ -188,6 +188,10 @@ class _PlanTab extends ConsumerWidget {
                 children: <Widget>[
                   AuthenticatedImage.sizedToImage(
                     fileId: data.fileId,
+                    // A floor's worth of markers on a phone-width drawing overlap until
+                    // the reader can magnify it. Read-only in both senses: nothing here
+                    // can be moved, and the zoom is not persisted.
+                    zoomable: true,
                     overlay: FloorPlanMarkerLayer(
                       objects: onPlan,
                       onTap: (ObjectListItemModel object) =>
@@ -210,6 +214,16 @@ class _PlanTab extends ConsumerWidget {
                             if (data.uploadedByName != null) data.uploadedByName!,
                             formatDate(data.uploadedAt),
                           ].join(' · '),
+                          style: CustomerTokens.rowSub,
+                        ),
+                        const SizedBox(height: 4),
+                        // Said out loud, because neither channel is self-evident: the
+                        // colour is a band a reader has no reason to guess at, and the
+                        // pinch is invisible until someone tries it.
+                        Text(
+                          'Тэмдэглэгээний өнгө нь эрсдэлийн түвшин, дүрс тэмдэг нь '
+                          'объектын төрлийг илэрхийлнэ. Хоёр хуруугаар томруулж '
+                          'харна.',
                           style: CustomerTokens.rowSub,
                         ),
                         if (unplaced > 0) ...<Widget>[
@@ -343,10 +357,13 @@ class _HistoryTab extends ConsumerWidget {
                       onThisFloor[i].requestNumber,
                       if (onThisFloor[i].device != null)
                         onThisFloor[i].device!.name,
-                      onThisFloor[i].status?.label ?? '',
+                      // The stage the server groups the request under, when it sent
+                      // one: this row reports where the work has got to, and that is
+                      // the word the office uses for it. Falls back to the status.
+                      onThisFloor[i].stepLabel ?? '',
                     ].where((String part) => part.isNotEmpty).join(' · '),
                     meta: formatEventStamp(onThisFloor[i].createdAt),
-                    tone: onThisFloor[i].status?.tone ?? AccentTone.neutral,
+                    tone: onThisFloor[i].stepTone,
                     icon: onThisFloor[i].isUrgent
                         ? Icons.priority_high
                         : Icons.assignment_outlined,

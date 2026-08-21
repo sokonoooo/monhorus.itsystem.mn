@@ -6,6 +6,7 @@ import '../../../../core/error/failure.dart';
 import '../../../../core/network/api_result.dart';
 import '../../../../core/network/paginated_data.dart';
 import '../../domain/entities/customer_scope.dart';
+import '../../domain/entities/server_vocabulary.dart';
 import '../../domain/entities/service_request_enums.dart';
 import '../../domain/repositories/customer_portal_repository.dart';
 import '../datasources/customer_portal_remote_data_source.dart';
@@ -13,6 +14,7 @@ import '../models/notification_model.dart';
 import '../models/object_master_model.dart';
 import '../models/project_model.dart';
 import '../models/service_request_model.dart';
+import '../models/survey_model.dart';
 
 class CustomerPortalRepositoryImpl implements CustomerPortalRepository {
   const CustomerPortalRepositoryImpl(this._remote);
@@ -62,12 +64,14 @@ class CustomerPortalRepositoryImpl implements CustomerPortalRepository {
     ResolvedCustomerScope scope, {
     String? projectId,
     String? search,
+    int page = 1,
   }) {
     return _guard(
       () => _remote.listBuildings(
         scope: scope,
         projectId: projectId,
         search: search,
+        page: page,
       ),
     );
   }
@@ -141,6 +145,29 @@ class CustomerPortalRepositoryImpl implements CustomerPortalRepository {
     return _guard(() => _remote.getServiceRequest(requestId));
   }
 
+  /// A 404 here is an answer, not a fault: the endpoint uses it for "no approved
+  /// conclusion" as well as for "not your request", and both mean the same thing to
+  /// the reader — there is nothing to show yet. It is turned into a null so the screen
+  /// renders the not-ready line rather than an error card. Every other status still
+  /// travels through [_mapException].
+  @override
+  Future<ApiResult<CustomerWorkReportModel?>> getCustomerWorkReport(
+    String requestId,
+  ) async {
+    try {
+      return Success<CustomerWorkReportModel?>(
+        await _remote.getCustomerWorkReport(requestId),
+      );
+    } on ServerException catch (error) {
+      if (error.statusCode == 404) {
+        return const Success<CustomerWorkReportModel?>(null);
+      }
+      return FailureResult<CustomerWorkReportModel?>(_mapException(error));
+    } catch (error) {
+      return FailureResult<CustomerWorkReportModel?>(_mapException(error));
+    }
+  }
+
   @override
   Future<ApiResult<ServiceRequestAttachmentModel>> uploadServiceRequestAttachment(
     CapturedPhoto photo,
@@ -149,10 +176,51 @@ class CustomerPortalRepositoryImpl implements CustomerPortalRepository {
   }
 
   @override
+  Future<ApiResult<List<CallableObjectTypeModel>>> listCallableObjectTypes() {
+    return _guard(() => _remote.listCallableObjectTypes());
+  }
+
+  @override
+  Future<ApiResult<ServerVocabulary>> getVocabulary() {
+    return _guard(() => _remote.getVocabulary());
+  }
+
+  @override
   Future<ApiResult<ServiceRequestDetailModel>> createServiceRequest(
     CreateServiceRequestRequestModel request,
   ) {
     return _guard(() => _remote.createServiceRequest(request));
+  }
+
+  @override
+  Future<ApiResult<List<SurveyPendingItemModel>>> listPendingSurveys() {
+    return _guard(() => _remote.listPendingSurveys());
+  }
+
+  /// A 404 here is an answer, not a fault — the same rule [getCustomerWorkReport]
+  /// follows. The endpoint uses it for "no survey to answer" as well as for "not your
+  /// request", and both mean the same thing to the reader: there is nothing to rate.
+  /// Every other status still travels through [_mapException].
+  @override
+  Future<ApiResult<SurveyFormModel?>> getSurveyForm(String requestId) async {
+    try {
+      return Success<SurveyFormModel?>(await _remote.getSurveyForm(requestId));
+    } on ServerException catch (error) {
+      if (error.statusCode == 404) {
+        return const Success<SurveyFormModel?>(null);
+      }
+      return FailureResult<SurveyFormModel?>(_mapException(error));
+    } catch (error) {
+      return FailureResult<SurveyFormModel?>(_mapException(error));
+    }
+  }
+
+  @override
+  Future<ApiResult<void>> submitSurveyResponse(
+    String requestId,
+    SubmitSurveyResponseRequest request,
+  ) {
+    return _guard(() => _remote.submitSurveyResponse(requestId, request));
   }
 
   @override

@@ -1,8 +1,10 @@
 import {
+  MATERIAL_UNIT_LABELS,
   PERMISSIONS,
   progressPercentOf,
   riskLevelFor,
   type CreatePlannedWorkInput,
+  type MaterialUnit,
   type CreatePlannedWorkTaskInput,
   type PaginatedData,
   type PlannedWorkDto,
@@ -11,8 +13,11 @@ import {
   type PlannedWorkMaterialsInput,
   type PlannedWorkPauseDto,
   type PlannedWorkPhotoDto,
+  type PlannedWorkReportDto,
   type PlannedWorkScheduleChangeDto,
   type PlannedWorkTaskDto,
+  type PlannedWorkTaskMaterialUsageDto,
+  type RecordTaskMaterialUsageInput,
   type RecordTaskProgressInput,
   type ReschedulePlannedWorkInput,
   type UpdatePlannedWorkInput,
@@ -21,19 +26,34 @@ import {
 import { Types, type FilterQuery, type HydratedDocument } from 'mongoose';
 
 import { AppError } from '../../common/errors/app-error';
+import {
+  assertInCustomerScope,
+  customerScopeFilter,
+  resolveCustomerScope,
+} from '../../common/security/customer-scope';
 import { ERROR_CODES } from '../../common/errors/error-codes';
 import type { AuthContext } from '../../common/types/express';
+import { CREATOR_POPULATE, creatorName } from '../../common/utils/creator.util';
 import type { RequestMeta } from '../../common/utils/request-meta.util';
 import { hasPermission } from '../../middlewares/authorize.middleware';
 import { recordAudit } from '../audit/audit.service';
 import { Employee } from '../employee/employee.model';
+import { MaterialItem } from '../material/material.models';
+import { notify } from '../notification/notification.service';
+import { userIdsForEmployees } from '../notification/recipient.util';
 import { ObjectRecord } from '../object-master/object-master.models';
 import { ObjectNode } from '../objects/object.models';
 import { Team } from '../org/org.models';
 import { getRiskBands } from '../settings/settings.service';
 import { StoredFile, type IStoredFile } from '../storage/stored-file.model';
 import { deleteStoredFile } from '../storage/storage.service';
+import { assertEmployeesExist } from './planned-work.crew';
 import { plannedWorkMaterialsOf } from './planned-work.materials.service';
+import {
+  recordTaskMaterialUsage,
+  releaseTaskMaterialUsage,
+  usageByTask,
+} from './planned-work.material-usage.service';
 import {
   PlannedWork,
   PlannedWorkTask,
@@ -165,18 +185,6 @@ async function assertFloorInBuilding(
   }
 
   return floor._id;
-}
-
-async function assertEmployeesExist(employeeIds: readonly string[]): Promise<Types.ObjectId[]> {
-  if (employeeIds.length === 0) return [];
-  const ids = employeeIds.map((id) => new Types.ObjectId(id));
-  const found = await Employee.countDocuments({ _id: { $in: ids } });
-  if (found !== ids.length) {
-    throw AppError.badRequest(ERROR_CODES.VALIDATION_ERROR, 'Ажилтан олдсонгүй.', [
-      { field: 'assignedEmployeeIds', message: 'Сонгосон ажилтан олдсонгүй.' },
-    ]);
-  }
-  return ids;
 }
 
 /**
@@ -319,6 +327,7 @@ const LIST_POPULATE = [
   { path: 'building', select: 'name' },
   { path: 'assignedEmployees', select: 'firstName lastName' },
   { path: 'assignedTeam', select: 'name' },
+  CREATOR_POPULATE,
 ] as const;
 
 function namedRef(value: unknown): { id: string; name: string } {
@@ -397,6 +406,13 @@ function photoDto(value: unknown): PlannedWorkPhotoDto | null {
 export function toTaskDto(
   task: Doc<IPlannedWorkTask>,
   floorNames: ReadonlyMap<string, string>,
+  /**
+   * Usage rows for this task, from the one read the caller already did for the whole work.
+   *
+   * Passed in rather than fetched here: this runs once per sub-task, and a query inside it
+   * would turn one page of a floor's tasks into a query per row.
+   */
+  materialUsage: readonly PlannedWorkTaskMaterialUsageDto[] = [],
 ): PlannedWorkTaskDto {
   const completed = Math.min(task.completedQuantity, task.totalQuantity);
 
@@ -433,8 +449,10 @@ export function toTaskDto(
     afterPhotos: task.afterPhotos.map(photoDto).filter((photo): photo is PlannedWorkPhotoDto =>
       photo !== null,
     ),
+    materialUsage,
     missingEvidence: missingTaskEvidenceOf(task),
     completedAt: task.completedAt?.toISOString() ?? null,
+    createdByName: creatorName(task.createdBy),
     createdAt: task.createdAt.toISOString(),
     updatedAt: task.updatedAt.toISOString(),
   };
@@ -471,7 +489,47 @@ export function toListItemDto(
     assignedEmployees: employeeRefs(work.assignedEmployees),
     assignedTeam: work.assignedTeam ? namedRef(work.assignedTeam) : null,
     reportStatus,
+    createdByName: creatorName(work.createdBy),
     createdAt: work.createdAt.toISOString(),
+  };
+}
+
+/**
+ * Withholds an unapproved report from a customer, and the review trail from an approved one.
+ *
+ * `visibleToCustomer` was computed correctly and then acted on by nobody: the flag rode
+ * along beside the very content it described, so `GET /planned-work/:id` handed a customer
+ * the draft conclusion, the internal `returnReason` — a manager's written criticism of a
+ * technician's write-up — and the id and full name of everyone who authored, submitted,
+ * returned and approved it. Only the portal's JSX declined to paint it, which is a
+ * presentation choice rather than a boundary, and `curl` was never bound by it.
+ *
+ * `assertReportVisibleToCustomer` was written for exactly this and had zero callers. This
+ * is the same rule applied where the payload is actually built, so there is nothing left to
+ * forget to call. The sibling service-request path already gets it right by refusing
+ * server-side and composing its customer DTO field by field.
+ */
+function narrowReportForActor(
+  report: PlannedWorkReportDto | null,
+  actor: AuthContext,
+): PlannedWorkReportDto | null {
+  if (!report) return null;
+  if (resolveCustomerScope(actor).mode !== 'CUSTOMER') return report;
+
+  // Anything short of APPROVED is not the customer's to read at all.
+  if (report.status !== 'APPROVED') return null;
+
+  const empty = { id: null, name: null, at: null };
+  return {
+    ...report,
+    // The signed-off text is the deliverable; the review trail that produced it is not.
+    createdBy: empty,
+    submittedBy: empty,
+    returnedBy: empty,
+    returnReason: null,
+    submissionBlockers: [],
+    canApprove: false,
+    approvalBlockers: [],
   };
 }
 
@@ -486,6 +544,7 @@ async function loadDetail(
       { path: 'afterPhotos', select: 'originalName mimeType sizeBytes uploadedByName storageKey createdAt' },
       { path: 'assignedEmployee', select: 'firstName lastName' },
       { path: 'relatedObjects', select: 'name' },
+      CREATOR_POPULATE,
     ])
     .sort({ plannedStartDate: 1, title: 1 });
 
@@ -499,12 +558,24 @@ async function loadDetail(
     : [];
   const floorNames = new Map(floors.map((floor) => [String(floor._id), floor.name]));
 
-  const [materials, reportState, assignmentAllowed] = await Promise.all([
+  const [materials, usage, reportState, assignmentAllowed] = await Promise.all([
     plannedWorkMaterialsOf(work),
+    // One read for the whole work, handed to each task below, rather than a query per row.
+    usageByTask(work._id),
     loadReportState(work),
-    // Resolved once here so the action list a technician is shown matches what the write
-    // endpoints will actually accept. Reading the record stays unscoped.
-    isWithinAssignmentScope(work._id, actor),
+    /**
+     * Resolved once here so the action list a technician is shown matches what the write
+     * endpoints will actually accept. Reading the record stays unscoped.
+     *
+     * SKIPPED FOR A CUSTOMER, exactly as `transitionPlannedWork` skips it. This asks which
+     * employee a job belongs to, and a portal account has no employee card, so it answers
+     * NOT_ASSIGNED for every customer — which made `availableActionsFor` drop every action
+     * and left a customer looking at their own draft with no way to submit it. Their bound
+     * is tenancy, and the scoped read above has already applied it.
+     */
+    resolveCustomerScope(actor).mode === 'CUSTOMER'
+      ? Promise.resolve(true)
+      : isWithinAssignmentScope(work._id, actor),
   ]);
 
   const blockers = completionBlockersOf(tasks);
@@ -529,12 +600,15 @@ async function loadDetail(
       name: work.archivedByName,
       at: work.archivedAt?.toISOString() ?? null,
     },
-    tasks: tasks.map((task) => toTaskDto(task, floorNames)),
+    tasks: tasks.map((task) => toTaskDto(task, floorNames, usage.get(String(task._id)) ?? [])),
     floorProgress: floorProgressOf(tasks, floorNames),
     materials,
-    report: reportState.report
-      ? toReportDto(reportState.report, actor, reportState.blockers)
-      : null,
+    report: narrowReportForActor(
+      reportState.report
+        ? toReportDto(reportState.report, actor, reportState.blockers)
+        : null,
+      actor,
+    ),
     availableActions: availableActionsFor(work, actor, blockers.length === 0, assignmentAllowed),
     completionBlockers: blockers,
   };
@@ -579,9 +653,20 @@ export async function getPlannedWorkById(
 ): Promise<PlannedWorkDto> {
   const now = new Date();
 
-  const assignmentFilter = await resolveAssignedWorkFilter<IPlannedWork>(actor);
-  const filter: FilterQuery<IPlannedWork> = { _id: new Types.ObjectId(plannedWorkId) };
-  if (assignmentFilter) filter.$and = [assignmentFilter];
+  const scope = resolveCustomerScope(actor);
+  const filter: FilterQuery<IPlannedWork> = {
+    _id: new Types.ObjectId(plannedWorkId),
+    // In the QUERY, not a check on the loaded document, so another organisation's work is
+    // indistinguishable from one that does not exist. Answering "forbidden" would confirm
+    // the id is real and turn this into a probe for other tenants' identifiers.
+    ...customerScopeFilter(scope),
+  };
+
+  // Skipped for a customer for the same reason the list skips it: no employee card.
+  if (scope.mode === 'STAFF') {
+    const assignmentFilter = await resolveAssignedWorkFilter<IPlannedWork>(actor);
+    if (assignmentFilter) filter.$and = [assignmentFilter];
+  }
 
   const work = await PlannedWork.findOne(filter).populate([...LIST_POPULATE]);
   if (!work) {
@@ -612,12 +697,44 @@ export async function listPlannedWork(
   actor: AuthContext,
 ): Promise<PaginatedData<PlannedWorkListItemDto>> {
   const now = new Date();
-  const filter: FilterQuery<IPlannedWork> = {};
+  const scope = resolveCustomerScope(actor);
+  const filter: FilterQuery<IPlannedWork> = { ...customerScopeFilter(scope) };
 
-  const assignmentFilter = await resolveAssignedWorkFilter<IPlannedWork>(actor);
-  if (assignmentFilter) filter.$and = [assignmentFilter];
+  /**
+   * Assignment scope is a STAFF question and is skipped for a customer.
+   *
+   * It narrows to the work an employee is on, and a portal account has no employee card —
+   * so applying it would answer the empty list for every customer. Tenancy is a customer's
+   * boundary and `customerScopeFilter` above has already applied it.
+   */
+  if (scope.mode === 'STAFF') {
+    const assignmentFilter = await resolveAssignedWorkFilter<IPlannedWork>(actor);
+    if (assignmentFilter) {
+      /**
+       * An employee's own list never shows work that has not been approved.
+       *
+       * A non-null assignment filter IS the definition of "this caller sees their own work
+       * rather than the company's" — anyone with an oversight key gets null here and keeps
+       * seeing everything, which is what a planner needs.
+       *
+       * Belt and braces on top of the crew rules. Nothing pre-approval is supposed to carry
+       * a crew, so in principle the assignment predicate already excludes all of this. That
+       * is an invariant maintained by several separate guards, though, and a technician
+       * being shown a draft nobody has agreed to do is not a failure worth risking on it
+       * holding everywhere. Here the exclusion is a property of the query.
+       */
+      filter.$and = [assignmentFilter, { status: { $nin: PRE_APPROVAL_STATUSES } }];
+    }
+  }
 
-  if (query.customerId) filter.customer = new Types.ObjectId(query.customerId);
+  /**
+   * A customer's own tenant is already pinned, so a `customerId` they send is DISCARDED
+   * rather than honoured — the same rule the service-request list follows. Trusting it
+   * would let the filter widen the very boundary it sits inside.
+   */
+  if (scope.mode === 'STAFF' && query.customerId) {
+    filter.customer = new Types.ObjectId(query.customerId);
+  }
   if (query.projectId) filter.project = new Types.ObjectId(query.projectId);
   if (query.buildingId) filter.building = new Types.ObjectId(query.buildingId);
   if (query.employeeId) filter.assignedEmployees = new Types.ObjectId(query.employeeId);
@@ -696,9 +813,42 @@ export async function createPlannedWork(
   actor: AuthContext,
   meta: RequestMeta,
 ): Promise<PlannedWorkDto> {
+  /**
+   * A CUSTOMER may raise work, and what they raise is a REQUEST rather than a plan.
+   *
+   * Decided from the authenticated account, never from the body: `resolveCustomerScope`
+   * reads the tenant off the account, so a customer cannot raise work in another
+   * organisation's name however the payload is shaped. Three things are then forced
+   * regardless of what was sent —
+   *
+   *   - the status is PENDING_APPROVAL, so it is not yet a commitment;
+   *   - the crew is empty, which is what makes "cannot be assigned before approval" true
+   *     of the DATA rather than a rule the caller is trusted to follow;
+   *   - the owner is their own organisation.
+   *
+   * Staff creation is completely unchanged and still lands in DRAFT with whatever crew the
+   * planner named.
+   */
+  const scope = resolveCustomerScope(actor);
+  const raisedByCustomer = scope.mode === 'CUSTOMER';
+
   const location = await resolveLocation(input.projectId ?? null, input.buildingId);
-  const employeeIds = await assertEmployeesExist(input.assignedEmployeeIds);
-  const teamId = input.assignedTeamId ? await assertTeamExists(input.assignedTeamId) : null;
+
+  if (raisedByCustomer && String(location.customerId) !== scope.customerId) {
+    // The location chain named somebody else's building. Reported as a validation failure
+    // rather than a 403 so it cannot be used to probe which building ids exist.
+    throw AppError.badRequest(
+      ERROR_CODES.VALIDATION_ERROR,
+      'Барилга танай байгууллагад хамаарахгүй байна.',
+      [{ field: 'buildingId', message: 'Өөр байгууллагын барилга.' }],
+    );
+  }
+
+  const employeeIds = raisedByCustomer
+    ? []
+    : await assertEmployeesExist(input.assignedEmployeeIds);
+  const teamId =
+    !raisedByCustomer && input.assignedTeamId ? await assertTeamExists(input.assignedTeamId) : null;
 
   const plannedEndDate = new Date(input.plannedEndDate);
 
@@ -713,6 +863,8 @@ export async function createPlannedWork(
     plannedEndDate,
     // Captured once so a later reschedule cannot erase the original commitment.
     originalPlannedEndDate: plannedEndDate,
+    // DRAFT whoever raised it. A customer's request is no longer submitted the instant it
+    // is created — they compose it, break it down, and submit it themselves with PLAN.
     status: 'DRAFT',
     assignedEmployees: employeeIds,
     assignedTeam: teamId,
@@ -736,13 +888,49 @@ export async function createPlannedWork(
   return getPlannedWorkById(String(work._id), actor);
 }
 
+/**
+ * The statuses whose content still belongs to whoever raised the work.
+ *
+ * A draft has never been submitted and a returned one is waiting to be corrected, so in
+ * both the creator is still composing. Everything after PENDING_APPROVAL has been agreed to
+ * by an approver, and letting the requester keep editing it would let them change what was
+ * approved after the fact.
+ */
+const CREATOR_EDITABLE_STATUSES: readonly IPlannedWork['status'][] = ['DRAFT', 'REJECTED'];
+
+/**
+ * The work an owner-side edit may target, bounded by who is asking.
+ *
+ * Staff are unaffected: `resolveCustomerScope` answers STAFF and both checks are skipped, so
+ * a planner still edits at every status `assertMutable` allows. A customer is bounded twice —
+ * to their own record, and to the statuses above — and the two fail differently on purpose,
+ * for the reasons given on `findRawForTaskWrite`.
+ */
+async function findRawForOwnerEdit(
+  plannedWorkId: string,
+  actor: AuthContext,
+): Promise<Awaited<ReturnType<typeof findRaw>>> {
+  const work = await findRaw(plannedWorkId);
+  const scope = resolveCustomerScope(actor);
+  if (scope.mode === 'CUSTOMER') {
+    assertInCustomerScope(scope, work.customer);
+    if (!CREATOR_EDITABLE_STATUSES.includes(work.status)) {
+      throw AppError.badRequest(
+        ERROR_CODES.VALIDATION_ERROR,
+        'Илгээгдсэн хүсэлтийг өөрчлөх боломжгүй.',
+      );
+    }
+  }
+  return work;
+}
+
 export async function updatePlannedWork(
   plannedWorkId: string,
   input: UpdatePlannedWorkInput,
   actor: AuthContext,
   meta: RequestMeta,
 ): Promise<PlannedWorkDto> {
-  const work = await findRaw(plannedWorkId);
+  const work = await findRawForOwnerEdit(plannedWorkId, actor);
   assertMutable(work);
 
   const before = {
@@ -750,6 +938,15 @@ export async function updatePlannedWork(
     plannedStartDate: work.plannedStartDate.toISOString(),
     building: String(work.building),
   };
+
+  /**
+   * Who was already on the work, read before the crew field is overwritten.
+   *
+   * A crew edit almost always resends the people who are staying and changes one name. The
+   * announcement below is aimed at the change, so it needs the roster as it stood, not the
+   * one it is about to become.
+   */
+  const crewBefore = new Set(work.assignedEmployees.map((id) => String(id)));
 
   if (input.buildingId !== undefined) {
     const location = await resolveLocation(
@@ -782,6 +979,25 @@ export async function updatePlannedWork(
     work.plannedStartDate = start;
   }
 
+  /**
+   * NOBODY IS ASSIGNED TO A WORK THAT HAS NOT BEEN APPROVED.
+   *
+   * This is the second half of the gate. Forcing an empty crew at creation stops a customer
+   * assigning; this stops anyone else doing it through the ordinary edit path while the
+   * request is still pending. Refused rather than ignored — a planner who believes they
+   * have staffed a job and has not is worse off than one who gets an error.
+   */
+  if (
+    PRE_APPROVAL_STATUSES.includes(work.status) &&
+    (input.assignedEmployeeIds !== undefined || input.assignedTeamId !== undefined)
+  ) {
+    throw AppError.badRequest(
+      ERROR_CODES.VALIDATION_ERROR,
+      'Батлагдаагүй ажилд хариуцагч томилох боломжгүй. Эхлээд батална уу.',
+      [{ field: 'assignedEmployeeIds', message: 'Батлагдсаны дараа томилно.' }],
+    );
+  }
+
   if (input.assignedEmployeeIds !== undefined) {
     work.assignedEmployees = await assertEmployeesExist(input.assignedEmployeeIds);
   }
@@ -804,6 +1020,28 @@ export async function updatePlannedWork(
       building: String(work.building),
     },
   });
+
+  /**
+   * Told to the people who were genuinely added, and to nobody else.
+   *
+   * The whole roster is on hand and announcing to all of it would be one line shorter, but
+   * it would tell everybody still on the job something they learned at approval. An inbox
+   * that repeats itself on every unrelated edit is one people stop opening, and then the
+   * one notification that mattered goes unread too.
+   */
+  const crewAdded = work.assignedEmployees.filter((id) => !crewBefore.has(String(id)));
+  if (crewAdded.length > 0) {
+    await notify({
+      event: 'PLANNED_WORK_ASSIGNED',
+      title: `${work.workNumber} төлөвлөгөөт ажилд томилогдлоо`,
+      body: work.title,
+      entityType: 'PlannedWork',
+      entityId: work._id,
+      linkPath: `/planned-work/${String(work._id)}`,
+      userIds: await userIdsForEmployees(crewAdded.map((id) => String(id))),
+      excludeUserId: actor.userId,
+    });
+  }
 
   return getPlannedWorkById(plannedWorkId, actor);
 }
@@ -900,7 +1138,72 @@ export async function reschedulePlannedWork(
   return getPlannedWorkById(plannedWorkId, actor);
 }
 
+/**
+ * Refuses naming an employee on a still-unapproved work.
+ *
+ * THE SAME RULE AS THE WORK-LEVEL CREW, applied one level down. `updatePlannedWork` already
+ * refuses `assignedEmployeeIds` while PENDING_APPROVAL, but a sub-task carries its own
+ * assignee, and that path only ever checked `assertMutable` — which permits
+ * PENDING_APPROVAL. So a holder of `planned_work.update` could staff the sub-tasks of a
+ * customer request nobody had approved yet.
+ *
+ * It granted no access: `planned-work.scope.ts` reads only `assignedEmployees`/
+ * `assignedTeam`, so the named technician still saw nothing and could write nothing. It was
+ * a promise the system had not agreed to — a job with somebody's name on it that may still
+ * be refused outright. Refused rather than ignored, for the reason the work-level rule gives.
+ */
+const PRE_APPROVAL_STATUSES: readonly IPlannedWork['status'][] = [
+  'DRAFT',
+  'PENDING_APPROVAL',
+  'REJECTED',
+];
+
+function assertCrewAssignable(work: Pick<IPlannedWork, 'status'>): void {
+  if (PRE_APPROVAL_STATUSES.includes(work.status)) {
+    throw AppError.badRequest(
+      ERROR_CODES.VALIDATION_ERROR,
+      'Батлагдаагүй ажилд хариуцагч томилох боломжгүй. Эхлээд батална уу.',
+      [{ field: 'assignedEmployeeId', message: 'Батлагдсаны дараа томилно.' }],
+    );
+  }
+}
+
 // -- Tasks -------------------------------------------------------------------
+
+/**
+ * The work a sub-task write may target, bounded by who is asking.
+ *
+ * A customer may shape their OWN request, and only while it is still PENDING_APPROVAL. Both
+ * halves matter and they fail differently on purpose:
+ *
+ *   - Another organisation's work is reported as not-found, never forbidden, for the reason
+ *     `assertInCustomerScope` gives: "forbidden" on an id that exists elsewhere confirms the
+ *     record is real and turns this into an oracle for probing other tenants' identifiers.
+ *   - Their own work past approval is refused with an explanation, because the customer can
+ *     see it and needs to know why the drawer stopped accepting edits. Once an approver has
+ *     agreed to a request, its scope is settled; letting the requester keep adding work to
+ *     it afterwards would make the approval meaningless.
+ *
+ * Staff are unaffected — `resolveCustomerScope` answers STAFF for them and both checks are
+ * skipped, so the existing planning flow keeps working at every status `assertMutable` allows.
+ */
+async function findRawForTaskWrite(
+  plannedWorkId: string,
+  actor: AuthContext,
+): Promise<Awaited<ReturnType<typeof findRaw>>> {
+  const work = await findRaw(plannedWorkId);
+  const scope = resolveCustomerScope(actor);
+  if (scope.mode === 'CUSTOMER') {
+    assertInCustomerScope(scope, work.customer);
+    if (!CREATOR_EDITABLE_STATUSES.includes(work.status)) {
+      throw AppError.badRequest(
+        ERROR_CODES.VALIDATION_ERROR,
+        'Илгээгдсэн хүсэлтийн дэд ажлыг өөрчлөх боломжгүй.',
+      );
+    }
+  }
+  return work;
+}
 
 export async function createTask(
   plannedWorkId: string,
@@ -908,7 +1211,7 @@ export async function createTask(
   actor: AuthContext,
   meta: RequestMeta,
 ): Promise<PlannedWorkDto> {
-  const work = await findRaw(plannedWorkId);
+  const work = await findRawForTaskWrite(plannedWorkId, actor);
   assertMutable(work);
 
   const start = new Date(input.plannedStartDate);
@@ -916,6 +1219,7 @@ export async function createTask(
   assertTaskWithinWorkWindow(work, start, end);
 
   const floorId = input.floorId ? await assertFloorInBuilding(input.floorId, work.building) : null;
+  if (input.assignedEmployeeId) assertCrewAssignable(work);
   const assignedEmployee = input.assignedEmployeeId
     ? (await assertEmployeesExist([input.assignedEmployeeId]))[0]
     : null;
@@ -937,6 +1241,7 @@ export async function createTask(
     plannedEndDate: end,
     assignedEmployee: assignedEmployee ?? null,
     relatedObjects,
+    createdBy: new Types.ObjectId(actor.userId),
   });
 
   await recalculatePlannedWorkProgress(work._id);
@@ -954,7 +1259,37 @@ export async function createTask(
     },
   });
 
+  if (assignedEmployee) {
+    await notifyTaskAssignee(work, task, assignedEmployee, actor);
+  }
+
   return getPlannedWorkById(plannedWorkId, actor);
+}
+
+/**
+ * Tells one technician that a sub-task is theirs.
+ *
+ * The link goes to the parent work rather than the sub-task, because there is no sub-task
+ * screen to land on — the sheet is part of the work's detail page, so the work is the only
+ * address that resolves. `entityId` follows the link for the same reason: an inbox row that
+ * points at a record the reader cannot open is worse than one with no link at all.
+ */
+async function notifyTaskAssignee(
+  work: Pick<IPlannedWork, 'workNumber'> & { _id: Types.ObjectId },
+  task: Pick<IPlannedWorkTask, 'title'>,
+  assignee: Types.ObjectId,
+  actor: AuthContext,
+): Promise<void> {
+  await notify({
+    event: 'PLANNED_WORK_TASK_ASSIGNED',
+    title: `${work.workNumber} ажлын дэд ажилд томилогдлоо`,
+    body: task.title,
+    entityType: 'PlannedWork',
+    entityId: work._id,
+    linkPath: `/planned-work/${String(work._id)}`,
+    userIds: await userIdsForEmployees([String(assignee)]),
+    excludeUserId: actor.userId,
+  });
 }
 
 async function findTask(
@@ -979,7 +1314,7 @@ export async function updateTask(
   actor: AuthContext,
   meta: RequestMeta,
 ): Promise<PlannedWorkDto> {
-  const work = await findRaw(plannedWorkId);
+  const work = await findRawForTaskWrite(plannedWorkId, actor);
   assertMutable(work);
   const task = await findTask(plannedWorkId, taskId);
 
@@ -989,6 +1324,10 @@ export async function updateTask(
     plannedStartDate: task.plannedStartDate.toISOString(),
     plannedEndDate: task.plannedEndDate.toISOString(),
   };
+
+  // Read before the edit, because the sheet resends the assignee it loaded on every save:
+  // without this, retitling a sub-task would re-announce an assignment nothing changed.
+  const assigneeBefore = task.assignedEmployee ? String(task.assignedEmployee) : null;
 
   if (input.floorId !== undefined) {
     task.floor = input.floorId ? await assertFloorInBuilding(input.floorId, work.building) : null;
@@ -1014,6 +1353,8 @@ export async function updateTask(
   }
 
   if (input.assignedEmployeeId !== undefined) {
+    // Clearing an assignee stays allowed while pending — only naming one is refused.
+    if (input.assignedEmployeeId) assertCrewAssignable(work);
     task.assignedEmployee = input.assignedEmployeeId
       ? ((await assertEmployeesExist([input.assignedEmployeeId]))[0] ?? null)
       : null;
@@ -1046,6 +1387,13 @@ export async function updateTask(
       plannedEndDate: task.plannedEndDate.toISOString(),
     },
   });
+
+  // Only a genuine change of hands is news. Clearing the assignee tells nobody: there is
+  // no new owner to inform, and the person taken off learns it from the work itself.
+  const assigneeAfter = task.assignedEmployee;
+  if (assigneeAfter && String(assigneeAfter) !== assigneeBefore) {
+    await notifyTaskAssignee(work, task, assigneeAfter, actor);
+  }
 
   return getPlannedWorkById(plannedWorkId, actor);
 }
@@ -1176,7 +1524,7 @@ export async function deleteTask(
   actor: AuthContext,
   meta: RequestMeta,
 ): Promise<PlannedWorkDto> {
-  const work = await findRaw(plannedWorkId);
+  const work = await findRawForTaskWrite(plannedWorkId, actor);
   assertMutable(work);
   const task = await findTask(plannedWorkId, taskId);
 
@@ -1194,6 +1542,11 @@ export async function deleteTask(
     for (const file of files) deleteStoredFile(file.storageKey);
     await StoredFile.deleteMany({ _id: { $in: photoIds } });
   }
+
+  // Whatever this sub-task drew goes back to the pool before the rows that record it are
+  // gone. Deleting the task without this would leave the work permanently short of a
+  // material that nothing left in the system claims to have used.
+  await releaseTaskMaterialUsage(work._id, task._id);
 
   await PlannedWorkTask.deleteOne({ _id: task._id });
   await recalculatePlannedWorkProgress(work._id);
@@ -1229,16 +1582,95 @@ export async function setPlannedMaterials(
   assertMutable(work);
 
   const before = work.plannedMaterials.map((entry) => ({
+    materialItemId: String(entry.materialItem),
     name: entry.name,
     quantity: entry.quantity,
+    consumedQuantity: entry.consumedQuantity,
     unit: entry.unit,
   }));
 
-  work.plannedMaterials = input.materials.map((entry) => ({
-    name: entry.name,
-    quantity: entry.quantity,
-    unit: entry.unit,
-  }));
+  // The catalogue is the authority on the name and the unit. Resolving all of them in one
+  // read rather than per row, and refusing the whole list if any id is unknown or retired:
+  // a partially applied material list is worse than a refused one.
+  const requestedIds = input.materials.map((entry) => new Types.ObjectId(entry.materialItemId));
+  const catalogue = await MaterialItem.find({ _id: { $in: requestedIds }, isActive: true })
+    .select('name defaultUnit')
+    .lean<{ _id: Types.ObjectId; name: string; defaultUnit: MaterialUnit }[]>();
+  const byId = new Map(catalogue.map((item) => [String(item._id), item]));
+
+  const issues = input.materials
+    .map((entry, index) =>
+      byId.has(entry.materialItemId)
+        ? null
+        : { field: `materials.${index}.materialItemId`, message: 'Материал олдсонгүй.' },
+    )
+    .filter((issue): issue is { field: string; message: string } => issue !== null);
+  if (issues.length > 0) {
+    throw AppError.badRequest(
+      ERROR_CODES.VALIDATION_ERROR,
+      'Жагсаалтад байхгүй эсвэл идэвхгүй материал байна.',
+      issues,
+    );
+  }
+
+  /*
+   * WHAT IS ALREADY CONSUMED SURVIVES THIS WRITE, and bounds it.
+   *
+   * The drawer replaces the whole list, which was harmless while a row was only a plan.
+   * It is not harmless now: a row carries what sub-tasks have already drawn, and rebuilding
+   * it from the request alone would silently reset that to zero and hand the pool back out
+   * a second time. So the consumed figure is carried across per material, and lowering a
+   * registered quantity below it is refused outright — the alternative is a negative
+   * remainder, which is the exact state this feature exists to make impossible.
+   *
+   * Removing a row that has been drawn on is refused for the same reason: the ledger rows
+   * would still name a material the work no longer registers.
+   */
+  const consumedById = new Map(
+    work.plannedMaterials.map((entry) => [String(entry.materialItem), entry.consumedQuantity]),
+  );
+
+  const shortfalls = input.materials
+    .map((entry, index) => {
+      const consumed = consumedById.get(entry.materialItemId) ?? 0;
+      return entry.quantity < consumed
+        ? {
+            field: `materials.${index}.quantity`,
+            message: `Зарцуулсан хэмжээнээс бага байж болохгүй. Зарцуулсан: ${consumed}.`,
+          }
+        : null;
+    })
+    .filter((issue): issue is { field: string; message: string } => issue !== null);
+
+  const requestedIdSet = new Set(input.materials.map((entry) => entry.materialItemId));
+  const droppedInUse = work.plannedMaterials.filter(
+    (entry) => entry.consumedQuantity > 0 && !requestedIdSet.has(String(entry.materialItem)),
+  );
+
+  if (shortfalls.length > 0 || droppedInUse.length > 0) {
+    throw AppError.badRequest(
+      ERROR_CODES.VALIDATION_ERROR,
+      droppedInUse.length > 0
+        ? `Зарцуулсан материалыг жагсаалтаас хасах боломжгүй: ${droppedInUse
+            .map((entry) => entry.name)
+            .join(', ')}.`
+        : 'Бүртгэсэн хэмжээ зарцуулсан хэмжээнээс бага байна.',
+      shortfalls,
+    );
+  }
+
+  work.plannedMaterials = input.materials.map((entry) => {
+    const item = byId.get(entry.materialItemId)!;
+    const consumed = consumedById.get(entry.materialItemId) ?? 0;
+    return {
+      materialItem: new Types.ObjectId(entry.materialItemId),
+      name: item.name,
+      quantity: entry.quantity,
+      consumedQuantity: consumed,
+      remainingQuantity: entry.quantity - consumed,
+      unit: item.defaultUnit,
+    };
+  });
   await work.save();
 
   await recordAudit({
@@ -1251,8 +1683,10 @@ export async function setPlannedMaterials(
     oldValue: { materials: before },
     newValue: {
       materials: work.plannedMaterials.map((entry) => ({
+        materialItemId: String(entry.materialItem),
         name: entry.name,
         quantity: entry.quantity,
+        consumedQuantity: entry.consumedQuantity,
         unit: entry.unit,
       })),
     },
@@ -1382,6 +1816,76 @@ export async function detachTaskPhoto(
 /** Exposed so the routes can hand the caller's permission set to the detail mapper. */
 export function canRecordProgress(actor: AuthContext): boolean {
   return hasPermission(actor, PERMISSIONS.PLANNED_WORK_RECORD_PROGRESS);
+}
+
+/**
+ * Records what one sub-task consumed of one material registered on its parent work.
+ *
+ * THE SAME GATES AS PROGRESS, and for the same reasons: the work must be mutable, the
+ * caller must be inside the assignment scope, and the task must belong to this work — the
+ * last checked by scoping the lookup rather than by trusting the id, so naming another
+ * job's task is a 404 and not a way to draw down somebody else's materials.
+ *
+ * ONE GATE OF ITS OWN: a finished sub-task is closed to this. The figure it reported is
+ * the record of what that piece of work took, and letting it move afterwards would edit
+ * history to make a later shortage disappear. Corrections belong to a sub-task that is
+ * still open.
+ *
+ * The arithmetic and the refusal live in `planned-work.material-usage.service`; this
+ * function is the gatekeeper, not the accountant.
+ */
+export async function recordTaskMaterialUsageOnWork(
+  plannedWorkId: string,
+  taskId: string,
+  input: RecordTaskMaterialUsageInput,
+  actor: AuthContext,
+  meta: RequestMeta,
+): Promise<PlannedWorkDto> {
+  const work = await findRaw(plannedWorkId);
+  assertMutable(work);
+  await assertPlannedWorkAssignmentScope(work._id, actor);
+
+  const task = await findTask(plannedWorkId, taskId);
+
+  if (task.status === 'DONE' || task.skipped) {
+    throw AppError.badRequest(
+      ERROR_CODES.VALIDATION_ERROR,
+      'Дууссан дэд ажлын материалын бүртгэлийг өөрчлөх боломжгүй.',
+    );
+  }
+
+  const registered = work.plannedMaterials.find(
+    (entry) => String(entry.materialItem) === input.materialItemId,
+  );
+
+  await recordTaskMaterialUsage(
+    {
+      plannedWorkId: work._id,
+      taskId: task._id,
+      registered: registered
+        ? { materialItem: registered.materialItem, name: registered.name, unit: registered.unit }
+        : undefined,
+      unitLabel: registered ? MATERIAL_UNIT_LABELS[registered.unit] : '',
+    },
+    input,
+    actor,
+  );
+
+  await recordAudit({
+    entityType: 'PlannedWork',
+    entityId: work._id,
+    action: 'Updated',
+    actor: { id: actor.userId, role: actor.role, label: actor.fullName },
+    meta,
+    reason: 'sub-task material usage recorded',
+    newValue: {
+      taskId: String(task._id),
+      materialItemId: input.materialItemId,
+      quantity: input.quantity,
+    },
+  });
+
+  return getPlannedWorkById(plannedWorkId, actor);
 }
 
 export { isIncludedTask, findRaw as findPlannedWorkOrThrow };

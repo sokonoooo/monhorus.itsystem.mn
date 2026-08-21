@@ -183,6 +183,11 @@ export function CustomerListPage(): ReactElement {
         ),
     },
     {
+      key: 'createdBy',
+      header: 'Үүсгэсэн',
+      render: (row) => <span className="text-slate-700">{row.createdByName ?? '-'}</span>,
+    },
+    {
       key: 'actions',
       header: 'Үйлдэл',
       align: 'right',
@@ -281,6 +286,9 @@ export function CustomerListPage(): ReactElement {
           columns={columnState.visibleColumns}
           rows={data?.items ?? []}
           rowKey={(row) => row.id}
+          // Numbered off the response rather than the query, so a request in flight can
+          // never number the rows on screen against the page they did not come from.
+          numbering={{ page: data?.page ?? 1, limit: data?.limit ?? 20 }}
           loading={loading}
           error={error}
           onRetry={() => void load()}

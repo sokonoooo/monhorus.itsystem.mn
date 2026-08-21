@@ -1,4 +1,5 @@
 import {
+  EMPLOYEE_STATUS_LABELS,
   EMPLOYEE_TYPE_LABELS,
   GENDER_LABELS,
   PERMISSIONS,
@@ -91,7 +92,7 @@ ${payload.registrationNumber ? `<tr><td>Регистрийн дугаар</td><t
 <tr><td>Харьяалагдах алба</td><td>${payload.departmentName ?? '-'}</td></tr>
 <tr><td>Албан тушаал</td><td>${payload.positionName ?? '-'}</td></tr>
 <tr><td>Ажилд орсон огноо</td><td>${payload.employmentStartDate?.slice(0, 10) ?? '-'}</td></tr>
-<tr><td>Одоогийн төлөв</td><td>${payload.status}</td></tr>
+<tr><td>Одоогийн төлөв</td><td>${EMPLOYEE_STATUS_LABELS[payload.status] ?? payload.status}</td></tr>
 </table>
 <div class="foot"><p>Тодорхойлолт гаргасан огноо: ${payload.generatedAt.slice(0, 10)}</p>
 <p>Эрх бүхий албан тушаалтан: ${payload.generatedByName}</p></div>

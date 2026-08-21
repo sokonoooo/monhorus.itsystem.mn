@@ -5,8 +5,6 @@ import {
   REPORT_STATUS_LABELS,
   REPORT_TYPES,
   REPORT_TYPE_LABELS,
-  RISK_LEVELS,
-  RISK_LEVEL_LABELS,
   type CustomerDto,
   type InspectionListItemDto,
   type InspectionListQuery,
@@ -29,6 +27,11 @@ import {
   FILTER_LABEL,
   FILTER_SELECT,
 } from '../../components/ui/control-styles';
+import {
+  riskLabelOf,
+  riskLevelsInOrder,
+  riskPaletteOf,
+} from '../../components/ui/risk-palette';
 import { useTableColumns } from '../../hooks/use-table-columns';
 import { ApiError } from '../../lib/api-client';
 import { objectService } from '../../services/object.service';
@@ -41,14 +44,6 @@ function formatDate(iso: string | null): string {
   if (!iso) return '-';
   return new Date(iso).toLocaleDateString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
 }
-
-const BAND_TONES: Record<RiskLevel, string> = {
-  NORMAL: 'text-green-700',
-  ATTENTION: 'text-amber-700',
-  SCHEDULE_REPAIR: 'text-orange-700',
-  CRITICAL: 'text-red-700',
-  OUT_OF_SERVICE: 'text-stone-800',
-};
 
 function CountCard({
   label,
@@ -266,8 +261,10 @@ export function InspectionListPage(): ReactElement {
             {REPORT_STATUS_LABELS[row.status]}
           </span>
           {row.riskLevel ? (
-            <span className={`whitespace-nowrap text-xs ${BAND_TONES[row.riskLevel]}`}>
-              {RISK_LEVEL_LABELS[row.riskLevel]}
+            <span
+              className={`whitespace-nowrap text-xs ${riskPaletteOf(row.riskLevel, bands).text}`}
+            >
+              {riskLabelOf(row.riskLevel, bands)}
             </span>
           ) : (
             // A report that recorded a visit without scoring has no band to show.
@@ -434,9 +431,12 @@ export function InspectionListPage(): ReactElement {
             className={FILTER_SELECT}
           >
             <option value="">Бүгд</option>
-            {RISK_LEVELS.map((level) => (
+            {/* The CONFIGURED bands, not `RISK_LEVELS`: that list carries three reserved
+                spare keys, and offering «Түвшин 7» as a filter would promise a band no
+                assessment has ever been stored as. */}
+            {riskLevelsInOrder(bands).map((level) => (
               <option key={level} value={level}>
-                {RISK_LEVEL_LABELS[level]}
+                {riskLabelOf(level, bands)}
               </option>
             ))}
           </select>
@@ -470,7 +470,9 @@ export function InspectionListPage(): ReactElement {
       </div>
 
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <RiskLegend bands={bands} />
+        {/* Null means the thresholds could not be read. The legend then says nothing
+            rather than printing the shipped defaults as though they were in force. */}
+        {bands === null ? <span /> : <RiskLegend bands={bands} />}
         <ColumnPicker controller={columnState} />
       </div>
 
@@ -479,6 +481,9 @@ export function InspectionListPage(): ReactElement {
           columns={columnState.visibleColumns}
           rows={data?.items ?? []}
           rowKey={(row) => row.id}
+          // Numbered off the response rather than the query, so a request in flight can
+          // never number the rows on screen against the page they did not come from.
+          numbering={{ page: data?.page ?? 1, limit: data?.limit ?? 25 }}
           loading={loading}
           error={error}
           onRowClick={(row) =>

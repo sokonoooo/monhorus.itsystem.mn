@@ -46,6 +46,14 @@ apps/*/android/app/release/
 .env.*
 !.env.example
 
+# apps/web/.env.production is the exception, and is tracked. It holds no secret — Vite
+# inlines every VITE_* value into the bundle, so anything in it is public the moment the
+# site is served. It is tracked precisely because it must survive a fresh clone: the API
+# origin is baked in at BUILD time, so if that file is missing the build silently falls
+# back to http://localhost:4000/api/v1 and produces a bundle that deploys cleanly and
+# then sends every request to whoever built it.
+!apps/web/.env.production
+
 # -- Local uploads ------------------------------------------------------------
 #
 # The storage module writes attachments to disk in development. They are tenant data,
@@ -88,3 +96,36 @@ coverage/
 
 # -- Runtime upload storage (UPLOAD_DIR) --------------------------------------
 var/
+
+# -- Android release signing --------------------------------------------------
+# The keystore IS the apps' identity on every phone that has installed them. Committing
+# it would let anyone publish a build Android accepts as a legitimate update. The tracked
+# artefact is key.properties.example; the real values never enter the repository.
+key.properties
+*.jks
+*.keystore
+
+# -- Firebase / Apple push credentials ----------------------------------------
+# Nothing matching these patterns exists in the repository yet. They are listed
+# ahead of the work rather than after it, because the failure they prevent is
+# silent: `flutterfire configure` and the Firebase console both drop their output
+# straight into the app directories, and a service-account JSON or an APNs key
+# committed once stays in the history even after it is deleted.
+#
+# google-services.json and GoogleService-Info.plist are not secret in themselves
+# (they ship inside the installed app), but they pin a project a reader can then
+# probe, and they are regenerated per environment. Keep them out of the tree.
+#
+# *.p8 and serviceAccount*.json ARE secret: an APNs key signs push for every app
+# under the Apple team, and a service account can send push as the backend.
+# Globbed, not exact: downloading a second app's config gives google-services-2.json
+# and GoogleService-Info-2.plist, which exact names silently let through.
+google-services*.json
+GoogleService-Info*.plist
+*.p8
+*.p12
+serviceAccount*.json
+# The name the Firebase console actually gives the file it downloads:
+# <project>-firebase-adminsdk-<id>-<id>.json. serviceAccount*.json above only
+# catches it if somebody renames it first, and nobody does.
+*firebase-adminsdk*.json

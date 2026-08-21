@@ -10,6 +10,7 @@ import type {
   PlannedWorkMaterialsInput,
   PlannedWorkReportDto,
   PlannedWorkReportPreviewDto,
+  RecordTaskMaterialUsageInput,
   RecordTaskProgressInput,
   ReschedulePlannedWorkInput,
   ReturnPlannedWorkReportInput,
@@ -18,6 +19,7 @@ import type {
   UpdatePlannedWorkTaskInput,
 } from '@monhorus/shared';
 
+import { downloadPdf } from '../lib/download-pdf';
 import { apiClient, unwrap } from '../lib/api-client';
 
 export interface ReportBundle {
@@ -74,11 +76,13 @@ export const plannedWorkService = {
     plannedWorkId: string,
     action: PlannedWorkAction,
     reason?: string | null,
+    /** Required by APPROVE and ignored by everything else — see `assignsCrew`. */
+    assignedEmployeeIds: readonly string[] = [],
   ): Promise<PlannedWorkDto> {
     return unwrap(
       await apiClient.post<ApiResponse<PlannedWorkDto>>(
         `/planned-work/${plannedWorkId}/transition`,
-        { action, reason: reason ?? null },
+        { action, reason: reason ?? null, assignedEmployeeIds: [...assignedEmployeeIds] },
       ),
     );
   },
@@ -182,6 +186,52 @@ export const plannedWorkService = {
         `/planned-work/${plannedWorkId}/materials`,
         payload,
       ),
+    );
+  },
+
+  /**
+   * One sub-task's draw against one material registered on the work.
+   *
+   * The quantity is ABSOLUTE for that (sub-task, material) pair rather than an increment,
+   * so sending the same figure twice is the same as sending it once — which is what makes
+   * this safe to retry from a phone — and sending zero deletes the row.
+   *
+   * Gated on `planned_work.record_progress`, not on `planned_work.update`: consumption is
+   * something the crew reports, while the registered list is something a manager plans.
+   * The whole work comes back, because a draw moves the work-level totals too.
+   */
+  async recordMaterialUsage(
+    plannedWorkId: string,
+    taskId: string,
+    payload: RecordTaskMaterialUsageInput,
+  ): Promise<PlannedWorkDto> {
+    return unwrap(
+      await apiClient.post<ApiResponse<PlannedWorkDto>>(
+        `/planned-work/${plannedWorkId}/tasks/${taskId}/materials`,
+        payload,
+      ),
+    );
+  },
+
+  /**
+   * Downloads the consolidated report as a PDF laid out like the office's own
+   * «Үзлэгийн тайлан».
+   *
+   * The server renders it from the same query this page reads, so the file cannot say
+   * anything the screen does not.
+   */
+  async downloadReportPdf(plannedWorkId: string, workNumber: string): Promise<void> {
+    await downloadPdf(`/planned-work/${plannedWorkId}/report/pdf`, `tailan-${workNumber}`);
+  },
+
+  /** The same, for the consolidated inspection report. */
+  async downloadInspectionReportPdf(
+    plannedWorkId: string,
+    workNumber: string,
+  ): Promise<void> {
+    await downloadPdf(
+      `/planned-work/${plannedWorkId}/inspection-report/pdf`,
+      `uzleg-${workNumber}`,
     );
   },
 

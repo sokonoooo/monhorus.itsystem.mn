@@ -23,6 +23,7 @@ import { requireAnyPermission, requirePermission } from '../../middlewares/autho
 import { validate } from '../../middlewares/validate.middleware';
 import { claimServiceRequest } from './claim.service';
 import * as service from './service-request.service';
+import { listCallableObjectTypes } from './service-request.service';
 import * as workReportService from './work-report.service';
 
 const requestIdParamSchema = z.object({
@@ -80,6 +81,34 @@ serviceRequestRouter.post(
         meta(req),
       );
       created(res, result, 'Үйлчилгээний хүсэлт үүслээ.');
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+/**
+ * The equipment types the caller may raise a call against.
+ *
+ * A separate endpoint rather than `GET /object-types?canCreateCall=true`, because the two
+ * audiences for that catalogue are different. Reading the catalogue needs
+ * `object_master.view`, which a customer-portal account does not hold and a staff role with
+ * only `service_request.create` need not hold either - both would be refused while being
+ * perfectly entitled to raise a call.
+ *
+ * So this is gated on being able to CREATE a request, by either route, and answers a
+ * narrower question: it returns only active, callable types, and only the three fields a
+ * picker needs. An administrator managing the catalogue still uses /object-types.
+ */
+serviceRequestRouter.get(
+  '/callable-object-types',
+  requireAnyPermission(
+    PERMISSIONS.SERVICE_REQUEST_CREATE,
+    PERMISSIONS.PORTAL_SERVICE_REQUEST_CREATE,
+  ),
+  async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      ok(res, await listCallableObjectTypes());
     } catch (error) {
       next(error);
     }
@@ -228,6 +257,49 @@ serviceRequestRouter.get(
       ok(
         res,
         await workReportService.getOrCreateWorkReport(
+          pathParam(req, 'requestId'),
+          resolveCustomerScope(auth),
+          auth,
+        ),
+      );
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+/**
+ * The conclusion, as the customer who raised the request may read it.
+ *
+ * A SEPARATE ROUTE FROM `GET /:requestId/report`, and it has to be. That one is
+ * `getOrCreateWorkReport`: a read that WRITES, minting a DRAFT stamped with the caller's
+ * name when the request has no conclusion yet. Hanging a portal key off it would have made
+ * every customer who opened the tab the recorded author of an empty conclusion — which is
+ * why the note above it says the portal is not admitted there, and why widening it was
+ * never the cheap option it looks like.
+ *
+ * A SEPARATE DTO for the same reason it is a separate route. `WorkReportDto` is the
+ * technician's working document — `returnReason`, `missing`, and four internal names — so
+ * the response is built field by field in `getCustomerWorkReport` rather than filtered
+ * here, where a later addition to the staff shape would have flowed straight through.
+ *
+ * BOTH KEYS. `service_request.view` keeps staff able to call it, so the portal's view of a
+ * conclusion is something an administrator can reproduce without a customer's account
+ * instead of guessing at it from the staff screen.
+ *
+ * Answers 404 unless the conclusion is APPROVED — see `getCustomerWorkReport` for why a
+ * draft, a submission and a return are all indistinguishable from nothing at all.
+ */
+serviceRequestRouter.get(
+  '/:requestId/report/customer',
+  requireAnyPermission(PERMISSIONS.SERVICE_REQUEST_VIEW, PERMISSIONS.PORTAL_SERVICE_REQUEST_VIEW),
+  validate({ params: requestIdParamSchema }),
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const auth = requireAuth(req);
+      ok(
+        res,
+        await workReportService.getCustomerWorkReport(
           pathParam(req, 'requestId'),
           resolveCustomerScope(auth),
           auth,

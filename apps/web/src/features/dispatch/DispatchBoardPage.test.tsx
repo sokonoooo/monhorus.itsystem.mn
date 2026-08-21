@@ -22,12 +22,12 @@ function makeItem(
     floor: null,
     room: null,
     device: null,
-    requestType: 'URGENT_CALL',
     isUrgent: true,
     status: 'UNASSIGNED',
     assignedEmployees: [],
     assignedTeam: null,
     createdAt: '2026-01-01T00:00:00.000Z',
+    createdByName: 'Б. Энхтөр',
     slaDueAt: '2026-01-01T06:00:00.000Z',
     slaState: 'STARTED',
     slaRemainingMinutes: 300,
@@ -43,6 +43,7 @@ function makeBoard(overrides?: Partial<DispatchBoardDto>): DispatchBoardDto {
         id: 'OPEN',
         statuses: ['NEW', 'UNASSIGNED'],
         label: 'Хуваарилаагүй',
+        colour: 'grey',
         total: 2,
         items: [
           // A NEW request: the status every request is created with. It shares the open
@@ -90,6 +91,26 @@ describe('DispatchBoardPage', () => {
     expect(open).toHaveTextContent('SR-202601-0000');
     expect(open).toHaveTextContent('SR-202601-0001');
     expect(screen.getByText('SR-202601-0002')).toBeInTheDocument();
+  });
+
+  /**
+   * The column wears the stage's own colour, sent with the column rather than derived here.
+   * A board that picked its own would drift from the badge on the same request in the list
+   * the moment an administrator recoloured a stage.
+   *
+   * A column with no colour gets no marker at all: inventing one would state a grouping
+   * the server did not send.
+   */
+  it('marks a column with the stage colour the server sent, and only then', async () => {
+    vi.spyOn(dispatchService, 'board').mockResolvedValue(makeBoard());
+
+    renderWithAuth(<DispatchBoardPage />, { permissions: [PERMISSIONS.DISPATCH_VIEW] });
+
+    const open = await screen.findByRole('region', { name: 'Хуваарилаагүй' });
+    expect(open.querySelector('span[aria-hidden].bg-slate-400')).toBeInTheDocument();
+
+    const assigned = screen.getByRole('region', { name: 'Хуваарилагдсан' });
+    expect(assigned.querySelector('span[aria-hidden]')).not.toBeInTheDocument();
   });
 
   it('offers assignment on a NEW card in the merged open column', async () => {

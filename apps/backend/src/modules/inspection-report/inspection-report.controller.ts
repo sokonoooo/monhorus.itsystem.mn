@@ -9,6 +9,11 @@ import { created, ok } from '../../common/utils/api-response.util';
 import { pathParam } from '../../common/utils/path-param.util';
 import { buildRequestMeta as meta } from '../../common/utils/request-meta.util';
 import { requireAuth } from '../../middlewares/authenticate.middleware';
+import { inspectionReportDocument } from '../report-pdf/inspection-report.pdf';
+import { renderPdf } from '../report-pdf/pdf.renderer';
+import { sendPdf } from '../report-pdf/pdf.response';
+import { loadReportBranding } from '../report-pdf/report-branding';
+import { loadTaskPhotos, MAX_PHOTOS_PER_TASK } from '../report-pdf/report-images';
 import * as service from './inspection-report.service';
 
 /**
@@ -27,6 +32,41 @@ export async function getReportHandler(
 ): Promise<void> {
   try {
     ok(res, await service.getReport(await work(req)));
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * The same report, laid out as the office's own «Үзлэгийн тайлан» and served as a PDF.
+ *
+ * Built from `service.getReport` — the identical call the JSON handler above makes — so
+ * the document and the screen cannot disagree. Read-keyed like the screen: rendering
+ * what a caller may already read is not a stronger act than reading it.
+ */
+export async function getReportPdfHandler(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    const report = await service.getReport(await work(req));
+
+    // The photographs each sub-task already carries. The report DTO names them; this
+    // reads and re-encodes the bytes, which is work the JSON endpoint has no reason to do.
+    const photos = await loadTaskPhotos(
+      report.groups.flatMap((group) =>
+        group.tasks.map((task) => ({
+          taskId: task.taskId,
+          fileIds: task.attachments.map((file) => file.id),
+        })),
+      ),
+      MAX_PHOTOS_PER_TASK,
+    );
+
+    const branding = await loadReportBranding();
+    const pdf = await renderPdf(inspectionReportDocument(report, branding, photos));
+    sendPdf(res, pdf, `uzleg-${report.workNumber}`);
   } catch (error) {
     next(error);
   }

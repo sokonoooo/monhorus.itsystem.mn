@@ -84,8 +84,6 @@ export function RescheduleDrawer({
     }
   }
 
-  const pausedDays = Math.floor(work.totalPausedMinutes / 1440);
-
   return (
     <Drawer
       open={open}
@@ -109,14 +107,6 @@ export function RescheduleDrawer({
           Хугацаа сунгах нь audit log-д бүртгэгдэх ажиллагаа. Эх хугацаа{' '}
           {work.originalPlannedEndDate.slice(0, 10)} хэвээр хадгалагдана.
         </Alert>
-
-        {work.totalPausedMinutes > 0 && (
-          <Alert variant="info">
-            Түр зогссон нийт хугацаа: {pausedDays} өдөр {Math.floor((work.totalPausedMinutes % 1440) / 60)}{' '}
-            цаг. Түр зогсолт хугацааг автоматаар сунгадаггүй тул шаардлагатай бол доор
-            шинэ огноог оруулна.
-          </Alert>
-        )}
 
         <Field
           label="Одоогийн дуусах огноо"

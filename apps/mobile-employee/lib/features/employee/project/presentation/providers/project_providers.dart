@@ -10,6 +10,7 @@ import '../../../../auth/presentation/providers/auth_provider.dart';
 import '../../data/datasources/project_remote_data_source.dart';
 import '../../data/models/inspection_models.dart';
 import '../../data/models/object_models.dart';
+import '../../data/models/report_record_models.dart';
 import '../../data/models/project_models.dart';
 import '../../data/repositories/project_repository_impl.dart';
 import '../../domain/entities/risk_level.dart';
@@ -212,6 +213,31 @@ final FutureProviderFamily<ObjectHistoryModel, String> objectHistoryProvider =
         (Ref ref, String objectId) async {
   final ProjectRepository repository = ref.watch(projectRepositoryProvider);
   return _unwrap(await repository.getObjectHistory(objectId));
+});
+
+/// Every report that recorded a finding on one piece of equipment.
+///
+/// The device screen's own list, replacing the mixed timeline it used to show. That
+/// timeline folded measurements, audit rows and request events in beside the written
+/// conclusions, which is a change log rather than a set of reports; a technician
+/// standing at the equipment is asking what was concluded about it.
+final FutureProviderFamily<List<ReportRecordModel>, String> objectReportsProvider =
+    FutureProvider.family<List<ReportRecordModel>, String>(
+        (Ref ref, String objectId) async {
+  final ProjectRepository repository = ref.watch(projectRepositoryProvider);
+  return _unwrap(await repository.listObjectReports(objectId));
+});
+
+/// One report, with the per-equipment findings the list rows omit.
+///
+/// Fetched only when a report is actually opened: the list endpoint leaves `items` out
+/// so a device with a long history does not drag every narrative of every visit down
+/// the wire to draw a handful of rows.
+final FutureProviderFamily<ReportRecordDetailModel, String> reportRecordProvider =
+    FutureProvider.family<ReportRecordDetailModel, String>(
+        (Ref ref, String reportId) async {
+  final ProjectRepository repository = ref.watch(projectRepositoryProvider);
+  return _unwrap(await repository.getReport(reportId));
 });
 
 // -- Device assessment -------------------------------------------------------

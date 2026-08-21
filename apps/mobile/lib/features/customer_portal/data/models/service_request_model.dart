@@ -1,5 +1,8 @@
+import '../../domain/entities/risk_level.dart';
 import '../../domain/entities/service_request_enums.dart';
+import '../../presentation/theme/customer_tokens.dart';
 import 'json_utils.dart';
+import 'object_master_model.dart';
 
 /// Every model in this file is a hand-written mirror of a TypeScript type in
 /// packages/shared. Dart cannot import that package, so the pairing is recorded in a
@@ -120,6 +123,12 @@ class ServiceRequestAttachmentModel {
   bool get isImage => mimeType.startsWith('image/');
 }
 
+/// `WorkReportPhotoDto` in packages/shared/src/types/work-report.types.ts is
+/// field-for-field the same shape as `ServiceRequestAttachmentDto` — id, name,
+/// downloadUrl, mimeType, sizeBytes, uploadedByName, uploadedAt — so it is parsed by
+/// the same model rather than by a second copy of it that could drift.
+typedef WorkReportPhotoModel = ServiceRequestAttachmentModel;
+
 /// Mirrors `ServiceRequestStatusHistoryDto` in
 /// packages/shared/src/types/service-request.types.ts.
 ///
@@ -154,6 +163,56 @@ class ServiceRequestStatusHistoryModel {
   }
 }
 
+/// The coarse workflow step the server groups a request under - the `stage` block on
+/// both service-request DTOs.
+///
+/// Sent alongside `status`, not instead of it, and the two answer different questions.
+/// `status` is what the engine is doing and what the transition rules are written
+/// against: ON_SITE is what unlocks a conclusion, UNASSIGNED is what puts a job back in
+/// the claim pool. A stage is what the business calls that step, grouped and named by
+/// an administrator - the shipped ladder folds ON_SITE and IN_PROGRESS into one
+/// «Гүйцэтгэж байна».
+///
+/// So anything that reasons about a request keeps reading `status`, and a label that
+/// only reports where the work has got to prefers this: it is the word the office and
+/// the dispatch board use for the same request, and printing a different one on the
+/// customer's phone is how two people looking at one job end up describing it
+/// differently.
+///
+/// Null on an older server, and for a status the administrator's ladder covers nowhere.
+/// Every reader falls back to the status label for both cases.
+class ServiceRequestStageModel {
+  const ServiceRequestStageModel({
+    required this.key,
+    required this.label,
+    required this.colour,
+  });
+
+  /// Stable across renames.
+  final String key;
+
+  final String label;
+
+  /// A name from `STAGE_COLOURS`, resolved to a triad by `AccentTone.named`.
+  final String colour;
+
+  /// The triad to paint this stage in, or null when the palette has no answer for the
+  /// name and the caller should keep the status tone it already had.
+  AccentTone? get tone => AccentTone.named(colour);
+
+  static ServiceRequestStageModel? fromJson(Object? json) {
+    if (json is! Map<String, dynamic>) return null;
+    final Object? key = json['key'];
+    final Object? label = json['label'];
+    if (key is! String || label is! String || label.isEmpty) return null;
+    return ServiceRequestStageModel(
+      key: key,
+      label: label,
+      colour: json['colour'] is String ? json['colour']! as String : '',
+    );
+  }
+}
+
 /// Mirrors `ServiceRequestListItemDto` in
 /// packages/shared/src/types/service-request.types.ts.
 ///
@@ -170,9 +229,9 @@ class ServiceRequestListItemModel {
     required this.floor,
     required this.room,
     required this.device,
-    required this.requestType,
     required this.isUrgent,
     required this.status,
+    required this.stage,
     required this.assignedEmployees,
     required this.assignedTeam,
     required this.createdAt,
@@ -189,9 +248,13 @@ class ServiceRequestListItemModel {
   final ObjectRefModel? floor;
   final ObjectRefModel? room;
   final ObjectRefModel? device;
-  final ServiceRequestType? requestType;
   final bool isUrgent;
   final ServiceRequestStatus? status;
+
+  /// What this installation calls the step [status] belongs to. See
+  /// [ServiceRequestStageModel].
+  final ServiceRequestStageModel? stage;
+
   final List<EmployeeRefModel> assignedEmployees;
   final ObjectRefModel? assignedTeam;
   final DateTime? createdAt;
@@ -214,9 +277,9 @@ class ServiceRequestListItemModel {
       floor: ObjectRefModel.fromJson(json['floor']),
       room: ObjectRefModel.fromJson(json['room']),
       device: ObjectRefModel.fromJson(json['device']),
-      requestType: ServiceRequestType.fromWire(json['requestType'] as String?),
       isUrgent: json['isUrgent'] as bool? ?? false,
       status: ServiceRequestStatus.fromWire(json['status'] as String?),
+      stage: ServiceRequestStageModel.fromJson(json['stage']),
       assignedEmployees: parseList(json['assignedEmployees'], EmployeeRefModel.fromJson),
       assignedTeam: ObjectRefModel.fromJson(json['assignedTeam']),
       createdAt: parseDate(json['createdAt']),
@@ -225,6 +288,18 @@ class ServiceRequestListItemModel {
       slaRemainingMinutes: (json['slaRemainingMinutes'] as num?)?.toInt(),
     );
   }
+
+  /// The step name to print, best available first.
+  ///
+  /// The stage is preferred because it is the word the office and the dispatch board
+  /// use for this request; the status label is the fallback, and it carries an
+  /// administrator's rename too whenever their stage covers exactly one status.
+  String? get stepLabel => stage?.label ?? status?.label;
+
+  /// The triad that goes with [stepLabel], neutral when the request carries neither a
+  /// stage nor a status this binary knows.
+  AccentTone get stepTone =>
+      stage?.tone ?? status?.tone ?? AccentTone.neutral;
 
   /// "Main Tower · 2-р давхар" - the location line under a request title.
   String get locationLine {
@@ -258,9 +333,9 @@ class ServiceRequestDetailModel extends ServiceRequestListItemModel {
     required super.floor,
     required super.room,
     required super.device,
-    required super.requestType,
     required super.isUrgent,
     required super.status,
+    required super.stage,
     required super.assignedEmployees,
     required super.assignedTeam,
     required super.createdAt,
@@ -285,6 +360,7 @@ class ServiceRequestDetailModel extends ServiceRequestListItemModel {
     required this.parentRequestId,
     required this.createdByName,
     required this.updatedAt,
+    required this.hasApprovedReport,
   });
 
   final ObjectRefModel? panel;
@@ -306,6 +382,19 @@ class ServiceRequestDetailModel extends ServiceRequestListItemModel {
   final String? createdByName;
   final DateTime? updatedAt;
 
+  /// Whether `GET /service-requests/:id/report/customer` would answer with a
+  /// conclusion rather than a 404.
+  ///
+  /// The server computes it, and it is true only for a report the office has
+  /// APPROVED — a draft, a submission and a returned report are all false, exactly as
+  /// the report endpoint treats them. Read before that endpoint is called so the
+  /// report tab does not fire a request it already knows will 404.
+  ///
+  /// Optional in `ServiceRequestDetailDto`, so an older server that does not send it
+  /// reads false: the tab then says the conclusion is not ready, which is the honest
+  /// answer when nothing said otherwise.
+  final bool hasApprovedReport;
+
   factory ServiceRequestDetailModel.fromJson(Map<String, dynamic> json) {
     return ServiceRequestDetailModel(
       id: json['id'] as String,
@@ -316,9 +405,9 @@ class ServiceRequestDetailModel extends ServiceRequestListItemModel {
       floor: ObjectRefModel.fromJson(json['floor']),
       room: ObjectRefModel.fromJson(json['room']),
       device: ObjectRefModel.fromJson(json['device']),
-      requestType: ServiceRequestType.fromWire(json['requestType'] as String?),
       isUrgent: json['isUrgent'] as bool? ?? false,
       status: ServiceRequestStatus.fromWire(json['status'] as String?),
+      stage: ServiceRequestStageModel.fromJson(json['stage']),
       assignedEmployees: parseList(json['assignedEmployees'], EmployeeRefModel.fromJson),
       assignedTeam: ObjectRefModel.fromJson(json['assignedTeam']),
       createdAt: parseDate(json['createdAt']),
@@ -345,6 +434,70 @@ class ServiceRequestDetailModel extends ServiceRequestListItemModel {
       parentRequestId: json['parentRequestId'] as String?,
       createdByName: json['createdByName'] as String?,
       updatedAt: parseDate(json['updatedAt']),
+      hasApprovedReport: json['hasApprovedReport'] as bool? ?? false,
+    );
+  }
+}
+
+/// Mirrors `CustomerWorkReportDto` in
+/// packages/shared/src/types/work-report.types.ts — the eleven fields the backend
+/// writes out by hand for a customer, and not one field of the staff `WorkReportDto`
+/// more.
+///
+/// Only ever obtained for an APPROVED report: `getCustomerWorkReport` answers 404 for
+/// a draft, a submission, a returned report and a request belonging to somebody else,
+/// so the presence of this object is itself the statement that a technician's
+/// conclusion has been approved.
+class CustomerWorkReportModel {
+  const CustomerWorkReportModel({
+    required this.conclusion,
+    required this.recommendation,
+    required this.score,
+    required this.riskLevel,
+    required this.repairRequired,
+    required this.revisitRequired,
+    required this.revisitDate,
+    required this.beforePhotos,
+    required this.afterPhotos,
+    required this.approvedAt,
+    required this.approvedByName,
+  });
+
+  final String? conclusion;
+  final String? recommendation;
+
+  /// 0-100, or null when the technician recorded no score. Never rendered as a zero.
+  final int? score;
+
+  /// The band the server derived from [score] against the thresholds in force. Never
+  /// derived on the device; see [RiskLevel.fromScore].
+  final RiskLevel? riskLevel;
+
+  final bool repairRequired;
+  final bool revisitRequired;
+  final DateTime? revisitDate;
+
+  final List<WorkReportPhotoModel> beforePhotos;
+  final List<WorkReportPhotoModel> afterPhotos;
+
+  final DateTime? approvedAt;
+  final String? approvedByName;
+
+  factory CustomerWorkReportModel.fromJson(Map<String, dynamic> json) {
+    return CustomerWorkReportModel(
+      conclusion: json['conclusion'] as String?,
+      recommendation: json['recommendation'] as String?,
+      score: (json['score'] as num?)?.toInt(),
+      riskLevel: RiskLevel.fromWire(json['riskLevel'] as String?),
+      repairRequired: json['repairRequired'] as bool? ?? false,
+      revisitRequired: json['revisitRequired'] as bool? ?? false,
+      revisitDate: parseDate(json['revisitDate']),
+      beforePhotos:
+          parseList(json['beforePhotos'], ServiceRequestAttachmentModel.fromJson),
+      afterPhotos:
+          parseList(json['afterPhotos'], ServiceRequestAttachmentModel.fromJson),
+      approvedAt: parseDate(json['approvedAt']),
+      approvedByName: json['approvedByName'] as String?,
     );
   }
 }
@@ -361,7 +514,7 @@ class CreateServiceRequestRequestModel {
   const CreateServiceRequestRequestModel({
     required this.customerId,
     required this.buildingId,
-    required this.requestType,
+    required this.objectTypeId,
     required this.description,
     required this.contactName,
     required this.contactPhone,
@@ -372,11 +525,16 @@ class CreateServiceRequestRequestModel {
     this.panelId,
     this.circuitId,
     this.deviceId,
-    this.isUrgent = false,
+    this.planPosition,
     this.attachmentIds = const <String>[],
   });
 
   final String customerId;
+
+  /// The equipment type this call is about. The server takes the SLA window from it, and
+  /// refuses a type that may not be called about, so this is required rather than nullable:
+  /// a nullable field here would only move that refusal to runtime.
+  final String objectTypeId;
   final String? branch;
   final String? projectId;
   final String buildingId;
@@ -384,9 +542,23 @@ class CreateServiceRequestRequestModel {
   final String? roomId;
   final String? panelId;
   final String? circuitId;
+
+  /// An `ObjectNode` of kind DEVICE, NOT an entry in the object-master register.
+  ///
+  /// The two are different collections and `validateLocationChain` resolves this one
+  /// with `ObjectNode.findById`, so a master-register id here is refused outright with
+  /// `Төхөөрөмж олдсонгүй.` and a 400. Nothing in the customer app has a node id of
+  /// that kind to give — every device screen here is built on the master register —
+  /// so no flow in this app populates the field; see [CreateRequestSheet].
   final String? deviceId;
-  final ServiceRequestType requestType;
-  final bool isUrgent;
+
+  /// Where on the floor's plan the customer says the fault is, as a fraction of the
+  /// drawing's width and height.
+  ///
+  /// `createServiceRequestSchema` refuses a pin that names no floor, so this is only
+  /// ever sent alongside [floorId]. Independent of [roomId]: pointing at the spot and
+  /// naming a zone are two different statements and either may be made alone.
+  final PlanPositionModel? planPosition;
   final String description;
   final String contactName;
   final String contactPhone;
@@ -402,6 +574,7 @@ class CreateServiceRequestRequestModel {
 
   Map<String, dynamic> toJson() => <String, dynamic>{
         'customerId': customerId,
+        'objectTypeId': objectTypeId,
         if (branch != null && branch!.isNotEmpty) 'branch': branch,
         if (projectId != null) 'projectId': projectId,
         'buildingId': buildingId,
@@ -410,11 +583,39 @@ class CreateServiceRequestRequestModel {
         if (panelId != null) 'panelId': panelId,
         if (circuitId != null) 'circuitId': circuitId,
         if (deviceId != null) 'deviceId': deviceId,
-        'requestType': requestType.wireValue,
-        'isUrgent': isUrgent,
+        if (planPosition != null) 'planPosition': planPosition!.toJson(),
         'description': description,
         'contactName': contactName,
         'contactPhone': contactPhone,
         'attachmentIds': attachmentIds,
       };
+}
+
+/// One option in the call form's equipment-type picker.
+///
+/// Mirrors `CallableObjectTypeDto`: a label, a value, and the SLA window the choice
+/// implies. Deliberately NOT `ObjectTypeRefModel`, which is the reference embedded on an
+/// object row - that carries a code and an icon and no window, and answers a different
+/// question.
+class CallableObjectTypeModel {
+  const CallableObjectTypeModel({
+    required this.id,
+    required this.name,
+    required this.callSlaHours,
+  });
+
+  factory CallableObjectTypeModel.fromJson(Map<String, dynamic> json) {
+    return CallableObjectTypeModel(
+      id: json['id'] as String,
+      name: json['name'] as String,
+      callSlaHours: (json['callSlaHours'] as num).toInt(),
+    );
+  }
+
+  final String id;
+  final String name;
+
+  /// Hours. The deadline this call will be given, and worth showing beside the name so the
+  /// choice is not made blind.
+  final int callSlaHours;
 }

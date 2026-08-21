@@ -38,6 +38,9 @@ const AUTHOR_PERMISSIONS = [
   PERMISSIONS.PLANNED_WORK_CHANGE_STATUS,
   PERMISSIONS.PLANNED_WORK_RECORD_PROGRESS,
   PERMISSIONS.PLANNED_WORK_SUBMIT_REPORT,
+  // Reaching PLANNED now passes through the approval gate, so the fixture author needs
+  // the approve key on top of the change_status key it drives the rest of the run with.
+  PERMISSIONS.PLANNED_WORK_APPROVE,
 ] as const;
 
 /** The administrator side: reviews the report, cannot author it. */
@@ -56,6 +59,8 @@ let authorId: string;
 let authorToken: string;
 let reviewerToken: string;
 let secondFloorId: string;
+/** The employee every approval hands its work to, unless a case names its own. */
+let crewEmployeeId: string;
 
 /**
  * The read-only caller is created on demand.
@@ -113,11 +118,28 @@ async function addTask(workId: string, options: TaskOptions = {}): Promise<strin
   return tasks.find((task) => task.title === (options.title ?? 'Самбарын үзлэг'))!.id;
 }
 
-async function transition(workId: string, action: string): Promise<request.Response> {
+async function transition(
+  workId: string,
+  action: string,
+  body: Record<string, unknown> = {},
+): Promise<request.Response> {
   return request(app)
     .post(`${API}/planned-work/${workId}/transition`)
     .set('Authorization', `Bearer ${authorToken}`)
-    .send({ action });
+    .send({ action, ...body });
+}
+
+/**
+ * Drives a draft all the way to PLANNED.
+ *
+ * REACHING PLANNED TAKES TWO ACTIONS NOW: PLAN only submits the work for approval
+ * (DRAFT -> PENDING_APPROVAL), and APPROVE is what plans it — and APPROVE refuses to run
+ * without at least one employee, so the crew travels with the approval. `crew` is
+ * overridable for the cases that assert on the responsible employees by name.
+ */
+async function planAndApprove(workId: string, crew: string[] = [crewEmployeeId]): Promise<void> {
+  expect((await transition(workId, 'PLAN')).status).toBe(200);
+  expect((await transition(workId, 'APPROVE', { assignedEmployeeIds: crew })).status).toBe(200);
 }
 
 interface CompletionOptions {
@@ -160,7 +182,7 @@ async function completeTask(
 async function scoredWork(score = 88): Promise<string> {
   const workId = await createWork();
   const taskId = await addTask(workId);
-  expect((await transition(workId, 'PLAN')).status).toBe(200);
+  await planAndApprove(workId);
   expect((await transition(workId, 'START')).status).toBe(200);
   await completeTask(workId, taskId, { score });
   return workId;
@@ -230,6 +252,21 @@ beforeEach(async () => {
 
   const reviewer = await createUserWithPermissions('irreviewer@test.mn', REVIEWER_PERMISSIONS);
   reviewerToken = await login(reviewer.email, reviewer.password);
+
+  // Approval assigns, so every run needs a real employee to hand the work to. Deliberately
+  // NOT linked to a system user: the author must keep resolving its own Employee card.
+  const crew = await Employee.create({
+    employeeCode: 'EMP-IR-CREW',
+    firstName: 'Сүх',
+    lastName: 'Ганбат',
+    company: org.companyId,
+    department: org.departmentId,
+    position: org.positionId,
+    employeeType: 'FULL_TIME',
+    employmentStartDate: new Date('2024-01-01'),
+    status: 'ACTIVE',
+  });
+  crewEmployeeId = String(crew._id);
 });
 
 describe('readiness', () => {
@@ -248,7 +285,7 @@ describe('readiness', () => {
     const workId = await createWork();
     await addTask(workId, { title: 'Дууссан ажил' });
     await addTask(workId, { title: 'Дуусаагүй ажил' });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
 
     const response = await readiness(workId);
@@ -274,7 +311,7 @@ describe('readiness', () => {
     const workId = await createWork();
     const done = await addTask(workId, { title: 'Хийсэн' });
     const skipped = await addTask(workId, { title: 'Хийхгүй' });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
     await completeTask(workId, done, { score: 90 });
 
@@ -323,7 +360,7 @@ describe('generation', () => {
   it('refuses generation while a sub-task is unfinished and names it', async () => {
     const workId = await createWork();
     await addTask(workId, { title: 'Дуусаагүй ажил' });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
 
     const response = await generate(workId);
@@ -371,7 +408,9 @@ describe('generation', () => {
       assignedTeamId: org.teamId,
     });
     const taskId = await addTask(workId);
-    await transition(workId, 'PLAN');
+    // Approval is what sets the crew, so this case's own employee has to be named there
+    // rather than only on the draft — the signature block is read from that crew.
+    await planAndApprove(workId, [String(employee._id)]);
     await transition(workId, 'START');
     await completeTask(workId, taskId, { score: 90 });
     expect((await generate(workId)).status).toBe(201);
@@ -403,7 +442,7 @@ describe('generation', () => {
     const first = await addTask(workId, { title: 'Нэгдүгээр давхрын самбар' });
     const second = await addTask(workId, { title: 'Хоёрдугаар давхрын самбар', floorId: secondFloorId });
     const nowhere = await addTask(workId, { title: 'Давхаргүй ажил', floorId: null });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
     await completeTask(workId, first, { score: 90 });
     await completeTask(workId, second, { score: 85 });
@@ -452,7 +491,7 @@ describe('findings and the overall safety level', () => {
     const workId = await createWork();
     const healthy = await addTask(workId, { title: 'Хэвийн самбар' });
     const faulty = await addTask(workId, { title: 'Гэмтэлтэй самбар', floorId: secondFloorId });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
     await completeTask(workId, healthy, { score: 95 });
     await completeTask(workId, faulty, {
@@ -478,7 +517,7 @@ describe('findings and the overall safety level', () => {
     const good = await addTask(workId, { title: 'Сайн' });
     const middling = await addTask(workId, { title: 'Дунд', floorId: secondFloorId });
     const bad = await addTask(workId, { title: 'Муу', floorId: null });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
     await completeTask(workId, good, { score: 95 });
     await completeTask(workId, middling, { score: 50 });
@@ -497,7 +536,7 @@ describe('findings and the overall safety level', () => {
   it('reports no overall level when nothing was scored', async () => {
     const workId = await createWork();
     const skipped = await addTask(workId, { title: 'Хийгдээгүй' });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
     const skip = await request(app)
       .post(`${API}/planned-work/${workId}/tasks/${skipped}/progress`)
@@ -516,7 +555,7 @@ describe('findings and the overall safety level', () => {
   it('recomputes the overall level from the sub-tasks rather than storing it', async () => {
     const workId = await createWork();
     const taskId = await addTask(workId);
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
     await completeTask(workId, taskId, { score: 95 });
     expect((await generate(workId)).status).toBe(201);
@@ -536,10 +575,10 @@ describe('findings and the overall safety level', () => {
 });
 
 describe('auto-composed draft', () => {
-  it('composes the narrative and seeds the replacement lists from the worst findings', async () => {
+  it('composes the narrative and seeds the panel list from the worst findings', async () => {
     const workId = await createWork();
     const taskId = await addTask(workId, { title: 'Гол самбар' });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
     await completeTask(workId, taskId, {
       score: 25,
@@ -556,7 +595,29 @@ describe('auto-composed draft', () => {
     expect(report.conclusion).toContain('Ноцтой эрсдэлтэй');
     expect(report.recommendation).toContain('Автомат таслуурыг солих.');
     expect(report.replacementPanels).toEqual(['1 давхар - Гол самбар']);
-    expect(report.replacementConnections).toEqual(['1 давхар - Гол самбар']);
+  });
+
+  /**
+   * The connection list used to arrive as a verbatim copy of the panel list. Nothing in
+   * the sub-task data distinguishes a самбар from a холболт, so that put an unsupported
+   * claim into a printed official act. It arrives empty and a human writes it.
+   */
+  it('never pre-fills the connection list from the panel findings', async () => {
+    const workId = await createWork();
+    const taskId = await addTask(workId, { title: 'Гол самбар' });
+    await planAndApprove(workId);
+    await transition(workId, 'START');
+    await completeTask(workId, taskId, {
+      score: 25,
+      note: 'Автомат таслуур ажиллахгүй.',
+      recommendation: 'Автомат таслуурыг солих.',
+    });
+    expect((await generate(workId)).status).toBe(201);
+
+    const report = (await fetchReport(workId)).body.data;
+    expect(report.replacementConnections).toEqual([]);
+    // The panel list is unaffected: it is derived from findings about panels.
+    expect(report.replacementPanels).toEqual(['1 давхар - Гол самбар']);
   });
 
   it('clears isAutoDraft the moment an administrator edits the text', async () => {

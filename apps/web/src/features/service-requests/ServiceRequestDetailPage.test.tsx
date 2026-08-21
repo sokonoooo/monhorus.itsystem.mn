@@ -1,14 +1,20 @@
 import {
   PERMISSIONS,
+  type PermissionKey,
   type ServiceRequestAttachmentDto,
   type ServiceRequestDetailDto,
+  type UserRole,
+  type WorkReportDto,
 } from '@monhorus/shared';
-import { screen, within } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { ApiError } from '../../lib/api-client';
 import * as fileUrl from '../../lib/file-url';
+import { projectService } from '../../services/project.service';
 import { serviceRequestService, workReportService } from '../../services/service-request.service';
+import { makeFloorPlan } from '../../test/fixtures';
 import { renderWithAuth } from '../../test/render';
 import { ServiceRequestDetailPage } from './ServiceRequestDetailPage';
 
@@ -42,7 +48,6 @@ function makeRequest(overrides: Partial<ServiceRequestDetailDto> = {}): ServiceR
     panel: null,
     circuit: null,
     branch: null,
-    requestType: 'URGENT_CALL',
     isUrgent: false,
     status: 'UNASSIGNED',
     assignedEmployees: [],
@@ -158,5 +163,307 @@ describe('ServiceRequestDetailPage attachments', () => {
     const card = await attachmentCard(0);
     expect(within(card).getByText('Хавсралт байхгүй байна.')).toBeInTheDocument();
     expect(fileUrl.authorisedFileUrl).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Where on the floor. The pin is what a technician reads the request for when the zone
+ * cannot be named, so it is drawn on the plan rather than reported as a pair of numbers.
+ */
+describe('ServiceRequestDetailPage plan position', () => {
+  const FLOOR = { id: '507f1f77bcf86cd799439121', name: '2 давхар' };
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(workReportService, 'get').mockRejectedValue(new Error('no report'));
+    vi.spyOn(fileUrl, 'authorisedFileUrl').mockResolvedValue('blob:plan');
+  });
+
+  it('draws the marker on the floor plan for a request that carries one', async () => {
+    vi.spyOn(projectService, 'getFloorPlan').mockResolvedValue(makeFloorPlan());
+    vi.spyOn(serviceRequestService, 'getById').mockResolvedValue(
+      makeRequest({ floor: FLOOR, planPosition: { x: 0.25, y: 0.5 } }),
+    );
+
+    render();
+
+    expect(await screen.findByText('План дээрх байрлал')).toBeInTheDocument();
+    expect(await screen.findByAltText('2 давхарын төлөвлөгөө')).toHaveAttribute('src', 'blob:plan');
+    expect(screen.getByRole('img', { name: 'План дээр тэмдэглэсэн байрлал' })).toHaveStyle({
+      left: '25%',
+      top: '50%',
+    });
+  });
+
+  /** Read-only: the request records what was reported and the detail page does not edit it. */
+  it('offers no way to move or clear the marker', async () => {
+    vi.spyOn(projectService, 'getFloorPlan').mockResolvedValue(makeFloorPlan());
+    vi.spyOn(serviceRequestService, 'getById').mockResolvedValue(
+      makeRequest({ floor: FLOOR, planPosition: { x: 0.25, y: 0.5 } }),
+    );
+
+    render();
+
+    await screen.findByRole('img', { name: 'План дээр тэмдэглэсэн байрлал' });
+    expect(
+      screen.queryByRole('button', { name: 'Тэмдэглэгээ арилгах' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('shows no plan section for a request without a pin', async () => {
+    const getPlan = vi.spyOn(projectService, 'getFloorPlan').mockResolvedValue(makeFloorPlan());
+    vi.spyOn(serviceRequestService, 'getById').mockResolvedValue(makeRequest({ floor: FLOOR }));
+
+    render();
+
+    await screen.findByText('Байршил');
+    expect(screen.queryByText('План дээрх байрлал')).not.toBeInTheDocument();
+    // Nothing to draw, so the plan is not fetched either.
+    expect(getPlan).not.toHaveBeenCalled();
+  });
+});
+
+
+/**
+ * A conclusion in whatever state the test needs. Only the fields the panel reads matter;
+ * the rest are filled in so the DTO is a whole one.
+ */
+function makeReport(overrides: Partial<WorkReportDto> = {}): WorkReportDto {
+  return {
+    id: '507f1f77bcf86cd799439501',
+    serviceRequestId: REQUEST_ID,
+    status: 'SUBMITTED',
+    score: 78,
+    riskLevel: 'ATTENTION',
+    conclusion: 'Холболт сул байсныг чангаллаа.',
+    recommendation: null,
+    actionTaken: null,
+    repairRequired: false,
+    revisitRequired: false,
+    revisitDate: null,
+    beforePhotos: [],
+    afterPhotos: [],
+    materials: [],
+    objects: [],
+    objectAssessments: [],
+    missing: [],
+    isComplete: true,
+    createdByName: 'Б. Энхтөр',
+    submittedByName: 'Б. Энхтөр',
+    submittedAt: '2026-08-02T00:00:00.000Z',
+    approvedByName: null,
+    approvedAt: null,
+    returnedByName: null,
+    returnedAt: null,
+    returnReason: null,
+    createdAt: '2026-08-01T00:00:00.000Z',
+    updatedAt: '2026-08-02T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+/** The page as somebody who may move the request sees it. */
+function renderAsDispatcher() {
+  return renderWithAuth(<ServiceRequestDetailPage />, {
+    permissions: [PERMISSIONS.SERVICE_REQUEST_VIEW, PERMISSIONS.SERVICE_REQUEST_CHANGE_STATUS],
+    route: `/service-requests/${REQUEST_ID}`,
+    path: '/service-requests/:requestId',
+  });
+}
+
+/**
+ * The status card offers what the transition matrix allows and nothing else — including
+ * after something OTHER than the card itself has moved the request.
+ */
+describe('ServiceRequestDetailPage status actions', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(workReportService, 'get').mockRejectedValue(new Error('no report'));
+  });
+
+  it('offers no status action at all on a COMPLETED request', async () => {
+    vi.spyOn(serviceRequestService, 'getById').mockResolvedValue(
+      makeRequest({ status: 'COMPLETED' }),
+    );
+
+    renderAsDispatcher();
+
+    // Waited on a section the page always draws, so the assertions below are about the
+    // absence of the buttons rather than about the page not having loaded yet.
+    await screen.findByText('Төлөвийн түүх');
+    expect(screen.queryByText('Төлөв өөрчлөх')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Дууссан' })).not.toBeInTheDocument();
+  });
+
+  it('stops offering "Дууссан" once approving the conclusion has completed the request', async () => {
+    // Approval completes the request on the backend (`advanceOnConclusion`), so the
+    // second read is a different record from the first.
+    const getById = vi
+      .spyOn(serviceRequestService, 'getById')
+      .mockResolvedValueOnce(makeRequest({ status: 'REPORT_SUBMITTED' }))
+      .mockResolvedValue(makeRequest({ status: 'COMPLETED' }));
+    vi.spyOn(workReportService, 'get').mockResolvedValue(makeReport());
+    const approve = vi
+      .spyOn(workReportService, 'approve')
+      .mockResolvedValue(makeReport({ status: 'APPROVED', approvedByName: 'Д. Болор' }));
+    const changeStatus = vi.spyOn(serviceRequestService, 'changeStatus');
+
+    renderAsDispatcher();
+
+    // REPORT_SUBMITTED does offer it, which is what makes the button after approval a trap.
+    expect(await screen.findByRole('button', { name: 'Дууссан' })).toBeInTheDocument();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Ажлын дүгнэлт' }));
+    await userEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Батлах' }));
+
+    await waitFor(() => expect(approve).toHaveBeenCalledTimes(1));
+    // The page re-reads rather than guessing where the request went.
+    await waitFor(() => expect(getById).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Дууссан' })).not.toBeInTheDocument(),
+    );
+    // Nothing was asked of the transition endpoint, so there is no refusal to show.
+    expect(changeStatus).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Claiming from the detail page.
+ *
+ * The unclaimed-work notification links straight to `/service-requests/<id>`, so this is
+ * where a technician following it lands. Without the action here their only way to take the
+ * job would be to navigate back out to the open queue and find the row again.
+ */
+describe('ServiceRequestDetailPage claim action', () => {
+  const CLAIMER = [PERMISSIONS.SERVICE_REQUEST_VIEW, PERMISSIONS.SERVICE_REQUEST_CLAIM];
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(workReportService, 'get').mockRejectedValue(new Error('no report'));
+  });
+
+  /**
+   * Rendered as a TECHNICIAN, not on the harness default.
+   *
+   * The default is `admin`, and these cases were passing on it only incidentally — the
+   * action is for the person who will go and do the job. An administrator dispatches
+   * instead and is no longer offered it, which the case below asserts directly.
+   */
+  function renderAsClaimer(
+    permissions: readonly PermissionKey[] = CLAIMER,
+    role: UserRole = 'technician',
+  ) {
+    return renderWithAuth(<ServiceRequestDetailPage />, {
+      permissions,
+      role,
+      route: `/service-requests/${REQUEST_ID}`,
+      path: '/service-requests/:requestId',
+    });
+  }
+
+  it('does not offer the action to an administrator', async () => {
+    vi.spyOn(serviceRequestService, 'getById').mockResolvedValue(makeRequest());
+
+    renderAsClaimer(CLAIMER, 'admin');
+
+    // The page rendered, so this is the button being withheld rather than a failed load.
+    // By heading: the request number also appears in the breadcrumb.
+    expect(
+      await screen.findByRole('heading', { name: 'SR-202608-0001' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Өөртөө авах' })).not.toBeInTheDocument();
+  });
+
+  /** The permission is not the gate — an administrator holding it still is not offered it. */
+  it('does not offer the action to a head admin either', async () => {
+    vi.spyOn(serviceRequestService, 'getById').mockResolvedValue(makeRequest());
+
+    renderAsClaimer(CLAIMER, 'head_admin');
+
+    expect(
+      await screen.findByRole('heading', { name: 'SR-202608-0001' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Өөртөө авах' })).not.toBeInTheDocument();
+  });
+
+  it('takes the request and shows the server’s updated record', async () => {
+    vi.spyOn(serviceRequestService, 'getById').mockResolvedValue(makeRequest());
+    const claim = vi.spyOn(serviceRequestService, 'claim').mockResolvedValue(
+      makeRequest({
+        status: 'ASSIGNED',
+        assignedEmployees: [
+          { id: 'e1', employeeCode: 'EMP-001', firstName: 'Энхтөр', lastName: 'Б', photoUrl: null },
+        ],
+      }),
+    );
+
+    renderAsClaimer();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Өөртөө авах' }));
+
+    expect(claim).toHaveBeenCalledWith(REQUEST_ID);
+    expect(await screen.findByText('SR-202608-0001 ажлыг өөртөө авлаа.')).toBeInTheDocument();
+    // The answer is used rather than re-read, and the request is no longer claimable.
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Өөртөө авах' })).not.toBeInTheDocument(),
+    );
+    expect(serviceRequestService.getById).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the server’s refusal when somebody else won the race', async () => {
+    vi.spyOn(serviceRequestService, 'getById').mockResolvedValue(makeRequest());
+    vi.spyOn(serviceRequestService, 'claim').mockRejectedValue(
+      new ApiError('Энэ ажлыг өөр ажилтан аль хэдийн авсан байна.', 'DUPLICATE_KEY', 409),
+    );
+
+    renderAsClaimer();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Өөртөө авах' }));
+
+    expect(
+      await screen.findByText('Энэ ажлыг өөр ажилтан аль хэдийн авсан байна.'),
+    ).toBeInTheDocument();
+  });
+
+  it('offers nothing to a caller without service_request.claim', async () => {
+    vi.spyOn(serviceRequestService, 'getById').mockResolvedValue(makeRequest());
+
+    renderAsClaimer([PERMISSIONS.SERVICE_REQUEST_VIEW]);
+
+    await screen.findByText('Төлөвийн түүх');
+    expect(screen.queryByRole('button', { name: 'Өөртөө авах' })).not.toBeInTheDocument();
+  });
+
+  it('offers nothing on a request that already names an employee', async () => {
+    vi.spyOn(serviceRequestService, 'getById').mockResolvedValue(
+      makeRequest({
+        status: 'ASSIGNED',
+        assignedEmployees: [
+          { id: 'e1', employeeCode: 'EMP-001', firstName: 'Энхтөр', lastName: 'Б', photoUrl: null },
+        ],
+      }),
+    );
+
+    renderAsClaimer();
+
+    await screen.findByText('Төлөвийн түүх');
+    expect(screen.queryByRole('button', { name: 'Өөртөө авах' })).not.toBeInTheDocument();
+  });
+
+  /**
+   * The half most easily got wrong. A request carrying only a TEAM names no individual, but
+   * it is already somebody's work — the claim endpoint's atomic filter requires
+   * `assignedTeam: null` alongside the empty employee list, so offering the button here would
+   * put a refusal behind a click.
+   */
+  it('offers nothing on a request that carries only a team', async () => {
+    vi.spyOn(serviceRequestService, 'getById').mockResolvedValue(
+      makeRequest({ status: 'UNASSIGNED', assignedTeam: { id: 't1', name: 'Баг А' } }),
+    );
+
+    renderAsClaimer();
+
+    await screen.findByText('Төлөвийн түүх');
+    expect(screen.queryByRole('button', { name: 'Өөртөө авах' })).not.toBeInTheDocument();
   });
 });

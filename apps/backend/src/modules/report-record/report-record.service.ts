@@ -9,12 +9,15 @@ import {
   type ReportSourceType,
   type ReportStatus,
   type ReportType,
+  formatAttributeValue,
+  type ObjectAttributeValue,
 } from '@monhorus/shared';
 import { Types } from 'mongoose';
 
 import { logger } from '../../config/logger';
 import { appendAssessmentHistory } from '../object-master/assessment-history.service';
 import { ObjectRecord } from '../object-master/object-master.models';
+import { toObjectTypeAttributeDtos } from '../object-master/object-type.service';
 import { ObjectNode } from '../objects/object.models';
 import { getRiskBands } from '../settings/settings.service';
 import {
@@ -193,6 +196,46 @@ export async function writeReport(input: WriteReportInput): Promise<Doc<IReport>
  * so a sub-task that stops naming a panel stops reporting on it. Appending instead would
  * leave the report asserting a finding its source has withdrawn.
  */
+/**
+ * The equipment type's attributes as they stand right now, resolved for a frozen record.
+ *
+ * Read at the moment the item is written rather than at the moment it is read, because a
+ * report is a dated document: the answers live on the equipment and move as it is corrected,
+ * so a report reading them live would rewrite its own history and two printouts of the same
+ * document could disagree.
+ *
+ * The LABEL and the DISPLAYED text are captured alongside the raw value, so the row can print
+ * itself with no lookup — an administrator may rename or delete the attribute afterwards, and
+ * the report must still be able to say what it recorded.
+ *
+ * Only answered attributes are captured. A blank is not a finding, and a row reading
+ * "Хайлмал: —" would suggest somebody looked and found nothing.
+ */
+async function snapshotAttributes(
+  objectId: Types.ObjectId,
+): Promise<
+  { key: string; label: string; value: ObjectAttributeValue; display: string }[]
+> {
+  const object = await ObjectRecord.findById(objectId)
+    .select('attributeValues objectType')
+    .populate({ path: 'objectType', select: 'attributes' });
+  if (!object) return [];
+
+  const type = object.objectType as unknown as { attributes?: unknown } | null;
+  const defs = toObjectTypeAttributeDtos(
+    type && typeof type === 'object' && 'attributes' in type
+      ? (type.attributes as never)
+      : undefined,
+  );
+  const values = object.attributeValues ?? {};
+
+  return defs.flatMap((def) => {
+    const display = formatAttributeValue(def, values[def.key]);
+    if (display === null) return [];
+    return [{ key: def.key, label: def.label, value: values[def.key]!, display }];
+  });
+}
+
 async function syncItems(
   reportId: Types.ObjectId,
   customer: Types.ObjectId | null,
@@ -220,6 +263,9 @@ async function syncItems(
           conclusion: item.conclusion ?? null,
           recommendation: item.recommendation ?? null,
           measuredLoadKw: item.measuredLoadKw ?? null,
+          // Frozen here, beside the score and the narrative, and rewritten only when they
+          // are — so the snapshot shares the finding's lifecycle exactly.
+          attributes: await snapshotAttributes(item.object),
           evidenceAttachments: item.evidenceAttachments ?? [],
           judgedBy: item.judgedBy ?? null,
           judgedByName: item.judgedByName ?? null,
@@ -403,6 +449,14 @@ export function toReportItemDto(item: Doc<IReportItem>): ReportItemDto {
     conclusion: item.conclusion,
     recommendation: item.recommendation,
     measuredLoadKw: item.measuredLoadKw,
+    // Frozen when the item was written; an item from before the feature has none, and
+    // nothing is back-filled — see the note on `IReportItem.attributes`.
+    attributes: (item.attributes ?? []).map((attribute) => ({
+      key: attribute.key,
+      label: attribute.label,
+      value: attribute.value,
+      display: attribute.display,
+    })),
     evidenceAttachments: (item.evidenceAttachments ?? [])
       .map(attachmentDto)
       .filter((entry): entry is ReportAttachmentDto => entry !== null),

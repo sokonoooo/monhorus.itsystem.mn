@@ -20,6 +20,7 @@ import 'package:monhorus_employee/features/employee/project/domain/entities/risk
 import 'package:monhorus_employee/features/employee/project/data/models/project_models.dart';
 import 'package:monhorus_employee/features/employee/shared/service_request_models.dart';
 import 'package:monhorus_employee/features/employee/work/data/models/work_report_model.dart';
+import 'package:monhorus_employee/features/employee/work/domain/entities/work_identity.dart';
 import 'package:monhorus_employee/features/employee/work/domain/repositories/work_repository.dart';
 import 'package:monhorus_employee/features/employee/work/presentation/providers/conclusion_providers.dart';
 import 'package:monhorus_employee/features/employee/work/presentation/providers/work_providers.dart';
@@ -29,6 +30,22 @@ import 'package:monhorus_employee/features/employee/work/presentation/screens/se
 
 const String kRequestId = 'r1';
 const String kBuildingId = 'b1';
+const String kEmployeeId = 'emp-1';
+
+/// The employee card the assignment mirror compares the record against.
+///
+/// Overridden wherever the DETAIL SCREEN is built, never left to the real
+/// `GET /employees/me`: that read is what decides whether the screen believes this request
+/// is the reader's, so leaving it to fail over the network would make the presence of the
+/// conclusion pill accidental.
+const ResolvedWorkIdentity _identity = ResolvedWorkIdentity(
+  employeeId: kEmployeeId,
+  employeeCode: 'E-1',
+  fullName: 'Дорж Ganbold',
+  positionName: null,
+  teamId: null,
+  teamName: null,
+);
 
 /// A technician who may author a conclusion.
 const AppUser _author = AppUser(
@@ -60,6 +77,13 @@ Map<String, dynamic> _report({
   List<String> beforePhotoIds = const <String>[],
   List<String> afterPhotoIds = const <String>[],
   List<String> missing = const <String>[],
+  String? actionTaken,
+  // The office's four fields, absent by default so every existing case still describes a
+  // report this app authored on its own.
+  List<Map<String, dynamic>>? materials,
+  bool? repairRequired,
+  bool? revisitRequired,
+  String? revisitDate,
 }) {
   List<Map<String, dynamic>> photos(List<String> ids) => ids
       .map((String id) => <String, dynamic>{'id': id, 'name': '$id.jpg'})
@@ -78,6 +102,11 @@ Map<String, dynamic> _report({
     'objectAssessments': assessments,
     'missing': missing,
     'isComplete': missing.isEmpty,
+    'actionTaken': actionTaken,
+    if (materials != null) 'materials': materials,
+    if (repairRequired != null) 'repairRequired': repairRequired,
+    if (revisitRequired != null) 'revisitRequired': revisitRequired,
+    if (revisitDate != null) 'revisitDate': revisitDate,
   };
 }
 
@@ -92,12 +121,19 @@ Override _detailOverride([ServiceRequestDetailModel? detail]) {
       .overrideWith((Ref ref) async => detail);
 }
 
+/// ASSIGNED TO THE READER AND ON SITE, because the way into the editor is now gated on
+/// both. `GET /service-requests/:id/report` mints a draft attributed to the caller, so the
+/// pill is drawn only for the employee the job actually belongs to, and only once they have
+/// reported arriving; a record that was neither — this fixture named nobody and sat in
+/// ASSIGNED — no longer draws it at all.
 ServiceRequestDetailModel _detail() =>
     ServiceRequestDetailModel.fromJson(<String, dynamic>{
       'id': kRequestId,
       'requestNumber': 'SR-202608-0001',
-      'requestType': 'REPAIR',
-      'status': 'ASSIGNED',
+      'status': 'ON_SITE',
+      'assignedEmployees': <Map<String, dynamic>>[
+        <String, dynamic>{'id': kEmployeeId, 'name': 'Дорж'},
+      ],
       'isUrgent': false,
       'description': 'Гэрэлтүүлэг унтарсан.',
       'contactName': 'Бат',
@@ -182,6 +218,8 @@ ObjectListItemModel _equipment(
   String code,
   String name, {
   String status = 'ACTIVE',
+  List<Map<String, dynamic>> attributes = const <Map<String, dynamic>>[],
+  Map<String, dynamic> attributeValues = const <String, dynamic>{},
 }) =>
     ObjectListItemModel.fromJson(<String, dynamic>{
       'id': id,
@@ -191,6 +229,16 @@ ObjectListItemModel _equipment(
       'status': status,
       'floorId': 'f1',
       'floorName': '2-р давхар',
+      // The type's own declared fields ride on the type reference every object row carries,
+      // which is what lets a picked card ask them with no extra round trip.
+      'objectType': <String, dynamic>{
+        'id': 'ot1',
+        'code': 'MCB',
+        'name': 'Автомат таслуур',
+        'icon': 'BREAKER',
+        'attributes': attributes,
+      },
+      'attributeValues': attributeValues,
     });
 
 Future<void> _pumpEditor(
@@ -276,6 +324,7 @@ void main() {
       ProviderScope(
         overrides: <Override>[
           currentUserProvider.overrideWithValue(_author),
+          workIdentityProvider.overrideWith((Ref ref) async => _identity),
           _detailOverride(_detail()),
         ],
         child: const MaterialApp(
@@ -307,6 +356,7 @@ void main() {
       ProviderScope(
         overrides: <Override>[
           currentUserProvider.overrideWithValue(_reader),
+          workIdentityProvider.overrideWith((Ref ref) async => _identity),
           _detailOverride(_detail()),
         ],
         child: const MaterialApp(
@@ -847,6 +897,67 @@ void main() {
 
   // -- The three fields the app could not send --------------------------------
 
+  /// The equipment type's own declared fields, on the card a technician fills in (4.1).
+  ///
+  /// Nothing in the app names an attribute: the definitions ride on the picked row's type
+  /// reference, so a field added in Тоноглолын төрөл is asked here with no release.
+  testWidgets('an equipment card asks its type\'s questions and sends the answers', (
+    WidgetTester tester,
+  ) async {
+    final _ReportRepository repository = _ReportRepository(initial: _report());
+    await _pumpEditor(
+      tester,
+      repository: repository,
+      floors: <FloorModel>[_floor('f1', '2-р давхар')],
+      equipment: <ObjectListItemModel>[
+        _equipment(
+          'o1',
+          'MCB-01',
+          'Автомат таслуур 1',
+          attributes: <Map<String, dynamic>>[
+            <String, dynamic>{
+              'key': 'fuse',
+              'label': 'Хайлмал хамгаалалт',
+              'type': 'SELECT',
+              'required': true,
+              'options': <Map<String, dynamic>>[
+                <String, dynamic>{'value': 'FUSED', 'label': 'Хайлмалтай'},
+                <String, dynamic>{'value': 'NOT_FUSED', 'label': 'Хайлмалгүй'},
+              ],
+            },
+          ],
+          // Already on record, so the card opens on it rather than blank: these are standing
+          // facts about the kit, and a blank draft saved back would clear them.
+          attributeValues: <String, dynamic>{'fuse': 'NOT_FUSED'},
+        ),
+      ],
+    );
+
+    await tester.tap(find.byType(DropdownButtonFormField<String>));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('2-р давхар').last);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Тоноглол нэмэх'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('MCB-01 · Автомат таслуур 1'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.textContaining('Сонгосныг нэмэх'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('ХАЙЛМАЛ ХАМГААЛАЛТ (ЗААВАЛ)'), findsOneWidget);
+    expect(find.text('Хайлмалтай'), findsOneWidget);
+
+    await tester.tap(find.text('Хайлмалтай'));
+    await tester.pumpAndSettle();
+    await _tapAction(tester, 'Ноорогт хадгалах');
+
+    // The answer travels with the finding and the server writes it onto the EQUIPMENT.
+    expect(
+      repository.saved.single.objectAssessments.single.attributeValues,
+      <String, Object?>{'fuse': 'FUSED'},
+    );
+  });
+
   testWidgets('the visit score is enterable and reaches the payload', (
     WidgetTester tester,
   ) async {
@@ -918,6 +1029,104 @@ void main() {
     expect(repository.saved.single.beforePhotoIds, <String>['old2']);
   });
 
+  // -- The office's own fields -------------------------------------------------
+  //
+  // `materials`, `repairRequired`, `revisitRequired`, `revisitDate` and `actionTaken` are
+  // entered on the web console and this app draws no control for any of them. `PUT
+  // .../report` REPLACES the record and the schema defaults every one of them, so the
+  // payload used to erase all five — two hard-coded `false`s, a hard-coded `null` and two
+  // absent keys — the instant a technician tapped save.
+
+  test('saving from the phone relays the office fields rather than erasing them', () async {
+    final _ReportRepository repository = _ReportRepository(
+      initial: _report(
+        actionTaken: 'Автомат таслуур сольсон.',
+        materials: <Map<String, dynamic>>[
+          <String, dynamic>{'name': 'Кабель 3x2.5', 'quantity': 12.5, 'unit': 'METRE'},
+          <String, dynamic>{'name': 'Автомат таслуур', 'quantity': 2, 'unit': 'PIECE'},
+        ],
+        repairRequired: true,
+        revisitRequired: true,
+        revisitDate: '2026-09-01T00:00:00.000Z',
+      ),
+    );
+    final ProviderContainer container = ProviderContainer(
+      overrides: <Override>[
+        currentUserProvider.overrideWithValue(_author),
+        workRepositoryProvider.overrideWithValue(repository),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    const ConclusionRef ref = (requestId: kRequestId, buildingId: kBuildingId);
+    await container.read(conclusionEditorProvider(ref).future);
+    final ConclusionEditor editor = container.read(conclusionEditorProvider(ref).notifier);
+
+    // A perfectly ordinary edit on this app: the technician touches the narrative and
+    // saves. Nothing they did says anything about materials or the revisit.
+    editor.setConclusion('Ажил дууссан.');
+    await editor.save();
+
+    // Asserted on the encoded body, not on the object, because it is the JSON the server
+    // replaces the record from.
+    final Map<String, dynamic> sent = repository.saved.single.toJson();
+    expect(sent['conclusion'], 'Ажил дууссан.');
+    expect(sent['actionTaken'], 'Автомат таслуур сольсон.');
+    expect(sent['repairRequired'], isTrue);
+    expect(sent['revisitRequired'], isTrue);
+    expect(sent['revisitDate'], '2026-09-01T00:00:00.000Z');
+    expect(sent['materials'], <Map<String, dynamic>>[
+      <String, dynamic>{'name': 'Кабель 3x2.5', 'quantity': 12.5, 'unit': 'METRE'},
+      <String, dynamic>{'name': 'Автомат таслуур', 'quantity': 2, 'unit': 'PIECE'},
+    ]);
+    // A whole quantity goes back whole: `2.0` is a different body from `2`.
+    expect((sent['materials'] as List<dynamic>)[1]['quantity'], isA<int>());
+  });
+
+  test('a report with no office fields sends a payload the schema accepts', () async {
+    final _ReportRepository repository = _ReportRepository(
+      initial: <String, dynamic>{
+        ..._report(),
+        // Explicit nulls as well as absent keys, and one material row the server's own
+        // schema would refuse back (`name` min(1), `quantity` positive) alongside one
+        // whose quantity is not a number at all.
+        'repairRequired': null,
+        'revisitRequired': null,
+        'revisitDate': null,
+        'materials': <dynamic>[
+          <String, dynamic>{'name': '', 'quantity': 3, 'unit': 'PIECE'},
+          <String, dynamic>{'name': 'Гагнуурын утас', 'quantity': 0},
+          <String, dynamic>{'name': 'Тусгаарлагч тууз', 'quantity': '4'},
+          <String, dynamic>{'name': 'Сум', 'quantity': 1},
+        ],
+      },
+    );
+    final ProviderContainer container = ProviderContainer(
+      overrides: <Override>[
+        currentUserProvider.overrideWithValue(_author),
+        workRepositoryProvider.overrideWithValue(repository),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    const ConclusionRef ref = (requestId: kRequestId, buildingId: kBuildingId);
+    await container.read(conclusionEditorProvider(ref).future);
+    final ConclusionEditor editor = container.read(conclusionEditorProvider(ref).notifier);
+
+    expect(await editor.save(), isNull);
+
+    final Map<String, dynamic> sent = repository.saved.single.toJson();
+    expect(sent['repairRequired'], isFalse);
+    expect(sent['revisitRequired'], isFalse);
+    expect(sent['revisitDate'], isNull);
+    expect(sent['actionTaken'], isNull);
+    // Only the one well-formed row survives, and the unit falls back to the schema's own
+    // default rather than being dropped.
+    expect(sent['materials'], <Map<String, dynamic>>[
+      <String, dynamic>{'name': 'Сум', 'quantity': 1, 'unit': 'PIECE'},
+    ]);
+  });
+
   testWidgets('both visit photo slots are drawn and labelled', (WidgetTester tester) async {
     await _pumpEditor(tester, repository: _ReportRepository());
 
@@ -983,7 +1192,10 @@ void main() {
 
     final Finder card = find.byType(EquipmentAssessmentCard);
 
-    for (final RiskLevel level in RiskLevel.values) {
+    // The bands in use, which with no vocabulary read is the documented five. The
+    // reserved keys are deliberately absent: naming «Түвшин 6» on a scoring card would
+    // offer a band no assessment can be graded into.
+    for (final RiskLevel level in documentedRiskBands) {
       expect(
         find.descendant(of: card, matching: find.textContaining(level.label)),
         findsWidgets,
@@ -1009,6 +1221,46 @@ void main() {
     }
 
     expect(tester.takeException(), isNull);
+  });
+
+  // -- The request follows the conclusion --------------------------------------
+  //
+  // `submitWorkReport` calls `advanceOnConclusion` on the backend, which moves the REQUEST
+  // to REPORT_SUBMITTED. The answer carries only the conclusion, so a screen holding the
+  // request keeps the status it read before submitting — and goes on offering the moves
+  // that status allowed. Tapping one asks the server to make a move the request has already
+  // made, and the refusal reads as «... төлвөөс ... шилжих боломжгүй» to somebody whose
+  // screen still says the request is somewhere else.
+
+  test('submitting the conclusion re-reads the request it just moved', () async {
+    int detailReads = 0;
+    final _ReportRepository repository = _ReportRepository();
+    final ProviderContainer container = ProviderContainer(
+      overrides: <Override>[
+        currentUserProvider.overrideWithValue(_author),
+        workRepositoryProvider.overrideWithValue(repository),
+        // Counted rather than asserted against a spy, because what matters is that the
+        // read happens AGAIN — a cached first answer is exactly the stale status.
+        serviceRequestDetailProvider(kRequestId).overrideWith((Ref ref) async {
+          detailReads += 1;
+          return _detail();
+        }),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    await container.read(serviceRequestDetailProvider(kRequestId).future);
+    expect(detailReads, 1);
+
+    const ConclusionRef ref = (requestId: kRequestId, buildingId: kBuildingId);
+    await container.read(conclusionEditorProvider(ref).future);
+    expect(await container.read(conclusionEditorProvider(ref).notifier).submit(), isNull);
+    expect(repository.submits, 1);
+
+    // Still the cached ON_SITE record without the invalidation, which is what left a live
+    // «"Дүгнэлт илгээсэн" болгох» button on a request that had already got there.
+    await container.read(serviceRequestDetailProvider(kRequestId).future);
+    expect(detailReads, 2);
   });
 }
 

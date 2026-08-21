@@ -8,10 +8,11 @@ import { useCallback, useEffect, useState, type ReactElement } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { Button } from '../../components/ui/Button';
-import { SlaBadge, UrgentBadge } from '../../components/ui/DomainBadges';
+import { SlaBadge } from '../../components/ui/DomainBadges';
 import { PageHeader } from '../../components/ui/PageHeader';
 import { SubNav } from '../../components/ui/SubNav';
 import { EmptyState, ErrorState, Skeleton } from '../../components/ui/States';
+import { STAGE_DOT_STYLES } from '../../components/ui/stage-palette';
 import { SERVICE_REQUEST_TABS } from '../../config/navigation';
 import { useAuth } from '../../contexts/auth-context';
 import { ApiError } from '../../lib/api-client';
@@ -47,12 +48,9 @@ function RequestCard({
         onClick={onOpen}
         className="w-full text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
       >
-      <div className="mb-1 flex items-center justify-between gap-2">
-        <span className="truncate text-xs font-semibold text-slate-900">
-          {request.requestNumber}
-        </span>
-        {request.isUrgent && <UrgentBadge />}
-      </div>
+      <span className="mb-1 block truncate text-xs font-semibold text-slate-900">
+        {request.requestNumber}
+      </span>
       <p className="mb-1 truncate text-xs text-slate-600">{request.customer?.name ?? '-'}</p>
       <p className="mb-1.5 truncate text-[11px] text-slate-500">
         {[request.building?.name, request.floor?.name].filter(Boolean).join(' · ') || '-'}
@@ -178,8 +176,20 @@ export function DispatchBoardPage(): ReactElement {
                   aria-label={column.label}
                 >
                   <header className="mb-2 flex items-center justify-between gap-2 px-1">
-                    <h2 className="truncate text-xs font-semibold text-slate-700">
-                      {column.label}
+                    <h2 className="flex min-w-0 items-center gap-1.5 text-xs font-semibold text-slate-700">
+                      {/*
+                        The stage's own colour, sent with the column. Painted here so a
+                        column heading and the badge on the same request in the list read as
+                        the same step; omitted rather than defaulted when the server sends
+                        no colour, since a made-up one would say something untrue.
+                      */}
+                      {column.colour && (
+                        <span
+                          aria-hidden
+                          className={`h-2 w-2 shrink-0 rounded-full ${STAGE_DOT_STYLES[column.colour]}`}
+                        />
+                      )}
+                      <span className="truncate">{column.label}</span>
                     </h2>
                     <span className="shrink-0 rounded-full bg-white px-1.5 py-0.5 text-[11px] font-medium text-slate-600">
                       {column.total}

@@ -4,6 +4,7 @@ import {
   PLANNED_WORK_STATUS_LABELS,
   resumeTargetStatus,
   type PlannedWorkAction,
+  type PlannedWorkActionRule,
   type PlannedWorkAvailableActionDto,
   type PlannedWorkLifecycleStatus,
   type PlannedWorkTransitionInput,
@@ -11,6 +12,10 @@ import {
 import { Types, type ClientSession, type HydratedDocument } from 'mongoose';
 
 import { AppError } from '../../common/errors/app-error';
+import {
+  assertInCustomerScope,
+  resolveCustomerScope,
+} from '../../common/security/customer-scope';
 import { ERROR_CODES } from '../../common/errors/error-codes';
 import type { AuthContext } from '../../common/types/express';
 import type { RequestMeta } from '../../common/utils/request-meta.util';
@@ -18,6 +23,8 @@ import { withTransaction } from '../../common/utils/transaction.util';
 import { logger } from '../../config/logger';
 import { hasPermission } from '../../middlewares/authorize.middleware';
 import { recordAudit } from '../audit/audit.service';
+import { notify } from '../notification/notification.service';
+import { userIdsForEmployees } from '../notification/recipient.util';
 import {
   writeReport,
   type ReportItemInput,
@@ -28,6 +35,7 @@ import {
   PlannedWorkTask,
   type IPlannedWork,
 } from './planned-work.models';
+import { assertEmployeesExist } from './planned-work.crew';
 import { allTasksComplete, completionBlockersOf } from './planned-work.progress.service';
 import { assertPlannedWorkAssignmentScope } from './planned-work.scope';
 
@@ -85,7 +93,7 @@ export function availableActionsFor(
   for (const action of PLANNED_WORK_ACTIONS) {
     const rule = PLANNED_WORK_ACTION_RULES[action];
     if (!rule.from.includes(work.status)) continue;
-    if (!hasPermission(actor, rule.permission)) continue;
+    if (!mayPerform(rule, actor)) continue;
     // Never offer a button the assignment-scope policy will refuse. The refusal in
     // `transitionPlannedWork` is the authority; this only keeps the client honest.
     if (!assignmentAllowed) continue;
@@ -97,10 +105,24 @@ export function availableActionsFor(
       label: rule.label,
       requiresReason: rule.requiresReason,
       targetStatus: targetStatusFor(action, work),
+      assignsCrew: rule.assignsCrew === true,
     });
   }
 
   return actions;
+}
+
+/**
+ * Whether the caller holds a key that admits this action.
+ *
+ * `customerPermission` is the portal's way in and exists only on PLAN. It is deliberately
+ * NOT enough on its own: `transitionPlannedWork` separately bounds a customer to their own
+ * record, so holding the key answers "may this caller ever submit work" and the scope check
+ * answers "is this theirs".
+ */
+function mayPerform(rule: PlannedWorkActionRule, actor: AuthContext): boolean {
+  if (hasPermission(actor, rule.permission)) return true;
+  return rule.customerPermission ? hasPermission(actor, rule.customerPermission) : false;
 }
 
 function assertTransitionAllowed(
@@ -111,7 +133,7 @@ function assertTransitionAllowed(
 ): void {
   const rule = PLANNED_WORK_ACTION_RULES[action];
 
-  if (!hasPermission(actor, rule.permission)) {
+  if (!mayPerform(rule, actor)) {
     throw AppError.forbidden(ERROR_CODES.FORBIDDEN, 'Энэ үйлдлийг хийх эрх байхгүй байна.');
   }
 
@@ -138,6 +160,89 @@ export interface TransitionResult {
 }
 
 /**
+ * The notifications one lifecycle action owes.
+ *
+ * ONE EVENT PER AUDIENCE, NOT ONE PER FACT. APPROVE is two entries in the event catalogue
+ * — the work becomes scheduled and a crew is put on it — but it is a single decision, taken
+ * once, about a single work. The crew is therefore told exactly one thing, that this job is
+ * theirs (`PLANNED_WORK_ASSIGNED`), and the customer exactly one thing, that their work is
+ * booked (`PLANNED_WORK_SCHEDULED`). Sending both events to the crew would put two rows
+ * carrying the same sentence in the same inbox, and a second row that adds nothing only
+ * teaches people to stop reading the first.
+ *
+ * The audience split is forced by the link in any case: staff need `/planned-work/<id>` and
+ * a customer following it gets a permission refusal, so these could never have been one
+ * call however the events were divided. START is the same event to both audiences and is
+ * split for that reason alone.
+ */
+async function notifyTransition(
+  work: Doc<IPlannedWork>,
+  action: PlannedWorkAction,
+  /**
+   * Passed in rather than read off `work`: APPROVE writes the crew with `updateOne`, so the
+   * loaded document still carries the pre-approval roster (empty) at this point.
+   */
+  crew: readonly Types.ObjectId[],
+  actor: AuthContext,
+): Promise<void> {
+  if (action !== 'APPROVE' && action !== 'START') return;
+
+  const id = String(work._id);
+  const staffLink = `/planned-work/${id}`;
+  const portalLink = `/portal/planned-work/${id}`;
+  const crewUserIds = await userIdsForEmployees(crew.map((employeeId) => String(employeeId)));
+
+  if (action === 'APPROVE') {
+    await notify({
+      event: 'PLANNED_WORK_ASSIGNED',
+      title: `${work.workNumber} төлөвлөгөөт ажилд томилогдлоо`,
+      body: work.title,
+      entityType: 'PlannedWork',
+      entityId: work._id,
+      linkPath: staffLink,
+      userIds: crewUserIds,
+      excludeUserId: actor.userId,
+    });
+
+    await notify({
+      event: 'PLANNED_WORK_SCHEDULED',
+      title: `${work.workNumber} төлөвлөгөөт ажил товлогдлоо`,
+      body: work.title,
+      entityType: 'PlannedWork',
+      entityId: work._id,
+      linkPath: portalLink,
+      customerId: work.customer,
+      excludeUserId: actor.userId,
+    });
+    return;
+  }
+
+  await notify({
+    event: 'PLANNED_WORK_STARTED',
+    title: `${work.workNumber} төлөвлөгөөт ажил эхэллээ`,
+    body: work.title,
+    entityType: 'PlannedWork',
+    entityId: work._id,
+    linkPath: staffLink,
+    userIds: crewUserIds,
+    // The technician who pressed start is normally on the crew, and telling somebody about
+    // their own keystroke is the fastest way to make the inbox worthless.
+    excludeUserId: actor.userId,
+  });
+
+  await notify({
+    event: 'PLANNED_WORK_STARTED',
+    title: `${work.workNumber} төлөвлөгөөт ажил эхэллээ`,
+    body: work.title,
+    entityType: 'PlannedWork',
+    entityId: work._id,
+    linkPath: portalLink,
+    customerId: work.customer,
+    excludeUserId: actor.userId,
+  });
+}
+
+/**
  * Applies one lifecycle action.
  *
  * Completion touches the work, its report and the audit trail together, so the whole
@@ -153,6 +258,39 @@ export async function transitionPlannedWork(
   assertTransitionAllowed(input.action, work, actor, reason);
 
   /**
+   * A customer may drive only their own record.
+   *
+   * This is the ONLY thing bounding them. The assignment-scope check below is a staff
+   * policy and is skipped for customers — see the note on it — so without this the portal
+   * key that lets a customer submit their own draft would let them submit anybody's.
+   * Reported as not-found for the usual reason: a forbidden on an id that exists elsewhere
+   * confirms the record is real.
+   */
+  const scope = resolveCustomerScope(actor);
+  if (scope.mode === 'CUSTOMER') assertInCustomerScope(scope, work.customer);
+
+  /**
+   * The crew, resolved before anything is written.
+   *
+   * APPROVE is the only action that assigns, and it refuses to run unstaffed: approving is
+   * agreeing to the work AND saying who does it, so there is no moment at which a work is
+   * PLANNED and nobody is on it. Doing this here rather than inside the transaction means a
+   * bad employee id fails the whole action rather than half-applying it.
+   */
+  const rule = PLANNED_WORK_ACTION_RULES[input.action];
+  let approvedCrew: Types.ObjectId[] = [];
+  if (rule.assignsCrew) {
+    if (input.assignedEmployeeIds.length === 0) {
+      throw AppError.badRequest(
+        ERROR_CODES.VALIDATION_ERROR,
+        'Батлахдаа гүйцэтгэх ажилтныг сонгоно уу.',
+        [{ field: 'assignedEmployeeIds', message: 'Дор хаяж нэг ажилтан сонгоно.' }],
+      );
+    }
+    approvedCrew = await assertEmployeesExist(input.assignedEmployeeIds);
+  }
+
+  /**
    * Assignment scope, checked AFTER the permission gate and independently of it.
    *
    * Holding the action's permission answers "may this caller ever do this"; it says nothing
@@ -161,7 +299,15 @@ export async function transitionPlannedWork(
    * closes the whole endpoint. CANCEL is keyed on `planned_work.cancel`, which is an
    * oversight permission, so a legitimate canceller is unscoped and unaffected.
    */
-  await assertPlannedWorkAssignmentScope(work._id, actor);
+  //
+  // A CUSTOMER IS BOUNDED DIFFERENTLY AND MUST SKIP IT. This policy asks which employee a
+  // job belongs to, and a portal account has no employee card, so it answers NOT_ASSIGNED
+  // for every customer and would refuse them their own request. Their bound is the tenancy
+  // check above, which is the right question for them: not "is this your job" but "is this
+  // your organisation's work".
+  if (scope.mode !== 'CUSTOMER') {
+    await assertPlannedWorkAssignmentScope(work._id, actor);
+  }
 
   const previousStatus = work.status;
   const newStatus = targetStatusFor(input.action, work);
@@ -255,7 +401,22 @@ export async function transitionPlannedWork(
         break;
       }
 
-      case 'CANCEL': {
+      case 'APPROVE': {
+        // Approval and assignment are one write. The work becomes PLANNED and staffed in
+        // the same update, so no reader can observe it approved-but-unstaffed.
+        update.assignedEmployees = approvedCrew;
+        break;
+      }
+
+      case 'CANCEL':
+      /**
+       * REJECT shares CANCEL's bookkeeping because both owe the reader an explanation, and
+       * `cancelReason` is where the portal already looks for one. Their destinations now
+       * differ — CANCELLED ends the record, REJECTED hands it back — but the four writes
+       * are the same, and repeating them is how a refusal with no explanation on somebody's
+       * screen gets introduced.
+       */
+      case 'REJECT': {
         update.cancelReason = reason;
         update.cancelledBy = new Types.ObjectId(actor.userId);
         update.cancelledByName = actor.fullName;
@@ -263,8 +424,17 @@ export async function transitionPlannedWork(
         break;
       }
 
-      case 'PLAN':
+      case 'PLAN': {
+        // Re-submitting clears the previous refusal. Leaving it would show the creator a
+        // rejection notice on a work that is once again waiting to be looked at.
+        if (previousStatus === 'REJECTED') {
+          update.cancelReason = null;
+          update.cancelledBy = null;
+          update.cancelledByName = null;
+          update.cancelledAt = null;
+        }
         break;
+      }
     }
 
     await PlannedWork.updateOne({ _id: work._id }, { $set: update }, options);
@@ -335,6 +505,22 @@ export async function transitionPlannedWork(
       );
     }
   }
+
+  /*
+   * Announced only once the transaction above has committed.
+   *
+   * `notify` writes through its own connection and is not part of the session, so a call
+   * placed inside `withTransaction` would survive a rollback that erased the status change
+   * it describes — leaving the inbox as the only record of a state the database never held.
+   * It swallows its own failures, so awaiting it here cannot turn a committed transition
+   * into a 500 for the caller.
+   */
+  await notifyTransition(
+    work,
+    input.action,
+    input.action === 'APPROVE' ? approvedCrew : work.assignedEmployees,
+    actor,
+  );
 
   return { previousStatus, newStatus, reportCreated };
 }

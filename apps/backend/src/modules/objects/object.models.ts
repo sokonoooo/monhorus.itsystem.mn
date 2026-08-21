@@ -20,6 +20,14 @@ export interface ICustomer {
   responsibleEmployee: Types.ObjectId | null;
   notes: string | null;
   isActive: boolean;
+  /**
+   * Who registered this customer.
+   *
+   * Nullable and will stay null on every row that existed before the field did — the
+   * information was never captured, and inventing it from `updatedAt` or an audit row would
+   * be a guess presented as a fact. New records carry it.
+   */
+  createdBy: Types.ObjectId | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -42,6 +50,7 @@ const customerSchema = new Schema<ICustomer>(
     },
     notes: { type: String, default: null, trim: true, maxlength: 2000 },
     isActive: { type: Boolean, default: true, index: true },
+    createdBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
   },
   { timestamps: true, versionKey: false },
 );
@@ -131,6 +140,11 @@ export interface IObjectNode {
   description: string | null;
   attributes: IObjectNodeAttributes;
   isActive: boolean;
+  /**
+   * Who registered this node — a project, a building or a floor, all three being kinds of
+   * `ObjectNode`. Null on every row that predates the field; see the note on `ICustomer`.
+   */
+  createdBy: Types.ObjectId | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -166,6 +180,7 @@ const objectNodeSchema = new Schema<IObjectNode>(
     description: { type: String, default: null, trim: true, maxlength: 4000 },
     attributes: { type: objectNodeAttributesSchema, default: () => ({}) },
     isActive: { type: Boolean, default: true, index: true },
+    createdBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
   },
   { timestamps: true, versionKey: false },
 );

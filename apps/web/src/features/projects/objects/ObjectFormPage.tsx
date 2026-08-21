@@ -1,19 +1,18 @@
 import {
   OBJECT_CATEGORIES,
-  OBJECT_CATEGORY_DESCRIPTIONS,
   OBJECT_CATEGORY_LABELS,
   PERMISSIONS,
   createObjectAssessmentSchema,
   createObjectSchema,
-  riskLevelFor,
   updateObjectSchema,
+  validateAttributeValues,
   type CustomerDto,
   type FloorDto,
   type ObjectCategory,
   type ObjectListItemDto,
   type ObjectTypeDto,
 } from '@monhorus/shared';
-import { useEffect, useState, type ReactElement } from 'react';
+import { useEffect, useId, useState, type ReactElement } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 
 import { Alert } from '../../../components/ui/Alert';
@@ -23,12 +22,32 @@ import { ErrorState, Skeleton } from '../../../components/ui/States';
 import { useToast } from '../../../components/ui/ToastProvider';
 import { FIELD_TEXTAREA, FILTER_LABEL } from '../../../components/ui/control-styles';
 import { useAuth } from '../../../contexts/auth-context';
+import { riskLevelForScore } from '../../../components/ui/risk-palette';
 import { useRiskBands } from '../../../hooks/use-risk-bands';
 import { ApiError } from '../../../lib/api-client';
 import { objectService } from '../../../services/object.service';
 import { objectMasterService, objectTypeService } from '../../../services/object-master.service';
 import { projectService } from '../../../services/project.service';
 import { Field, SelectInput, TextInput } from '../../employees/FormControls';
+import {
+  ObjectAttributeFields,
+  toAttributeDrafts,
+  toAttributePayload,
+} from './ObjectAttributeFields';
+
+/** The name each category's own attribute block goes by, shown beside the section header. */
+const ELECTRICAL_BLOCK_LABELS: Record<ObjectCategory, string> = {
+  PANEL: 'Самбарын мэдээлэл',
+  CIRCUIT: 'Хэлхээний мэдээлэл',
+  EQUIPMENT: 'Тоноглолын мэдээлэл',
+};
+
+/** The `fieldErrors` prefix the schema and the backend key each category's attributes under. */
+const ELECTRICAL_ERROR_PREFIXES: Record<ObjectCategory, string> = {
+  PANEL: 'panel.',
+  CIRCUIT: 'circuit.',
+  EQUIPMENT: 'equipment.',
+};
 
 /**
  * Object create and edit.
@@ -62,6 +81,8 @@ export function ObjectFormPage(): ReactElement {
    * The bands currently in force, read from Тохиргоо. The red/black conditional fields are
    * decided against these rather than against a threshold written into this file, so a
    * re-banding in settings moves the requirement with it — exactly as the backend does.
+   *
+   * Null when they could not be read; see `requiresFindings` for what this form does then.
    */
   const bands = useRiskBands();
 
@@ -133,6 +154,27 @@ export function ObjectFormPage(): ReactElement {
   const [usageCoefficient, setUsageCoefficient] = useState('');
   const [installedAt, setInstalledAt] = useState('');
   const [warrantyUntil, setWarrantyUntil] = useState('');
+
+  /**
+   * The user's own choice about the electrical section, or null while they have made none.
+   *
+   * Null is the interesting value: with nothing said either way the section decides for
+   * itself from what it holds, which is what opens an edit of a panel that already has a
+   * capacity and leaves a blank registration folded. Once the header is clicked the choice
+   * is theirs and stays theirs. See `electricalExpanded` for the one thing that overrides it.
+   */
+  /**
+   * The answers to whatever the chosen TYPE declares (requirements 4.1), keyed by attribute.
+   *
+   * Strings whatever the attribute's declared type is, exactly as every other box on this
+   * form; `toAttributePayload` parses them once, on submit. Keyed by attribute rather than
+   * held per field because the fields are not known until a type is chosen — that is the
+   * whole point of the feature.
+   */
+  const [attributeDrafts, setAttributeDrafts] = useState<Record<string, string>>({});
+
+  const [electricalToggled, setElectricalToggled] = useState<boolean | null>(null);
+  const electricalPanelId = useId();
 
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -207,6 +249,13 @@ export function ObjectFormPage(): ReactElement {
           setUsageCoefficient(object.equipment?.usageCoefficient?.toString() ?? '');
           setInstalledAt(object.equipment?.installedAt?.slice(0, 10) ?? '');
           setWarrantyUntil(object.equipment?.warrantyUntil?.slice(0, 10) ?? '');
+
+          // Hydrated from the definitions the detail response carries rather than from the
+          // type list, which has not loaded yet at this point. They are the same definitions
+          // — this is the type's own list, travelling with the object that uses it.
+          setAttributeDrafts(
+            toAttributeDrafts(object.objectType?.attributes ?? [], object.attributeValues),
+          );
         }
       } catch (caught) {
         if (!cancelled) {
@@ -365,6 +414,14 @@ export function ObjectFormPage(): ReactElement {
   const effectiveFloorId = floorId ?? (chosenFloorId || null);
   const floorPath = floorId ? `/floors/${floorId}` : '/projects';
   const selectedType = types.find((type) => type.id === objectTypeId) ?? null;
+  /**
+   * What the chosen type demands beyond its category's own fields (requirements 4.1).
+   *
+   * Empty until a type is chosen, and empty for every type that declares nothing — which is
+   * the case this form behaved as before the feature existed, so that path renders and
+   * submits exactly as it always did.
+   */
+  const typeAttributes = selectedType?.attributes ?? [];
   // Section 4.1: only a type flagged as generating a conclusion may carry an assessment,
   // so the score field appears exactly where the backend would accept one.
   const showInitialScore = !isEdit && canAssess && (selectedType?.generatesConclusion ?? false);
@@ -372,14 +429,65 @@ export function ObjectFormPage(): ReactElement {
   /**
    * The band the typed score falls into, or null when no score was typed.
    *
-   * Resolved with the shared `riskLevelFor` against the configured bands, the same call the
-   * backend makes, so the form asks for exactly the fields the backend is about to demand.
+   * Resolved against the configured bands the server publishes, so the form asks for exactly
+   * the fields the backend is about to demand. `riskLevelForScore` rather than the shared
+   * `riskLevelFor` because the bands here come from `/vocabulary` — and because it falls back
+   * to the worst CONFIGURED band instead of the literal `OUT_OF_SERVICE` key, which an
+   * installation that renamed its bottom band does not use.
    */
   const parsedScore = initialScore.trim() === '' ? Number.NaN : Number(initialScore.trim());
-  const initialRiskLevel = Number.isFinite(parsedScore) ? riskLevelFor(parsedScore, bands) : null;
+  const scoreTyped = Number.isFinite(parsedScore);
+  const initialRiskLevel =
+    scoreTyped && bands !== null ? riskLevelForScore(parsedScore, bands) : null;
   // Section 10.1: the red and black bands require a conclusion, a recommendation and the
   // action taken. Nothing here decides where those bands start.
   const redOrBlack = initialRiskLevel === 'CRITICAL' || initialRiskLevel === 'OUT_OF_SERVICE';
+  /**
+   * Whether the three section 10.1 findings are demanded before anything is written.
+   *
+   * `bands === null` means the thresholds could not be read, so this form cannot tell
+   * which side of the line a typed score falls on. It asks for all three rather than
+   * guess: the object and the assessment are two calls, and skipping the check would let
+   * the second one fail after the object is already on record with its score thrown away.
+   * The form still states no threshold — it only asks for more.
+   */
+  const bandsUnknown = bands === null;
+  const requiresFindings = bandsUnknown ? scoreTyped : redOrBlack;
+
+  /**
+   * Whether the chosen category's attribute fields already carry anything.
+   *
+   * Only the chosen category is consulted, because only its block is rendered and only its
+   * values are ever sent: a figure left behind in a category the user tried and moved off
+   * is not detail worth opening the section for.
+   */
+  const electricalValues =
+    category === 'PANEL'
+      ? [capacityKw, location, protection]
+      : category === 'CIRCUIT'
+        ? [panelId, breakerRating, permittedCapacityKw, cableType, cableSectionMm2, cableLengthM]
+        : [
+            circuitId,
+            equipmentPanelId,
+            ratedPowerKw,
+            quantity,
+            usageCoefficient,
+            installedAt,
+            warrantyUntil,
+          ];
+  const electricalFilled = electricalValues.some((value) => value.trim() !== '');
+  const electricalHasError = Object.keys(fieldErrors).some((key) =>
+    key.startsWith(ELECTRICAL_ERROR_PREFIXES[category]),
+  );
+  /**
+   * A field error inside the section outranks everything, the user's own collapse included.
+   *
+   * Refusing a save over a message that is folded out of sight is a dead end with nothing on
+   * screen to explain it, so an error opens the section and holds it open until the next
+   * save clears it. Short of that the user's choice wins, and with no choice made the
+   * section opens exactly when it has something to show.
+   */
+  const electricalExpanded = electricalHasError || (electricalToggled ?? electricalFilled);
 
   async function handleSubmit(): Promise<void> {
     setFormError(null);
@@ -421,6 +529,19 @@ export function ObjectFormPage(): ReactElement {
               },
             };
 
+    const attributeValues = toAttributePayload(typeAttributes, attributeDrafts);
+
+    /**
+     * The attribute bag is sent only once the chosen type is actually in hand.
+     *
+     * The type registry loads in its own request, so there is a window in which `selectedType`
+     * is null and this form cannot know what the type declares. Sending `{}` in that window
+     * would be a statement — a declared attribute absent from an update is a declared
+     * attribute cleared — and it would wipe values off an object over a race. Omitting the key
+     * says nothing instead, and the backend leaves what is stored exactly as it is.
+     */
+    const attributePayload = selectedType ? { attributeValues } : {};
+
     const parsed = isEdit
       ? updateObjectSchema.safeParse({
           name: name.trim(),
@@ -428,6 +549,7 @@ export function ObjectFormPage(): ReactElement {
           floorId: floorId ?? null,
           description: description.trim() || null,
           notes: notes.trim() || null,
+          ...attributePayload,
           ...attributes,
         })
       : createObjectSchema.safeParse({
@@ -439,14 +561,32 @@ export function ObjectFormPage(): ReactElement {
           description: description.trim() || null,
           notes: notes.trim() || null,
           category,
+          ...attributePayload,
           ...attributes,
         });
 
-    if (!parsed.success) {
+    /**
+     * The type's own rules, which zod cannot state.
+     *
+     * Whether a key is legal, whether it is required and whether a SELECT value is one of its
+     * options all depend on definitions held in the database, so they come from the same
+     * shared function the backend enforces with — checked here purely so the user is told
+     * without a round trip. The backend does not assume this ran.
+     */
+    const attributeIssues = validateAttributeValues(typeAttributes, attributeValues);
+
+    if (!parsed.success || attributeIssues.length > 0) {
       const errors: Record<string, string> = {};
-      for (const issue of parsed.error.issues) {
-        const key = issue.path.join('.') || '_';
-        if (!errors[key]) errors[key] = issue.message;
+      if (!parsed.success) {
+        for (const issue of parsed.error.issues) {
+          const key = issue.path.join('.') || '_';
+          if (!errors[key]) errors[key] = issue.message;
+        }
+      }
+      // Already keyed `attributeValues.<key>`, the same path the backend returns, so the two
+      // sources land on the same input without either knowing about the other.
+      for (const issue of attributeIssues) {
+        if (!errors[issue.field]) errors[issue.field] = issue.message;
       }
       setFieldErrors(errors);
       setFormError('Оруулсан мэдээлэл шаардлага хангахгүй байна.');
@@ -463,16 +603,17 @@ export function ObjectFormPage(): ReactElement {
      * assessment are two calls, and letting the second one fail leaves an object on record
      * whose score was thrown away.
      */
-    if (wantsAssessment && redOrBlack) {
+    if (wantsAssessment && requiresFindings) {
+      const because = bandsUnknown ? 'Үнэлгээний түвшин тодорхойгүй тул' : 'Улаан/хар төлөвт';
       const missing: Record<string, string> = {};
       if (!initialConclusion.trim()) {
-        missing['assessment.conclusion'] = 'Улаан/хар төлөвт дүгнэлт заавал.';
+        missing['assessment.conclusion'] = `${because} дүгнэлт заавал.`;
       }
       if (!initialRecommendation.trim()) {
-        missing['assessment.recommendation'] = 'Улаан/хар төлөвт зөвлөмж заавал.';
+        missing['assessment.recommendation'] = `${because} зөвлөмж заавал.`;
       }
       if (!initialActionTaken.trim()) {
-        missing['assessment.actionTaken'] = 'Улаан/хар төлөвт авах арга хэмжээ заавал.';
+        missing['assessment.actionTaken'] = `${because} авах арга хэмжээ заавал.`;
       }
       if (Object.keys(missing).length > 0) {
         setFieldErrors(missing);
@@ -680,15 +821,6 @@ export function ObjectFormPage(): ReactElement {
           </Alert>
         )}
 
-        {isEdit ? (
-          <Alert variant="info">
-            Код болон ангиллыг өөрчлөхгүй. Ангилал өөрчлөгдвөл хадгалагдсан техникийн
-            талбарууд болон ачааллын тооцоо хүчингүй болно.
-          </Alert>
-        ) : (
-          <Alert variant="info">{OBJECT_CATEGORY_DESCRIPTIONS[category]}</Alert>
-        )}
-
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
           {isFloorless && !isEdit ? (
             <>
@@ -792,175 +924,254 @@ export function ObjectFormPage(): ReactElement {
           </Field>
         </div>
 
-        {/* Only the block belonging to the chosen category is rendered. */}
-        {category === 'PANEL' && (
-          <fieldset aria-label="Самбарын мэдээлэл">
+        {/*
+          The electrical detail, folded away.
+
+          Registering an asset is a code, a name and a type. Everything below is optional at
+          the API — nullish in the schema, null by default in the store — and putting two
+          dozen of them on screen at once is what made a simple registration feel heavy.
+          Nothing is removed and nothing about what is sent has changed: the same fields, one
+          click away.
+
+          It is never folded over anything that matters, which `electricalExpanded` above is
+          the whole of: a block that already holds a value opens itself, and so does one
+          holding a field error.
+        */}
+        <section className="rounded-lg ring-1 ring-slate-200">
+          {/* The accordion as the ARIA pattern describes it, and as the planned-work floor
+              sections already do it: a heading carrying the level, with the button that
+              opens the panel inside it. */}
+          <h3 className="text-sm font-semibold text-slate-900">
+            <button
+              type="button"
+              onClick={() => setElectricalToggled(!electricalExpanded)}
+              aria-expanded={electricalExpanded}
+              aria-controls={electricalPanelId}
+              className="flex w-full flex-wrap items-center gap-2 rounded-lg px-4 py-2.5 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-600"
+            >
+              <svg
+                className={`h-3.5 w-3.5 shrink-0 text-slate-500 transition-transform ${
+                  electricalExpanded ? 'rotate-90' : ''
+                }`}
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                aria-hidden="true"
+              >
+                <path d="M9 6l6 6-6 6" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              <span>Цахилгааны мэдээлэл</span>
+              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-normal text-slate-600">
+                {ELECTRICAL_BLOCK_LABELS[category]}
+              </span>
+              {/* Folded away by the user's own hand over values they typed: said plainly, so
+                  nothing they entered is hidden without a word. */}
+              {!electricalExpanded && electricalFilled && (
+                <span className="text-[11px] font-normal text-slate-500">
+                  Бөглөсөн мэдээлэлтэй
+                </span>
+              )}
+            </button>
+          </h3>
+
+          <div
+            id={electricalPanelId}
+            hidden={!electricalExpanded}
+            className="border-t border-slate-200 px-4 py-4"
+          >
+            {/* Only the block belonging to the chosen category is rendered. */}
+            {category === 'PANEL' && (
+              <fieldset aria-label="Самбарын мэдээлэл">
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                  <Field label="Хүчин чадал (kW)" error={fieldErrors['panel.capacityKw']}>
+                    <TextInput type="number" value={capacityKw} onChange={setCapacityKw} disabled={submitting} />
+                  </Field>
+                  <Field label="Байрлал" error={fieldErrors['panel.location']}>
+                    <TextInput value={location} onChange={setLocation} disabled={submitting} />
+                  </Field>
+                  <Field label="Хамгаалалт" error={fieldErrors['panel.protection']}>
+                    <TextInput value={protection} onChange={setProtection} disabled={submitting} />
+                  </Field>
+                </div>
+              </fieldset>
+            )}
+
+            {category === 'CIRCUIT' && (
+              <fieldset aria-label="Хэлхээний мэдээлэл">
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                  <Field
+                    label="Харьяалагдах самбар"
+                    error={fieldErrors['circuit.panelId']}
+                    hint={
+                      effectiveBuildingId ? 'Зөвхөн энэ барилгын самбарууд.' : undefined
+                    }
+                  >
+                    <SelectInput
+                      value={panelId}
+                      onChange={setPanelId}
+                      placeholder={
+                        panels.length === 0 && effectiveBuildingId
+                          ? 'Энэ барилгад самбар алга'
+                          : 'Самбар сонгох'
+                      }
+                      options={panels.map((panel) => ({
+                        value: panel.id,
+                        label: `${panel.name} (${panel.code})`,
+                      }))}
+                      disabled={submitting || !customerId}
+                    />
+                  </Field>
+                  <Field label="Хамгаалах автомат" error={fieldErrors['circuit.breakerRating']}>
+                    <TextInput value={breakerRating} onChange={setBreakerRating} disabled={submitting} />
+                  </Field>
+                  <Field label="Зөвшөөрөгдөх чадал (kW)" error={fieldErrors['circuit.permittedCapacityKw']}>
+                    <TextInput
+                      type="number"
+                      value={permittedCapacityKw}
+                      onChange={setPermittedCapacityKw}
+                      disabled={submitting}
+                    />
+                  </Field>
+                  <Field label="Кабелийн төрөл" error={fieldErrors['circuit.cableType']}>
+                    <TextInput value={cableType} onChange={setCableType} disabled={submitting} />
+                  </Field>
+                  <Field label="Огтлол (мм²)" error={fieldErrors['circuit.cableSectionMm2']}>
+                    <TextInput
+                      type="number"
+                      value={cableSectionMm2}
+                      onChange={setCableSectionMm2}
+                      disabled={submitting}
+                    />
+                  </Field>
+                  <Field label="Урт (м)" error={fieldErrors['circuit.cableLengthM']}>
+                    <TextInput type="number" value={cableLengthM} onChange={setCableLengthM} disabled={submitting} />
+                  </Field>
+                </div>
+              </fieldset>
+            )}
+
+            {category === 'EQUIPMENT' && (
+              <fieldset aria-label="Тоноглолын мэдээлэл">
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                  <Field
+                    label="Тэжээх хэлхээ"
+                    error={fieldErrors['equipment.circuitId']}
+                    hint={
+                      effectiveBuildingId ? 'Зөвхөн энэ барилгын хэлхээнүүд.' : undefined
+                    }
+                  >
+                    <SelectInput
+                      value={circuitId}
+                      onChange={setCircuitId}
+                      placeholder={
+                        circuits.length === 0 && effectiveBuildingId
+                          ? 'Энэ барилгад хэлхээ алга'
+                          : 'Хэлхээнд холбохгүй'
+                      }
+                      options={circuits.map((circuit) => ({
+                        value: circuit.id,
+                        label: `${circuit.name} (${circuit.code})`,
+                      }))}
+                      disabled={submitting || !customerId}
+                    />
+                  </Field>
+                  {/*
+                    Where the device is mounted, offered beside what feeds it.
+
+                    Scoped to the same customer and building as the circuit picker above, and
+                    for the same reason: the backend refuses a reference whose two ends stand in
+                    different buildings, so anything wider would be offering a choice that can
+                    only come back as a field error.
+
+                    Independent of the circuit. Both may be set — a sub-panel's main breaker is
+                    mounted in one panel and fed from another — and a mount carries no load
+                    whatsoever; only the circuit does.
+                  */}
+                  <Field
+                    label="Байрлах самбар"
+                    error={fieldErrors['equipment.panelId']}
+                    hint={
+                      effectiveBuildingId
+                        ? 'Самбарын дотор суурилуулсан бол сонгоно. Ачаалалд нөлөөлөхгүй.'
+                        : 'Самбарын дотор суурилуулсан бол сонгоно.'
+                    }
+                  >
+                    <SelectInput
+                      value={equipmentPanelId}
+                      onChange={setEquipmentPanelId}
+                      placeholder={
+                        panels.length === 0 && effectiveBuildingId
+                          ? 'Энэ барилгад самбар алга'
+                          : 'Самбарт байрлуулахгүй'
+                      }
+                      options={panels.map((panel) => ({
+                        value: panel.id,
+                        label: `${panel.name} (${panel.code})`,
+                      }))}
+                      disabled={submitting || !customerId}
+                    />
+                  </Field>
+                  <Field
+                    label="Нэрлэсэн чадал (kW)"
+                    error={fieldErrors['equipment.ratedPowerKw']}
+                    hint="Ачааллын тооцоонд ашиглана"
+                  >
+                    <TextInput type="number" value={ratedPowerKw} onChange={setRatedPowerKw} disabled={submitting} />
+                  </Field>
+                  <Field label="Тоо ширхэг" error={fieldErrors['equipment.quantity']}>
+                    <TextInput type="number" value={quantity} onChange={setQuantity} disabled={submitting} />
+                  </Field>
+                  <Field
+                    label="Ашиглалтын коэффициент"
+                    error={fieldErrors['equipment.usageCoefficient']}
+                    hint="Хоосон бол 1.0 гэж тооцно"
+                  >
+                    <TextInput
+                      type="number"
+                      value={usageCoefficient}
+                      onChange={setUsageCoefficient}
+                      disabled={submitting}
+                    />
+                  </Field>
+                  <Field label="Суурилуулсан огноо" error={fieldErrors['equipment.installedAt']}>
+                    <TextInput type="date" value={installedAt} onChange={setInstalledAt} disabled={submitting} />
+                  </Field>
+                  <Field label="Баталгаат хугацаа" error={fieldErrors['equipment.warrantyUntil']}>
+                    <TextInput type="date" value={warrantyUntil} onChange={setWarrantyUntil} disabled={submitting} />
+                  </Field>
+                </div>
+              </fieldset>
+            )}
+          </div>
+        </section>
+
+        {/*
+          The chosen type's own fields, rendered entirely from its definitions.
+
+          Nothing here names an attribute, a category or a type — adding a field to Автомат
+          таслуур is an edit in Тоноглолын төрөл, not a change to this file. The section is
+          absent altogether for a type that declares nothing, which is every type registered
+          before this existed.
+
+          The Үнэлгээ бүртгэх form asks the same questions from the same renderer, and both
+          write to the object: these are facts about the kit, not about a visit.
+        */}
+        {typeAttributes.length > 0 && (
+          <fieldset aria-label={`${selectedType?.name ?? ''} үзүүлэлт`.trim()}>
             <legend className="mb-3 w-full border-b border-slate-200 pb-1.5 text-sm font-semibold text-slate-900">
-              Самбарын мэдээлэл
+              {selectedType?.name ?? 'Төрлийн'} үзүүлэлт
             </legend>
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-              <Field label="Хүчин чадал (kW)" error={fieldErrors['panel.capacityKw']}>
-                <TextInput type="number" value={capacityKw} onChange={setCapacityKw} disabled={submitting} />
-              </Field>
-              <Field label="Байрлал" error={fieldErrors['panel.location']}>
-                <TextInput value={location} onChange={setLocation} disabled={submitting} />
-              </Field>
-              <Field label="Хамгаалалт" error={fieldErrors['panel.protection']}>
-                <TextInput value={protection} onChange={setProtection} disabled={submitting} />
-              </Field>
-            </div>
-          </fieldset>
-        )}
-
-        {category === 'CIRCUIT' && (
-          <fieldset aria-label="Хэлхээний мэдээлэл">
-            <legend className="mb-3 w-full border-b border-slate-200 pb-1.5 text-sm font-semibold text-slate-900">
-              Хэлхээний мэдээлэл
-            </legend>
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-              <Field
-                label="Харьяалагдах самбар"
-                error={fieldErrors['circuit.panelId']}
-                hint={
-                  effectiveBuildingId ? 'Зөвхөн энэ барилгын самбарууд.' : undefined
+            <div className="grid grid-cols-1 gap-x-5 gap-y-3.5 md:grid-cols-2 xl:grid-cols-3">
+              <ObjectAttributeFields
+                attributes={typeAttributes}
+                drafts={attributeDrafts}
+                onChange={(key, next) =>
+                  setAttributeDrafts((current) => ({ ...current, [key]: next }))
                 }
-              >
-                <SelectInput
-                  value={panelId}
-                  onChange={setPanelId}
-                  placeholder={
-                    panels.length === 0 && effectiveBuildingId
-                      ? 'Энэ барилгад самбар алга'
-                      : 'Самбар сонгох'
-                  }
-                  options={panels.map((panel) => ({
-                    value: panel.id,
-                    label: `${panel.name} (${panel.code})`,
-                  }))}
-                  disabled={submitting || !customerId}
-                />
-              </Field>
-              <Field label="Хамгаалах автомат" error={fieldErrors['circuit.breakerRating']}>
-                <TextInput value={breakerRating} onChange={setBreakerRating} disabled={submitting} />
-              </Field>
-              <Field label="Зөвшөөрөгдөх чадал (kW)" error={fieldErrors['circuit.permittedCapacityKw']}>
-                <TextInput
-                  type="number"
-                  value={permittedCapacityKw}
-                  onChange={setPermittedCapacityKw}
-                  disabled={submitting}
-                />
-              </Field>
-              <Field label="Кабелийн төрөл" error={fieldErrors['circuit.cableType']}>
-                <TextInput value={cableType} onChange={setCableType} disabled={submitting} />
-              </Field>
-              <Field label="Огтлол (мм²)" error={fieldErrors['circuit.cableSectionMm2']}>
-                <TextInput
-                  type="number"
-                  value={cableSectionMm2}
-                  onChange={setCableSectionMm2}
-                  disabled={submitting}
-                />
-              </Field>
-              <Field label="Урт (м)" error={fieldErrors['circuit.cableLengthM']}>
-                <TextInput type="number" value={cableLengthM} onChange={setCableLengthM} disabled={submitting} />
-              </Field>
-            </div>
-          </fieldset>
-        )}
-
-        {category === 'EQUIPMENT' && (
-          <fieldset aria-label="Тоноглолын мэдээлэл">
-            <legend className="mb-3 w-full border-b border-slate-200 pb-1.5 text-sm font-semibold text-slate-900">
-              Тоноглолын мэдээлэл
-            </legend>
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-              <Field
-                label="Тэжээх хэлхээ"
-                error={fieldErrors['equipment.circuitId']}
-                hint={
-                  effectiveBuildingId ? 'Зөвхөн энэ барилгын хэлхээнүүд.' : undefined
-                }
-              >
-                <SelectInput
-                  value={circuitId}
-                  onChange={setCircuitId}
-                  placeholder={
-                    circuits.length === 0 && effectiveBuildingId
-                      ? 'Энэ барилгад хэлхээ алга'
-                      : 'Хэлхээнд холбохгүй'
-                  }
-                  options={circuits.map((circuit) => ({
-                    value: circuit.id,
-                    label: `${circuit.name} (${circuit.code})`,
-                  }))}
-                  disabled={submitting || !customerId}
-                />
-              </Field>
-              {/*
-                Where the device is mounted, offered beside what feeds it.
-
-                Scoped to the same customer and building as the circuit picker above, and
-                for the same reason: the backend refuses a reference whose two ends stand in
-                different buildings, so anything wider would be offering a choice that can
-                only come back as a field error.
-
-                Independent of the circuit. Both may be set — a sub-panel's main breaker is
-                mounted in one panel and fed from another — and a mount carries no load
-                whatsoever; only the circuit does.
-              */}
-              <Field
-                label="Байрлах самбар"
-                error={fieldErrors['equipment.panelId']}
-                hint={
-                  effectiveBuildingId
-                    ? 'Самбарын дотор суурилуулсан бол сонгоно. Ачаалалд нөлөөлөхгүй.'
-                    : 'Самбарын дотор суурилуулсан бол сонгоно.'
-                }
-              >
-                <SelectInput
-                  value={equipmentPanelId}
-                  onChange={setEquipmentPanelId}
-                  placeholder={
-                    panels.length === 0 && effectiveBuildingId
-                      ? 'Энэ барилгад самбар алга'
-                      : 'Самбарт байрлуулахгүй'
-                  }
-                  options={panels.map((panel) => ({
-                    value: panel.id,
-                    label: `${panel.name} (${panel.code})`,
-                  }))}
-                  disabled={submitting || !customerId}
-                />
-              </Field>
-              <Field
-                label="Нэрлэсэн чадал (kW)"
-                error={fieldErrors['equipment.ratedPowerKw']}
-                hint="Ачааллын тооцоонд ашиглана"
-              >
-                <TextInput type="number" value={ratedPowerKw} onChange={setRatedPowerKw} disabled={submitting} />
-              </Field>
-              <Field label="Тоо ширхэг" error={fieldErrors['equipment.quantity']}>
-                <TextInput type="number" value={quantity} onChange={setQuantity} disabled={submitting} />
-              </Field>
-              <Field
-                label="Ашиглалтын коэффициент"
-                error={fieldErrors['equipment.usageCoefficient']}
-                hint="Хоосон бол 1.0 гэж тооцно"
-              >
-                <TextInput
-                  type="number"
-                  value={usageCoefficient}
-                  onChange={setUsageCoefficient}
-                  disabled={submitting}
-                />
-              </Field>
-              <Field label="Суурилуулсан огноо" error={fieldErrors['equipment.installedAt']}>
-                <TextInput type="date" value={installedAt} onChange={setInstalledAt} disabled={submitting} />
-              </Field>
-              <Field label="Баталгаат хугацаа" error={fieldErrors['equipment.warrantyUntil']}>
-                <TextInput type="date" value={warrantyUntil} onChange={setWarrantyUntil} disabled={submitting} />
-              </Field>
+                disabled={submitting}
+                fieldErrors={fieldErrors}
+              />
             </div>
           </fieldset>
         )}
@@ -985,7 +1196,7 @@ export function ObjectFormPage(): ReactElement {
               </Field>
               <Field
                 label="Дүгнэлт"
-                required={redOrBlack}
+                required={requiresFindings}
                 error={fieldErrors['assessment.conclusion']}
               >
                 <TextInput
@@ -996,7 +1207,7 @@ export function ObjectFormPage(): ReactElement {
               </Field>
               <Field
                 label="Зөвлөмж"
-                required={redOrBlack}
+                required={requiresFindings}
                 error={fieldErrors['assessment.recommendation']}
               >
                 <TextInput
@@ -1012,12 +1223,14 @@ export function ObjectFormPage(): ReactElement {
               */}
               <Field
                 label="Авах арга хэмжээ"
-                required={redOrBlack}
+                required={requiresFindings}
                 error={fieldErrors['assessment.actionTaken']}
                 hint={
                   redOrBlack
                     ? 'Улаан/хар төлөвт заавал'
-                    : 'Газар дээр нь хийсэн ажил'
+                    : requiresFindings
+                      ? 'Заавал'
+                      : 'Газар дээр нь хийсэн ажил'
                 }
               >
                 <TextInput
@@ -1032,6 +1245,16 @@ export function ObjectFormPage(): ReactElement {
               <p className="mt-2 text-xs text-amber-700">
                 Оруулсан оноо улаан/хар түвшинд байна: дүгнэлт, зөвлөмж, авах арга хэмжээ
                 гурвуулаа заавал.
+              </p>
+            )}
+
+            {/* No threshold is stated here — none is known. The form only says why it is
+                asking for all three. */}
+            {bandsUnknown && scoreTyped && (
+              <p className="mt-2 text-xs text-amber-700">
+                Үнэлгээний түвшний тохиргоог уншиж чадсангүй. Аль түвшинд байгааг
+                тодорхойлох боломжгүй тул дүгнэлт, зөвлөмж, авах арга хэмжээ гурвуулаа
+                заавал.
               </p>
             )}
 

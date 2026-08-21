@@ -1,5 +1,57 @@
 import '../../../core/util/json_parse.dart';
+import '../project/data/models/object_models.dart';
 import 'service_request_vocabulary.dart';
+
+/// The fault pin's coordinate type is the object tree's own [PlanPositionModel] — the
+/// same normalised pair a device's placement uses, because it is the same drawing and
+/// the same arithmetic. Re-exported so a screen reading `planPosition` off a request
+/// does not have to reach into the project feature's model file to name its type.
+export '../project/data/models/object_models.dart' show PlanPositionModel;
+
+/// The coarse workflow step the server groups a request under — the `stage` block on
+/// both service-request DTOs.
+///
+/// Sent alongside `status`, not instead of it, and the two answer different questions.
+/// `status` is what the engine is doing and what the transition rules are written
+/// against: ON_SITE is what unlocks the conclusion, UNASSIGNED is what puts a job back
+/// in the claim pool. A stage is what the business calls that step, grouped and named
+/// by an administrator — the shipped ladder folds ON_SITE and IN_PROGRESS into one
+/// «Гүйцэтгэж байна».
+///
+/// So a control keeps reading `status`, and a label that only reports where the job is
+/// prefers this: it is the name the office and the dispatch board use for the same
+/// request, and printing a different word on the technician's phone is how two people
+/// looking at one job end up describing it differently.
+///
+/// Null on an older server, and on a status the administrator's ladder covers nowhere.
+/// Every reader falls back to the status label for both cases.
+class ServiceRequestStageRef {
+  const ServiceRequestStageRef({
+    required this.key,
+    required this.label,
+    required this.colour,
+  });
+
+  /// Stable across renames.
+  final String key;
+
+  final String label;
+
+  /// A name from `STAGE_COLOURS`, resolved to a triad by `Tone.named`.
+  final String colour;
+
+  static ServiceRequestStageRef? fromJson(Object? json) {
+    if (json is! Map<String, dynamic>) return null;
+    final String? key = parseString(json['key']);
+    final String? label = parseString(json['label']);
+    if (key == null || label == null || label.isEmpty) return null;
+    return ServiceRequestStageRef(
+      key: key,
+      label: label,
+      colour: parseString(json['colour']) ?? '',
+    );
+  }
+}
 
 /// Mirrors `ServiceRequestListItemDto` — one row of `GET /service-requests`.
 ///
@@ -17,9 +69,9 @@ class ServiceRequestListItemModel {
     required this.building,
     required this.floor,
     required this.device,
-    required this.requestType,
     required this.isUrgent,
     required this.status,
+    required this.stage,
     required this.slaState,
     required this.slaDueAt,
     required this.slaRemainingMinutes,
@@ -34,9 +86,13 @@ class ServiceRequestListItemModel {
   final NamedRef? building;
   final NamedRef? floor;
   final NamedRef? device;
-  final ServiceRequestType? requestType;
   final bool isUrgent;
   final ServiceRequestStatus? status;
+
+  /// What this installation calls the step [status] belongs to. See
+  /// [ServiceRequestStageRef].
+  final ServiceRequestStageRef? stage;
+
   final SlaState? slaState;
   final DateTime? slaDueAt;
 
@@ -60,9 +116,9 @@ class ServiceRequestListItemModel {
       building: NamedRef.fromJson(json['building']),
       floor: NamedRef.fromJson(json['floor']),
       device: NamedRef.fromJson(json['device']),
-      requestType: ServiceRequestType.fromWire(parseString(json['requestType'])),
       isUrgent: parseBool(json['isUrgent']),
       status: ServiceRequestStatus.fromWire(parseString(json['status'])),
+      stage: ServiceRequestStageRef.fromJson(json['stage']),
       slaState: SlaState.fromWire(parseString(json['slaState'])),
       slaDueAt: parseDate(json['slaDueAt']),
       slaRemainingMinutes: parseInt(json['slaRemainingMinutes']),
@@ -72,18 +128,26 @@ class ServiceRequestListItemModel {
     );
   }
 
+  /// The step name to print, best available first.
+  ///
+  /// The stage is preferred because it is the word the dispatch board and the office
+  /// use for this request; the status label is the fallback, and it carries the
+  /// administrator's rename too whenever their stage covers exactly one status.
+  String? get stepLabel => stage?.label ?? status?.label;
+
   /// What a list card calls this request.
   ///
   /// `ServiceRequestListItemDto` carries no `description` — only the detail DTO does,
   /// and fetching a detail per row would be a request per card. The device is the
-  /// most specific thing on the list row; failing that, the request type says what
-  /// kind of job it is. The request number is never used, because it is already
-  /// printed on its own mono line and a card titled with its own reference says
-  /// nothing twice.
+  /// most specific thing on the list row; failing that the location does, narrowest
+  /// first. The request type used to sit in the middle of this chain and no longer
+  /// exists. The request number is never used, because it is already printed on its own
+  /// mono line and a card titled with its own reference says nothing twice.
   String get subjectLabel {
-    final NamedRef? target = device;
-    if (target != null && target.name.isNotEmpty) return target.name;
-    return requestType?.label ?? 'Үйлчилгээний хүсэлт';
+    for (final NamedRef? target in <NamedRef?>[device, floor, building, customer]) {
+      if (target != null && target.name.isNotEmpty) return target.name;
+    }
+    return 'Үйлчилгээний хүсэлт';
   }
 
   String get locationLabel => <String>[
@@ -195,9 +259,9 @@ class ServiceRequestDetailModel {
     required this.panel,
     required this.circuit,
     required this.branch,
-    required this.requestType,
     required this.isUrgent,
     required this.status,
+    required this.stage,
     required this.slaState,
     required this.slaDueAt,
     required this.slaRemainingMinutes,
@@ -209,6 +273,7 @@ class ServiceRequestDetailModel {
     required this.contactPhone,
     required this.attachments,
     required this.locationPath,
+    required this.planPosition,
   });
 
   final String id;
@@ -222,9 +287,13 @@ class ServiceRequestDetailModel {
   final NamedRef? panel;
   final NamedRef? circuit;
   final String? branch;
-  final ServiceRequestType? requestType;
   final bool isUrgent;
   final ServiceRequestStatus? status;
+
+  /// What this installation calls the step [status] belongs to. See
+  /// [ServiceRequestStageRef].
+  final ServiceRequestStageRef? stage;
+
   final SlaState? slaState;
   final DateTime? slaDueAt;
   final int? slaRemainingMinutes;
@@ -244,6 +313,17 @@ class ServiceRequestDetailModel {
   /// prints the trail, it does not navigate it.
   final List<String> locationPath;
 
+  /// Where on [floor]'s plan the reporter said the fault is, or null when they marked
+  /// nothing.
+  ///
+  /// A fraction of the drawing's width and height, so the mark survives the plan being
+  /// re-imported at another resolution. It is the ONE fact on this record that a
+  /// sentence cannot carry: "3-р давхар" names a floor, not the panel at the far end of
+  /// the corridor, and the technician walking in is the person who needs the
+  /// difference. Read-only in this app — placing the pin is the customer's act, on the
+  /// intake form.
+  final PlanPositionModel? planPosition;
+
   factory ServiceRequestDetailModel.fromJson(Map<String, dynamic> json) {
     return ServiceRequestDetailModel(
       id: parseString(json['id']) ?? '',
@@ -257,9 +337,9 @@ class ServiceRequestDetailModel {
       panel: NamedRef.fromJson(json['panel']),
       circuit: NamedRef.fromJson(json['circuit']),
       branch: parseString(json['branch']),
-      requestType: ServiceRequestType.fromWire(parseString(json['requestType'])),
       isUrgent: parseBool(json['isUrgent']),
       status: ServiceRequestStatus.fromWire(parseString(json['status'])),
+      stage: ServiceRequestStageRef.fromJson(json['stage']),
       slaState: SlaState.fromWire(parseString(json['slaState'])),
       slaDueAt: parseDate(json['slaDueAt']),
       slaRemainingMinutes: parseInt(json['slaRemainingMinutes']),
@@ -274,6 +354,10 @@ class ServiceRequestDetailModel {
         ServiceRequestAttachmentModel.fromJson,
       ),
       locationPath: _breadcrumbNames(json['locationPath']),
+      // Null for a malformed or out-of-range coordinate rather than a throw — see
+      // [PlanPositionModel.fromJson]. The request then reads as "no pin", which is the
+      // truthful state; a corrupt pair must not cost the whole record.
+      planPosition: PlanPositionModel.fromJson(json['planPosition']),
     );
   }
 
@@ -303,12 +387,17 @@ class ServiceRequestDetailModel {
     ].join(' · ');
   }
 
+  /// The step name to print, stage first. See
+  /// [ServiceRequestListItemModel.stepLabel].
+  String? get stepLabel => stage?.label ?? status?.label;
+
   /// The heading, chosen the same way a list card chooses one, so the title does not
   /// change under the reader when the fetch lands.
   String get subjectLabel {
-    final NamedRef? target = device;
-    if (target != null && target.name.isNotEmpty) return target.name;
-    return requestType?.label ?? 'Үйлчилгээний хүсэлт';
+    for (final NamedRef? target in <NamedRef?>[device, floor, building, customer]) {
+      if (target != null && target.name.isNotEmpty) return target.name;
+    }
+    return 'Үйлчилгээний хүсэлт';
   }
 
   /// Nobody holds this request. The server's own definition, both halves of it — see

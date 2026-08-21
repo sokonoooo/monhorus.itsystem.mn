@@ -62,6 +62,29 @@ describe('AuditLogPage', () => {
     expect(within(table).getByText('Гэрээ баталгаажсан')).toBeInTheDocument();
   });
 
+  /**
+   * Row numbers only mean something if they are continuous: asked to "check entry 26",
+   * a reader must find it as row 26 on page two, not as row 1 all over again.
+   */
+  it('numbers page two from 26 rather than restarting at 1', async () => {
+    vi.spyOn(auditService, 'list').mockResolvedValue({
+      ...makePage([makeEntry()]),
+      page: 2,
+      total: 26,
+      totalPages: 2,
+    });
+
+    renderWithAuth(<AuditLogPage />, {
+      permissions: [PERMISSIONS.AUDIT_VIEW],
+      route: '/audit?page=2',
+    });
+
+    const table = await screen.findByRole('table');
+    expect(within(table).getByRole('columnheader', { name: '№' })).toBeInTheDocument();
+    const firstRow = within(table).getAllByRole('row')[1]!;
+    expect(within(firstRow).getAllByRole('cell')[0]).toHaveTextContent(/^26$/);
+  });
+
   it('shows an empty state when there is nothing logged', async () => {
     vi.spyOn(auditService, 'list').mockResolvedValue(makePage([]));
 
@@ -95,14 +118,19 @@ describe('AuditLogPage', () => {
     expect(screen.queryByRole('menuitem', { name: /Устгах/ })).not.toBeInTheDocument();
   });
 
-  it('warns a caller without salary permission that some rows are withheld', async () => {
+  /**
+   * The withheld-rows notice moved to the Help panel. The log itself now says nothing about
+   * it either way, which is the point of the change: the page carries records, not caveats.
+   */
+  it('carries no salary notice on the page, with or without the permission', async () => {
     vi.spyOn(auditService, 'list').mockResolvedValue(makePage([makeEntry()]));
 
     renderWithAuth(<AuditLogPage />, { permissions: [PERMISSIONS.AUDIT_VIEW] });
 
+    await screen.findByRole('table');
     expect(
-      await screen.findByText(/Цалинтай холбоотой бүртгэлийг харахын тулд/),
-    ).toBeInTheDocument();
+      screen.queryByText(/Цалинтай холбоотой бүртгэлийг харахын тулд/),
+    ).not.toBeInTheDocument();
   });
 
   it('omits the salary notice when the permission is held', async () => {

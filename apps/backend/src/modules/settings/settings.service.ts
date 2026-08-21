@@ -6,10 +6,12 @@ import {
   SETTING_GROUP_DESCRIPTIONS,
   SETTING_GROUP_LABELS,
   defaultSettings,
+  requestStagesOf,
   riskBandsOf,
   slaConfigOf,
   validateSettings,
   type RiskBand,
+  type ServiceRequestStage,
   type SettingEntryDto,
   type SettingKey,
   type SettingValue,
@@ -77,6 +79,10 @@ export async function getSlaConfig(): Promise<SlaConfig> {
 
 export async function getRiskBands(): Promise<RiskBand[]> {
   return riskBandsOf(await getSettings());
+}
+
+export async function getRequestStages(): Promise<readonly ServiceRequestStage[]> {
+  return requestStagesOf(await getSettings());
 }
 
 // -- Presentation ------------------------------------------------------------

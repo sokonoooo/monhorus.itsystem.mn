@@ -12,7 +12,6 @@ import {
   REPORT_TYPE_LABELS,
   RISK_LEVEL_LABELS,
   SERVICE_REQUEST_STATUS_LABELS,
-  SERVICE_REQUEST_TYPE_LABELS,
   SETTING_KEYS,
   effectivePlannedWorkStatus,
   type KpiSummaryDto,
@@ -34,7 +33,7 @@ import { Customer } from '../objects/object.models';
 import { PlannedWork } from '../planned-work/planned-work.models';
 import { Report, ReportItem } from '../report-record/report-record.model';
 import { ServiceRequest } from '../service-request/service-request.model';
-import { getSettings } from '../settings/settings.service';
+import { getSettings, getRiskBands } from '../settings/settings.service';
 
 /**
  * Section 15.2 report catalogue.
@@ -77,12 +76,18 @@ function labelOf(value: unknown, field: string): string | null {
   return raw === null || raw === undefined ? null : String(raw);
 }
 
+/** Rows to skip to reach the requested window. */
+function skipFor(query: ReportQueryInput): number {
+  return (query.page - 1) * query.limit;
+}
+
 function envelope(
   key: ReportKey,
   query: ReportQueryInput,
   columns: readonly ReportColumnDto[],
   rows: readonly Row[],
   totals: ReportRowDto | null,
+  total: number,
 ): ReportResultDto {
   return {
     key,
@@ -93,10 +98,16 @@ function envelope(
     dateTo: query.dateTo ?? null,
     columns,
     rows,
+    page: query.page,
+    limit: query.limit,
+    total,
+    totalPages: total === 0 ? 0 : Math.ceil(total / query.limit),
     totals,
-    // A capped row set is stated rather than silently truncated, so an export cannot be
-    // mistaken for a complete one.
-    truncatedAt: rows.length >= query.limit ? query.limit : null,
+    // A paged reader reaches every row through `totalPages`, so nothing is hidden from
+    // them and there is nothing to warn about. The CSV export is the exception: it renders
+    // one window and offers no way to ask for the next, so a capped export still says so
+    // rather than passing itself off as the whole report.
+    truncatedAt: query.format === 'csv' && total > query.limit ? query.limit : null,
   };
 }
 
@@ -110,15 +121,26 @@ async function plannedWorkReport(query: ReportQueryInput): Promise<ReportResultD
   };
 
   const now = new Date();
-  const works = await PlannedWork.find(filter)
-    .populate([
-      { path: 'project', select: 'name' },
-      { path: 'building', select: 'name' },
-      { path: 'customer', select: 'name' },
-    ])
-    .sort({ plannedStartDate: -1 })
-    .limit(query.limit)
-    .lean();
+  // The window, the count and the footer's average are asked for together. The average is
+  // aggregated over the whole filtered set rather than reduced over `rows`: a mean of the
+  // twenty rows on screen is not the mean of the report.
+  const [works, total, summary] = await Promise.all([
+    PlannedWork.find(filter)
+      .populate([
+        { path: 'project', select: 'name' },
+        { path: 'building', select: 'name' },
+        { path: 'customer', select: 'name' },
+      ])
+      .sort({ plannedStartDate: -1 })
+      .skip(skipFor(query))
+      .limit(query.limit)
+      .lean(),
+    PlannedWork.countDocuments(filter),
+    PlannedWork.aggregate<{ progress: number }>([
+      { $match: filter },
+      { $group: { _id: null, progress: { $avg: '$progressPercent' } } },
+    ]),
+  ]);
 
   const rows: Row[] = works.map((work) => ({
     workNumber: work.workNumber,
@@ -137,7 +159,6 @@ async function plannedWorkReport(query: ReportQueryInput): Promise<ReportResultD
     completedLate: work.completedLate ? 'Тийм' : 'Үгүй',
   }));
 
-  const totalProgress = rows.reduce((sum, row) => sum + Number(row.progressPercent ?? 0), 0);
 
   return envelope(
     'PLANNED_WORK',
@@ -157,12 +178,13 @@ async function plannedWorkReport(query: ReportQueryInput): Promise<ReportResultD
       { key: 'completedLate', label: 'Хоцорсон', format: 'TEXT' },
     ],
     rows,
-    rows.length > 0
+    total > 0
       ? {
-          workNumber: `Нийт ${rows.length}`,
-          progressPercent: Math.round(totalProgress / rows.length),
+          workNumber: `Нийт ${total}`,
+          progressPercent: Math.round(summary[0]?.progress ?? 0),
         }
       : null,
+    total,
   );
 }
 
@@ -176,18 +198,25 @@ async function serviceWorkReport(query: ReportQueryInput): Promise<ReportResultD
     ...(query.employeeId ? { assignedEmployees: new Types.ObjectId(query.employeeId) } : {}),
   };
 
-  const requests = await ServiceRequest.find(filter)
+  const [requests, total] = await Promise.all([
+    ServiceRequest.find(filter)
     .populate([
       { path: 'customer', select: 'name' },
       { path: 'building', select: 'name' },
     ])
     .sort({ createdAt: -1 })
-    .limit(query.limit)
-    .lean();
+      .skip(skipFor(query))
+      .limit(query.limit)
+      .lean(),
+    ServiceRequest.countDocuments(filter)
+    .populate([
+      { path: 'customer', select: 'name' },
+      { path: 'building', select: 'name' },
+    ]),
+  ]);
 
   const rows: Row[] = requests.map((request) => ({
     requestNumber: request.requestNumber,
-    type: SERVICE_REQUEST_TYPE_LABELS[request.requestType],
     urgent: request.isUrgent ? 'Тийм' : 'Үгүй',
     customer: nameOf(request.customer),
     building: nameOf(request.building),
@@ -208,7 +237,6 @@ async function serviceWorkReport(query: ReportQueryInput): Promise<ReportResultD
     query,
     [
       { key: 'requestNumber', label: 'Хүсэлтийн №', format: 'TEXT' },
-      { key: 'type', label: 'Төрөл', format: 'TEXT' },
       { key: 'urgent', label: 'Яаралтай', format: 'TEXT' },
       { key: 'customer', label: 'Харилцагч', format: 'TEXT' },
       { key: 'building', label: 'Барилга', format: 'TEXT' },
@@ -218,18 +246,23 @@ async function serviceWorkReport(query: ReportQueryInput): Promise<ReportResultD
       { key: 'resolutionHours', label: 'Шийдвэрлэсэн цаг', format: 'NUMBER', align: 'right' },
     ],
     rows,
-    rows.length > 0 ? { requestNumber: `Нийт ${rows.length}` } : null,
+    total > 0 ? { requestNumber: `Нийт ${total}` } : null,
+    total,
   );
 }
 
 // -- 15.2 Эрсдэл ба үнэлгээ ---------------------------------------------------
 
 async function riskAssessmentReport(query: ReportQueryInput): Promise<ReportResultDto> {
-  const assessments = await ObjectAssessment.find(withinRange('assessedAt', query))
+  const [assessments, total] = await Promise.all([
+    ObjectAssessment.find(withinRange('assessedAt', query))
     .populate({ path: 'object', select: 'code name customer' })
     .sort({ assessedAt: -1 })
-    .limit(query.limit)
-    .lean();
+      .skip(skipFor(query))
+      .limit(query.limit)
+      .lean(),
+    ObjectAssessment.countDocuments(withinRange('assessedAt', query)),
+  ]);
 
   const filtered = query.customerId
     ? assessments.filter(
@@ -268,7 +301,8 @@ async function riskAssessmentReport(query: ReportQueryInput): Promise<ReportResu
       { key: 'assessedAt', label: 'Огноо', format: 'DATETIME' },
     ],
     rows,
-    rows.length > 0 ? { objectCode: `Нийт ${rows.length}` } : null,
+    total > 0 ? { objectCode: `Нийт ${total}` } : null,
+    total,
   );
 }
 
@@ -280,11 +314,15 @@ async function slaReport(query: ReportQueryInput): Promise<ReportResultDto> {
     ...(query.customerId ? { customer: new Types.ObjectId(query.customerId) } : {}),
   };
 
-  const requests = await ServiceRequest.find(filter)
+  const [requests, total] = await Promise.all([
+    ServiceRequest.find(filter)
     .populate({ path: 'customer', select: 'name' })
     .sort({ slaDueAt: 1 })
-    .limit(query.limit)
-    .lean();
+      .skip(skipFor(query))
+      .limit(query.limit)
+      .lean(),
+    ServiceRequest.countDocuments(filter),
+  ]);
 
   const now = new Date();
   const rows: Row[] = requests.map((request) => {
@@ -295,7 +333,6 @@ async function slaReport(query: ReportQueryInput): Promise<ReportResultDto> {
     return {
       requestNumber: request.requestNumber,
       customer: nameOf(request.customer),
-      type: SERVICE_REQUEST_TYPE_LABELS[request.requestType],
       status: SERVICE_REQUEST_STATUS_LABELS[request.status],
       slaDueAt: isoOrNull(request.slaDueAt),
       completedAt: isoOrNull(settledAt),
@@ -320,7 +357,6 @@ async function slaReport(query: ReportQueryInput): Promise<ReportResultDto> {
     [
       { key: 'requestNumber', label: 'Хүсэлтийн №', format: 'TEXT' },
       { key: 'customer', label: 'Харилцагч', format: 'TEXT' },
-      { key: 'type', label: 'Төрөл', format: 'TEXT' },
       { key: 'status', label: 'Төлөв', format: 'TEXT' },
       { key: 'slaDueAt', label: 'SLA хугацаа', format: 'DATETIME' },
       { key: 'completedAt', label: 'Дууссан', format: 'DATETIME' },
@@ -328,25 +364,47 @@ async function slaReport(query: ReportQueryInput): Promise<ReportResultDto> {
       { key: 'extendedMinutes', label: 'Сунгасан (мин)', format: 'NUMBER', align: 'right' },
     ],
     rows,
-    rows.length > 0 ? { requestNumber: `Нийт ${rows.length}`, slaResult: `Зөрчсөн ${breachedCount}` } : null,
+    total > 0
+      ? { requestNumber: `Нийт ${total}`, slaResult: `Зөрчсөн ${breachedCount}` }
+      : null,
+    total,
   );
 }
 
 // -- 15.2 Харилцагч, барилгын тайлан -------------------------------------------
 
 async function customerReport(query: ReportQueryInput): Promise<ReportResultDto> {
-  const customers = await Customer.find(
-    query.customerId ? { _id: new Types.ObjectId(query.customerId) } : {},
-  )
-    .sort({ name: 1 })
-    .limit(query.limit)
-    .lean();
+  const customerFilter: FilterQuery<Record<string, unknown>> = query.customerId
+    ? { _id: new Types.ObjectId(query.customerId) }
+    : {};
+
+  const [customers, total] = await Promise.all([
+    Customer.find(customerFilter)
+      .sort({ name: 1 })
+      .skip(skipFor(query))
+      .limit(query.limit)
+      .lean(),
+    Customer.countDocuments(customerFilter),
+  ]);
 
   const ids = customers.map((customer) => customer._id);
   const range = withinRange('createdAt', query);
 
-  // Four grouped aggregations rather than four queries per customer.
-  const [requests, works, invoices, objects] = await Promise.all([
+  // Four grouped aggregations rather than four queries per customer, plus one more for
+  // the footer. The four above are scoped to the customers ON THIS PAGE, because that is
+  // what the rows need; the footer describes every customer the filter matches, so it
+  // cannot reuse them.
+  /**
+   * Which bands count as "critical" is configuration, so the level names cannot be
+   * literals inside the pipeline: a renamed band would silently stop being counted and
+   * the number would still look plausible. A band that demands a written conclusion is
+   * the one an operator treats as serious.
+   */
+  const criticalBandKeys = (await getRiskBands())
+    .filter((band) => band.requiresConclusion)
+    .map((band) => band.level);
+
+  const [requests, works, invoices, objects, wholeSet] = await Promise.all([
     ServiceRequest.aggregate<{ _id: Types.ObjectId; count: number }>([
       { $match: { customer: { $in: ids }, ...range } },
       { $group: { _id: '$customer', count: { $sum: 1 } } },
@@ -374,12 +432,27 @@ async function customerReport(query: ReportQueryInput): Promise<ReportResultDto>
           critical: {
             $sum: {
               $cond: [
-                { $in: ['$latestAssessment.riskLevel', ['CRITICAL', 'OUT_OF_SERVICE']] },
+                { $in: ['$latestAssessment.riskLevel', criticalBandKeys] },
                 1,
                 0,
               ],
             },
           },
+        },
+      },
+    ]),
+    Invoice.aggregate<{ total: number; unpaid: number }>([
+      {
+        $match: {
+          ...(query.customerId ? { customer: new Types.ObjectId(query.customerId) } : {}),
+          status: { $ne: 'CANCELLED' },
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: '$total' },
+          unpaid: { $sum: { $cond: [{ $eq: ['$status', 'SENT'] }, '$total', 0] } },
         },
       },
     ]),
@@ -418,26 +491,33 @@ async function customerReport(query: ReportQueryInput): Promise<ReportResultDto>
       { key: 'receivableTotal', label: 'Авлага', format: 'MONEY', align: 'right' },
     ],
     rows,
-    rows.length > 0
+    total > 0
       ? {
-          customer: `Нийт ${rows.length}`,
-          invoicedTotal: rows.reduce((sum, row) => sum + Number(row.invoicedTotal ?? 0), 0),
-          receivableTotal: rows.reduce((sum, row) => sum + Number(row.receivableTotal ?? 0), 0),
+          customer: `Нийт ${total}`,
+          invoicedTotal: wholeSet[0]?.total ?? 0,
+          receivableTotal: wholeSet[0]?.unpaid ?? 0,
         }
       : null,
+    total,
   );
 }
 
 // -- 15.2 Ажилтны гүйцэтгэл ----------------------------------------------------
 
 async function employeePerformanceReport(query: ReportQueryInput): Promise<ReportResultDto> {
-  const employees = await Employee.find(
-    query.employeeId ? { _id: new Types.ObjectId(query.employeeId) } : { status: 'ACTIVE' },
-  )
-    .select('firstName lastName employeeCode')
-    .sort({ lastName: 1 })
-    .limit(query.limit)
-    .lean();
+  const employeeFilter: FilterQuery<Record<string, unknown>> = query.employeeId
+    ? { _id: new Types.ObjectId(query.employeeId) }
+    : { status: 'ACTIVE' };
+
+  const [employees, total] = await Promise.all([
+    Employee.find(employeeFilter)
+      .select('firstName lastName employeeCode')
+      .sort({ lastName: 1 })
+      .skip(skipFor(query))
+      .limit(query.limit)
+      .lean(),
+    Employee.countDocuments(employeeFilter),
+  ]);
 
   const ids = employees.map((employee) => employee._id);
   const range = withinRange('createdAt', query);
@@ -453,6 +533,30 @@ async function employeePerformanceReport(query: ReportQueryInput): Promise<Repor
    * technician closed. An average cannot be added up across rows, which is exactly the
    * misreading a total invited.
    */
+  /**
+   * The footer's two counters, over every employee the filter matches.
+   *
+   * The id list is fetched in full for this, and that is not the "fetch everything and
+   * throw most of it away" this endpoint was paginated to stop: it is a projection of
+   * ObjectIds for a staff list, not a page of assembled report rows, and it is what lets
+   * the footer describe the report rather than the twenty rows on screen.
+   */
+  const allIds = (await Employee.find(employeeFilter).select('_id').lean()).map(
+    (employee) => employee._id,
+  );
+  const wholeSet = await ServiceRequest.aggregate<{ assigned: number; completed: number }>([
+    { $match: { assignedEmployees: { $in: allIds }, ...range } },
+    { $unwind: '$assignedEmployees' },
+    { $match: { assignedEmployees: { $in: allIds } } },
+    {
+      $group: {
+        _id: null,
+        assigned: { $sum: 1 },
+        completed: { $sum: { $cond: [{ $eq: ['$status', 'COMPLETED'] }, 1, 0] } },
+      },
+    },
+  ]);
+
   const grouped = await ServiceRequest.aggregate<{
     _id: Types.ObjectId;
     assigned: number;
@@ -543,13 +647,17 @@ async function employeePerformanceReport(query: ReportQueryInput): Promise<Repor
       { key: 'returned', label: 'Буцаалт', format: 'NUMBER', align: 'right' },
     ],
     rows,
-    rows.length > 0
+    // The assigned and completed columns count service requests, and the footer counts
+    // them across every employee the filter matches rather than across the page. It is one
+    // aggregation over the same range the rows use.
+    total > 0
       ? {
-          employee: `Нийт ${rows.length}`,
-          assigned: rows.reduce((sum, row) => sum + Number(row.assigned ?? 0), 0),
-          completed: rows.reduce((sum, row) => sum + Number(row.completed ?? 0), 0),
+          employee: `Нийт ${total}`,
+          assigned: wholeSet[0]?.assigned ?? 0,
+          completed: wholeSet[0]?.completed ?? 0,
         }
       : null,
+    total,
   );
 }
 
@@ -561,11 +669,30 @@ async function invoiceReport(query: ReportQueryInput): Promise<ReportResultDto> 
     ...(query.customerId ? { customer: new Types.ObjectId(query.customerId) } : {}),
   };
 
-  const invoices = await Invoice.find(filter)
-    .populate({ path: 'customer', select: 'name' })
-    .sort({ issueDate: -1 })
-    .limit(query.limit)
-    .lean();
+  // The footer's money columns are aggregated over the whole filtered set: a receivable
+  // total that summed only the page on screen would understate the debt, which is the one
+  // number on this report nobody may be misled about.
+  const [invoices, total, sums] = await Promise.all([
+    Invoice.find(filter)
+      .populate({ path: 'customer', select: 'name' })
+      .sort({ issueDate: -1 })
+      .skip(skipFor(query))
+      .limit(query.limit)
+      .lean(),
+    Invoice.countDocuments(filter),
+    Invoice.aggregate<{ total: number; receivable: number }>([
+      { $match: filter },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: '$total' },
+          receivable: {
+            $sum: { $cond: [{ $eq: ['$status', 'SENT'] }, '$total', 0] },
+          },
+        },
+      },
+    ]),
+  ]);
 
   const now = new Date();
   const rows: Row[] = invoices.map((invoice) => ({
@@ -598,23 +725,28 @@ async function invoiceReport(query: ReportQueryInput): Promise<ReportResultDto> 
       { key: 'receivable', label: 'Авлага', format: 'MONEY', align: 'right' },
     ],
     rows,
-    rows.length > 0
+    total > 0
       ? {
-          invoiceNumber: `Нийт ${rows.length}`,
-          total: rows.reduce((sum, row) => sum + Number(row.total ?? 0), 0),
-          receivable: rows.reduce((sum, row) => sum + Number(row.receivable ?? 0), 0),
+          invoiceNumber: `Нийт ${total}`,
+          total: sums[0]?.total ?? 0,
+          receivable: sums[0]?.receivable ?? 0,
         }
       : null,
+    total,
   );
 }
 
 // -- 15.2 Audit ба дүгнэлтийн log ----------------------------------------------
 
 async function auditReport(query: ReportQueryInput): Promise<ReportResultDto> {
-  const entries = await AuditLog.find(withinRange('createdAt', query))
+  const [entries, total] = await Promise.all([
+    AuditLog.find(withinRange('createdAt', query))
     .sort({ createdAt: -1 })
-    .limit(query.limit)
-    .lean();
+      .skip(skipFor(query))
+      .limit(query.limit)
+      .lean(),
+    AuditLog.countDocuments(withinRange('createdAt', query)),
+  ]);
 
   const rows: Row[] = entries.map((entry) => ({
     createdAt: isoOrNull(entry.createdAt),
@@ -639,7 +771,8 @@ async function auditReport(query: ReportQueryInput): Promise<ReportResultDto> {
       { key: 'ip', label: 'IP', format: 'TEXT' },
     ],
     rows,
-    rows.length > 0 ? { createdAt: `Нийт ${rows.length}` } : null,
+    total > 0 ? { createdAt: `Нийт ${total}` } : null,
+    total,
   );
 }
 
@@ -659,15 +792,24 @@ async function technicalReport(query: ReportQueryInput): Promise<ReportResultDto
     ...(query.projectId ? { project: new Types.ObjectId(query.projectId) } : {}),
   };
 
-  const reports = await Report.find(filter)
+  const [reports, total] = await Promise.all([
+    Report.find(filter)
     .populate([
       { path: 'customer', select: 'name' },
       { path: 'project', select: 'name' },
       { path: 'building', select: 'name' },
     ])
     .sort({ occurredAt: -1 })
-    .limit(query.limit)
-    .lean();
+      .skip(skipFor(query))
+      .limit(query.limit)
+      .lean(),
+    Report.countDocuments(filter)
+    .populate([
+      { path: 'customer', select: 'name' },
+      { path: 'project', select: 'name' },
+      { path: 'building', select: 'name' },
+    ]),
+  ]);
 
   // Grouped once for the page rather than counted per row.
   const counts = await ReportItem.aggregate<{ _id: Types.ObjectId; count: number }>([
@@ -697,7 +839,6 @@ async function technicalReport(query: ReportQueryInput): Promise<ReportResultDto
     query,
     [
       { key: 'reportNumber', label: 'Тайлангийн №', format: 'TEXT' },
-      { key: 'type', label: 'Төрөл', format: 'TEXT' },
       { key: 'status', label: 'Төлөв', format: 'TEXT' },
       { key: 'title', label: 'Гарчиг', format: 'TEXT' },
       { key: 'customer', label: 'Харилцагч', format: 'TEXT' },
@@ -711,7 +852,8 @@ async function technicalReport(query: ReportQueryInput): Promise<ReportResultDto
       { key: 'occurredAt', label: 'Огноо', format: 'DATETIME' },
     ],
     rows,
-    rows.length > 0 ? { reportNumber: `Нийт ${rows.length}` } : null,
+    total > 0 ? { reportNumber: `Нийт ${total}` } : null,
+    total,
   );
 }
 

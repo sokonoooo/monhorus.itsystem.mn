@@ -76,7 +76,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: <Widget>[
-                  const SizedBox(height: 8),
+                  const _BrandMark(),
+                  const SizedBox(height: 18),
                   Text(
                     'Monhorus',
                     textAlign: TextAlign.center,
@@ -88,7 +89,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                     textAlign: TextAlign.center,
                     style: CustomerTokens.emptyText,
                   ),
-                  const SizedBox(height: 32),
+                  const SizedBox(height: 28),
 
                   Card(
                     child: Padding(
@@ -141,6 +142,16 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                           const SizedBox(height: 24),
 
                           FilledButton(
+                            // The only branded control on the screen. The rest of the app
+                            // keeps the shared accent; see the token's own note.
+                            style: FilledButton.styleFrom(
+                              backgroundColor: CustomerTokens.brand,
+                              foregroundColor: CustomerTokens.white,
+                              disabledBackgroundColor:
+                                  CustomerTokens.brand.withValues(alpha: 0.45),
+                              disabledForegroundColor:
+                                  CustomerTokens.white.withValues(alpha: 0.85),
+                            ),
                             onPressed: state.busy ? null : _submit,
                             child: state.busy
                                 ? const SizedBox(
@@ -207,6 +218,52 @@ class _ErrorBanner extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// The launcher icon, over a wash of its own colour.
+///
+/// The sign-in screen is the one place a person may be unsure WHICH of the two apps they
+/// opened — the forms are near enough identical and the product name is the same on both.
+/// Showing the icon they just tapped, in the colour they just tapped, answers that before
+/// they read a word. Everything past this screen keeps the shared accent.
+class _BrandMark extends StatelessWidget {
+  const _BrandMark();
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Container(
+        padding: const EdgeInsets.all(18),
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          // A tint rather than a solid disc: at full strength the field colour competes
+          // with the icon sitting on it, which is the same colour.
+          color: CustomerTokens.brand.withValues(alpha: 0.12),
+        ),
+        child: Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(20),
+            boxShadow: <BoxShadow>[
+              BoxShadow(
+                color: CustomerTokens.brandDeep.withValues(alpha: 0.28),
+                blurRadius: 18,
+                offset: const Offset(0, 6),
+              ),
+            ],
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(20),
+            child: Image.asset(
+              'assets/brand/app_icon.png',
+              width: 76,
+              height: 76,
+              fit: BoxFit.cover,
+            ),
+          ),
+        ),
       ),
     );
   }

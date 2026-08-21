@@ -1,12 +1,16 @@
 import {
+  ARRIVED_STATUSES,
   riskLevelFor,
   workReportCompleteness,
+  type CustomerWorkReportDto,
   type ReturnWorkReportInput,
   type SaveWorkReportInput,
   type WorkReportDto,
   type WorkReportMaterialDto,
   type WorkReportObjectDto,
   type WorkReportPhotoDto,
+  type ObjectAttributeValue,
+  type ObjectTypeAttributeDto,
 } from '@monhorus/shared';
 import { Types, type FilterQuery } from 'mongoose';
 
@@ -21,12 +25,19 @@ import type { RequestMeta } from '../../common/utils/request-meta.util';
 import { logger } from '../../config/logger';
 import { recordAudit } from '../audit/audit.service';
 import { notify } from '../notification/notification.service';
-import { ObjectRecord } from '../object-master/object-master.models';
+import { userIdsForEmployees } from '../notification/recipient.util';
+import {
+  ObjectRecord,
+  type IObjectTypeAttribute,
+} from '../object-master/object-master.models';
+import { applyObjectAttributeValues } from '../object-master/object-master.service';
+import { toObjectTypeAttributeDtos } from '../object-master/object-type.service';
 import { resolveAssignedWorkFilter } from '../planned-work/planned-work.scope';
 import { Report } from '../report-record/report-record.model';
 import { applyReportSafely, writeReport } from '../report-record/report-record.service';
 import { getRiskBands } from '../settings/settings.service';
 import { assertReportApprovalAllowed } from './self-progress.policy';
+import { advanceOnConclusion } from './service-request.auto-status';
 import { ServiceRequest, type IServiceRequest } from './service-request.model';
 import { WorkReport, type IWorkReport } from './work-report.model';
 
@@ -61,6 +72,38 @@ function toPhotoDto(value: unknown): WorkReportPhotoDto | null {
  * maps to its id with null labels, so a caller that did not populate still gets a usable
  * row rather than a crash.
  */
+/**
+ * The equipment's own attribute answers and the definitions that describe them.
+ *
+ * Both come off the OBJECT rather than off the finding: they are facts about the kit, true
+ * between visits, so every report against the same equipment reads the same answers.
+ *
+ * Empty on both counts when the path was not populated or the type declares nothing, so a
+ * report saved before the feature existed renders exactly as it did.
+ */
+function attributesOf(value: unknown): {
+  attributeValues: Record<string, ObjectAttributeValue>;
+  objectTypeAttributes: ObjectTypeAttributeDto[];
+} {
+  if (typeof value !== 'object' || value === null) {
+    return { attributeValues: {}, objectTypeAttributes: [] };
+  }
+  const object = value as {
+    attributeValues?: Record<string, ObjectAttributeValue>;
+    objectType?: { attributes?: IObjectTypeAttribute[] } | Types.ObjectId;
+  };
+  const type = object.objectType;
+  const attributes =
+    type !== null && typeof type === 'object' && 'attributes' in type ? type.attributes : undefined;
+
+  return {
+    // Spread rather than handed out: `attributeValues` is a `Mixed` path, so this is the
+    // loaded document's own object.
+    attributeValues: { ...(object.attributeValues ?? {}) },
+    objectTypeAttributes: toObjectTypeAttributeDtos(attributes),
+  };
+}
+
 function toLinkedObject(value: unknown): WorkReportObjectDto {
   if (typeof value === 'object' && value !== null && 'code' in value) {
     const object = value as { _id: Types.ObjectId; code: string; name: string };
@@ -136,6 +179,7 @@ function toDto(report: WithId<IWorkReport>): WorkReportDto {
         conclusion: entry.conclusion,
         recommendation: entry.recommendation,
         photoIds: listOf(entry.photos).map(String),
+        ...attributesOf(entry.object),
       };
     }),
     missing: completeness.missing,
@@ -157,6 +201,22 @@ const POPULATE = [
   { path: 'beforePhotos', select: PHOTO_SELECT },
   { path: 'afterPhotos', select: PHOTO_SELECT },
   { path: 'objects', select: 'code name' },
+  /**
+   * The assessed equipment, and the type behind it.
+   *
+   * `attributeValues` and the type's definitions come back so each row on the report can ask
+   * the type's own questions (4.1) pre-filled with what the equipment already answered — a
+   * report may name a panel and a breaker, and they declare different things.
+   *
+   * Populating this path also gives the per-row `code` and `name` something to read: they
+   * were declared nullable and always came back null, because only the flat `objects` list
+   * above was ever populated.
+   */
+  {
+    path: 'objectAssessments.object',
+    select: 'code name attributeValues objectType',
+    populate: { path: 'objectType', select: 'attributes' },
+  },
 ];
 
 function actorOf(actor: AuthContext): {
@@ -237,6 +297,76 @@ async function requestIdInScope(
 }
 
 /**
+ * The request a conclusion may be WRITTEN against, bounded by who is asking and by whether
+ * they have arrived.
+ *
+ * TWO RULES, AND THEY FAIL DIFFERENTLY ON PURPOSE.
+ *
+ * Assignment first, reported as not-found. `requestIdInScope` keeps the unclaimed branch
+ * because looking at the open queue is legitimate; writing on it is not. Dropping that
+ * branch here means a technician must CLAIM a request before concluding it — the claim flow
+ * exists precisely so that authorship is never ambiguous, and the previous behaviour let any
+ * technician who scrolled past an unclaimed request become the author of a draft on it.
+ * Not-found rather than forbidden for the usual reason: a colleague's request is none of
+ * their business, including whether it exists.
+ *
+ * Arrival second, reported as a plain refusal with a reason, because by then the caller has
+ * been established as the right person and is owed an explanation. A conclusion is a record
+ * of what was found ON SITE; one written from the road is a guess. Arrival is read from the
+ * history as well as the current status, so a request that arrived and was later returned to
+ * ASSIGNED still counts as visited — `ARRIVED_STATUSES` alone cannot tell that.
+ *
+ * Oversight is unaffected: `resolveAssignedWorkFilter` answers null for a caller holding an
+ * oversight key, so an administrator is bounded by neither rule.
+ */
+async function writableRequestId(
+  requestId: string,
+  scope: ResolvedCustomerScope,
+  actor: AuthContext,
+): Promise<Types.ObjectId> {
+  const filter: FilterQuery<IServiceRequest> = {
+    _id: new Types.ObjectId(requestId),
+    ...customerScopeFilter(scope),
+  };
+
+  let assignmentBounded = false;
+  if (scope.mode === 'STAFF') {
+    const assignmentFilter = await resolveAssignedWorkFilter<IServiceRequest>(actor, {
+      includeUnclaimed: false,
+    });
+    if (assignmentFilter) {
+      filter.$and = [assignmentFilter];
+      assignmentBounded = true;
+    }
+  }
+
+  const request = await ServiceRequest.findOne(filter)
+    .select('_id status statusHistory')
+    .lean();
+  if (!request) throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Хүсэлт олдсонгүй.');
+
+  // The arrival rule is about the person doing the visit. An unscoped caller is not doing
+  // one, so holding them to it would stop an administrator correcting a record.
+  if (assignmentBounded && !hasArrivedOnSite(request)) {
+    throw AppError.badRequest(
+      ERROR_CODES.VALIDATION_ERROR,
+      'Ажлын байрлалд очсоны дараа дүгнэлт бичих боломжтой.',
+      [{ field: 'status', message: 'Эхлээд "Очсон" төлөвт шилжүүлнэ үү.' }],
+    );
+  }
+
+  return request._id;
+}
+
+/** Whether the technician has ever reached the site, by current status or by history. */
+function hasArrivedOnSite(
+  request: Pick<IServiceRequest, 'status' | 'statusHistory'>,
+): boolean {
+  if (ARRIVED_STATUSES.includes(request.status)) return true;
+  return (request.statusHistory ?? []).some((entry) => entry.toStatus === 'ON_SITE');
+}
+
+/**
  * The conclusion for a request, created empty on first read.
  *
  * A technician opens the form before there is anything to save, so the record is brought
@@ -247,7 +377,8 @@ export async function getOrCreateWorkReport(
   scope: ResolvedCustomerScope,
   actor: AuthContext,
 ): Promise<WorkReportDto> {
-  const request = { _id: await requestIdInScope(requestId, scope, actor) };
+  // Minting a draft attributes it to the caller, so this is a write, not a read.
+  const request = { _id: await writableRequestId(requestId, scope, actor) };
 
   const existing = await WorkReport.findOne({ serviceRequest: request._id })
     .populate(POPULATE)
@@ -278,6 +409,74 @@ export async function findWorkReport(
   return report ? toDto(report) : null;
 }
 
+/**
+ * Whether a request's conclusion has been approved.
+ *
+ * Deliberately `exists` on the unique `serviceRequest` index rather than a populate: the
+ * request detail read runs this on every call, for staff and customer alike, and it needs
+ * to answer one boolean rather than assemble a conclusion nobody asked for.
+ */
+export async function hasApprovedWorkReport(requestId: Types.ObjectId): Promise<boolean> {
+  const approved = await WorkReport.exists({ serviceRequest: requestId, status: 'APPROVED' });
+  return approved !== null;
+}
+
+/**
+ * The conclusion as a customer reads it.
+ *
+ * READS, NEVER CREATES. `GET /:id/report` is `getOrCreateWorkReport`, which mints a DRAFT
+ * attributed to whoever asked first; pointing a portal key at that route would have made
+ * every customer who opened the tab the recorded author of an empty conclusion on their own
+ * request. `findWorkReport` is the read that has no such side effect, and this is what it
+ * exists for.
+ *
+ * APPROVED OR NOTHING, and the nothing is a 404. Rules 17.6/17.7 make approval the moment a
+ * conclusion stops being a working document, and the planned-work portal already draws the
+ * line in the same place (`visibleToCustomer: report.status === 'APPROVED'`). The request's
+ * own `COMPLETED` is not a substitute — it is set by hand, and live data has a COMPLETED
+ * request whose conclusion never left DRAFT.
+ *
+ * "No conclusion", "a draft", "submitted" and "returned" are ALL answered identically, with
+ * the same message a foreign request gets. A distinct reply for each would let a customer
+ * watch their own request's internal review progress — and, worse, an "exists but not
+ * approved" answer confirms a technician has written something they have not yet stood
+ * behind. Whether the office is still arguing about the wording is not a fact the portal
+ * should be able to observe.
+ *
+ * Tenancy is `requestIdInScope`'s, which puts the customer predicate in the query, so a
+ * foreign request is missing rather than forbidden. Its assignment half is skipped for a
+ * CUSTOMER scope, which is correct here for the reason stated there: a portal account has
+ * no employee card to be assigned to anything.
+ */
+export async function getCustomerWorkReport(
+  requestId: string,
+  scope: ResolvedCustomerScope,
+  actor: AuthContext,
+): Promise<CustomerWorkReportDto> {
+  const report = await findWorkReport(requestId, scope, actor);
+
+  if (!report || report.status !== 'APPROVED') {
+    throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Дүгнэлт олдсонгүй.');
+  }
+
+  // Written out field by field rather than by deleting from the staff DTO: a field added to
+  // `WorkReportDto` later must be opted IN to here, so the next internal note added to a
+  // conclusion cannot reach a customer by default.
+  return {
+    conclusion: report.conclusion,
+    recommendation: report.recommendation,
+    score: report.score,
+    riskLevel: report.riskLevel,
+    repairRequired: report.repairRequired,
+    revisitRequired: report.revisitRequired,
+    revisitDate: report.revisitDate,
+    beforePhotos: report.beforePhotos,
+    afterPhotos: report.afterPhotos,
+    approvedAt: report.approvedAt,
+    approvedByName: report.approvedByName,
+  };
+}
+
 export async function saveWorkReport(
   requestId: string,
   input: SaveWorkReportInput,
@@ -286,7 +485,7 @@ export async function saveWorkReport(
   meta: RequestMeta,
 ): Promise<WorkReportDto> {
   const report = await WorkReport.findOne({
-    serviceRequest: await requestIdInScope(requestId, scope, actor),
+    serviceRequest: await writableRequestId(requestId, scope, actor),
   });
   if (!report) throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Дүгнэлт олдсонгүй.');
 
@@ -308,22 +507,32 @@ export async function saveWorkReport(
       : riskLevelFor(input.score, await getRiskBands());
   report.conclusion = input.conclusion ?? null;
   report.recommendation = input.recommendation ?? null;
-  report.actionTaken = input.actionTaken ?? null;
-  report.repairRequired = input.repairRequired;
-  report.revisitRequired = input.revisitRequired;
-  report.revisitDate = input.revisitDate ? new Date(input.revisitDate) : null;
+  /**
+   * Absent means untouched for the five office-entered fields; see the note on
+   * `saveWorkReportSchema`. `undefined` is "the caller does not manage this", `null`/`[]`
+   * is "the caller is clearing it" — collapsing the two with `??` is what let a phone save
+   * erase a dispatcher's material list and follow-up flags.
+   */
+  if (input.actionTaken !== undefined) report.actionTaken = input.actionTaken ?? null;
+  if (input.repairRequired !== undefined) report.repairRequired = input.repairRequired;
+  if (input.revisitRequired !== undefined) report.revisitRequired = input.revisitRequired;
+  if (input.revisitDate !== undefined) {
+    report.revisitDate = input.revisitDate ? new Date(input.revisitDate) : null;
+  }
   report.set('beforePhotos', input.beforePhotoIds.map((id) => new Types.ObjectId(id)));
   report.set('afterPhotos', input.afterPhotoIds.map((id) => new Types.ObjectId(id)));
-  // Requirements 19.2: what was used on the job, typed by hand. The whole list is
-  // replaced, exactly as the photo lists are.
-  report.set(
-    'materials',
-    input.materials.map((entry) => ({
-      name: entry.name,
-      quantity: entry.quantity,
-      unit: entry.unit,
-    })),
-  );
+  // Requirements 19.2: what was used on the job, typed by hand. An explicitly sent list
+  // still replaces the whole thing, exactly as the photo lists do.
+  if (input.materials !== undefined) {
+    report.set(
+      'materials',
+      input.materials.map((entry) => ({
+        name: entry.name,
+        quantity: entry.quantity,
+        unit: entry.unit,
+      })),
+    );
+  }
 
   /**
    * The equipment link is the only bridge from a service result to the object master, so
@@ -373,6 +582,30 @@ export async function saveWorkReport(
     })),
   );
 
+  /**
+   * The type's own attributes answered on this report land on the EQUIPMENT (4.1).
+   *
+   * Not on the ReportItem: the score and the narrative are what this visit observed, while
+   * "this breaker is fused" is a standing fact about the kit. A copy per report would create
+   * as many answers as there are visits with no way to say which is current.
+   *
+   * Applied AFTER the ownership check above, so a row naming another tenant's equipment is
+   * refused before anything is written to it. Sequential rather than parallel because each
+   * call saves its own document and a refusal should name the first row that is wrong rather
+   * than racing several.
+   *
+   * A row that omits the key is not asked and not touched — which is what lets a draft saved
+   * from an older client, or before the fields were filled in, save unchanged.
+   */
+  for (const [index, entry] of assessments.entries()) {
+    if (entry.attributeValues === undefined) continue;
+    await applyObjectAttributeValues(
+      new Types.ObjectId(entry.objectId),
+      entry.attributeValues,
+      `objectAssessments.${index}.`,
+    );
+  }
+
   // Editing a returned conclusion puts it back into draft, so the technician resubmits
   // rather than leaving it sitting in a rejected state that reads as unaddressed.
   if (report.status === 'RETURNED') report.status = 'DRAFT';
@@ -405,7 +638,7 @@ export async function submitWorkReport(
   meta: RequestMeta,
 ): Promise<WorkReportDto> {
   const report = await WorkReport.findOne({
-    serviceRequest: await requestIdInScope(requestId, scope, actor),
+    serviceRequest: await writableRequestId(requestId, scope, actor),
   })
     .populate(POPULATE)
     .lean<WithId<IWorkReport> | null>();
@@ -452,7 +685,33 @@ export async function submitWorkReport(
     excludeUserId: actor.userId,
   });
 
+  // The request follows the conclusion. Submitting one used to leave the request wherever
+  // it was, so a technician who had finished still showed as working and somebody had to
+  // move it by hand — two records of the same fact, kept in step by memory.
+  await advanceOnConclusion(report.serviceRequest, 'REPORT_SUBMITTED', actor);
+
   return loadPopulated(report._id);
+}
+
+/**
+ * The user accounts of whoever is on the job this conclusion belongs to.
+ *
+ * WHY A CONCLUSION EVENT NEEDS THIS AT ALL. `REPORT_APPROVED` and `REPORT_RETURNED` were
+ * addressed to `service_request.view` and nothing else. TECHNICIAN holds that key, so every
+ * technician in the company was told about every conclusion on every request — which is
+ * what "I always get the same notification" means from the inbox side. The crew are named
+ * here instead, exactly as `service-request.notify.ts` names them for a status change, and
+ * the blanket key narrows to the desk that owns the request's flow.
+ *
+ * An empty list is a perfectly ordinary answer: an office-written conclusion on an
+ * unassigned request has no crew, and the dispatch fan-out still carries it.
+ */
+async function crewUserIds(serviceRequestId: Types.ObjectId): Promise<Types.ObjectId[]> {
+  const request = await ServiceRequest.findById(serviceRequestId)
+    .select('assignedEmployees')
+    .lean();
+  if (!request) return [];
+  return userIdsForEmployees(request.assignedEmployees.map(String));
 }
 
 /**
@@ -630,9 +889,16 @@ export async function approveWorkReport(
     entityType: 'Work',
     entityId: report.serviceRequest,
     linkPath: `/service-requests/${String(report.serviceRequest)}`,
-    permission: 'service_request.view',
+    // The crew whose work this is, plus the desk that owns the request. NOT
+    // `service_request.view`: see `crewUserIds`.
+    permission: 'dispatch.view',
+    userIds: await crewUserIds(report.serviceRequest),
     excludeUserId: actor.userId,
   });
+
+  // Approving the conclusion is the verification, so it finishes the request — and this is
+  // where the customer is finally told, which nothing did before.
+  await advanceOnConclusion(report.serviceRequest, 'COMPLETED', actor);
 
   return loadPopulated(report._id);
 }
@@ -673,6 +939,19 @@ export async function returnWorkReport(
     newValue: { status: 'RETURNED' },
   });
 
+  /*
+   * THE SUBMITTER IS NAMED, and they are the whole point of this message.
+   *
+   * A return is work handed back to a particular person: they wrote it, they are the one
+   * who has to fix it, and until now nothing addressed them as such — they heard about
+   * their own returned conclusion only by being caught in the `service_request.view` net
+   * along with every other technician in the company. Naming them also survives the case
+   * the blanket key hid: an author taken off the request between submitting and the return
+   * is no longer in the crew, and would otherwise never be told.
+   */
+  const returnedTo = new Set<string>((await crewUserIds(report.serviceRequest)).map(String));
+  if (report.submittedBy) returnedTo.add(String(report.submittedBy));
+
   await notify({
     event: 'REPORT_RETURNED',
     title: 'Дүгнэлт засварлуулахаар буцаагдлаа',
@@ -680,7 +959,8 @@ export async function returnWorkReport(
     entityType: 'Work',
     entityId: report.serviceRequest,
     linkPath: `/service-requests/${String(report.serviceRequest)}`,
-    permission: 'service_request.view',
+    permission: 'dispatch.view',
+    userIds: [...returnedTo],
     excludeUserId: actor.userId,
   });
 

@@ -1,8 +1,7 @@
 import {
   SERVICE_REQUEST_STATUSES,
-  SERVICE_REQUEST_TYPES,
+  type PlanPositionDto,
   type ServiceRequestStatus,
-  type ServiceRequestType,
 } from '@monhorus/shared';
 import { Schema, Types, model, type Model } from 'mongoose';
 
@@ -29,7 +28,16 @@ export interface IServiceRequest {
   circuit: Types.ObjectId | null;
   device: Types.ObjectId | null;
 
-  requestType: ServiceRequestType;
+  /**
+   * Where on the floor's plan image the problem is, normalised to 0..1 of the drawing's
+   * width and height — the same convention, and the same shape, an object's placement uses.
+   *
+   * Meaningless without `floor`, since there is no drawing to point at, and deliberately
+   * independent of `room`: a caller may know the spot without a zone having been named.
+   */
+  planPosition: PlanPositionDto | null;
+  /** The equipment type the call is about, or null for calls raised before types had SLAs. */
+  objectType: Types.ObjectId | null;
   isUrgent: boolean;
   description: string;
   contactName: string;
@@ -57,20 +65,49 @@ export interface IServiceRequest {
   /**
    * When this request most recently entered the open, unassigned queue.
    *
-   * The trigger for the two-hour scheduling alert, and re-stamped every time the request
-   * returns to that queue — an assignment that is later withdrawn starts a NEW interval,
-   * so the second spell in the queue is alerted on its own merits rather than being
-   * suppressed because the first one already was. Null whenever the request is not open.
+   * The trigger for the unclaimed chase, and the anchor every one of its repeats is
+   * measured from: reminder N is due at this stamp plus N intervals, so the schedule is a
+   * function of when the request opened rather than of when the sweep happened to run, and
+   * a server that was down cannot push the whole series later.
+   *
+   * Re-stamped every time the request returns to that queue — an assignment that is later
+   * withdrawn starts a NEW interval, so the second spell in the queue is chased on its own
+   * merits rather than being suppressed because the first one already was. Null whenever
+   * the request is not open.
    */
   openedForClaimAt: Date | null;
   /**
-   * The value of `openedForClaimAt` the unclaimed alert last fired for.
+   * The value of `openedForClaimAt` the unclaimed reminders so far belong to.
    *
-   * Comparing the two is what makes the job rerun-safe AND once-per-interval with one
-   * field: equal means this spell has been alerted, different (or null) means it has not.
-   * A boolean flag could not tell a re-opened request from an already-notified one.
+   * STILL A DATE, AND STILL FOR THE ORIGINAL REASON. Comparing it against the live stamp
+   * is what tells a re-opened request from an already-alerted one: equal means
+   * `unclaimedAlertCount` counts THIS spell, different (or null) means the count is a
+   * leftover from a previous one and is read as zero. A boolean could never express that,
+   * and neither can the counter on its own — which is why the counter was added beside
+   * this field rather than replacing it.
    */
   unclaimedNotifiedFor: Date | null;
+  /**
+   * How many unclaimed reminders have gone out for `unclaimedNotifiedFor`.
+   *
+   * The pair is what makes the repeating chase both rerun-safe and capped with no lock:
+   * the sweep stakes its send with a conditional update that names the count it read, so
+   * two passes running at the same instant cannot both advance 1 → 2, and the loser sends
+   * nothing. Meaningful only alongside `unclaimedNotifiedFor`; reset to 0 whenever the
+   * request enters or leaves the open queue.
+   */
+  unclaimedAlertCount: number;
+
+  /**
+   * The `slaDueAt` each SLA warning has already been sent for.
+   *
+   * Staked against the deadline rather than a boolean because `slaDueAt` is mutable: the
+   * extension path recomputes it. A request whose deadline moves is therefore a request
+   * that can be warned about again, which is the desired behaviour — the old warning was
+   * about a deadline that no longer exists.
+   */
+  slaNearBreachNotifiedFor: Date | null;
+  slaBreachNotifiedFor: Date | null;
 
   createdBy: Types.ObjectId | null;
   createdByName: string | null;
@@ -90,6 +127,20 @@ const statusHistorySchema = new Schema<IServiceRequestStatusHistory>(
   { _id: true },
 );
 
+/**
+ * The pin, bounded here as well as in the shared schema.
+ *
+ * The service is not the only writer of a request document — the seed script and any future
+ * migration write it directly — and a coordinate outside the drawing is unusable.
+ */
+const planPositionSchema = new Schema<PlanPositionDto>(
+  {
+    x: { type: Number, required: true, min: 0, max: 1 },
+    y: { type: Number, required: true, min: 0, max: 1 },
+  },
+  { _id: false },
+);
+
 const serviceRequestSchema = new Schema<IServiceRequest>(
   {
     requestNumber: { type: String, required: true, unique: true, uppercase: true, trim: true },
@@ -103,8 +154,27 @@ const serviceRequestSchema = new Schema<IServiceRequest>(
     panel: { type: Schema.Types.ObjectId, ref: 'ObjectNode', default: null },
     circuit: { type: Schema.Types.ObjectId, ref: 'ObjectNode', default: null },
     device: { type: Schema.Types.ObjectId, ref: 'ObjectNode', default: null },
-
-    requestType: { type: String, enum: SERVICE_REQUEST_TYPES, required: true, index: true },
+    planPosition: { type: planPositionSchema, default: null },
+    /*
+     * The equipment type this call is about, and where its SLA window came from.
+     *
+     * Nullable, not required: every request created before equipment types carried an SLA
+     * has none, and backfilling one would be inventing a fact about work already done.
+     * New calls are required to name one by the create schema, so null means "historic",
+     * never "the caller skipped it".
+     *
+     * Recorded on the request rather than looked up through the location tree because the
+     * two do not meet - a request points at ObjectNode (building/floor/panel), while an
+     * ObjectType hangs off ObjectRecord - and because the window must stay the one that was
+     * agreed when the call was raised, not whatever the catalogue says later.
+     */
+    objectType: { type: Schema.Types.ObjectId, ref: 'ObjectType', default: null, index: true },
+    /*
+     * Derived, not supplied. Set at creation from the equipment type's SLA window - a short
+     * window means urgent - so it can no longer disagree with the deadline the same choice
+     * produced. Still stored and still indexed: it orders the dispatch board and decides
+     * what the Today panel surfaces early.
+     */
     isUrgent: { type: Boolean, default: false, index: true },
     description: { type: String, required: true, trim: true, maxlength: 4000 },
     contactName: { type: String, required: true, trim: true, maxlength: 200 },
@@ -134,6 +204,9 @@ const serviceRequestSchema = new Schema<IServiceRequest>(
 
     openedForClaimAt: { type: Date, default: null },
     unclaimedNotifiedFor: { type: Date, default: null },
+    unclaimedAlertCount: { type: Number, default: 0, min: 0 },
+    slaNearBreachNotifiedFor: { type: Date, default: null },
+    slaBreachNotifiedFor: { type: Date, default: null },
 
     createdBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
     createdByName: { type: String, default: null },

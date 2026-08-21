@@ -8,6 +8,7 @@ export const ERROR_CODES = {
   TOKEN_EXPIRED: 'TOKEN_EXPIRED',
   TOKEN_INVALID: 'TOKEN_INVALID',
   REFRESH_TOKEN_INVALID: 'REFRESH_TOKEN_INVALID',
+  RESET_TOKEN_INVALID: 'RESET_TOKEN_INVALID',
   FORBIDDEN: 'FORBIDDEN',
   INSUFFICIENT_PRIVILEGES: 'INSUFFICIENT_PRIVILEGES',
   EMAIL_ALREADY_EXISTS: 'EMAIL_ALREADY_EXISTS',
@@ -31,6 +32,11 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   TOKEN_EXPIRED: 'Нэвтрэх хугацаа дууссан байна.',
   TOKEN_INVALID: 'Нэвтрэх мэдээлэл хүчингүй байна.',
   REFRESH_TOKEN_INVALID: 'Сессийн мэдээлэл хүчингүй байна. Дахин нэвтэрнэ үү.',
+  // Deliberately one message for expired, already-used and never-existed. Telling them
+  // apart would let someone with a stolen link learn whether it had been used, and the
+  // remedy is the same in every case: ask for a new link.
+  RESET_TOKEN_INVALID:
+    'Нууц үг сэргээх холбоос хүчингүй эсвэл хугацаа нь дууссан байна. Дахин хүсэлт илгээнэ үү.',
   FORBIDDEN: 'Энэ үйлдлийг хийх эрх байхгүй байна.',
   INSUFFICIENT_PRIVILEGES: 'Танд энэ түвшний хэрэглэгчийг удирдах эрх байхгүй.',
   EMAIL_ALREADY_EXISTS: 'Энэ имэйлээр бүртгэл аль хэдийн үүссэн байна.',

@@ -49,25 +49,38 @@ enum ObjectStatus {
 /// The shared package names the icon but ships no artwork, so the glyph beside each
 /// value is a local choice. The prototype draws stroked outlines throughout, hence
 /// the outlined Material set rather than the filled one.
+///
+/// Every value must be distinguishable from every other AT PLAN SIZE, not merely on a
+/// settings row: on a floor plan the glyph is the only thing separating a socket from a
+/// sensor, drawn inside a dot a couple of dozen logical pixels across. That rules out
+/// two glyphs whose silhouettes differ only in a detail — hence a plug for SOCKET and a
+/// radiating arc for SENSOR rather than two near-identical roundels.
+///
+/// [label] mirrors `OBJECT_ICON_LABELS` and is what a screen reader is given for the
+/// glyph, which is otherwise a picture with no name.
 enum ObjectIcon {
-  panel('PANEL', Icons.dashboard_outlined),
-  breaker('BREAKER', Icons.power_settings_new_outlined),
-  light('LIGHT', Icons.lightbulb_outline),
-  socket('SOCKET', Icons.power_outlined),
-  switchDevice('SWITCH', Icons.toggle_on_outlined),
-  cable('CABLE', Icons.cable_outlined),
-  motor('MOTOR', Icons.settings_outlined),
-  pump('PUMP', Icons.water_drop_outlined),
-  camera('CAMERA', Icons.videocam_outlined),
-  sensor('SENSOR', Icons.sensors_outlined),
-  ups('UPS', Icons.battery_charging_full_outlined),
-  serverRack('SERVER_RACK', Icons.dns_outlined),
-  hvac('HVAC', Icons.hvac_outlined),
-  other('OTHER', Icons.category_outlined);
+  panel('PANEL', 'Самбар', Icons.dashboard_outlined),
+  breaker('BREAKER', 'Автомат таслуур', Icons.power_settings_new_outlined),
+  light('LIGHT', 'Гэрэл', Icons.lightbulb_outline),
+  socket('SOCKET', 'Залгуур', Icons.power_outlined),
+  switchDevice('SWITCH', 'Унтраалга', Icons.toggle_on_outlined),
+  cable('CABLE', 'Кабель', Icons.cable_outlined),
+  motor('MOTOR', 'Мотор', Icons.settings_outlined),
+  pump('PUMP', 'Насос', Icons.water_drop_outlined),
+  camera('CAMERA', 'Камер', Icons.videocam_outlined),
+  sensor('SENSOR', 'Мэдрэгч', Icons.sensors_outlined),
+  ups('UPS', 'UPS', Icons.battery_charging_full_outlined),
+  serverRack('SERVER_RACK', 'Server rack', Icons.dns_outlined),
+  hvac('HVAC', 'Агааржуулалт', Icons.hvac_outlined),
+  other('OTHER', 'Бусад', Icons.category_outlined);
 
-  const ObjectIcon(this.wireValue, this.glyph);
+  const ObjectIcon(this.wireValue, this.label, this.glyph);
 
   final String wireValue;
+
+  /// The Mongolian name of the icon, as `OBJECT_ICON_LABELS` gives it.
+  final String label;
+
   final IconData glyph;
 
   static ObjectIcon fromWire(String? value) {
@@ -201,5 +214,33 @@ enum LoadMeasurementPhase {
       if (phase.wireValue == value) return phase;
     }
     return null;
+  }
+}
+
+/// Mirrors `ObjectAttributeType` in
+/// packages/shared/src/constants/object-type-attribute.ts.
+///
+/// What one of an object TYPE's own declared fields holds — the thing an administrator
+/// defines in Тоноглолын төрөл and this app asks about on the үнэлгээ sheet. Unrelated to
+/// [ObjectCategory], which is structural and fixed.
+enum ObjectAttributeType {
+  select('SELECT'),
+  text('TEXT'),
+  number('NUMBER'),
+  boolean('BOOLEAN');
+
+  const ObjectAttributeType(this.wireValue);
+
+  final String wireValue;
+
+  /// Tolerant, like every other `fromWire` here: a kind this build has never heard of
+  /// falls back to free text rather than dropping the field or throwing. A technician
+  /// then still sees the question and can still answer it, and the server has the last
+  /// word on whether the answer is acceptable.
+  static ObjectAttributeType fromWire(String? value) {
+    for (final ObjectAttributeType type in ObjectAttributeType.values) {
+      if (type.wireValue == value) return type;
+    }
+    return ObjectAttributeType.text;
   }
 }

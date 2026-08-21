@@ -305,8 +305,13 @@ class HomeUrgentItem {
       band: work.effectiveStatus?.band ?? SeverityBand.neutral,
       dueAt: work.plannedEndDate,
       isOverdue: work.effectiveStatus == PlannedWorkStatus.overdue,
-      detail: 'Явц ${formatPercent(work.progressPercent)} · '
-          '${work.taskCount} task',
+      // The "Явц …" half is dropped rather than printed as 0% when the answer
+      // carried no figure, leaving the sub-task count, which is a fact either way.
+      detail: <String>[
+        if (work.progressPercent != null)
+          'Явц ${formatPercent(work.progressPercent)}',
+        '${work.taskCount} task',
+      ].join(' · '),
       // Empty when a newer API version answered without one, which leaves the row
       // untappable rather than pushing a detail screen onto a blank id.
       plannedWorkId: work.id.isEmpty ? null : work.id,

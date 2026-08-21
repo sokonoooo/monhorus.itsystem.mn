@@ -3,7 +3,6 @@ import { z } from 'zod';
 import { MATERIAL_UNITS } from '../constants/material';
 import {
   SERVICE_REQUEST_STATUSES,
-  SERVICE_REQUEST_TYPES,
   SLA_STATES,
 } from '../constants/service-request';
 import {
@@ -13,33 +12,57 @@ import {
   phoneSchema,
   sortDirSchema,
 } from './common.schema';
+import { planPositionSchema, rejectFloorlessPosition } from './object-master.schema';
 
 /**
  * Requirements section 8.2 marks customer, branch, building, attachments,
  * description, urgency and contact as mandatory; floor, room and device are
  * conditional refinements of the location.
  */
-export const createServiceRequestSchema = z.object({
-  customerId: objectIdSchema,
-  branch: z.string().trim().max(200).nullish(),
-  projectId: objectIdSchema.nullish(),
-  buildingId: objectIdSchema,
-  floorId: objectIdSchema.nullish(),
-  roomId: objectIdSchema.nullish(),
-  panelId: objectIdSchema.nullish(),
-  circuitId: objectIdSchema.nullish(),
-  deviceId: objectIdSchema.nullish(),
-  requestType: z.enum(SERVICE_REQUEST_TYPES, { required_error: 'Хүсэлтийн төрөл заавал.' }),
-  isUrgent: z.boolean().default(false),
-  description: z
-    .string()
-    .trim()
-    .min(5, 'Тайлбар дор хаяж 5 тэмдэгттэй байна.')
-    .max(4000, 'Тайлбар 4000 тэмдэгтээс урт байж болохгүй.'),
-  contactName: z.string().trim().min(1, 'Холбоо барих хүн заавал.').max(200),
-  contactPhone: phoneSchema,
-  attachmentIds: z.array(objectIdSchema).max(20).default([]),
-});
+export const createServiceRequestSchema = z
+  .object({
+    customerId: objectIdSchema,
+    branch: z.string().trim().max(200).nullish(),
+    projectId: objectIdSchema.nullish(),
+    buildingId: objectIdSchema,
+    floorId: objectIdSchema.nullish(),
+    roomId: objectIdSchema.nullish(),
+    panelId: objectIdSchema.nullish(),
+    circuitId: objectIdSchema.nullish(),
+    deviceId: objectIdSchema.nullish(),
+    /**
+     * Where on the floor plan the fault is, as a fraction of the drawing's width and
+     * height. The SAME shape and the same 0..1 convention an object's placement uses, so a
+     * client renders both pins with one piece of code.
+     *
+     * Independent of `roomId`: a caller who can point at the spot but cannot name a zone —
+     * because none has been registered yet — is the ordinary case, not an error. The pin
+     * needs a drawing, not a name, so only the floor is required alongside it.
+     */
+    planPosition: planPositionSchema.nullish(),
+  /**
+   * The equipment type the call is about. Required, and its `callSlaHours` is what sets the
+   * deadline - so a call with no type would be a call with no agreed window, which is the
+   * thing this field exists to prevent. The backend additionally refuses any type whose
+   * `canCreateCall` is false; the form filtering the list is a convenience, not the rule.
+   */
+  objectTypeId: objectIdSchema,
+    /*
+     * Not accepted from a client. Urgency is derived on the server from the chosen
+     * equipment type's SLA window, so a caller cannot claim it - see deriveIsUrgent in
+     * service-request.service.ts. Left out of the payload entirely rather than accepted and
+     * ignored, which would let a form believe it had set something.
+     */
+    description: z
+      .string()
+      .trim()
+      .min(5, 'Тайлбар дор хаяж 5 тэмдэгттэй байна.')
+      .max(4000, 'Тайлбар 4000 тэмдэгтээс урт байж болохгүй.'),
+    contactName: z.string().trim().min(1, 'Холбоо барих хүн заавал.').max(200),
+    contactPhone: phoneSchema,
+    attachmentIds: z.array(objectIdSchema).max(20).default([]),
+  })
+  .superRefine(rejectFloorlessPosition);
 
 export const assignServiceRequestSchema = z
   .object({
@@ -92,7 +115,14 @@ export const serviceRequestListQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(100).default(20),
   search: z.string().trim().max(200).optional(),
   status: z.enum(SERVICE_REQUEST_STATUSES).optional(),
-  requestType: z.enum(SERVICE_REQUEST_TYPES).optional(),
+  /**
+   * Filter by the operator's stage rather than one engine status.
+   *
+   * Kept beside `status` instead of replacing it: a stage covers several statuses and is
+   * configuration, while `status` is exact and is what the audit trail and older saved
+   * links speak. When both arrive, `status` wins as the narrower of the two.
+   */
+  stage: z.string().trim().max(40).optional(),
   isUrgent: booleanQuerySchema.optional(),
   slaState: z.enum(SLA_STATES).optional(),
   customerId: objectIdSchema.optional(),
@@ -138,6 +168,19 @@ export const workReportObjectAssessmentSchema = z.object({
   recommendation: z.string().trim().max(4000).nullish(),
   /** Evidence for THIS object, separate from the request-level before/after pair. */
   photoIds: z.array(objectIdSchema).max(20).default([]),
+  /**
+   * The equipment's own per-type attributes, answered while writing this report (4.1).
+   *
+   * NOT PART OF THE FINDING. "This breaker is fused" is a fact about the equipment, true
+   * between visits; the score and the narrative above are what this visit observed. So the
+   * server writes these onto the OBJECT and the ReportItem keeps none of them — one set of
+   * answers, corrected from whichever screen the technician happens to be on.
+   *
+   * OPTIONAL, AND ABSENT MEANS "NOT ASKED". A row that omits it enforces nothing and clears
+   * nothing, so a draft saved before the fields were filled in — and any client that has
+   * not been updated — behaves exactly as it did before.
+   */
+  attributeValues: z.record(z.union([z.string(), z.number(), z.boolean()])).optional(),
 });
 
 export const saveWorkReportSchema = z.object({
@@ -149,9 +192,22 @@ export const saveWorkReportSchema = z.object({
     .nullish(),
   conclusion: z.string().trim().max(4000).nullish(),
   recommendation: z.string().trim().max(4000).nullish(),
+  /**
+   * The five office-entered fields, and why these alone are absent-means-untouched.
+   *
+   * The photo and object lists below are deliberately replace-on-save working copies: the
+   * screen that sends them owns them outright. These five are different — they are filled
+   * in on the web by a dispatcher, and the employee mobile conclusion screen has no UI for
+   * them at all. While they defaulted, a phone save that simply did not mention them was
+   * indistinguishable from "clear them", so a technician tapping Save erased the material
+   * list (requirements 19.2), both follow-up flags and the revisit date.
+   *
+   * `.optional()` rather than `.default()` keeps an explicitly sent `[]`/`false`/`null`
+   * meaningful, so the web editor can still clear any of them on purpose.
+   */
   actionTaken: z.string().trim().max(2000).nullish(),
-  repairRequired: z.boolean().default(false),
-  revisitRequired: z.boolean().default(false),
+  repairRequired: z.boolean().optional(),
+  revisitRequired: z.boolean().optional(),
   revisitDate: isoDateSchema.nullish(),
   beforePhotoIds: z.array(objectIdSchema).max(20).default([]),
   afterPhotoIds: z.array(objectIdSchema).max(20).default([]),
@@ -182,7 +238,7 @@ export const saveWorkReportSchema = z.object({
       }),
     )
     .max(200)
-    .default([]),
+    .optional(),
 });
 
 export const returnWorkReportSchema = z.object({

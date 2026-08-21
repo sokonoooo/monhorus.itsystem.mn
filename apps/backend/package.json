@@ -11,12 +11,16 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "seed:dev": "tsx src/scripts/seed-dev-data.ts",
+    "sync:indexes": "tsx src/scripts/sync-indexes.ts",
     "migrate:task-note": "tsx src/scripts/rename-task-conclusion-to-note.ts",
     "migrate:technician-permissions": "tsx src/scripts/converge-technician-permissions.ts",
     "migrate:system-role-permissions": "tsx src/scripts/converge-system-role-permissions.ts",
     "backfill:user-roles": "tsx src/scripts/backfill-user-roles.ts",
     "backfill:report-assessment-history": "tsx src/scripts/backfill-report-assessment-history.ts",
-    "backfill:assessment-judged-by": "tsx src/scripts/backfill-assessment-judged-by.ts"
+    "backfill:assessment-judged-by": "tsx src/scripts/backfill-assessment-judged-by.ts",
+    "migrate:drop-request-type": "tsx src/scripts/drop-request-type.ts",
+    "migrate:risk-bands": "tsx src/scripts/migrate-risk-bands.ts",
+    "migrate:planned-materials": "tsx src/scripts/migrate-planned-materials-to-catalogue.ts"
   },
   "dependencies": {
     "@monhorus/shared": "*",
@@ -30,8 +34,11 @@
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.9.2",
     "multer": "^2.2.0",
+    "nodemailer": "^6.9.16",
+    "pdfmake": "^0.2.23",
     "pino": "^9.5.0",
     "pino-http": "^10.3.0",
+    "sharp": "^0.35.3",
     "zod": "^3.24.1"
   },
   "devDependencies": {
@@ -42,6 +49,7 @@
     "@types/jsonwebtoken": "^9.0.7",
     "@types/multer": "^2.2.0",
     "@types/node": "^22.10.2",
+    "@types/pdfmake": "^0.3.3",
     "@types/supertest": "^7.2.1",
     "mongodb-memory-server": "^11.2.0",
     "pino-pretty": "^13.0.0",

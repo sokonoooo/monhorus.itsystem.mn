@@ -99,11 +99,6 @@ function TodayRow({
           <span className="truncate">
             {item.assigneeNames.length > 0 ? item.assigneeNames.join(', ') : 'Хуваарилагдаагүй'}
           </span>
-          {item.isUrgent && (
-            <span className="rounded bg-red-50 px-1.5 py-0.5 font-medium text-red-700">
-              Яаралтай
-            </span>
-          )}
           {item.isOverdue && (
             <span className="rounded bg-red-600 px-1.5 py-0.5 font-medium text-white">
               Хугацаа хэтэрсэн
@@ -125,10 +120,25 @@ function TodayRow({
  *
  * It sits beside the trend chart as a narrow column: the numbers lead the page, and this
  * is the one list on it anybody acts on, so it stays in view rather than below the fold.
+ *
+ * The title names whose day it is. This is the one block on the board that lists records
+ * rather than counting them — each row carries a customer, an address and a fault
+ * description — so a bounded caller seeing a shorter list has to be told the list is
+ * theirs, or the missing rows read as the company having a quiet day.
  */
-export function TodayPanel({ today }: { today: DashboardTodaySummary }): ReactElement {
+export function TodayPanel({
+  today,
+  isScoped,
+}: {
+  today: DashboardTodaySummary;
+  isScoped: boolean;
+}): ReactElement {
   return (
-    <WidgetCard title="Өнөөдрийн ажил" hint={`${formatDate(today.date)} · ${today.timezone}`} flush>
+    <WidgetCard
+      title={isScoped ? 'Миний өнөөдрийн ажил' : 'Өнөөдрийн ажил'}
+      hint={`${formatDate(today.date)} · ${today.timezone}`}
+      flush
+    >
       <div role="group" aria-label="Өнөөдрийн үзүүлэлт" className="flex flex-wrap gap-1.5 px-4">
         <Counter label="Өнөөдөр" value={today.dueCount} />
         <Counter label="Хугацаа хэтэрсэн" value={today.overdueCount} tone="red" />

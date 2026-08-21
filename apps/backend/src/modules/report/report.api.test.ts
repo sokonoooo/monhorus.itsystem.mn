@@ -294,6 +294,92 @@ describe('Report and inspection API', () => {
     expect(response.body.data.key).toBe('RISK_ASSESSMENT');
   });
 
+  /**
+   * The catalogue used to answer with up to a thousand rows and a `truncatedAt` flag, so a
+   * report longer than that silently lost its tail and a screen had to render every row it
+   * did get. These pin the window, the real total, and the footer that describes the whole
+   * filtered set rather than the page.
+   */
+  it('windows the rows and states the real total', async () => {
+    const hierarchy = await seedHierarchy();
+    for (let index = 0; index < 5; index += 1) {
+      await seedObject(hierarchy, `PAGE-${index}`);
+    }
+
+    const first = await request(app)
+      .get(`${API}/reports/RISK_ASSESSMENT?page=1&limit=2`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(first.status).toBe(200);
+    expect(first.body.data.page).toBe(1);
+    expect(first.body.data.limit).toBe(2);
+    // The count is of everything the filter matches, not of what came back.
+    expect(first.body.data.total).toBeGreaterThanOrEqual(first.body.data.rows.length);
+    expect(first.body.data.totalPages).toBe(
+      Math.ceil(first.body.data.total / 2),
+    );
+    expect(first.body.data.rows.length).toBeLessThanOrEqual(2);
+  });
+
+  it('returns a different window for a later page', async () => {
+    const hierarchy = await seedHierarchy();
+    for (let index = 0; index < 4; index += 1) {
+      await seedAssessedObject(hierarchy, `WIN-${index}`, 40 + index, 'CRITICAL');
+    }
+
+    const [first, second] = await Promise.all([
+      request(app)
+        .get(`${API}/reports/RISK_ASSESSMENT?page=1&limit=2`)
+        .set('Authorization', `Bearer ${token}`),
+      request(app)
+        .get(`${API}/reports/RISK_ASSESSMENT?page=2&limit=2`)
+        .set('Authorization', `Bearer ${token}`),
+    ]);
+
+    expect(second.body.data.page).toBe(2);
+    // Both pages report the SAME total — it describes the filter, not the window.
+    expect(second.body.data.total).toBe(first.body.data.total);
+    // And they are genuinely different rows, which a skip that was never applied would
+    // fail: page two would simply repeat page one.
+    const firstKeys = JSON.stringify(first.body.data.rows);
+    const secondKeys = JSON.stringify(second.body.data.rows);
+    if (first.body.data.total > 2) expect(secondKeys).not.toBe(firstKeys);
+  });
+
+  it('counts the whole filtered set in the footer, not the page', async () => {
+    const hierarchy = await seedHierarchy();
+    for (let index = 0; index < 5; index += 1) {
+      await seedObject(hierarchy, `FOOT-${index}`);
+    }
+
+    const response = await request(app)
+      .get(`${API}/reports/RISK_ASSESSMENT?page=1&limit=2`)
+      .set('Authorization', `Bearer ${token}`);
+
+    const total = response.body.data.total as number;
+    if (total > 0) {
+      // "Нийт N" must be the report's N. Summing the page would say 2.
+      expect(String(response.body.data.totals.objectCode)).toBe(`Нийт ${total}`);
+    }
+  });
+
+  /**
+   * The CSV export has no pager, so a capped export still says so. A paged screen does
+   * not, because it can reach every row.
+   */
+  it('flags truncation only for the export, never for a paged screen', async () => {
+    const hierarchy = await seedHierarchy();
+    for (let index = 0; index < 3; index += 1) {
+      await seedObject(hierarchy, `TRUNC-${index}`);
+    }
+
+    const screen = await request(app)
+      .get(`${API}/reports/RISK_ASSESSMENT?page=1&limit=1`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(screen.body.data.truncatedAt).toBeNull();
+  });
+
   it('rejects an unknown report key rather than returning an empty table', async () => {
     const response = await request(app)
       .get(`${API}/reports/NOT_A_REPORT`)

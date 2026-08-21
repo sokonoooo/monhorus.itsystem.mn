@@ -1,4 +1,5 @@
 import '../../../../../core/util/json_parse.dart';
+import '../../../project/data/models/object_models.dart';
 
 /// The section 9.2 service-request conclusion, as this app reads and writes it.
 ///
@@ -121,6 +122,8 @@ class WorkReportObjectAssessmentModel {
   const WorkReportObjectAssessmentModel({
     required this.objectId,
     required this.photoIds,
+    required this.attributeValues,
+    required this.objectTypeAttributes,
     this.code,
     this.name,
     this.score,
@@ -137,6 +140,19 @@ class WorkReportObjectAssessmentModel {
   final String? conclusion;
   final String? recommendation;
   final List<String> photoIds;
+
+  /// What the equipment has answered for its type's declared attributes (4.1).
+  ///
+  /// Off the OBJECT, not off this finding: the score and the narrative are what the visit
+  /// observed, while "this breaker is fused" is true between visits — so every report
+  /// against the same equipment reads the same answers.
+  final Map<String, Object?> attributeValues;
+
+  /// The definitions in force for this equipment's type, in display order.
+  ///
+  /// Per row rather than per report: a report may name a panel and a breaker and they
+  /// declare different things.
+  final List<ObjectTypeAttributeModel> objectTypeAttributes;
 
   /*
    * THERE IS DELIBERATELY NO `riskLevel` HERE.
@@ -165,8 +181,64 @@ class WorkReportObjectAssessmentModel {
           .map((Object? id) => parseString(id))
           .whereType<String>()
           .toList(),
+      // Defensive on both: a server that predates the field answers neither, and the editor
+      // then simply asks nothing extra rather than failing to parse the report.
+      attributeValues: json['attributeValues'] is Map
+          ? Map<String, Object?>.from(json['attributeValues'] as Map)
+          : const <String, Object?>{},
+      objectTypeAttributes:
+          parseList(json['objectTypeAttributes'], ObjectTypeAttributeModel.fromJson),
     );
   }
+}
+
+/// One material the job consumed, as `saveWorkReportSchema.materials` types it.
+///
+/// Read and re-sent, never authored here: this app draws no materials control, and the
+/// list is only modelled at all so a mobile save stops erasing what the web recorded.
+///
+/// Deliberately NOT `MaterialItemModel`: that is a catalogue row (`id`/`code`/
+/// `defaultUnit`) picked from master data, whereas a conclusion carries a freehand
+/// name/quantity/unit triple with no catalogue behind it.
+class WorkReportMaterialModel {
+  const WorkReportMaterialModel({
+    required this.name,
+    required this.quantity,
+    required this.unit,
+  });
+
+  final String name;
+
+  /// `num` rather than `double`, so a quantity of 3 goes back as `3` and not as `3.0`.
+  final num quantity;
+
+  /// The WIRE value, not a [MaterialUnit]. `MaterialUnit.fromWire` folds anything it does
+  /// not recognise onto PIECE, which on a field this app only relays would quietly rewrite
+  /// a unit added after this build shipped into the wrong one.
+  final String unit;
+
+  /// Null for an entry the server's own schema would refuse back.
+  ///
+  /// `name` is `min(1)` and `quantity` is `positive()` there, so a malformed row is dropped
+  /// rather than relayed: sending it back would turn every subsequent save into a 400 and
+  /// lock the technician out of their own draft.
+  static WorkReportMaterialModel? fromJson(Map<String, dynamic> json) {
+    final String? name = parseString(json['name']);
+    final Object? quantity = json['quantity'];
+    if (name == null || quantity is! num || quantity <= 0) return null;
+    return WorkReportMaterialModel(
+      name: name,
+      quantity: quantity,
+      // The schema's own default, so an entry stored before the unit existed still sends.
+      unit: parseString(json['unit']) ?? 'PIECE',
+    );
+  }
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'name': name,
+        'quantity': quantity,
+        'unit': unit,
+      };
 }
 
 /// Equipment the conclusion names without yet saying anything about it.
@@ -206,6 +278,10 @@ class WorkReportModel {
     this.recommendation,
     this.actionTaken,
     this.returnReason,
+    this.materials = const <WorkReportMaterialModel>[],
+    this.repairRequired = false,
+    this.revisitRequired = false,
+    this.revisitDateWire,
   });
 
   final String id;
@@ -232,6 +308,26 @@ class WorkReportModel {
   /// The server's own list of what still blocks submission, in its own vocabulary.
   final List<String> missing;
   final bool isComplete;
+
+  /*
+   * THE OFFICE'S FOUR FIELDS, HELD ONLY SO A SAVE FROM HERE DOES NOT DESTROY THEM.
+   *
+   * `materials`, `repairRequired`, `revisitRequired` and `revisitDate` are entered on the
+   * web console; this app draws no control for any of them. But `PUT .../report` REPLACES
+   * the record, and the schema defaults every one of them, so a payload that omits them —
+   * or hard-codes `false` — erases what a dispatcher recorded the moment the technician
+   * taps "Ноорогт хадгалах".
+   *
+   * They are therefore the exact OPPOSITE of the photo and object lists below, which are
+   * the editor's working copies precisely so a local removal survives: these are immutable
+   * pass-through, read from the response and echoed back byte for byte, and nothing in the
+   * app may edit them. `revisitDate` is kept as the wire string rather than a `DateTime` so
+   * a round trip cannot shift it through a timezone or drop its precision.
+   */
+  final List<WorkReportMaterialModel> materials;
+  final bool repairRequired;
+  final bool revisitRequired;
+  final String? revisitDateWire;
 
   static WorkReportModel fromJson(Map<String, dynamic> json) {
     List<WorkReportPhotoModel> photos(Object? value) =>
@@ -265,6 +361,14 @@ class WorkReportModel {
           .whereType<String>()
           .toList(),
       isComplete: json['isComplete'] == true,
+      materials: (json['materials'] as List<dynamic>? ?? <dynamic>[])
+          .whereType<Map<String, dynamic>>()
+          .map(WorkReportMaterialModel.fromJson)
+          .whereType<WorkReportMaterialModel>()
+          .toList(),
+      repairRequired: parseBool(json['repairRequired']),
+      revisitRequired: parseBool(json['revisitRequired']),
+      revisitDateWire: parseString(json['revisitDate']),
     );
   }
 }
@@ -278,6 +382,7 @@ class SaveObjectAssessment {
     this.observation,
     this.conclusion,
     this.recommendation,
+    this.attributeValues,
   });
 
   final String objectId;
@@ -286,6 +391,14 @@ class SaveObjectAssessment {
   final String? conclusion;
   final String? recommendation;
   final List<String> photoIds;
+
+  /// The equipment's per-type attributes, answered while writing this finding (4.1).
+  ///
+  /// NULL MEANS "NOT ASKED", AND IS NOT EMPTY. Null leaves the key off the body, and the
+  /// server then enforces nothing and clears nothing — which is what a card whose type
+  /// declares no attributes sends. An empty map would say "the answer to everything is
+  /// nothing" and would wipe what the equipment already carries.
+  final Map<String, Object?>? attributeValues;
 
   Map<String, dynamic> toJson() {
     return <String, dynamic>{
@@ -297,6 +410,9 @@ class SaveObjectAssessment {
       'conclusion': conclusion,
       'recommendation': recommendation,
       'photoIds': photoIds,
+      // Unlike the nullish fields above, null here means "leave it alone" rather than
+      // "clear it", so the key is omitted entirely.
+      if (attributeValues != null) 'attributeValues': attributeValues,
     };
   }
 }
@@ -316,6 +432,10 @@ class SaveWorkReportRequest {
     this.conclusion,
     this.recommendation,
     this.actionTaken,
+    this.materials = const <WorkReportMaterialModel>[],
+    this.repairRequired = false,
+    this.revisitRequired = false,
+    this.revisitDateWire,
   });
 
   final int? score;
@@ -327,14 +447,28 @@ class SaveWorkReportRequest {
   final List<String> beforePhotoIds;
   final List<String> afterPhotoIds;
 
+  /// The four office-entered fields, carried back exactly as they were read.
+  ///
+  /// Not a working copy and not a default: they used to be `false`, `false` and two absent
+  /// keys, and because the server replaces the record and the schema defaults every one of
+  /// them, saving from the phone wiped the dispatcher's materials and flags. Whatever the
+  /// loaded report holds is what goes back.
+  final List<WorkReportMaterialModel> materials;
+  final bool repairRequired;
+  final bool revisitRequired;
+  final String? revisitDateWire;
+
   Map<String, dynamic> toJson() {
     return <String, dynamic>{
       'score': score,
       'conclusion': conclusion,
       'recommendation': recommendation,
       'actionTaken': actionTaken,
-      'repairRequired': false,
-      'revisitRequired': false,
+      'repairRequired': repairRequired,
+      'revisitRequired': revisitRequired,
+      'revisitDate': revisitDateWire,
+      'materials':
+          materials.map((WorkReportMaterialModel entry) => entry.toJson()).toList(),
       'objectIds': objectIds,
       'objectAssessments':
           objectAssessments.map((SaveObjectAssessment entry) => entry.toJson()).toList(),

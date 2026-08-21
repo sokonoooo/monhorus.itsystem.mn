@@ -11,7 +11,7 @@ import {
   DASHBOARD_WIDGETS,
   DASHBOARD_WIDGET_SIZES,
 } from '../constants/dashboard-layout';
-import { NOTIFICATION_EVENTS } from '../constants/notification';
+import { DEVICE_PLATFORMS, NOTIFICATION_EVENTS } from '../constants/notification';
 import { REPORT_EXPORT_FORMATS } from '../constants/report';
 import {
   REPORT_SOURCE_TYPES,
@@ -56,8 +56,12 @@ export const inspectionListQuerySchema = z.object({
 /**
  * Shared filter for the section 15.2 catalogue.
  *
- * `limit` caps the row set. A capped result reports `truncatedAt` so an export never
- * silently omits rows.
+ * `page` and `limit` window the row set and every response states the real `total`, so a
+ * reader reaches every row instead of being handed a silently capped slice.
+ *
+ * The default `limit` stays high because it is the CSV export's default: an export renders
+ * one window and has no pager, so it must still carry the whole report. A screen asks for
+ * a page-sized window explicitly.
  */
 export const reportQuerySchema = z.object({
   dateFrom: isoDateSchema.optional(),
@@ -65,6 +69,7 @@ export const reportQuerySchema = z.object({
   customerId: objectIdSchema.optional(),
   projectId: objectIdSchema.optional(),
   employeeId: objectIdSchema.optional(),
+  page: z.coerce.number().int().positive().default(1),
   limit: z.coerce.number().int().positive().max(5000).default(1000),
   format: z.enum(REPORT_EXPORT_FORMATS).optional(),
 });
@@ -79,6 +84,20 @@ export const notificationListQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(100).default(25),
   unreadOnly: z.coerce.boolean().optional(),
   event: z.enum(NOTIFICATION_EVENTS).optional(),
+});
+
+/**
+ * Registering this install for push.
+ *
+ * `token` is bounded but not pattern-matched: FCM registration tokens have no published
+ * format guarantee and have changed shape before, so a regex here would reject valid
+ * devices the day Google lengthens them. The bound only stops an unbounded string from
+ * reaching the database.
+ */
+export const deviceTokenRegisterSchema = z.object({
+  token: z.string().min(10, 'Token буруу байна.').max(4096),
+  platform: z.enum(DEVICE_PLATFORMS),
+  appId: z.string().min(1).max(200).optional(),
 });
 
 export type InspectionListQueryInput = z.infer<typeof inspectionListQuerySchema>;
@@ -164,3 +183,4 @@ export const dashboardCustomWidgetSchema = z.object({
 });
 
 export type DashboardCustomWidgetInput = z.infer<typeof dashboardCustomWidgetSchema>;
+export type DeviceTokenRegisterInput = z.infer<typeof deviceTokenRegisterSchema>;

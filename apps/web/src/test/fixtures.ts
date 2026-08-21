@@ -9,8 +9,11 @@ import type {
   PaginatedData,
   PlannedWorkDto,
   PlannedWorkListItemDto,
+  MaterialItemDto,
+  PlannedWorkMaterialDto,
   PlannedWorkReportDto,
   PlannedWorkTaskDto,
+  PlannedWorkTaskMaterialUsageDto,
   FloorDto,
   FloorLoadSummaryDto,
   FloorPlanDto,
@@ -26,9 +29,18 @@ import type {
   ProjectDto,
   ReportResultDto,
   ReportRollupDto,
+  RiskBandConfig,
   RiskSummaryDto,
   ServiceRequestListItemDto,
+  ServiceRequestStage,
 } from '@monhorus/shared';
+import {
+  DEFAULT_RISK_BANDS,
+  DEFAULT_SERVICE_REQUEST_STAGES,
+  resolveRiskBands,
+} from '@monhorus/shared';
+
+import type { VocabularyDto } from '../services/vocabulary.service';
 
 /**
  * Shared test fixtures.
@@ -52,6 +64,7 @@ export function makeCustomer(overrides: Partial<CustomerDto> = {}): CustomerDto 
     responsibleEmployeeName: null,
     notes: null,
     isActive: true,
+    createdByName: 'Б. Энхтөр',
     ...overrides,
   };
 }
@@ -84,17 +97,72 @@ export function makeServiceRequest(
     floor: null,
     room: null,
     device: null,
-    requestType: 'URGENT_CALL',
     isUrgent: true,
     status: 'UNASSIGNED',
     assignedEmployees: [],
     assignedTeam: null,
     createdAt: '2026-01-01T00:00:00.000Z',
+    createdByName: 'Б. Энхтөр',
     slaDueAt: '2026-01-01T06:00:00.000Z',
     slaState: 'STARTED',
     slaRemainingMinutes: 300,
     ...overrides,
   };
+}
+
+/**
+ * A `GET /vocabulary` payload — the words and colours an administrator has configured.
+ *
+ * `useRequestStages` and `useRiskBands` both read this one endpoint, so a screen with a
+ * stage filter, a band name, a band colour or a score boundary cannot be tested without it.
+ * It is deliberately NOT `GET /settings`: that is gated on `settings.view`, which a customer
+ * does not hold, and the portal is one of the callers.
+ *
+ * The ladder and the stage list are PARAMETERS, never defaults the assertions lean on. The
+ * point of most of these tests is that the screen reads the configured values rather than
+ * the bundled ones, so a test proving that passes cut points unlike the shipped 81/61/41/21.
+ */
+export function makeVocabulary(
+  overrides: {
+    stages?: readonly ServiceRequestStage[];
+    bands?: readonly RiskBandConfig[];
+  } = {},
+): VocabularyDto {
+  const stages = overrides.stages ?? DEFAULT_SERVICE_REQUEST_STAGES;
+  const bands = overrides.bands ?? DEFAULT_RISK_BANDS;
+
+  return {
+    requestStages: stages.map((stage) => ({
+      key: stage.key,
+      label: stage.label,
+      colour: stage.colour,
+      statuses: [...stage.statuses],
+      hidden: stage.hidden,
+    })),
+    // Resolved exactly as the server resolves them — sorted, with each band's upper bound
+    // derived from the next one's minimum — and served worst-first, so a fixture cannot
+    // quietly disagree with the endpoint about what a band covers.
+    riskBands: [...resolveRiskBands(bands)].reverse().map((band) => ({
+      level: band.key,
+      label: band.label,
+      colour: band.colour,
+      min: band.min,
+      max: band.max,
+    })),
+  };
+}
+
+/**
+ * The shipped ladder with its cut points moved, keeping every name and colour.
+ *
+ * `minScores` is worst-first, matching `DEFAULT_RISK_BANDS`, so `[0, 30, 50, 70, 90]` reads
+ * in the same order the constant is written in.
+ */
+export function makeRiskBandsAt(minScores: readonly number[]): RiskBandConfig[] {
+  return DEFAULT_RISK_BANDS.map((band, index) => ({
+    ...band,
+    minScore: minScores[index] ?? band.minScore,
+  }));
 }
 
 export function makePlannedWorkListItem(
@@ -125,6 +193,7 @@ export function makePlannedWorkListItem(
     assignedTeam: null,
     reportStatus: null,
     createdAt: '2026-06-25T00:00:00.000Z',
+    createdByName: 'Б. Энхтөр',
     ...overrides,
   };
 }
@@ -161,10 +230,65 @@ export function makePlannedWorkTask(
     relatedObjects: [],
     beforePhotos: [],
     afterPhotos: [],
+    materialUsage: [],
     missingEvidence: ['Ажлын өмнөх зураг', 'Ажлын дараах зураг', 'Тайлбар', 'Зөвлөмж'],
     completedAt: null,
     createdAt: '2026-06-25T00:00:00.000Z',
+    createdByName: 'Б. Энхтөр',
     updatedAt: '2026-06-25T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+/** A row of the material catalogue, as the pickers on a planned work see it. */
+export function makeMaterialItem(overrides: Partial<MaterialItemDto> = {}): MaterialItemDto {
+  return {
+    id: '507f1f77bcf86cd799439091',
+    code: 'CBL-3X2.5',
+    name: 'Кабель 3x2.5',
+    category: 'CABLE',
+    defaultUnit: 'METRE',
+    description: null,
+    isActive: true,
+    createdAt: '2026-06-01T00:00:00.000Z',
+    updatedAt: '2026-06-01T00:00:00.000Z',
+  ...overrides,
+  };
+}
+
+/**
+ * One material registered on a work.
+ *
+ * All three figures are given explicitly rather than derived from each other, because that
+ * is exactly how they arrive: the backend stores the remainder, and a fixture that computed
+ * it would hide a screen that computes it too.
+ */
+export function makePlannedWorkMaterial(
+  overrides: Partial<PlannedWorkMaterialDto> = {},
+): PlannedWorkMaterialDto {
+  return {
+    materialItemId: '507f1f77bcf86cd799439091',
+    name: 'Кабель 3x2.5',
+    quantity: 100,
+    consumedQuantity: 40,
+    remainingQuantity: 60,
+    unit: 'METRE',
+    ...overrides,
+  };
+}
+
+export function makeTaskMaterialUsage(
+  overrides: Partial<PlannedWorkTaskMaterialUsageDto> = {},
+): PlannedWorkTaskMaterialUsageDto {
+  return {
+    id: '507f1f77bcf86cd7994390a1',
+    taskId: '507f1f77bcf86cd799439071',
+    materialItemId: '507f1f77bcf86cd799439091',
+    materialName: 'Кабель 3x2.5',
+    quantity: 40,
+    unit: 'METRE',
+    recordedByName: 'Бат Дорж',
+    recordedAt: '2026-07-12T00:00:00.000Z',
     ...overrides,
   };
 }
@@ -314,6 +438,7 @@ export function makeProject(overrides: Partial<ProjectDto> = {}): ProjectDto {
     objectCount: 42,
     riskSummary: makeRiskSummary(),
     rollup: makeRollup(),
+    createdByName: 'Б. Энхтөр',
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
     deleteBlockers: [],
@@ -338,6 +463,7 @@ export function makeBuilding(overrides: Partial<BuildingDto> = {}): BuildingDto 
     objectCount: 21,
     riskSummary: makeRiskSummary(),
     rollup: makeRollup(),
+    createdByName: 'Б. Энхтөр',
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
     deleteBlockers: [],
@@ -364,6 +490,7 @@ export function makeFloor(overrides: Partial<FloorDto> = {}): FloorDto {
     objectCount: 3,
     riskSummary: makeRiskSummary(),
     rollup: makeRollup(),
+    createdByName: 'Б. Энхтөр',
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
     deleteBlockers: [],
@@ -403,8 +530,20 @@ export function makeObjectType(overrides: Partial<ObjectTypeDto> = {}): ObjectTy
     insidePanel: true,
     generatesConclusion: true,
     icon: 'BREAKER',
+    // No custom icon by default: the built-in glyph is what a type registered before
+    // uploads existed still draws with, and that is the case worth being the default.
+    iconFileId: null,
+    iconUrl: null,
+    // No per-type attributes by default. A type declaring none is what every type looked like
+    // before they existed, so it is the case that must keep behaving exactly as it did.
+    attributes: [],
+    // Not callable by default: that is what every type registered before calls carried an
+    // SLA looks like, and the case that must keep behaving as it did.
+    canCreateCall: false,
+    callSlaHours: null,
     isActive: true,
     objectCount: 0,
+    createdByName: 'Б. Энхтөр',
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
     ...overrides,
@@ -424,7 +563,9 @@ export function makeObjectListItem(
       code: 'DB',
       name: 'Түгээх самбар',
       icon: 'PANEL',
+      iconUrl: null,
       showOnPlan: false,
+    attributes: [],
     },
     customerId: '507f1f77bcf86cd799439011',
     customerName: 'Central Tower ХХК',
@@ -434,9 +575,11 @@ export function makeObjectListItem(
     planPosition: null,
     status: 'ACTIVE',
     latestAssessment: null,
+    attributeValues: {},
     calculatedLoad: { valueKw: 18.4, complete: true, reasons: [] },
     measuredLoadKw: null,
     loadVariance: { valueKw: null, complete: false, reasons: [] },
+    createdByName: 'Б. Энхтөр',
     createdAt: '2026-01-01T00:00:00.000Z',
     ...overrides,
   };
@@ -452,6 +595,7 @@ export function makeObjectDetail(overrides: Partial<ObjectDetailDto> = {}): Obje
     panel: { capacityKw: 25, location: 'Баруун жигүүр', protection: 'IP54' },
     circuit: null,
     equipment: null,
+    attributeValues: {},
     childCircuits: [],
     childEquipment: [],
     mountedEquipment: [],
@@ -512,6 +656,7 @@ export function makeInvoiceListItem(
     status: 'DRAFT',
     effectiveStatus: 'DRAFT',
     overdueDays: null,
+    createdByName: 'Б. Энхтөр',
     createdAt: '2026-07-01T00:00:00.000Z',
     ...overrides,
   };
@@ -617,6 +762,12 @@ export function makeReportResult(overrides: Partial<ReportResultDto> = {}): Repo
       { key: 'slaResult', label: 'SLA үр дүн', format: 'TEXT' },
       { key: 'extendedMinutes', label: 'Сунгасан (мин)', format: 'NUMBER', align: 'right' },
     ],
+    // One page holding everything, which is what a fixture wants unless a test is
+    // specifically about paging and overrides these.
+    page: 1,
+    limit: 25,
+    total: 2,
+    totalPages: 1,
     rows: [
       { requestNumber: 'SR-202607-0001', slaResult: 'Хугацаанд багтсан', extendedMinutes: 0 },
     ],
@@ -718,6 +869,10 @@ export function makeDashboardSummary(
   overrides: Partial<DashboardSummaryDto> = {},
 ): DashboardSummaryDto {
   return {
+    // The organisation-wide payload is the default because it is the one carrying every
+    // block: a scoped fixture would have to omit five of them, so a caller wanting the
+    // bounded shape passes `isScoped: true` along with the omissions it implies.
+    isScoped: false,
     generatedAt: '2026-07-29T06:00:00.000Z',
     requests: {
       newRequests: 2,
@@ -733,7 +888,6 @@ export function makeDashboardSummary(
       { key: 'NEW', label: 'Шинэ', count: 2 },
       { key: 'ASSIGNED', label: 'Хуваарилагдсан', count: 4 },
     ],
-    requestsByType: [{ key: 'REPAIR', label: 'Засвар үйлчилгээ', count: 3 }],
     trend: Array.from({ length: 14 }, (_, index) => ({
       date: `2026-07-${String(index + 16).padStart(2, '0')}`,
       created: index % 3,

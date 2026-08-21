@@ -31,12 +31,15 @@ void main() {
   });
 
   test('all five bands are visually distinct', () {
+    // The five documented bands, not `RiskLevel.values`: the enum also carries the
+    // three reserved storage keys, which share a neutral placeholder triad until an
+    // administrator colours them and would read here as three "collapsed" bands.
     final Set<Color> foregrounds =
-        RiskLevel.values.map((RiskLevel l) => l.tone.foreground).toSet();
+        documentedRiskBands.map((RiskLevel l) => l.tone.foreground).toSet();
     expect(foregrounds.length, 5, reason: 'a collapsed band is the bug this file exists for');
 
     final Set<Color> backgrounds =
-        RiskLevel.values.map((RiskLevel l) => l.tone.background).toSet();
+        documentedRiskBands.map((RiskLevel l) => l.tone.background).toSet();
     expect(backgrounds.length, 5);
 
     // …and the unassessed state is none of them, and specifically is not green.
@@ -75,10 +78,14 @@ void main() {
     await tester.pumpWidget(_host(const RiskLegend()));
     await tester.pumpAndSettle();
 
-    for (final RiskLevel level in RiskLevel.values) {
+    for (final RiskLevel level in documentedRiskBands) {
       expect(find.text(level.label), findsOneWidget);
     }
     expect(find.text(unassessedLabel), findsOneWidget);
+
+    // And the reserved keys are NOT named. Nobody has configured a sixth band, so
+    // there is no sixth band to put in a legend.
+    expect(find.text(RiskLevel.band6.label), findsNothing);
 
     // Six bands, six glyphs — the silhouette is what survives greyscale.
     expect(find.byType(RiskGlyph), findsNWidgets(6));

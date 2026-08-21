@@ -6,6 +6,7 @@ import '../../../../../core/network/api_result.dart';
 import '../../../../../core/network/paginated_data.dart';
 import '../../../../auth/domain/entities/app_user.dart';
 import '../../../../auth/presentation/providers/auth_provider.dart';
+import '../../../home/presentation/providers/home_providers.dart';
 import '../../../project/data/models/object_models.dart';
 import '../../../project/domain/entities/object_enums.dart';
 import '../../../project/data/models/project_models.dart';
@@ -56,10 +57,10 @@ class ConclusionGrants {
   bool get canSelfProgress =>
       _permissions.contains(PermissionKeys.serviceRequestSelfProgress) || canReview;
 
-  /// Settling a submitted conclusion. APPROVE only — returning one is not offered by this
-  /// app at all, and `service_request.approve_report` could not reach it if it were.
-  bool get canApproveConclusion =>
-      _permissions.contains(PermissionKeys.serviceRequestApproveReport) || canReview;
+  // THERE IS NO `canApproveConclusion` HERE, AND ADDING ONE BACK WOULD BE A MISTAKE.
+  // Settling a submitted conclusion — approving it or returning it — happens on the web
+  // admin, so no screen in this app has an approval control for a grant to gate. A getter
+  // reading `service_request.approve_report` would be an invitation to draw one.
 
   /// True once the permission array has actually arrived, so a screen can tell "no
   /// grants" apart from "not asked yet".
@@ -105,6 +106,8 @@ class EquipmentDraft {
     this.observation = '',
     this.conclusion = '',
     this.recommendation = '',
+    this.attributes = const <ObjectTypeAttributeModel>[],
+    this.attributeDrafts = const <String, String>{},
   });
 
   final String objectId;
@@ -128,6 +131,52 @@ class EquipmentDraft {
   final String recommendation;
   final List<String> photoIds;
 
+  // -- The equipment's own standing facts (requirements 4.1) -------------------
+  /// What this equipment's TYPE declares, in display order.
+  ///
+  /// Off the picked list row's type reference, so adding a card costs no round trip. Empty
+  /// for a type that declares none — and for a card whose equipment has gone away, which is
+  /// why an unavailable card asks nothing.
+  final List<ObjectTypeAttributeModel> attributes;
+
+  /// The answers as their controls hold them, keyed by attribute key.
+  ///
+  /// Pre-filled from what the equipment already answered, because these are standing facts
+  /// rather than a fresh reading: the technician corrects what is on record. That also makes
+  /// them safe to send — a declared attribute missing from a saved row is one CLEARED, so a
+  /// blank draft would wipe an earlier visit's work.
+  final Map<String, String> attributeDrafts;
+
+  /// The answers parsed to their declared kinds, with blanks left out.
+  Map<String, Object?> get attributePayload {
+    final Map<String, Object?> payload = <String, Object?>{};
+    for (final ObjectTypeAttributeModel attribute in attributes) {
+      final String raw = (attributeDrafts[attribute.key] ?? '').trim();
+      if (raw.isEmpty) continue;
+      switch (attribute.type) {
+        case ObjectAttributeType.number:
+          final double? parsed = double.tryParse(raw.replaceAll(',', '.'));
+          if (parsed != null) payload[attribute.key] = parsed;
+        case ObjectAttributeType.boolean:
+          payload[attribute.key] = raw == 'true';
+        case ObjectAttributeType.select:
+        case ObjectAttributeType.text:
+          payload[attribute.key] = raw;
+      }
+    }
+    return payload;
+  }
+
+  /// The declared attributes this card has not answered, by label.
+  ///
+  /// Mirrors `validateAttributeValues`, which is what the server enforces with. Only the
+  /// required ones: an optional blank is a complete card.
+  List<String> get missingRequiredAttributes => attributes
+      .where((ObjectTypeAttributeModel attribute) =>
+          attribute.required && (attributeDrafts[attribute.key] ?? '').trim().isEmpty)
+      .map((ObjectTypeAttributeModel attribute) => attribute.label)
+      .toList(growable: false);
+
   String get label => (code ?? '').isEmpty ? (name ?? objectId) : '$code · ${name ?? ''}';
 
   /// True when the technician has actually said something about this object.
@@ -140,7 +189,10 @@ class EquipmentDraft {
       observation.trim().isNotEmpty ||
       conclusion.trim().isNotEmpty ||
       recommendation.trim().isNotEmpty ||
-      photoIds.isNotEmpty;
+      photoIds.isNotEmpty ||
+      // An answered attribute is data too, or a card whose only content is "this breaker is
+      // fused" would never become a ReportItem and the answer would never reach the object.
+      attributePayload.isNotEmpty;
 
   bool get isReadOnly => origin == EquipmentOrigin.unavailable;
 
@@ -151,6 +203,7 @@ class EquipmentDraft {
     String? recommendation,
     List<String>? photoIds,
     EquipmentOrigin? origin,
+    Map<String, String>? attributeDrafts,
   }) {
     return EquipmentDraft(
       objectId: objectId,
@@ -166,6 +219,8 @@ class EquipmentDraft {
       conclusion: conclusion ?? this.conclusion,
       recommendation: recommendation ?? this.recommendation,
       photoIds: photoIds ?? this.photoIds,
+      attributes: attributes,
+      attributeDrafts: attributeDrafts ?? this.attributeDrafts,
     );
   }
 }
@@ -330,6 +385,11 @@ class ConclusionEditor extends FamilyAsyncNotifier<ConclusionEditorState, Conclu
           conclusion: item.conclusion ?? '',
           recommendation: item.recommendation ?? '',
           photoIds: List<String>.from(item.photoIds),
+          attributes: item.objectTypeAttributes,
+          attributeDrafts: <String, String>{
+            for (final ObjectTypeAttributeModel attribute in item.objectTypeAttributes)
+              attribute.key: item.attributeValues[attribute.key]?.toString() ?? '',
+          },
         ),
       );
     }
@@ -380,6 +440,27 @@ class ConclusionEditor extends FamilyAsyncNotifier<ConclusionEditorState, Conclu
   /// The list is rebuilt by identity rather than index, so a card keeps its values when
   /// another is added or removed — which is what "preserve entered values when switching
   /// between selected objects" actually requires.
+  /// Answers one of a card's type-declared attributes (requirements 4.1).
+  ///
+  /// Its own method rather than another argument on [patchDraft]: that one is fed by text
+  /// controllers on every keystroke and takes a fixed four fields, while the set of keys
+  /// here is whatever the equipment's type happens to declare.
+  void patchDraftAttribute(String objectId, String key, String value) {
+    _set(
+      _now.copyWith(
+        drafts: _now.drafts
+            .map(
+              (EquipmentDraft draft) => draft.objectId == objectId
+                  ? draft.copyWith(
+                      attributeDrafts: <String, String>{...draft.attributeDrafts, key: value},
+                    )
+                  : draft,
+            )
+            .toList(),
+      ),
+    );
+  }
+
   void patchDraft(
     String objectId, {
     String? score,
@@ -426,6 +507,15 @@ class ConclusionEditor extends FamilyAsyncNotifier<ConclusionEditorState, Conclu
             currentRiskWire: object.latestAssessment?.riskLevel?.wireValue,
             currentScore: object.latestAssessment?.score,
             photoIds: const <String>[],
+            // Both off the picked row: the list carries what the type declares and what this
+            // equipment has already answered, so adding a card costs no round trip — and
+            // starting from the STORED answers is what makes them safe to send back.
+            attributes: object.objectType?.attributes ?? const <ObjectTypeAttributeModel>[],
+            attributeDrafts: <String, String>{
+              for (final ObjectTypeAttributeModel attribute
+                  in object.objectType?.attributes ?? const <ObjectTypeAttributeModel>[])
+                attribute.key: object.attributeValues[attribute.key]?.toString() ?? '',
+            },
           ),
         )
         .toList();
@@ -548,7 +638,14 @@ class ConclusionEditor extends FamilyAsyncNotifier<ConclusionEditorState, Conclu
       conclusion: now.conclusion.trim().isEmpty ? null : now.conclusion.trim(),
       recommendation:
           now.recommendation.trim().isEmpty ? null : now.recommendation.trim(),
-      actionTaken: null,
+      // The five fields this editor draws no control for, echoed back from the loaded
+      // report rather than defaulted. The PUT replaces the record, so `null`/`false`/an
+      // absent key here is not "leave it alone" — it is "delete what the web recorded".
+      actionTaken: now.report.actionTaken,
+      materials: now.report.materials,
+      repairRequired: now.report.repairRequired,
+      revisitRequired: now.report.revisitRequired,
+      revisitDateWire: now.report.revisitDateWire,
       // Membership carries every card, including one not yet written up, so a selection
       // survives a save and can be filled in later.
       objectIds: now.drafts.map((EquipmentDraft draft) => draft.objectId).toList(),
@@ -566,6 +663,12 @@ class ConclusionEditor extends FamilyAsyncNotifier<ConclusionEditorState, Conclu
               recommendation:
                   draft.recommendation.trim().isEmpty ? null : draft.recommendation.trim(),
               photoIds: draft.photoIds,
+              // The type's own answers land on the EQUIPMENT, not on this finding: the score
+              // and the narrative are what the visit observed, while "this breaker is fused"
+              // is true between visits. Omitted for a card whose type declares nothing, so
+              // absent still means "not asked".
+              attributeValues:
+                  draft.attributes.isEmpty ? null : draft.attributePayload,
             ),
           )
           .toList(),
@@ -616,6 +719,17 @@ class ConclusionEditor extends FamilyAsyncNotifier<ConclusionEditorState, Conclu
     return result.when(
       success: (WorkReportModel submitted) {
         _set(_hydrate(submitted).copyWith(message: 'Хянуулахаар илгээлээ.'));
+        // THE REQUEST MOVED TOO. `submitWorkReport` calls `advanceOnConclusion` on the
+        // backend, which advances the request to REPORT_SUBMITTED; the answer here carries
+        // only the conclusion. Left alone, the detail screen keeps the status it read
+        // before — and keeps offering «"Дүгнэлт илгээсэн" болгох» off it, a button whose
+        // only outcome now is the server refusing a move the request has already made.
+        // The reads the status also appears in are refreshed for the same reason
+        // `ServiceRequestActionController` refreshes them.
+        ref
+          ..invalidate(serviceRequestDetailProvider(arg.requestId))
+          ..invalidate(assignedRequestsProvider)
+          ..invalidate(homeOverviewProvider);
         return null;
       },
       failure: (Failure failure) {

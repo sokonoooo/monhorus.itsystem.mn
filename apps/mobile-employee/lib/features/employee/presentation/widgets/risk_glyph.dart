@@ -18,6 +18,7 @@ import '../theme/employee_tokens.dart';
 /// | CRITICAL | filled triangle |
 /// | OUT_OF_SERVICE | filled square |
 /// | _unassessed_ | hollow thin-outline circle |
+/// | BAND_6 / 7 / 8 | filled hexagon |
 ///
 /// Drawn with a [CustomPainter] rather than as a Unicode character (◆ ▲ ◼ …): a text
 /// glyph depends on system font coverage, renders at a different optical weight on
@@ -140,7 +141,42 @@ class _RiskGlyphPainter extends CustomPainter {
           ),
           fill,
         );
+
+      case RiskLevel.band6:
+      case RiskLevel.band7:
+      case RiskLevel.band8:
+        // A generated mark, not a designed one, and that is the honest thing to draw.
+        //
+        // The five shapes above are a vocabulary: circle → drained circle → diamond →
+        // triangle → square spells out an escalation, and each was chosen against the
+        // others so the pair a colour-blind reader cannot separate by hue is still
+        // separable by outline. A reserved band has no place on that ladder — an
+        // administrator decides where it sits and what it means — so there is no
+        // position for a sixth shape to encode and nothing for this file to claim.
+        //
+        // A filled hexagon is what is left: solid like the graded bands rather than
+        // hollow like the unassessed ring, six-sided so it is not the diamond and not
+        // the square, and still one recognisable silhouette at 8px. For a configured
+        // band the meaning is carried by its colour and its name, which come from the
+        // administrator; the five documented bands keep the shapes drawn for them.
+        canvas.drawPath(_hexagon(centre, edge / 2), fill);
     }
+  }
+
+  /// A pointy-top regular hexagon. The literals are cos/sin of the six vertices at
+  /// 60° steps from due north, written out for the same reason the triangle's are:
+  /// the geometry is fixed and reads clearer than the arithmetic that produces it.
+  static Path _hexagon(Offset centre, double radius) {
+    final double wide = radius * 0.866;
+    final double tall = radius * 0.5;
+    return Path()
+      ..moveTo(centre.dx, centre.dy - radius)
+      ..lineTo(centre.dx + wide, centre.dy - tall)
+      ..lineTo(centre.dx + wide, centre.dy + tall)
+      ..lineTo(centre.dx, centre.dy + radius)
+      ..lineTo(centre.dx - wide, centre.dy + tall)
+      ..lineTo(centre.dx - wide, centre.dy - tall)
+      ..close();
   }
 
   @override

@@ -11,10 +11,22 @@
          `flutter test` and `flutter build apk` all pass regardless, since a missing
          runtime permission is not a compile-time fact. -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!--
+        Android 13 (API 33) and above will not show a notification until the user grants
+        this. Below 33 it is ignored, so it is declared unconditionally rather than gated on
+        the target SDK - which this module inherits from the Flutter SDK rather than pinning,
+        so it can rise to 33 without anybody here choosing it.
+
+        PushMessaging.start() is what raises the dialog. A refusal is not fatal: the token is
+        still registered, because the user may enable notifications later in system settings
+        and nothing would re-register at that point.
+    -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <application
         android:label="Monhorus Employee"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:networkSecurityConfig="@xml/network_security_config">
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -42,6 +54,15 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+        <!--
+            Where a message with no explicit channel lands. Must match _channelId in
+            lib/core/push/push_messaging.dart: Android silently discards a notification
+            whose channel does not exist, so a drift between these two is invisible until
+            somebody reports that push "does not work".
+        -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="monhorus_default" />
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

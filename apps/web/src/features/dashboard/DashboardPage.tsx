@@ -4,13 +4,11 @@ import {
   DASHBOARD_INSIGHT_RANGE_LABELS,
   DASHBOARD_WIDGET_LABELS,
   DEFAULT_DASHBOARD_LAYOUT,
-  RISK_LEVEL_LABELS,
   type DashboardCustomWidgetDto,
   type DashboardInsightDto,
   type DashboardSummaryDto,
   type DashboardWidgetPreference,
   type DashboardWidgetSize,
-  type RiskLevel,
 } from '@monhorus/shared';
 import { useEffect, useState, type ReactElement, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
@@ -29,20 +27,20 @@ import {
 } from '../../components/charts/Charts';
 import { Button } from '../../components/ui/Button';
 import { PageHeader } from '../../components/ui/PageHeader';
+import { riskLabelOf, riskPaletteOf } from '../../components/ui/risk-palette';
 import { ErrorState, Skeleton } from '../../components/ui/States';
+import { useRiskBands } from '../../hooks/use-risk-bands';
 import { ApiError } from '../../lib/api-client';
 import { dashboardService } from '../../services/org.service';
 import { CustomiseDashboardDrawer } from './CustomiseDashboardDrawer';
 import { TodayPanel } from './TodayPanel';
 
-/** Section 10 assigns each band its colour; the chart reuses them rather than inventing any. */
-const RISK_COLOURS: Record<RiskLevel, string> = {
-  NORMAL: CHART_COLOURS.green,
-  ATTENTION: CHART_COLOURS.amber,
-  SCHEDULE_REPAIR: CHART_COLOURS.orange,
-  CRITICAL: CHART_COLOURS.red,
-  OUT_OF_SERVICE: CHART_COLOURS.black,
-};
+/*
+ * The risk donut takes its hues from `risk-palette.ts` — `.chart`, which holds exactly the
+ * `CHART_COLOURS` steps this file used to name per level. Keyed on the band's configured
+ * COLOUR rather than on the level, so a recoloured or renamed band moves the slice with it
+ * instead of needing an edit here.
+ */
 
 const INVOICE_COLOURS: Record<string, string> = {
   DRAFT: CHART_COLOURS.slate,
@@ -202,6 +200,9 @@ export function DashboardPage(): ReactElement {
   // Bumped when a definition is created or deleted, so the board reloads rather than
   // trying to patch a layout the server has already reconciled.
   const [reloadToken, setReloadToken] = useState(0);
+  // The band names and hues the donut is drawn with. Null while unread, which the palette
+  // answers with the shipped ladder's colours — a hue states no threshold.
+  const bands = useRiskBands();
 
   useEffect(() => {
     let cancelled = false;
@@ -232,9 +233,9 @@ export function DashboardPage(): ReactElement {
 
   const riskData: ChartDatum[] = (summary.risk?.byLevel ?? []).map((entry) => ({
     key: entry.level,
-    label: RISK_LEVEL_LABELS[entry.level],
+    label: riskLabelOf(entry.level, bands),
     value: entry.count,
-    colour: RISK_COLOURS[entry.level],
+    colour: riskPaletteOf(entry.level, bands).chart,
   }));
 
   const statusData: ChartDatum[] = (summary.requestsByStatus ?? []).map((slice, index) => ({
@@ -244,12 +245,6 @@ export function DashboardPage(): ReactElement {
     colour: CATEGORICAL_COLOURS[index % CATEGORICAL_COLOURS.length] ?? CHART_COLOURS.blue,
   }));
 
-  const typeData: ChartDatum[] = (summary.requestsByType ?? []).map((slice, index) => ({
-    key: slice.key,
-    label: slice.label,
-    value: slice.count,
-    colour: CATEGORICAL_COLOURS[index % CATEGORICAL_COLOURS.length] ?? CHART_COLOURS.teal,
-  }));
 
   const financeData: ChartDatum[] = (summary.finance?.byStatus ?? []).map((slice) => ({
     key: slice.key,
@@ -279,11 +274,20 @@ export function DashboardPage(): ReactElement {
 
     switch (key) {
       case 'TODAY':
-        return summary.today ? <TodayPanel today={summary.today} /> : null;
+        return summary.today ? (
+          <TodayPanel today={summary.today} isScoped={summary.isScoped} />
+        ) : null;
 
       case 'REQUEST_METRICS':
         return summary.requests ? (
-          <WidgetCard title={DASHBOARD_WIDGET_LABELS.REQUEST_METRICS} hint="Одоогийн байдлаар.">
+          <WidgetCard
+            title={DASHBOARD_WIDGET_LABELS.REQUEST_METRICS}
+            hint={
+              summary.isScoped
+                ? 'Зөвхөн танд хуваарилагдсан хүсэлт.'
+                : 'Одоогийн байдлаар.'
+            }
+          >
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <MetricLink to="/service-requests?status=NEW">
                 <StatTile label="Шинэ хүсэлт" value={summary.requests.newRequests} />
@@ -315,7 +319,11 @@ export function DashboardPage(): ReactElement {
         return summary.trend ? (
           <LineChart
             title="Хүсэлтийн урсгал"
-            hint="Сүүлийн 14 хоногийн шинэ ба дууссан хүсэлт."
+            hint={
+              summary.isScoped
+                ? 'Сүүлийн 14 хоногт танд хуваарилагдсан шинэ ба дууссан хүсэлт.'
+                : 'Сүүлийн 14 хоногийн шинэ ба дууссан хүсэлт.'
+            }
             hero
             labels={summary.trend.map((point) => point.date)}
             series={[
@@ -330,6 +338,31 @@ export function DashboardPage(): ReactElement {
                 label: 'Дууссан',
                 colour: CHART_COLOURS.green,
                 values: summary.trend.map((point) => point.completed),
+              },
+            ]}
+          />
+        ) : null;
+
+      /**
+       * The long view. Same data as the fourteen-day line above, asked a different
+       * question: not "what is happening this fortnight" but "is the workload growing".
+       */
+      case 'MONTHLY_TREND':
+        return summary.monthlyTrend ? (
+          <LineChart
+            title="Хүсэлт сараар"
+            hint={
+              summary.isScoped
+                ? 'Сүүлийн 6 сард танд хуваарилагдсан хүсэлт.'
+                : 'Сүүлийн 6 сард бүртгэгдсэн хүсэлт.'
+            }
+            labels={summary.monthlyTrend.map((point) => point.month)}
+            series={[
+              {
+                key: 'raised',
+                label: 'Бүртгэгдсэн',
+                colour: CHART_COLOURS.blue,
+                values: summary.monthlyTrend.map((point) => point.count),
               },
             ]}
           />
@@ -350,18 +383,15 @@ export function DashboardPage(): ReactElement {
         return summary.requestsByStatus ? (
           <DonutChart
             title="Хүсэлт төлвөөр"
-            hint="Бүх хүсэлтийн төлвийн хуваарилалт."
+            hint={
+              // "Бүх" — every request — is the one word that must not survive onto a
+              // bounded board: the donut beside it is drawn from the caller's own work.
+              summary.isScoped
+                ? 'Танд хуваарилагдсан хүсэлтийн төлвийн хуваарилалт.'
+                : 'Бүх хүсэлтийн төлвийн хуваарилалт.'
+            }
             data={statusData}
             centreLabel="хүсэлт"
-          />
-        ) : null;
-
-      case 'REQUESTS_BY_TYPE':
-        return summary.requestsByType ? (
-          <BarChart
-            title="Нээлттэй хүсэлт төрлөөр"
-            hint="Дуусаагүй хүсэлтүүд ажлын төрлөөр."
-            data={typeData}
           />
         ) : null;
 
@@ -386,7 +416,7 @@ export function DashboardPage(): ReactElement {
         return summary.plannedWork ? (
           <ProgressChart
             title="Төлөвлөгөөт ажлын гүйцэтгэл"
-            hint={`Нийт ${summary.plannedWork.total}, явцтай ${summary.plannedWork.inProgress}, хугацаа хэтэрсэн ${summary.plannedWork.overdue}.`}
+            hint={`${summary.isScoped ? 'Танд хуваарилагдсан. ' : ''}Нийт ${summary.plannedWork.total}, явцтай ${summary.plannedWork.inProgress}, хугацаа хэтэрсэн ${summary.plannedWork.overdue}.`}
             percent={summary.plannedWork.averageProgress}
             caption={`${summary.plannedWork.completed} дууссан`}
           />
@@ -479,23 +509,55 @@ export function DashboardPage(): ReactElement {
   return (
     <>
       <PageHeader
-        title="Хяналтын самбар"
-        description={`Шинэчлэгдсэн: ${new Date(summary.generatedAt).toLocaleString('mn-MN', {
+        /**
+         * The heading names whose figures these are, in both directions.
+         *
+         * Naming the organisation out loud on the unbounded board is the deliberate half:
+         * a bounded caller and an unbounded one otherwise read the identical word over
+         * two quite different sets of numbers, and the reader has no way to tell which
+         * they are looking at. The employee app settled this the same way.
+         */
+        title={summary.isScoped ? 'Миний хяналтын самбар' : 'Байгууллагын хяналтын самбар'}
+        description={`${
+          summary.isScoped
+            ? 'Зөвхөн танд болон таны багт хуваарилагдсан ажил.'
+            : 'Байгууллагын нийт үзүүлэлт.'
+        } Шинэчлэгдсэн: ${new Date(summary.generatedAt).toLocaleString('mn-MN', {
           timeZone: 'Asia/Ulaanbaatar',
         })}`}
+        /*
+         * No customise button on a scoped board.
+         *
+         * The dialog offers the whole widget catalogue, and most of it — risk, workload,
+         * finance, headcount — counts records with no assignee to match against, so the
+         * API omits those blocks for this caller entirely. Offering them would be offering
+         * switches that do nothing: every one of them turns on a widget that renders as
+         * nothing at all, and the reader is left to work out which of their choices the
+         * product ignored.
+         */
         actions={
-          <Button variant="secondary" onClick={() => setCustomiseOpen(true)}>
-            Тохируулах
-          </Button>
+          summary.isScoped ? undefined : (
+            <Button variant="secondary" onClick={() => setCustomiseOpen(true)}>
+              Тохируулах
+            </Button>
+          )
         }
       />
 
       {rendered.length === 0 ? (
         <div className="rounded-xl bg-white p-8 text-center shadow-sm ring-1 ring-slate-200">
-          <p className="text-sm text-slate-600">Харагдах хэсэг сонгогдоогүй байна.</p>
-          <div className="mt-3">
-            <Button onClick={() => setCustomiseOpen(true)}>Тохируулах</Button>
-          </div>
+          <p className="text-sm text-slate-600">
+            {summary.isScoped
+              ? 'Танд хуваарилагдсан ажил одоогоор алга байна.'
+              : 'Харагдах хэсэг сонгогдоогүй байна.'}
+          </p>
+          {/* Same reason as above: without the dialog there is nothing to send them to,
+              and a button that opens a board they cannot fill is worse than no button. */}
+          {!summary.isScoped && (
+            <div className="mt-3">
+              <Button onClick={() => setCustomiseOpen(true)}>Тохируулах</Button>
+            </div>
+          )}
         </div>
       ) : (
         // Only the widgets that carried data are placed, so a block the caller may not see

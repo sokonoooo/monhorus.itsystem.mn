@@ -49,7 +49,13 @@ class PlannedWorkListItemModel {
   final DateTime? actualEndDate;
 
   /// 0-100, computed by the backend from recorded quantity.
-  final double progressPercent;
+  ///
+  /// Null when the answer carried no figure. `PlannedWorkListItemDto` declares it
+  /// non-null, so that is not the ordinary case — but the fallback that used to
+  /// stand here turned a silent answer into `0`, and "Явц 0%" on the Нүүр tab reads
+  /// as work nobody has started. See `agenda_card.dart`: "rendering 0% would state a
+  /// fact the backend declined to state."
+  final double? progressPercent;
 
   final int taskCount;
   final double completedQuantity;
@@ -70,7 +76,7 @@ class PlannedWorkListItemModel {
       plannedStartDate: parseDate(json['plannedStartDate']),
       plannedEndDate: parseDate(json['plannedEndDate']),
       actualEndDate: parseDate(json['actualEndDate']),
-      progressPercent: parseDouble(json['progressPercent']) ?? 0,
+      progressPercent: parseDouble(json['progressPercent']),
       taskCount: parseInt(json['taskCount']) ?? 0,
       completedQuantity: parseDouble(json['completedQuantity']) ?? 0,
       totalQuantity: parseDouble(json['totalQuantity']) ?? 0,

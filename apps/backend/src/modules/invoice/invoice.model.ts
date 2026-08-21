@@ -68,6 +68,17 @@ export interface IInvoice {
 
   sentAt: Date | null;
 
+  /**
+   * The `dueDate` each payment reminder has already been sent for.
+   *
+   * Staked against the due date so that editing it re-arms both reminders, and so an
+   * invoice cannot be reminded about twice for the same deadline. Overdue fires once on
+   * first breach rather than daily: an unpaid invoice stays overdue for weeks, and a
+   * notification repeated every morning is one people learn to dismiss without reading.
+   */
+  dueSoonNotifiedFor: Date | null;
+  overdueNotifiedFor: Date | null;
+
   paidAt: Date | null;
   paymentMethod: PaymentMethod | null;
   paymentReference: string | null;
@@ -135,6 +146,8 @@ const invoiceSchema = new Schema<IInvoice>(
     statusHistory: { type: [statusHistorySchema], default: [] },
 
     sentAt: { type: Date, default: null },
+    dueSoonNotifiedFor: { type: Date, default: null },
+    overdueNotifiedFor: { type: Date, default: null },
 
     paidAt: { type: Date, default: null },
     paymentMethod: { type: String, enum: [...PAYMENT_METHODS, null], default: null },
@@ -165,9 +178,20 @@ const invoiceSchema = new Schema<IInvoice>(
  * opposite of what the same clause asks for when it requires a replacement to carry the
  * cancelled invoice's reference.
  */
+// Spelled as an $in over the non-cancelled statuses rather than { $ne: 'CANCELLED' }.
+// MongoDB does not accept $ne in a partialFilterExpression -- it rejects the whole
+// index with "Expression not supported in partial index: $not" -- so the index was
+// never created at all and nothing was enforcing the no-duplicate-invoice rule this
+// block exists for. Derived from INVOICE_STATUSES so a new status is included the
+// moment it is added.
 invoiceSchema.index(
   { customer: 1, billingPeriod: 1, billingType: 1 },
-  { unique: true, partialFilterExpression: { status: { $ne: 'CANCELLED' } } },
+  {
+    unique: true,
+    partialFilterExpression: {
+      status: { $in: INVOICE_STATUSES.filter((status) => status !== 'CANCELLED') },
+    },
+  },
 );
 
 invoiceSchema.index({ dueDate: 1, status: 1 });

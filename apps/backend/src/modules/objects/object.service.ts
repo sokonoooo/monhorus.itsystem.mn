@@ -19,11 +19,13 @@ import {
   type ResolvedCustomerScope,
 } from '../../common/security/customer-scope';
 import type { AuthContext } from '../../common/types/express';
+import { CREATOR_POPULATE, creatorName } from '../../common/utils/creator.util';
 import type { RequestMeta } from '../../common/utils/request-meta.util';
 import { recordAudit } from '../audit/audit.service';
 import { getRiskBands } from '../settings/settings.service';
 import { ServiceAgreement } from '../service-agreement/service-agreement.model';
 import { Customer, ObjectNode, type ICustomer, type IObjectNode } from './object.models';
+import { deleteBlockersFor } from './project.service';
 
 /** Legal parent for each node kind, from the requirements section 4 hierarchy. */
 const PARENT_KIND: Record<string, string | null> = {
@@ -68,6 +70,7 @@ export function toCustomerDto(
       : null,
     responsibleEmployeeName: employeeName(responsible),
     notes: customer.notes,
+    createdByName: creatorName(customer.createdBy),
     isActive: customer.isActive,
     ...(counts ?? {}),
   };
@@ -125,6 +128,7 @@ export async function createCustomer(
       : null,
     notes: input.notes ?? null,
     isActive: true,
+    createdBy: new Types.ObjectId(actor.userId),
   });
 
   await recordAudit({
@@ -238,6 +242,7 @@ export async function listCustomers(
   const [rows, total] = await Promise.all([
     Customer.find(filter)
       .populate({ path: 'responsibleEmployee', select: 'firstName lastName' })
+      .populate(CREATOR_POPULATE)
       .sort(sort)
       .skip(skip)
       .limit(query.limit),
@@ -293,10 +298,9 @@ export async function listCustomers(
 }
 
 export async function getCustomerById(customerId: string): Promise<CustomerDto> {
-  const customer = await Customer.findById(customerId).populate({
-    path: 'responsibleEmployee',
-    select: 'firstName lastName',
-  });
+  const customer = await Customer.findById(customerId)
+    .populate({ path: 'responsibleEmployee', select: 'firstName lastName' })
+    .populate(CREATOR_POPULATE);
   if (!customer) {
     throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Харилцагч олдсонгүй.');
   }
@@ -462,4 +466,48 @@ export async function updateObjectNode(
 
   const hasChildren = (await ObjectNode.countDocuments({ parent: node._id })) > 0;
   return toObjectNodeDto(node, hasChildren, await getRiskBands());
+}
+
+/**
+ * Removes a hierarchy node — the one operation the generic node endpoints were missing, and
+ * the only delete that reaches the levels below a floor.
+ *
+ * Deletion is refused while anything depends on the node, using the SAME blocker set the
+ * project module applies to a project, building or floor rather than a second rule invented
+ * here. That is what stops a node named on a service request being removed underneath it:
+ * the request keeps a reference (a ROOM's is `room`), so the answer is to archive the node
+ * (`PATCH /objects/nodes/:id { isActive: false }`), which hides it from the selectors while
+ * every past request still resolves its name and its breadcrumb.
+ */
+export async function deleteObjectNode(
+  nodeId: string,
+  scope: ResolvedCustomerScope,
+  actor: AuthContext,
+  meta: RequestMeta,
+): Promise<void> {
+  // Scoped, so another tenant's node reports as missing rather than as forbidden.
+  const node = await ObjectNode.findOne({ _id: nodeId, ...customerScopeFilter(scope) });
+  if (!node) {
+    throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Объект олдсонгүй.');
+  }
+
+  const blockers = await deleteBlockersFor(node);
+  if (blockers.length > 0) {
+    throw AppError.conflict(
+      ERROR_CODES.DUPLICATE_KEY,
+      `Хамааралтай бичлэгтэй тул устгах боломжгүй. ${blockers.join(' ')} Архивлана уу.`,
+    );
+  }
+
+  await ObjectNode.deleteOne({ _id: node._id });
+
+  await recordAudit({
+    entityType: 'Equipment',
+    entityId: node._id,
+    action: 'Updated',
+    actor: { id: actor.userId, role: actor.role, label: actor.fullName },
+    meta,
+    reason: `${node.kind.toLowerCase()} deleted`,
+    oldValue: { kind: node.kind, code: node.code, name: node.name },
+  });
 }

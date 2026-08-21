@@ -1,10 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../../core/push/push_messaging.dart';
 import '../../../auth/presentation/providers/auth_provider.dart';
+import '../../home/presentation/providers/home_providers.dart';
 import '../../home/presentation/screens/home_tab_screen.dart';
 import '../../profile/presentation/screens/profile_tab_screen.dart';
 import '../../project/presentation/screens/project_tab_screen.dart';
+import '../../shared/server_vocabulary.dart';
+import '../../shared/server_vocabulary_provider.dart';
 import '../../work/presentation/screens/work_tab_screen.dart';
 import '../theme/employee_tokens.dart';
 
@@ -28,8 +32,46 @@ class EmployeeShellScreen extends ConsumerStatefulWidget {
   ConsumerState<EmployeeShellScreen> createState() => _EmployeeShellScreenState();
 }
 
-class _EmployeeShellScreenState extends ConsumerState<EmployeeShellScreen> {
+class _EmployeeShellScreenState extends ConsumerState<EmployeeShellScreen>
+    with WidgetsBindingObserver {
   int _index = 0;
+
+  VoidCallback? _stopListeningForPush;
+
+  /*
+   * The badge is fetched once and never again on its own: there is no polling here and no
+   * socket. That leaves it stale in the two cases a user actually notices - coming back to
+   * the app after a while, and a push landing while the app is open, which is precisely
+   * when the count just changed.
+   *
+   * Both are handled by re-asking the server. Nothing here trusts a local number: the
+   * notification that triggered a push may not even be addressed to this reader.
+   */
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _stopListeningForPush = PushMessaging.onPushArrived(_refreshNotifications);
+  }
+
+  @override
+  void dispose() {
+    _stopListeningForPush?.call();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _refreshNotifications();
+  }
+
+  void _refreshNotifications() {
+    if (!mounted) return;
+    ref
+      ..invalidate(unreadNotificationCountProvider)
+      ..invalidate(homeNotificationsProvider);
+  }
 
   /// The four tabs, in contract order. Index here is the index in [_tabs].
   static const List<_EmployeeTab> _tabs = <_EmployeeTab>[
@@ -63,9 +105,21 @@ class _EmployeeShellScreenState extends ConsumerState<EmployeeShellScreen> {
       },
     );
 
+    // Reading it here is what starts it: one small GET, shared by all four tabs, that
+    // replaces the compiled-in stage and risk-band words with whatever this
+    // installation calls them. It cannot fail in a way the reader sees — see
+    // `serverVocabularyProvider` — so there is no state to render off it here.
+    ref.watch(serverVocabularyProvider);
+
     return Scaffold(
       backgroundColor: EmployeeTokens.bg,
       body: IndexedStack(
+        // Keyed on the vocabulary, so the answer landing rebuilds the tabs the once.
+        // Each tab body is a const widget and a const widget is canonicalised, so
+        // this frame's rebuild would otherwise stop at the stack and leave four
+        // elements painting the words they were first built with. The key changes at
+        // most once a session, and never at all when the read failed.
+        key: ValueKey<int>(serverVocabularyRevision),
         index: _index,
         children: const <Widget>[
           HomeTabScreen(),

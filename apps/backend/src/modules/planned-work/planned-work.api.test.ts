@@ -1,5 +1,6 @@
 import { PERMISSIONS } from '@monhorus/shared';
 import type { Express } from 'express';
+import { Types } from 'mongoose';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
@@ -16,7 +17,10 @@ import {
 } from '../../test/helpers';
 import { AuditLog } from '../audit/audit-log.model';
 import { Employee } from '../employee/employee.model';
+import { Notification } from '../notification/notification.model';
 import { Customer, ObjectNode } from '../objects/object.models';
+import { MaterialItem } from '../material/material.models';
+import { User } from '../user/user.model';
 import { PlannedWork, PlannedWorkTask } from './planned-work.models';
 import { runOverdueReconciliation } from './planned-work.overdue.service';
 
@@ -28,6 +32,8 @@ const ALL_PLANNED_WORK = [
   PERMISSIONS.PLANNED_WORK_CREATE,
   PERMISSIONS.PLANNED_WORK_UPDATE,
   PERMISSIONS.PLANNED_WORK_CHANGE_STATUS,
+  // Reaching PLANNED now needs an approver, so the happy-path operator holds the key.
+  PERMISSIONS.PLANNED_WORK_APPROVE,
   PERMISSIONS.PLANNED_WORK_RESCHEDULE,
   PERMISSIONS.PLANNED_WORK_CANCEL,
   PERMISSIONS.PLANNED_WORK_RECORD_PROGRESS,
@@ -38,6 +44,10 @@ let app: Express;
 let org: OrgFixture;
 let objects: ObjectFixture;
 let token: string;
+/** The user behind `token`, needed by the cases that assert somebody was NOT notified. */
+let actorUserId: string;
+/** The crew APPROVE is given whenever a fixture just needs *some* valid employee. */
+let crewEmployeeId: string;
 
 async function login(email: string, password: string): Promise<string> {
   const response = await request(app).post(`${API}/auth/login`).send({ email, password });
@@ -103,6 +113,33 @@ async function transition(
 }
 
 /**
+ * Drives a work from DRAFT to PLANNED, which is TWO actions now rather than one.
+ *
+ * PLAN no longer reaches PLANNED: it submits the work for approval and lands on
+ * PENDING_APPROVAL. APPROVE is what makes it PLANNED, it needs
+ * `planned_work.approve`, and it refuses to run without a crew — approving the work and
+ * staffing it are one decision. Every fixture that used to say `transition(id, 'PLAN')`
+ * says this instead; the tests that are ABOUT the transitions still spell both out.
+ */
+async function planAndApprove(
+  workId: string,
+  crew: readonly string[] = [crewEmployeeId],
+  bearer = token,
+): Promise<request.Response> {
+  const submitted = await transition(workId, 'PLAN', undefined, bearer);
+  expect(submitted.status).toBe(200);
+  expect(submitted.body.data.lifecycleStatus).toBe('PENDING_APPROVAL');
+
+  const approved = await request(app)
+    .post(`${API}/planned-work/${workId}/transition`)
+    .set('Authorization', `Bearer ${bearer}`)
+    .send({ action: 'APPROVE', assignedEmployeeIds: crew });
+  expect(approved.status).toBe(200);
+  expect(approved.body.data.lifecycleStatus).toBe('PLANNED');
+  return approved;
+}
+
+/**
  * Drives a task to genuine completion: full quantity plus all five pieces of evidence.
  * Photos are attached as real uploads because that is the only way evidence exists.
  */
@@ -135,7 +172,7 @@ async function completeTask(workId: string, taskId: string, quantity = 10): Prom
 async function completedWork(): Promise<string> {
   const workId = await createWork();
   const taskId = await addTask(workId);
-  await transition(workId, 'PLAN');
+  await planAndApprove(workId);
   await transition(workId, 'START');
   await completeTask(workId, taskId);
   const done = await transition(workId, 'COMPLETE');
@@ -171,7 +208,9 @@ beforeEach(async () => {
   org = await createOrgFixture();
   objects = await createObjectFixture();
   const user = await createUserWithPermissions('pw@test.mn', ALL_PLANNED_WORK);
+  actorUserId = user.userId;
   token = await login(user.email, user.password);
+  crewEmployeeId = await activeEmployee();
 });
 
 describe('POST /planned-work', () => {
@@ -479,7 +518,7 @@ describe('sub-tasks', () => {
   it('clamps completed quantity when the total is reduced below it', async () => {
     const workId = await createWork();
     const taskId = await addTask(workId, { totalQuantity: 20 });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
 
     await request(app)
@@ -502,7 +541,7 @@ describe('sub-tasks', () => {
   it('refuses to delete a task that already has recorded progress', async () => {
     const workId = await createWork();
     const taskId = await addTask(workId);
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
     await request(app)
       .post(`${API}/planned-work/${workId}/tasks/${taskId}/progress`)
@@ -522,7 +561,7 @@ describe('progress recording', () => {
   it('refuses a completed quantity above the total', async () => {
     const workId = await createWork();
     const taskId = await addTask(workId, { totalQuantity: 10 });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
 
     const response = await request(app)
@@ -539,7 +578,7 @@ describe('progress recording', () => {
     const bigTask = await addTask(workId, { title: 'Том ажил', totalQuantity: 180 });
     await addTask(workId, { title: 'Жижиг ажил 1', totalQuantity: 10 });
     await addTask(workId, { title: 'Жижиг ажил 2', totalQuantity: 10 });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
 
     const response = await request(app)
@@ -558,7 +597,7 @@ describe('progress recording', () => {
   it('holds a fully counted task at IN_PROGRESS until evidence is complete', async () => {
     const workId = await createWork();
     const taskId = await addTask(workId, { totalQuantity: 5 });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
 
     const response = await request(app)
@@ -581,7 +620,7 @@ describe('progress recording', () => {
   it('reaches DONE once quantity and all five evidence items exist', async () => {
     const workId = await createWork();
     const taskId = await addTask(workId, { totalQuantity: 10 });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
     await completeTask(workId, taskId);
 
@@ -597,7 +636,7 @@ describe('progress recording', () => {
   it('pulls a task back out of DONE when evidence is removed', async () => {
     const workId = await createWork();
     const taskId = await addTask(workId);
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
     await completeTask(workId, taskId);
 
@@ -619,7 +658,7 @@ describe('progress recording', () => {
     const workId = await createWork();
     const kept = await addTask(workId, { title: 'Хийх ажил', totalQuantity: 10 });
     const skipped = await addTask(workId, { title: 'Хийхгүй ажил', totalQuantity: 90 });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
 
     await request(app)
@@ -642,7 +681,7 @@ describe('progress recording', () => {
     const workId = await createWork();
     const onFloor = await addTask(workId, { title: 'Давхарт', totalQuantity: 40 });
     await addTask(workId, { title: 'Давхаргүй', floorId: null, totalQuantity: 60 });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
 
     const response = await request(app)
@@ -676,7 +715,7 @@ describe('progress recording', () => {
   it('refuses a caller without planned_work.record_progress', async () => {
     const workId = await createWork();
     const taskId = await addTask(workId);
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
 
     const observer = await createUserWithPermissions('pwobs@test.mn', [
@@ -701,7 +740,7 @@ describe('sub-task note and evaluation', () => {
   async function startedWorkWithTask(): Promise<{ workId: string; taskId: string }> {
     const workId = await createWork();
     const taskId = await addTask(workId, { totalQuantity: 10 });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
     return { workId, taskId };
   }
@@ -845,7 +884,7 @@ describe('sub-task conclusion authorship and duration', () => {
   ): Promise<{ workId: string; taskId: string }> {
     const workId = await createWork();
     const taskId = await addTask(workId, { totalQuantity: 10, ...overrides });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
     return { workId, taskId };
   }
@@ -985,7 +1024,7 @@ describe('sub-task conclusion authorship and duration', () => {
   it('keeps the completion instant across a re-derivation that pulls the task out of DONE', async () => {
     const workId = await createWork();
     const taskId = await addTask(workId);
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
     await completeTask(workId, taskId);
 
@@ -1069,16 +1108,46 @@ describe('sub-task conclusion authorship and duration', () => {
 });
 
 describe('lifecycle transitions', () => {
-  it('walks DRAFT to PLANNED to STARTED', async () => {
+  /**
+   * The walk itself, spelled out rather than run through `planAndApprove`, because the
+   * two-step shape of it is the thing under test: PLAN submits, APPROVE commits.
+   */
+  it('walks DRAFT to PENDING_APPROVAL to PLANNED to STARTED', async () => {
     const workId = await createWork();
 
-    const planned = await transition(workId, 'PLAN');
+    const submitted = await transition(workId, 'PLAN');
+    expect(submitted.status).toBe(200);
+    // PLAN is a submission for approval now, not the plan itself.
+    expect(submitted.body.data.lifecycleStatus).toBe('PENDING_APPROVAL');
+
+    const planned = await request(app)
+      .post(`${API}/planned-work/${workId}/transition`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ action: 'APPROVE', assignedEmployeeIds: [crewEmployeeId] });
     expect(planned.status).toBe(200);
     expect(planned.body.data.lifecycleStatus).toBe('PLANNED');
+    // Approving and staffing are one decision, so PLANNED never arrives unstaffed.
+    expect(
+      (planned.body.data.assignedEmployees as { id: string }[]).map((entry) => entry.id),
+    ).toEqual([crewEmployeeId]);
 
     const started = await transition(workId, 'START');
     expect(started.body.data.lifecycleStatus).toBe('STARTED');
     expect(started.body.data.actualStartDate).not.toBeNull();
+  });
+
+  it('refuses to approve without a crew, and refuses START while pending', async () => {
+    const workId = await createWork();
+    expect((await transition(workId, 'PLAN')).status).toBe(200);
+
+    const unstaffed = await transition(workId, 'APPROVE');
+    expect(unstaffed.status).toBe(400);
+    expect(unstaffed.body.message).toContain('ажилтныг сонгоно');
+
+    // Still pending, so the work has not become startable by failing to be approved.
+    const premature = await transition(workId, 'START');
+    expect(premature.status).toBe(400);
+    expect((await PlannedWork.findById(workId))?.status).toBe('PENDING_APPROVAL');
   });
 
   it('refuses a transition that is not in the matrix', async () => {
@@ -1098,7 +1167,7 @@ describe('lifecycle transitions', () => {
 
   it('requires a reason to pause and records the pause history', async () => {
     const workId = await createWork();
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
 
     const noReason = await transition(workId, 'PAUSE');
@@ -1114,7 +1183,7 @@ describe('lifecycle transitions', () => {
 
   it('never shifts the deadline when pausing or resuming', async () => {
     const workId = await createWork();
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
     await transition(workId, 'PAUSE', 'Түр зогсоов');
 
@@ -1129,7 +1198,7 @@ describe('lifecycle transitions', () => {
 
   it('resumes to STARTED when the work had begun', async () => {
     const workId = await createWork();
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
     await transition(workId, 'PAUSE', 'Түр зогсоов');
 
@@ -1139,7 +1208,7 @@ describe('lifecycle transitions', () => {
 
   it('resumes to PLANNED when the work had never begun', async () => {
     const workId = await createWork();
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'PAUSE', 'Хойшлуулав');
 
     const resumed = await transition(workId, 'RESUME');
@@ -1150,7 +1219,7 @@ describe('lifecycle transitions', () => {
   it('refuses completion while a task is unfinished, and lists the blockers', async () => {
     const workId = await createWork();
     await addTask(workId, { totalQuantity: 10 });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
 
     const response = await transition(workId, 'COMPLETE');
@@ -1161,7 +1230,7 @@ describe('lifecycle transitions', () => {
 
   it('refuses completion of a work with no sub-tasks', async () => {
     const workId = await createWork();
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
 
     const response = await transition(workId, 'COMPLETE');
@@ -1243,8 +1312,10 @@ describe('lifecycle transitions', () => {
       systemUser: limited.userId,
     }).then((employee) => String(employee._id));
 
+    // Approved WITH that same employee as the crew: APPROVE writes the crew, so approving
+    // with anybody else would quietly undo the assignment this test depends on.
     const workId = await createWork({ assignedEmployeeIds: [employeeId] });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId, [employeeId]);
 
     const detail = await request(app)
       .get(`${API}/planned-work/${workId}`)
@@ -1262,12 +1333,13 @@ describe('lifecycle transitions', () => {
 
   it('writes a status change audit record for every transition', async () => {
     const workId = await createWork();
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
 
     const entries = await AuditLog.find({ entityType: 'PlannedWork', entityId: workId });
     const statusChanges = entries.filter((entry) => entry.action === 'StatusChanged');
-    expect(statusChanges).toHaveLength(2);
+    // Three transitions were performed — PLAN, APPROVE, START — so three rows.
+    expect(statusChanges).toHaveLength(3);
   });
 });
 
@@ -1277,7 +1349,7 @@ describe('overdue behaviour', () => {
       plannedStartDate: '2020-01-01T00:00:00.000Z',
       plannedEndDate: '2020-01-31T00:00:00.000Z',
     });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     return workId;
   }
 
@@ -1344,7 +1416,7 @@ describe('overdue behaviour', () => {
       plannedStartDate: '2020-01-01T00:00:00.000Z',
       plannedEndDate: '2020-01-31T00:00:00.000Z',
     });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     // Clear the stamp the transition read left behind, to simulate a never-opened work.
     // The audit log is append-only, so the earlier breach row cannot be deleted; the
     // assertion is on the delta the job produces instead.
@@ -1368,7 +1440,7 @@ describe('overdue behaviour', () => {
       plannedStartDate: '2099-01-01T00:00:00.000Z',
       plannedEndDate: '2099-01-31T00:00:00.000Z',
     });
-    await transition(onTime, 'PLAN');
+    await planAndApprove(onTime);
 
     const overdueList = await request(app)
       .get(`${API}/planned-work?status=OVERDUE`)
@@ -1470,7 +1542,7 @@ describe('overdue behaviour', () => {
       plannedStartDate: '2020-01-02T00:00:00.000Z',
       plannedEndDate: '2020-01-30T00:00:00.000Z',
     });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
     await completeTask(workId, taskId);
 
@@ -1484,55 +1556,311 @@ describe('overdue behaviour', () => {
 });
 
 describe('planned materials', () => {
-  it('stores a material as a name, a quantity and a unit', async () => {
-    const workId = await createWork();
+  /** The catalogue is the authority on a registered material's name and unit. */
+  async function catalogueItem(code: string, name: string, unit = 'METRE'): Promise<string> {
+    const item = await MaterialItem.create({ code, name, category: 'CABLE', defaultUnit: unit });
+    return String(item._id);
+  }
 
-    const response = await request(app)
+  async function registerMaterial(workId: string, itemId: string, quantity: number) {
+    return request(app)
       .put(`${API}/planned-work/${workId}/materials`)
       .set('Authorization', `Bearer ${token}`)
-      .send({ materials: [{ name: 'Кабель 3x2.5', quantity: 120, unit: 'METRE' }] });
+      .send({ materials: [{ materialItemId: itemId, quantity }] });
+  }
+
+  it('registers a material from the catalogue with nothing yet consumed', async () => {
+    const workId = await createWork();
+    const itemId = await catalogueItem('CBL-1', 'Кабель 3x2.5');
+
+    const response = await registerMaterial(workId, itemId, 120);
 
     expect(response.status).toBe(200);
     expect(response.body.data.materials).toHaveLength(1);
+    // The name and the unit come from the catalogue, not from the request.
     expect(response.body.data.materials[0]).toMatchObject({
+      materialItemId: itemId,
       name: 'Кабель 3x2.5',
       quantity: 120,
+      consumedQuantity: 0,
+      remainingQuantity: 120,
       unit: 'METRE',
     });
   });
 
   it('replaces the whole list rather than merging into it', async () => {
     const workId = await createWork();
+    const cable = await catalogueItem('CBL-2', 'Кабель');
+    const breaker = await catalogueItem('BRK-1', 'Автомат таслуур', 'PIECE');
 
-    await request(app)
-      .put(`${API}/planned-work/${workId}/materials`)
-      .set('Authorization', `Bearer ${token}`)
-      .send({ materials: [{ name: 'Кабель', quantity: 10, unit: 'METRE' }] });
-
-    const response = await request(app)
-      .put(`${API}/planned-work/${workId}/materials`)
-      .set('Authorization', `Bearer ${token}`)
-      .send({ materials: [{ name: 'Автомат таслуур', quantity: 4, unit: 'PIECE' }] });
+    await registerMaterial(workId, cable, 10);
+    const response = await registerMaterial(workId, breaker, 4);
 
     expect(response.status).toBe(200);
     expect(response.body.data.materials).toHaveLength(1);
     expect(response.body.data.materials[0].name).toBe('Автомат таслуур');
   });
 
-  it('rejects a duplicated material name in the list', async () => {
+  it('rejects the same catalogue item listed twice', async () => {
     const workId = await createWork();
+    const itemId = await catalogueItem('CBL-3', 'Кабель 3x2.5');
 
     const response = await request(app)
       .put(`${API}/planned-work/${workId}/materials`)
       .set('Authorization', `Bearer ${token}`)
       .send({
         materials: [
-          { name: 'Кабель 3x2.5', quantity: 10, unit: 'METRE' },
-          { name: 'кабель 3x2.5', quantity: 20, unit: 'METRE' },
+          { materialItemId: itemId, quantity: 10 },
+          { materialItemId: itemId, quantity: 20 },
         ],
       });
 
     expect(response.status).toBe(400);
+  });
+
+  it('refuses a material that is not in the catalogue', async () => {
+    const workId = await createWork();
+
+    const response = await request(app)
+      .put(`${API}/planned-work/${workId}/materials`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ materials: [{ materialItemId: '65b000000000000000000000', quantity: 5 }] });
+
+    expect(response.status).toBe(400);
+  });
+});
+
+describe('sub-task material consumption', () => {
+  let workId: string;
+  let taskId: string;
+  let itemId: string;
+
+  async function openTask(title: string): Promise<string> {
+    const task = await PlannedWorkTask.create({
+      plannedWork: workId,
+      title,
+      unit: 'METRE',
+      totalQuantity: 10,
+      completedQuantity: 0,
+      status: 'PENDING',
+      plannedStartDate: new Date('2026-07-01T00:00:00.000Z'),
+      plannedEndDate: new Date('2026-07-02T00:00:00.000Z'),
+    });
+    return String(task._id);
+  }
+
+  /**
+   * A work with one registered material of 100 and one open sub-task to draw against it.
+   * PLANNED rather than DRAFT, because a draft refuses progress writes of every kind.
+   */
+  beforeEach(async () => {
+    const item = await MaterialItem.create({
+      code: 'CBL-USE',
+      name: 'Кабель 3x2.5',
+      category: 'CABLE',
+      defaultUnit: 'METRE',
+    });
+    itemId = String(item._id);
+
+    workId = await createWork({ status: 'PLANNED' });
+    await request(app)
+      .put(`${API}/planned-work/${workId}/materials`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ materials: [{ materialItemId: itemId, quantity: 100 }] });
+
+    taskId = await openTask('Кабель татах');
+  });
+
+  async function useMaterial(quantity: number, material = () => itemId) {
+    return request(app)
+      .post(`${API}/planned-work/${workId}/tasks/${taskId}/materials`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ materialItemId: material(), quantity });
+  }
+
+  async function readMaterials() {
+    const detail = await request(app)
+      .get(`${API}/planned-work/${workId}`)
+      .set('Authorization', `Bearer ${token}`);
+    return detail.body.data.materials[0];
+  }
+
+  it('draws the used quantity down from the registered pool', async () => {
+    const response = await useMaterial(50);
+
+    expect(response.status).toBe(200);
+    // The figures the brief asked for: 100 registered, 50 used, 50 remaining.
+    expect(response.body.data.materials[0]).toMatchObject({
+      quantity: 100,
+      consumedQuantity: 50,
+      remainingQuantity: 50,
+    });
+  });
+
+  it('records which sub-task consumed it', async () => {
+    await useMaterial(50);
+
+    const detail = await request(app)
+      .get(`${API}/planned-work/${workId}`)
+      .set('Authorization', `Bearer ${token}`);
+
+    const task = detail.body.data.tasks.find((entry: { id: string }) => entry.id === taskId);
+    expect(task.materialUsage).toHaveLength(1);
+    expect(task.materialUsage[0]).toMatchObject({
+      materialItemId: itemId,
+      materialName: 'Кабель 3x2.5',
+      quantity: 50,
+      unit: 'METRE',
+    });
+  });
+
+  /**
+   * A SECOND sub-task, deliberately: recording again on the same one is a correction, not
+   * a further draw, so it could never exceed anything. Over-consumption is what happens
+   * when two pieces of work share one pool.
+   */
+  it('refuses a draw larger than what remains, naming what is left', async () => {
+    await useMaterial(80);
+    const secondTaskId = await openTask('Хоёр дахь дэд ажил');
+
+    const response = await request(app)
+      .post(`${API}/planned-work/${workId}/tasks/${secondTaskId}/materials`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ materialItemId: itemId, quantity: 30 });
+
+    expect(response.status).toBe(400);
+    // The refusal has to say what is actually available, or the technician is guessing.
+    expect(response.body.message).toContain('20');
+    expect(response.body.issues?.[0]?.field).toBe('quantity');
+  });
+
+  it('leaves the pool untouched when it refuses', async () => {
+    await useMaterial(80);
+    const secondTaskId = await openTask('Хоёр дахь дэд ажил');
+
+    await request(app)
+      .post(`${API}/planned-work/${workId}/tasks/${secondTaskId}/materials`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ materialItemId: itemId, quantity: 30 });
+
+    expect(await readMaterials()).toMatchObject({
+      consumedQuantity: 80,
+      remainingQuantity: 20,
+    });
+  });
+
+  /**
+   * The write is an absolute figure, not an increment — the same request twice must not
+   * draw twice. This is the property that makes a retry from a phone safe.
+   */
+  it('treats a repeated record as a correction, not a second draw', async () => {
+    await useMaterial(50);
+    const response = await useMaterial(50);
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.materials[0]).toMatchObject({
+      consumedQuantity: 50,
+      remainingQuantity: 50,
+    });
+  });
+
+  it('returns the difference to the pool when a correction lowers the figure', async () => {
+    await useMaterial(50);
+    const response = await useMaterial(20);
+
+    expect(response.body.data.materials[0]).toMatchObject({
+      consumedQuantity: 20,
+      remainingQuantity: 80,
+    });
+  });
+
+  it('removes the record when the correction is zero', async () => {
+    await useMaterial(50);
+    const response = await useMaterial(0);
+
+    expect(response.body.data.materials[0]).toMatchObject({
+      consumedQuantity: 0,
+      remainingQuantity: 100,
+    });
+    const task = response.body.data.tasks.find((entry: { id: string }) => entry.id === taskId);
+    expect(task.materialUsage).toHaveLength(0);
+  });
+
+  /**
+   * The concurrency case the whole design turns on. Two simultaneous draws of 60 against
+   * 100 must not both succeed: a read-then-check would let them, because both reads see
+   * 100 free before either write lands.
+   */
+  it('lets only one of two simultaneous over-drawing requests through', async () => {
+    const secondTaskId = await openTask('Хоёр дахь дэд ажил');
+
+    const [first, other] = await Promise.all([
+      request(app)
+        .post(`${API}/planned-work/${workId}/tasks/${taskId}/materials`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ materialItemId: itemId, quantity: 60 }),
+      request(app)
+        .post(`${API}/planned-work/${workId}/tasks/${secondTaskId}/materials`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ materialItemId: itemId, quantity: 60 }),
+    ]);
+
+    expect([first.status, other.status].sort()).toEqual([200, 400]);
+
+    // Never negative, and never more than was registered.
+    expect(await readMaterials()).toMatchObject({
+      consumedQuantity: 60,
+      remainingQuantity: 40,
+    });
+  });
+
+  it('refuses a material that is not registered on the work', async () => {
+    const other = await MaterialItem.create({
+      code: 'BRK-OTHER',
+      name: 'Автомат таслуур',
+      category: 'BREAKER',
+      defaultUnit: 'PIECE',
+    });
+
+    const response = await useMaterial(1, () => String(other._id));
+
+    expect(response.status).toBe(400);
+    expect(response.body.issues?.[0]?.field).toBe('materialItemId');
+  });
+
+  it('refuses to lower the registered quantity below what is already consumed', async () => {
+    await useMaterial(50);
+
+    const response = await request(app)
+      .put(`${API}/planned-work/${workId}/materials`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ materials: [{ materialItemId: itemId, quantity: 20 }] });
+
+    expect(response.status).toBe(400);
+  });
+
+  it('refuses to drop a material that has already been drawn on', async () => {
+    await useMaterial(50);
+
+    const response = await request(app)
+      .put(`${API}/planned-work/${workId}/materials`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ materials: [] });
+
+    expect(response.status).toBe(400);
+  });
+
+  it('returns the material to the pool when the sub-task is deleted', async () => {
+    await useMaterial(50);
+
+    await request(app)
+      .delete(`${API}/planned-work/${workId}/tasks/${taskId}`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(await readMaterials()).toMatchObject({
+      consumedQuantity: 0,
+      remainingQuantity: 100,
+    });
   });
 });
 
@@ -1575,5 +1903,243 @@ describe('GET /planned-work', () => {
 
     expect(response.status).toBe(200);
     expect(response.body.data.total).toBe(1);
+  });
+});
+
+/**
+ * The notifications the planned-work lifecycle owes.
+ *
+ * Every case reads the Notification collection directly rather than the inbox endpoint,
+ * because what is under test is WHO the row was addressed to, and the endpoint only ever
+ * shows the caller their own. `recipient` is the assertion that matters: an event firing
+ * into the wrong inbox is the failure these guard against, not an event failing to fire.
+ */
+describe('planned-work notifications', () => {
+  /**
+   * An employee with a sign-in account.
+   *
+   * `userIdsForEmployees` drops an employee whose `systemUser` is null, so the plain
+   * `activeEmployee` fixture is unreachable by design and every case here needs the link.
+   */
+  async function employeeWithAccount(
+    email: string,
+    code: string,
+  ): Promise<{ employeeId: string; userId: string }> {
+    const user = await createUserWithPermissions(email, [PERMISSIONS.PLANNED_WORK_VIEW]);
+    const employeeId = await activeEmployee(code);
+    await Employee.updateOne(
+      { _id: new Types.ObjectId(employeeId) },
+      { $set: { systemUser: new Types.ObjectId(user.userId) } },
+    );
+    return { employeeId, userId: user.userId };
+  }
+
+  /** A portal account for the fixture's customer, the only way `customerId` resolves. */
+  async function portalAccount(email: string): Promise<string> {
+    const user = await createUserWithPermissions(email, [PERMISSIONS.PLANNED_WORK_VIEW]);
+    await User.updateOne(
+      { _id: new Types.ObjectId(user.userId) },
+      { $set: { role: 'customer', customer: new Types.ObjectId(objects.customerId) } },
+    );
+    return user.userId;
+  }
+
+  interface NotificationRow {
+    recipient: Types.ObjectId;
+    linkPath: string | null;
+    entityId: Types.ObjectId | null;
+    entityType: string | null;
+  }
+
+  async function rowsFor(event: string): Promise<NotificationRow[]> {
+    return Notification.find({ event }).lean<NotificationRow[]>();
+  }
+
+  function recipientsOf(rows: readonly NotificationRow[]): string[] {
+    return rows.map((row) => String(row.recipient)).sort();
+  }
+
+  it('tells the approved crew they are on the work, and nobody else', async () => {
+    const first = await employeeWithAccount('crew1@test.mn', 'EMP-N1');
+    const second = await employeeWithAccount('crew2@test.mn', 'EMP-N2');
+    const bystander = await createUserWithPermissions('bystander@test.mn', [
+      PERMISSIONS.PLANNED_WORK_VIEW,
+    ]);
+
+    const workId = await createWork();
+    await planAndApprove(workId, [first.employeeId, second.employeeId]);
+
+    const rows = await rowsFor('PLANNED_WORK_ASSIGNED');
+    expect(recipientsOf(rows)).toEqual([first.userId, second.userId].sort());
+    // A permission holder who is not on the crew is deliberately not a recipient.
+    expect(recipientsOf(rows)).not.toContain(bystander.userId);
+    expect(rows[0]?.entityType).toBe('PlannedWork');
+    expect(String(rows[0]?.entityId)).toBe(workId);
+    expect(rows[0]?.linkPath).toBe(`/planned-work/${workId}`);
+  });
+
+  it('drops a crew member with no sign-in account rather than failing the approval', async () => {
+    const linked = await employeeWithAccount('crew3@test.mn', 'EMP-N3');
+    const unlinked = await activeEmployee('EMP-N4');
+
+    const workId = await createWork();
+    await planAndApprove(workId, [linked.employeeId, unlinked]);
+
+    // One recipient, not two and not an error: an employee with no account is nobody to notify.
+    expect(recipientsOf(await rowsFor('PLANNED_WORK_ASSIGNED'))).toEqual([linked.userId]);
+  });
+
+  /**
+   * The assign-versus-schedule split. APPROVE raises both events, but each audience gets
+   * exactly one of them, so no inbox holds two rows saying the same thing.
+   */
+  it('tells the customer the work is scheduled, on the portal link, and the crew not at all', async () => {
+    const crew = await employeeWithAccount('crew4@test.mn', 'EMP-N5');
+    const portalUserId = await portalAccount('portal1@test.mn');
+
+    const workId = await createWork();
+    await planAndApprove(workId, [crew.employeeId]);
+
+    const scheduled = await rowsFor('PLANNED_WORK_SCHEDULED');
+    expect(recipientsOf(scheduled)).toEqual([portalUserId]);
+    // A customer following the staff path is refused, so this link must be the portal one.
+    expect(scheduled[0]?.linkPath).toBe(`/portal/planned-work/${workId}`);
+
+    // And the reverse: the crew is told once, as assigned, never a second time as scheduled.
+    expect(recipientsOf(await rowsFor('PLANNED_WORK_ASSIGNED'))).toEqual([crew.userId]);
+  });
+
+  it('tells the crew and the customer when the work starts, each on their own link', async () => {
+    const crew = await employeeWithAccount('crew5@test.mn', 'EMP-N6');
+    const portalUserId = await portalAccount('portal2@test.mn');
+
+    const workId = await createWork();
+    await planAndApprove(workId, [crew.employeeId]);
+    expect((await transition(workId, 'START')).status).toBe(200);
+
+    const rows = await rowsFor('PLANNED_WORK_STARTED');
+    expect(recipientsOf(rows)).toEqual([crew.userId, portalUserId].sort());
+
+    const staffRow = rows.find((row) => String(row.recipient) === crew.userId);
+    const portalRow = rows.find((row) => String(row.recipient) === portalUserId);
+    expect(staffRow?.linkPath).toBe(`/planned-work/${workId}`);
+    expect(portalRow?.linkPath).toBe(`/portal/planned-work/${workId}`);
+  });
+
+  it('does not tell the technician about the start they pressed themselves', async () => {
+    // The acting user IS on the crew, which is the normal case: a technician starts their
+    // own job. `excludeUserId` is what keeps that out of their own inbox.
+    const employeeId = await activeEmployee('EMP-N7');
+    await Employee.updateOne(
+      { _id: new Types.ObjectId(employeeId) },
+      { $set: { systemUser: new Types.ObjectId(actorUserId) } },
+    );
+    const mate = await employeeWithAccount('crew6@test.mn', 'EMP-N8');
+
+    const workId = await createWork();
+    await planAndApprove(workId, [employeeId, mate.employeeId]);
+    expect((await transition(workId, 'START')).status).toBe(200);
+
+    const recipients = recipientsOf(await rowsFor('PLANNED_WORK_STARTED'));
+    expect(recipients).toContain(mate.userId);
+    expect(recipients).not.toContain(actorUserId);
+  });
+
+  it('tells only the newly added employee when the crew is changed later', async () => {
+    const original = await employeeWithAccount('crew7@test.mn', 'EMP-N9');
+    const added = await employeeWithAccount('crew8@test.mn', 'EMP-N10');
+
+    const workId = await createWork();
+    await planAndApprove(workId, [original.employeeId]);
+    await Notification.deleteMany({});
+
+    const response = await request(app)
+      .patch(`${API}/planned-work/${workId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ assignedEmployeeIds: [original.employeeId, added.employeeId] });
+    expect(response.status).toBe(200);
+
+    // The employee already on the work is not told again: nothing changed for them.
+    expect(recipientsOf(await rowsFor('PLANNED_WORK_ASSIGNED'))).toEqual([added.userId]);
+  });
+
+  it('says nothing when a crew edit changes no member', async () => {
+    const crew = await employeeWithAccount('crew9@test.mn', 'EMP-N11');
+
+    const workId = await createWork();
+    await planAndApprove(workId, [crew.employeeId]);
+    await Notification.deleteMany({});
+
+    const response = await request(app)
+      .patch(`${API}/planned-work/${workId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ title: 'Шинэ нэр', assignedEmployeeIds: [crew.employeeId] });
+    expect(response.status).toBe(200);
+
+    expect(await rowsFor('PLANNED_WORK_ASSIGNED')).toHaveLength(0);
+  });
+
+  it('tells the assignee when a sub-task is created for them', async () => {
+    const crew = await employeeWithAccount('crew10@test.mn', 'EMP-N12');
+
+    const workId = await createWork();
+    await planAndApprove(workId, [crew.employeeId]);
+    await Notification.deleteMany({});
+
+    await addTask(workId, { assignedEmployeeId: crew.employeeId, title: 'Шүүлтүүр солих' });
+
+    const rows = await rowsFor('PLANNED_WORK_TASK_ASSIGNED');
+    expect(recipientsOf(rows)).toEqual([crew.userId]);
+    // No sub-task screen exists, so the row points at the parent work.
+    expect(rows[0]?.linkPath).toBe(`/planned-work/${workId}`);
+    expect(String(rows[0]?.entityId)).toBe(workId);
+  });
+
+  it('says nothing when a sub-task is created with nobody on it', async () => {
+    const crew = await employeeWithAccount('crew11@test.mn', 'EMP-N13');
+
+    const workId = await createWork();
+    await planAndApprove(workId, [crew.employeeId]);
+    await Notification.deleteMany({});
+
+    await addTask(workId);
+
+    expect(await rowsFor('PLANNED_WORK_TASK_ASSIGNED')).toHaveLength(0);
+  });
+
+  it('tells the new assignee when a sub-task changes hands, and not the old one', async () => {
+    const first = await employeeWithAccount('crew12@test.mn', 'EMP-N14');
+    const second = await employeeWithAccount('crew13@test.mn', 'EMP-N15');
+
+    const workId = await createWork();
+    await planAndApprove(workId, [first.employeeId, second.employeeId]);
+    const taskId = await addTask(workId, { assignedEmployeeId: first.employeeId });
+    await Notification.deleteMany({});
+
+    const response = await request(app)
+      .patch(`${API}/planned-work/${workId}/tasks/${taskId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ assignedEmployeeId: second.employeeId });
+    expect(response.status).toBe(200);
+
+    expect(recipientsOf(await rowsFor('PLANNED_WORK_TASK_ASSIGNED'))).toEqual([second.userId]);
+  });
+
+  it('does not re-announce a sub-task edit that resends the same assignee', async () => {
+    const crew = await employeeWithAccount('crew14@test.mn', 'EMP-N16');
+
+    const workId = await createWork();
+    await planAndApprove(workId, [crew.employeeId]);
+    const taskId = await addTask(workId, { assignedEmployeeId: crew.employeeId });
+    await Notification.deleteMany({});
+
+    // Exactly what the sheet sends when only the title was touched.
+    const response = await request(app)
+      .patch(`${API}/planned-work/${workId}/tasks/${taskId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ title: 'Шинэчилсэн дэд ажил', assignedEmployeeId: crew.employeeId });
+    expect(response.status).toBe(200);
+
+    expect(await rowsFor('PLANNED_WORK_TASK_ASSIGNED')).toHaveLength(0);
   });
 });

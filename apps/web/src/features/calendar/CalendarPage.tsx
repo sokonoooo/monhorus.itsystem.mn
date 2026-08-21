@@ -13,7 +13,6 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
-import { Alert } from '../../components/ui/Alert';
 import { Button } from '../../components/ui/Button';
 import { PageHeader } from '../../components/ui/PageHeader';
 import { EmptyState, ErrorState, Skeleton } from '../../components/ui/States';
@@ -529,7 +528,9 @@ export function CalendarPage(): ReactElement {
       </div>
 
       {!loading && !error && (result?.events.length ?? 0) === 0 && view === 'month' && (
-        <Alert variant="info">Сонгосон хугацаанд төлөвлөгдсөн ажил, хүсэлт байхгүй.</Alert>
+        <p className="rounded-lg border border-slate-200 bg-white px-4 py-6 text-center text-sm text-slate-600">
+          Сонгосон хугацаанд төлөвлөгдсөн ажил, хүсэлт байхгүй.
+        </p>
       )}
     </>
   );

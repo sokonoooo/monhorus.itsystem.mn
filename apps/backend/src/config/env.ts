@@ -2,6 +2,24 @@ import 'dotenv/config';
 import { z } from 'zod';
 
 /**
+ * An optional variable whose value may also arrive as the empty string.
+ *
+ * `.optional()` alone is not enough for anything read out of an env file. It
+ * tolerates an *absent* key, but a key written with no value is present and
+ * empty, so the inner check still runs and fails — `BOOTSTRAP_ADMIN_PASSWORD=`
+ * was rejected with "must contain at least 10 character(s)" and the process
+ * exited 1 in a restart loop.
+ *
+ * That is not a hypothetical. `bootstrap-head-admin.ts` ends by instructing the
+ * operator to clear BOOTSTRAP_ADMIN_PASSWORD, and blanking the value is the
+ * obvious reading of that; `.env.example` itself ships all three BOOTSTRAP_ keys
+ * with empty values, so copying the tracked template verbatim produced a backend
+ * that could not boot. Treating empty as absent makes both work.
+ */
+const optionalEnv = <T extends z.ZodTypeAny>(schema: T) =>
+  z.preprocess((value) => (value === '' ? undefined : value), schema.optional());
+
+/**
  * Environment contract. Parsed once at boot; the process refuses to start when a
  * required secret is missing or malformed.
  */
@@ -32,8 +50,8 @@ const envSchema = z.object({
    *
    * The defaults are the shipping values and are what production uses.
    */
-  RATE_LIMIT_CREDENTIAL_MAX: z.coerce.number().int().positive().optional(),
-  RATE_LIMIT_REFRESH_MAX: z.coerce.number().int().positive().optional(),
+  RATE_LIMIT_CREDENTIAL_MAX: optionalEnv(z.coerce.number().int().positive()),
+  RATE_LIMIT_REFRESH_MAX: optionalEnv(z.coerce.number().int().positive()),
 
   CORS_ORIGINS: z.string().default('http://localhost:5173'),
   APP_TIMEZONE: z.string().default('Asia/Ulaanbaatar'),
@@ -44,9 +62,9 @@ const envSchema = z.object({
    */
   UPLOAD_DIR: z.string().default('./var/uploads'),
 
-  BOOTSTRAP_ADMIN_EMAIL: z.string().email().optional(),
-  BOOTSTRAP_ADMIN_PASSWORD: z.string().min(10).optional(),
-  BOOTSTRAP_ADMIN_NAME: z.string().min(1).optional(),
+  BOOTSTRAP_ADMIN_EMAIL: optionalEnv(z.string().email()),
+  BOOTSTRAP_ADMIN_PASSWORD: optionalEnv(z.string().min(10)),
+  BOOTSTRAP_ADMIN_NAME: optionalEnv(z.string().min(1)),
 
   /**
    * Password given to every login `seed-dev-data` provisions for a seeded employee.
@@ -60,9 +78,98 @@ const envSchema = z.object({
    * system-access screen enforces on an admin-issued passcode.
    */
   SEED_DEV_PASSWORD: z.string().min(10).default('Monhorus.dev2026'),
+
+  /**
+   * Where a password-reset link sends the reader.
+   *
+   * The backend had no notion of the public web address before this: every other response
+   * is consumed by a client that already knows its own origin. A mailed link is the first
+   * thing the server has to address on its own, and it cannot be derived from the request —
+   * the request comes from the browser being reset, or from nothing at all. Defaulted to
+   * the dev server so a fresh checkout produces a link that works.
+   */
+  APP_WEB_BASE_URL: z.string().url().default('http://localhost:5173'),
+
+  /**
+   * How long a reset link stays usable. Long enough to find the mail, short enough that
+   * one left sitting in an inbox stops working the same day.
+   */
+  PASSWORD_RESET_TTL_MINUTES: z.coerce.number().int().positive().default(60),
+
+  /**
+   * SMTP, all optional.
+   *
+   * Optional because the mail transport degrades rather than refuses: with no SMTP_HOST the
+   * server logs the reset link instead of sending it, which keeps `npm run dev` working on
+   * a laptop with no mail server and keeps the test suite off the network. A deployment
+   * that wants real mail sets these; `mailEnabled` below is what the transport switches on.
+   */
+  SMTP_HOST: z.string().min(1).optional(),
+  SMTP_PORT: z.coerce.number().int().positive().default(587),
+  SMTP_SECURE: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  SMTP_USER: z.string().min(1).optional(),
+  SMTP_PASS: z.string().min(1).optional(),
+  MAIL_FROM: z.string().min(1).default('Monhorus <no-reply@monhorus.itsystem.mn>'),
+
+  /*
+   * Firebase Cloud Messaging, for Android push.
+   *
+   * All three are optional and all three are needed together. With FIREBASE_PROJECT_ID
+   * unset the backend records notifications exactly as it always has and dispatches no
+   * push, which is how development and the test suite run. Unlike mail there is no
+   * production refusal: the in-app notification is the record of the event, push is an
+   * extra delivery on top of it, so a deployment without credentials is degraded rather
+   * than broken and must still boot.
+   *
+   * FIREBASE_PRIVATE_KEY holds a PEM with literal \n escapes, since a real newline cannot
+   * survive a single-line env file. push.service.ts converts them back before signing.
+   */
+  FIREBASE_PROJECT_ID: z.string().min(1).optional(),
+  FIREBASE_CLIENT_EMAIL: z.string().min(1).optional(),
+  FIREBASE_PRIVATE_KEY: z.string().min(1).optional(),
 });
 
-const parsed = envSchema.safeParse(process.env);
+/**
+ * The settings whose development defaults are silently wrong in production.
+ *
+ * `APP_WEB_BASE_URL` is the one that cannot fail visibly on its own. It is defaulted so a
+ * fresh checkout produces a working reset link, and it is the ONLY thing that decides where
+ * a mailed link points — the server cannot derive it from a request, because the request
+ * comes from the browser being reset or from nothing at all. Left unset in a deployment,
+ * every recipient is sent a link to their own machine, and nothing anywhere reports a
+ * problem: the send succeeds, the log is clean, the API returns its fixed message, and only
+ * the reader sees a dead link.
+ *
+ * Refusing to boot converts that into the loudest possible failure, at the one moment
+ * somebody is watching. It is checked here rather than at the field, because the rule
+ * depends on NODE_ENV, which is a sibling key.
+ */
+function assertProductionOverrides(value: z.infer<typeof envSchema>, ctx: z.RefinementCtx): void {
+  if (value.NODE_ENV !== 'production') return;
+
+  const webBaseUrl = value.APP_WEB_BASE_URL;
+  let host = '';
+  try {
+    host = new URL(webBaseUrl).hostname;
+  } catch {
+    // Unreachable: the field is `z.string().url()`, so it has already parsed.
+  }
+
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['APP_WEB_BASE_URL'],
+      message:
+        `must be the public address of the web app in production, not "${webBaseUrl}". ` +
+        'It is what every password-reset link points at, and a wrong value fails silently.',
+    });
+  }
+}
+
+const parsed = envSchema.superRefine(assertProductionOverrides).safeParse(process.env);
 
 if (!parsed.success) {
   const issues = parsed.error.issues
@@ -85,6 +192,15 @@ export const env = {
     .filter(Boolean),
   refreshTokenTtlMs: raw.REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000,
   accountLockMs: raw.ACCOUNT_LOCK_MINUTES * 60 * 1000,
+  passwordResetTtlMs: raw.PASSWORD_RESET_TTL_MINUTES * 60 * 1000,
+  // A host is the one setting that cannot be defaulted, so it is what decides whether mail
+  // is sent or logged. Credentials are separately optional: an internal relay often wants
+  // none, and demanding them would make that setup unreachable.
+  mailEnabled: Boolean(raw.SMTP_HOST),
+  /* All three are required to sign and address a message, so any one missing means off. */
+  pushEnabled: Boolean(
+    raw.FIREBASE_PROJECT_ID && raw.FIREBASE_CLIENT_EMAIL && raw.FIREBASE_PRIVATE_KEY,
+  ),
 } as const;
 
 export type Env = typeof env;

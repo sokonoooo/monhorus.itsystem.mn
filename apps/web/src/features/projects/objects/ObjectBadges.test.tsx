@@ -1,7 +1,14 @@
+import { RISK_LEVEL_LABELS, type RiskLevel } from '@monhorus/shared';
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
+import type { RiskBandView } from '../../../components/ui/risk-palette';
 import { RiskLegend, RiskSummaryCell, ScoreBar, ScorePercent } from './ObjectBadges';
+
+/** One resolved band, as `useRiskBands` hands them over. */
+function band(level: RiskLevel, min: number, max: number): RiskBandView {
+  return { level, min, max, label: RISK_LEVEL_LABELS[level], colour: 'green' };
+}
 
 describe('ScorePercent', () => {
   /** Section 10.1: the score is a 0-100 figure, so the percent is the score itself. */
@@ -133,16 +140,28 @@ describe('ScoreBar', () => {
 describe('RiskLegend', () => {
   /** The boundaries come from settings, so the legend cannot drift from the thresholds. */
   it('prints the band range it was given rather than a hardcoded one', () => {
+    render(<RiskLegend bands={[band('NORMAL', 90, 100), band('CRITICAL', 0, 89)]} />);
+
+    expect(screen.getByText('90-100% Хэвийн')).toBeInTheDocument();
+    expect(screen.getByText('0-89% Ноцтой эрсдэлтэй')).toBeInTheDocument();
+  });
+
+  /**
+   * The whole point of a configurable ladder: an administrator's own name for a band, not
+   * the wording that shipped in the bundle.
+   */
+  it('prints the configured band name rather than the shipped one', () => {
     render(
       <RiskLegend
         bands={[
-          { level: 'NORMAL', min: 90, max: 100 },
-          { level: 'CRITICAL', min: 0, max: 89 },
+          { ...band('NORMAL', 50, 100), label: 'Аюулгүй' },
+          { ...band('BAND_6', 0, 49), label: 'Хяналтад', colour: 'purple' as const },
         ]}
       />,
     );
 
-    expect(screen.getByText('90-100% Хэвийн')).toBeInTheDocument();
-    expect(screen.getByText('0-89% Ноцтой эрсдэлтэй')).toBeInTheDocument();
+    expect(screen.getByText('50-100% Аюулгүй')).toBeInTheDocument();
+    // A reserved spare key the administrator has named, which no hardcoded map could have.
+    expect(screen.getByText('0-49% Хяналтад')).toBeInTheDocument();
   });
 });

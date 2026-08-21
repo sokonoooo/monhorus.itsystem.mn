@@ -11,6 +11,10 @@ import type {
   LoadMeasurementPhase,
   LoadMeasurementUnit,
 } from '../constants/load-measurement';
+import type {
+  ObjectAttributeValue,
+  ObjectTypeAttributeDto,
+} from '../constants/object-type-attribute';
 
 /** A load figure plus why it could not be produced (rule 17.18). */
 export interface LoadValueDto {
@@ -49,10 +53,56 @@ export interface ObjectTypeDto {
   insidePanel: boolean;
   /** Section 4.1: тухайн төхөөрөмж дээр үзлэгийн дүгнэлт бүртгэх боломж. */
   generatesConclusion: boolean;
+  /**
+   * Whether a service call may be raised against equipment of this type.
+   *
+   * The call form lists only the types marked here, and the backend refuses a call naming
+   * any other - the filter is a convenience, not the rule.
+   */
+  canCreateCall: boolean;
+  /**
+   * The SLA window in hours for calls of this type, or null when `canCreateCall` is false.
+   *
+   * Non-null exactly when calls are allowed. This is what sets the deadline on a new call,
+   * in place of the global urgent/standard hours.
+   */
+  callSlaHours: number | null;
+  /**
+   * The built-in glyph, and the FALLBACK whenever `iconUrl` is null.
+   *
+   * Still required, still unchanged: every type registered before custom icons existed
+   * keeps working with no migration, and a client that never learns about `iconUrl`
+   * renders exactly what it rendered before.
+   */
   icon: ObjectIcon;
+  /** The uploaded SVG behind `iconUrl`, or null. Present so a form can tell "keep" from "clear". */
+  iconFileId: string | null;
+  /**
+   * Download path for the type's custom SVG icon, or null when it has none.
+   *
+   * Global, exactly as the type is: object types carry no `customer` and are shared by
+   * every tenant, so the icon reveals nothing about anybody's records. Render it with
+   * `<img src={iconUrl}>` — never inline the markup into the host document.
+   */
+  iconUrl: string | null;
   isActive: boolean;
+  /**
+   * The extra fields objects of this type must carry (requirements 4.1), in display order.
+   *
+   * Empty for a type that declares none, which is every type registered before this existed —
+   * so a client that ignores the field behaves exactly as it did before.
+   */
+  attributes: readonly ObjectTypeAttributeDto[];
   /** Objects currently using this type. A type in use cannot be deleted. */
   objectCount: number;
+  /**
+   * Who created the record, resolved to a display name.
+   *
+   * Null where it is not known: rows created before the creator was recorded, and
+   * records the system itself made. The screen renders that as a dash rather than
+   * guessing, because an absent creator is a real answer here.
+   */
+  createdByName: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -122,6 +172,17 @@ export interface ObjectPhotoDto {
   uploadedAt: string;
 }
 
+/** One frozen attribute answer on a dated finding. */
+export interface ReportedAttributeDto {
+  key: string;
+  /** The attribute's name as it read when the finding was written. */
+  label: string;
+  /** The raw answer, so a machine reader never parses `display`. */
+  value: ObjectAttributeValue;
+  /** What a document prints: a SELECT's option label, Тийм/Үгүй, or the value itself. */
+  display: string;
+}
+
 /** Denormalised head of the append-only assessment history. */
 export interface LatestAssessmentDto {
   id: string;
@@ -165,7 +226,27 @@ export interface ObjectListItemDto {
     code: string;
     name: string;
     icon: ObjectIcon;
+    /**
+     * The type's custom SVG, or null to fall back to `icon`.
+     *
+     * Inlined here beside `icon` for the same reason `showOnPlan` is: the floor plan draws
+     * every marker from one object list and must not have to fetch the whole type registry
+     * — which `object_master.view` alone does not always reach — to answer "what do I draw"
+     * per row.
+     */
+    iconUrl: string | null;
     showOnPlan: boolean;
+    /**
+     * The fields this type demands of its objects, in display order (requirements 4.1).
+     *
+     * ON THE LIST ROW, not only on the detail, because the screens that ask these questions
+     * are list-driven: the Ажлын тайлан equipment rows and the employee app's Дүгнэлт editor
+     * both build from a picked list item and would otherwise have to fetch a detail per
+     * piece of equipment just to know what to ask.
+     *
+     * Empty for a type that declares none.
+     */
+    attributes: readonly ObjectTypeAttributeDto[];
   } | null;
   customerId: string;
   customerName: string | null;
@@ -176,10 +257,26 @@ export interface ObjectListItemDto {
   planPosition: PlanPositionDto | null;
   status: ObjectStatus;
   latestAssessment: LatestAssessmentDto | null;
+  /**
+   * What this object has answered for its type's declared attributes (requirements 4.1).
+   *
+   * Read it THROUGH `objectType.attributes`, which is what says how each key is labelled and
+   * rendered. May hold keys the type no longer declares — removing an attribute does not
+   * erase what was recorded against it — and those are deliberately not shown.
+   */
+  attributeValues: Record<string, ObjectAttributeValue>;
   /** Backend-computed per section 11.5. Null when the inputs are incomplete. */
   calculatedLoad: LoadValueDto;
   measuredLoadKw: number | null;
   loadVariance: LoadValueDto;
+  /**
+   * Who created the record, resolved to a display name.
+   *
+   * Null where it is not known: rows created before the creator was recorded, and
+   * records the system itself made. The screen renders that as a dash rather than
+   * guessing, because an absent creator is a real answer here.
+   */
+  createdByName: string | null;
   createdAt: string;
 }
 
@@ -286,6 +383,17 @@ export interface ObjectAssessmentDto {
    * pair that disagrees rather than picking a winner.
    */
   measurements: readonly LoadMeasurementDto[];
+  /**
+   * The equipment type's own attributes, FROZEN as this finding recorded them (4.1).
+   *
+   * A dated record keeps saying what was true on its date: the answers live on the object and
+   * move as it is corrected, so an entry reading them live would rewrite its own history. The
+   * label and the displayed text are frozen with the value, so a row can print itself even
+   * after the attribute is renamed or deleted.
+   *
+   * Empty for every entry written before this existed. Nothing is back-filled.
+   */
+  attributes: readonly ReportedAttributeDto[];
   repairRequired: boolean;
   revisitRequired: boolean;
   revisitDate: string | null;

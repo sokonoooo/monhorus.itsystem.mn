@@ -301,7 +301,7 @@ class _HomeBody extends StatelessWidget {
   ///
   /// A row with neither id is left untappable — see [HomeUrgentItem.serviceRequestId].
   Widget _urgentRow(BuildContext context, HomeUrgentItem item) {
-    final Route<void>? route = _urgentRoute(item);
+    final Route<void> Function()? open = _urgentRoute(item);
 
     return BlueprintRow(
       band: severityTone(item.band).foreground,
@@ -310,36 +310,44 @@ class _HomeBody extends StatelessWidget {
       stateLabel: item.statusLabel,
       metaLabel: 'ЛАВЛАХ',
       metaValue: item.reference,
-      onTap: route == null ? null : () => Navigator.of(context).push(route),
+      onTap: open == null ? null : () => Navigator.of(context).push(open()),
     );
   }
 
-  /// The detail route a row opens, or null when it carries no id to open one with.
+  /// How to open the row, or null when it carries no id to open anything with.
+  ///
+  /// A FACTORY RATHER THAN A ROUTE, and the distinction is the whole point. A Route is a
+  /// single-use object: it carries its own lifecycle and completes when the screen it
+  /// installed is popped. Returning one from here — called during `build` — meant every
+  /// tap pushed the same spent instance, so the SECOND time a row was opened the
+  /// Navigator asserted `!_debugLocked`. Returning the recipe instead keeps the
+  /// tappability decision in `build`, where the row needs it, while the route itself is
+  /// minted fresh on each tap.
   ///
   /// Every field the row already holds is handed to the screen, so the number, the
   /// subject and the location are on screen in the first frame and the detail read
   /// fills in behind them rather than replacing a spinner.
-  Route<void>? _urgentRoute(HomeUrgentItem item) {
+  Route<void> Function()? _urgentRoute(HomeUrgentItem item) {
     final String? requestId = item.serviceRequestId;
     if (requestId != null) {
-      return ServiceRequestDetailScreen.route(
-        requestId: requestId,
-        requestNumber: item.reference,
-        subject: item.title,
-        location: item.location,
-        buildingId: item.buildingId,
-        buildingName: item.buildingName,
-        statusLabel: item.statusLabel,
-        slaLabel: item.detail,
-      );
+      return () => ServiceRequestDetailScreen.route(
+            requestId: requestId,
+            requestNumber: item.reference,
+            subject: item.title,
+            location: item.location,
+            buildingId: item.buildingId,
+            buildingName: item.buildingName,
+            statusLabel: item.statusLabel,
+            slaLabel: item.detail,
+          );
     }
 
     final String? workId = item.plannedWorkId;
     if (workId != null) {
-      return PlannedWorkDetailScreen.route(
-        plannedWorkId: workId,
-        workNumber: item.reference,
-      );
+      return () => PlannedWorkDetailScreen.route(
+            plannedWorkId: workId,
+            workNumber: item.reference,
+          );
     }
 
     return null;
@@ -446,10 +454,24 @@ class _AgendaSection extends StatelessWidget {
   ///
   /// Null when the entry names no source or carries no id, so the card draws itself as
   /// something that cannot be opened rather than swallowing the tap.
+  ///
+  /// THE ROUTE IS BUILT PER TAP, NEVER HERE. A Route is single-use — it completes when
+  /// the screen it installed is popped — so closing over one built during `build` meant
+  /// the second tap on a row pushed a spent instance and the Navigator asserted
+  /// `!_debugLocked`. Both reasons a row cannot be opened are answerable from the model
+  /// alone, so nothing has to be constructed to decide that.
   VoidCallback? _agendaTap(BuildContext context, CalendarEventModel event) {
     if (event.sourceId.isEmpty) return null;
 
-    final Route<void>? route = switch (event.source) {
+    // A source a newer API adds. Nothing here knows which screen it would be.
+    final CalendarSource? source = event.source;
+    if (source == null) return null;
+
+    return () => Navigator.of(context).push(_agendaRoute(source, event));
+  }
+
+  Route<void> _agendaRoute(CalendarSource source, CalendarEventModel event) {
+    return switch (source) {
       CalendarSource.plannedWork => PlannedWorkDetailScreen.route(
           plannedWorkId: event.sourceId,
           workNumber: event.reference,
@@ -462,11 +484,6 @@ class _AgendaSection extends StatelessWidget {
           buildingName: event.buildingName,
           statusLabel: event.statusLabel,
         ),
-      // A source a newer API adds. Nothing here knows which screen it would be.
-      null => null,
     };
-
-    if (route == null) return null;
-    return () => Navigator.of(context).push(route);
   }
 }

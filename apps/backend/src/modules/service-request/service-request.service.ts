@@ -1,5 +1,5 @@
 import {
-  SERVICE_REQUEST_STATUS_LABELS,
+  type CallableObjectTypeDto,
   canTransition,
   isReasonRequired,
   type AssignServiceRequestInput,
@@ -9,7 +9,10 @@ import {
   type ExtendSlaInput,
   type PaginatedData,
   type ServiceRequestDetailDto,
+  stageByKey,
+  stageOfStatus,
   type ServiceRequestListItemDto,
+  type ServiceRequestStage,
   type SlaConfig,
   type ObjectBreadcrumbDto,
   type ServiceRequestAttachmentDto,
@@ -27,11 +30,14 @@ import {
   type ResolvedCustomerScope,
 } from '../../common/security/customer-scope';
 import type { AuthContext } from '../../common/types/express';
+import { creatorName } from '../../common/utils/creator.util';
 import type { RequestMeta } from '../../common/utils/request-meta.util';
 import { recordAudit } from '../audit/audit.service';
 import { notify } from '../notification/notification.service';
+import { ObjectType } from '../object-master/object-master.models';
 import { resolveAssignedWorkFilter } from '../planned-work/planned-work.scope';
-import { assertReportAllows } from './work-report.service';
+import { issueSurveyInvitation } from '../survey/survey.invitation';
+import { assertReportAllows, hasApprovedWorkReport } from './work-report.service';
 import { assertSelfProgressAllowed } from './self-progress.policy';
 import { userIdsForEmployees } from '../notification/recipient.util';
 import { Employee, type IEmployee } from '../employee/employee.model';
@@ -39,13 +45,19 @@ import { toEmployeeRefDto } from '../employee/employee.mapper';
 import { Customer, ObjectNode } from '../objects/object.models';
 import { StoredFile } from '../storage/stored-file.model';
 import { computeSlaDueAt, evaluateSla } from './sla.service';
-import { getSlaConfig } from '../settings/settings.service';
+import { getRequestStages, getSlaConfig } from '../settings/settings.service';
 import {
   ServiceRequest,
   nextRequestNumber,
   type IServiceRequest,
   CLAIMABLE_STATUSES,
 } from './service-request.model';
+import {
+  notifyCustomerAssigned,
+  notifyCustomerRequestReceived,
+  notifySiteBusy,
+  notifyStatusChanged,
+} from './service-request.notify';
 import { clearOpenForClaim, markOpenForClaim } from './unclaimed.service';
 
 type WithId<T> = T & { _id: Types.ObjectId };
@@ -75,6 +87,7 @@ const LOCATION_POPULATE = [
 export function toListItemDto(
   request: WithId<IServiceRequest>,
   config: SlaConfig,
+  stages: readonly ServiceRequestStage[],
 ): ServiceRequestListItemDto {
   const sla = evaluateSla({
     status: request.status,
@@ -94,20 +107,28 @@ export function toListItemDto(
     )
     .map((entry) => toEmployeeRefDto(entry));
 
+  const stage = stageOfStatus(request.status, stages);
+
   return {
     id: String(request._id),
     requestNumber: request.requestNumber,
+    stage: stage ? { key: stage.key, label: stage.label, colour: stage.colour } : null,
     customer: ref(request.customer as unknown as NamedRef),
     project: ref(request.project as unknown as NamedRef),
     building: ref(request.building as unknown as NamedRef),
     floor: ref(request.floor as unknown as NamedRef),
     room: ref(request.room as unknown as NamedRef),
     device: ref(request.device as unknown as NamedRef),
-    requestType: request.requestType,
+    // Sent on every request, null when nobody dropped a pin. Travels on the list DTO and not
+    // only the detail one so a floor-plan view can mark several requests in one read.
+    planPosition: request.planPosition
+      ? { x: request.planPosition.x, y: request.planPosition.y }
+      : null,
     isUrgent: request.isUrgent,
     status: request.status,
     assignedEmployees: employees,
     assignedTeam: ref(request.assignedTeam as unknown as NamedRef),
+    createdByName: creatorName(request.createdBy, request.createdByName),
     createdAt: request.createdAt.toISOString(),
     slaDueAt: request.slaDueAt.toISOString(),
     slaState: sla.state,
@@ -168,10 +189,46 @@ async function resolveAttachments(
   }));
 }
 
+/**
+ * Removes the staff-internal half of a request detail before it reaches a customer.
+ *
+ * One DTO served both audiences, so a customer received the whole operational record: who
+ * every status change was made by and the free-text reason for it, the internal
+ * SLA-extension justification, the revisit reason, the creator's name, the team leader's
+ * id, and each assigned technician's internal employee code. The web portal knew and
+ * declined to render any of it — its own comment says the screen "is a presentation choice,
+ * not a boundary" — but the customer mobile app rendered it, so the reviewer's return text
+ * and the staff roster were on a customer's phone.
+ *
+ * Narrowing here rather than in either client makes it a boundary. The progress timeline
+ * itself is kept, because a customer watching their request move NEW → ASSIGNED → DONE is
+ * the point of the screen; only the internal who and why come off it.
+ */
+function narrowDetailForCustomer(detail: ServiceRequestDetailDto): ServiceRequestDetailDto {
+  return {
+    ...detail,
+    assignedEmployees: detail.assignedEmployees.map((employee) => ({
+      ...employee,
+      // An internal payroll identifier. The name and photo stay so the customer still knows
+      // who is attending; the type requires a string, so it is blanked rather than dropped.
+      employeeCode: '',
+    })),
+    statusHistory: detail.statusHistory.map((entry) => ({
+      ...entry,
+      reason: null,
+      changedByName: null,
+    })),
+    teamLeaderEmployeeId: null,
+    slaExtensionReason: null,
+    revisitReason: null,
+    createdByName: null,
+  };
+}
+
 export async function toDetailDto(
   request: WithId<IServiceRequest>,
 ): Promise<ServiceRequestDetailDto> {
-  const base = toListItemDto(request, await getSlaConfig());
+  const base = toListItemDto(request, await getSlaConfig(), await getRequestStages());
 
   return {
     ...base,
@@ -202,6 +259,10 @@ export async function toDetailDto(
     revisitDueAt: request.revisitDueAt ? request.revisitDueAt.toISOString() : null,
     parentRequestId: request.parentRequest ? String(request.parentRequest) : null,
     createdByName: request.createdByName,
+    // Whether `GET /:id/report/customer` will answer. Read from the conclusion rather than
+    // inferred from `status`: a request is moved to COMPLETED by a person, and the flag has
+    // to be a fact about the conclusion itself.
+    hasApprovedReport: await hasApprovedWorkReport(request._id),
     updatedAt: request.updatedAt.toISOString(),
   };
 }
@@ -337,6 +398,105 @@ async function assertAttachmentsBelongToActor(
   }
 }
 
+/**
+ * Resolves the equipment type a call names, refusing anything that may not be called about.
+ *
+ * Enforced here rather than trusted from the form. The call screens list only types with
+ * `canCreateCall`, but a filtered list is a convenience for the person using it, not a
+ * constraint on what can be sent - and this decides an SLA window, so it has to hold against
+ * a request that never went near the form.
+ *
+ * An inactive type is refused for the same reason: retiring a type from the catalogue should
+ * stop new calls arriving against it, without touching the calls already raised.
+ *
+ * `callSlaHours` is asserted non-null rather than defaulted. A callable type without hours
+ * should be impossible - the write path refuses it - so if one exists the honest response is
+ * to refuse the call rather than silently invent a window nobody agreed.
+ */
+/**
+ * The SLA window an existing request's equipment type carries, or null.
+ *
+ * Deliberately tolerant where `assertCallableEquipmentType` is strict. That guard runs when
+ * a call is raised and decides whether it may exist at all; this runs against calls that
+ * already exist, where the type may since have been retired or had calls switched off.
+ * Refusing an extension because of a later catalogue edit would punish the wrong person, so
+ * a missing or hours-less type simply falls back to the global window.
+ */
+/**
+ * The active, callable equipment types, for a call form's picker.
+ *
+ * Three fields, not the whole `ObjectTypeDto`. A picker needs a label, a value and the
+ * window it implies; the rest of the catalogue row - attributes, icons, structural flags -
+ * is administrative data, and a customer-portal account has no business receiving it just
+ * to fill in a dropdown.
+ *
+ * Sorted by name so the list is stable between renders and between users.
+ */
+export async function listCallableObjectTypes(): Promise<CallableObjectTypeDto[]> {
+  const types = await ObjectType.find({ canCreateCall: true, isActive: true })
+    .select('_id name callSlaHours')
+    .sort({ name: 1 })
+    .lean();
+
+  return types
+    // A callable type with no hours should not exist - the write path refuses it - but if
+    // one somehow does, offering it would produce a call the create endpoint then rejects.
+    .filter((type) => typeof type.callSlaHours === 'number')
+    .map((type) => ({
+      id: String(type._id),
+      name: type.name,
+      callSlaHours: type.callSlaHours as number,
+    }));
+}
+
+/**
+ * Whether a call counts as urgent, from the window its equipment type carries.
+ *
+ * Urgency used to be a checkbox on the form, and it decided nothing: the deadline comes
+ * from the equipment type, so a caller could tick "urgent" on a 24-hour call and see no
+ * change. The two facts are now one fact - a short window IS the urgent case - which means
+ * the dispatch board's ordering and the Today panel finally agree with the deadline.
+ *
+ * Six hours is the threshold because it is what `sla.urgent_hours` shipped as, so a call
+ * that would previously have been raised urgent lands on the same side of the line.
+ */
+const URGENT_WINDOW_HOURS = 6;
+
+export function deriveIsUrgent(callSlaHours: number): boolean {
+  return callSlaHours <= URGENT_WINDOW_HOURS;
+}
+
+async function equipmentSlaHoursFor(objectTypeId: Types.ObjectId | null): Promise<number | null> {
+  if (!objectTypeId) return null;
+  const type = await ObjectType.findById(objectTypeId).select('callSlaHours').lean();
+  return type?.callSlaHours ?? null;
+}
+
+async function assertCallableEquipmentType(
+  objectTypeId: string,
+): Promise<{ _id: Types.ObjectId; callSlaHours: number }> {
+  const type = await ObjectType.findById(objectTypeId)
+    .select('_id name canCreateCall callSlaHours isActive')
+    .lean();
+
+  if (!type || !type.isActive) {
+    throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Тоног төхөөрөмжийн төрөл олдсонгүй.');
+  }
+  if (!type.canCreateCall) {
+    throw AppError.badRequest(
+      ERROR_CODES.VALIDATION_ERROR,
+      `"${type.name}" төрөлд дуудлага үүсгэх боломжгүй.`,
+    );
+  }
+  if (type.callSlaHours === null || type.callSlaHours === undefined) {
+    throw AppError.badRequest(
+      ERROR_CODES.VALIDATION_ERROR,
+      `"${type.name}" төрлийн SLA хугацаа тохируулаагүй байна.`,
+    );
+  }
+  return { _id: type._id, callSlaHours: type.callSlaHours };
+}
+
 export async function createServiceRequest(
   input: CreateServiceRequestInput,
   scope: ResolvedCustomerScope,
@@ -350,8 +510,22 @@ export async function createServiceRequest(
   await validateLocationChain(input, ownerCustomerId);
   await assertAttachmentsBelongToActor(input.attachmentIds, actor);
 
+  const callableType = await assertCallableEquipmentType(input.objectTypeId);
+
   const now = new Date();
-  const slaDueAt = computeSlaDueAt(now, input.isUrgent, 0, await getSlaConfig());
+  /*
+   * The window comes from the equipment type, not from the urgency flag. `callSlaHours` is
+   * non-null for any type that reached this line, because a type may only be called about
+   * when it carries one.
+   */
+  const isUrgent = deriveIsUrgent(callableType.callSlaHours);
+  const slaDueAt = computeSlaDueAt(
+    now,
+    isUrgent,
+    0,
+    await getSlaConfig(),
+    callableType.callSlaHours,
+  );
 
   const request = await ServiceRequest.create({
     requestNumber: await nextRequestNumber(now),
@@ -364,8 +538,13 @@ export async function createServiceRequest(
     panel: input.panelId ? new Types.ObjectId(input.panelId) : null,
     circuit: input.circuitId ? new Types.ObjectId(input.circuitId) : null,
     device: input.deviceId ? new Types.ObjectId(input.deviceId) : null,
-    requestType: input.requestType,
-    isUrgent: input.isUrgent,
+    // The schema has already refused a pin without a floor, so what arrives here either
+    // names a drawing or is absent.
+    planPosition: input.planPosition
+      ? { x: input.planPosition.x, y: input.planPosition.y }
+      : null,
+    objectType: callableType._id,
+    isUrgent,
     description: input.description,
     contactName: input.contactName,
     contactPhone: input.contactPhone,
@@ -431,6 +610,18 @@ export async function createServiceRequest(
     excludeUserId: actor.userId,
   });
 
+  /*
+   * The customer gets a receipt, and the site gets checked for company.
+   *
+   * Both sit here, after the document, the file ownership transfer and the audit entry are
+   * all committed. `notify` swallows its own failures, but the ORDER still matters: a
+   * notification written before the work it describes would be a lie if anything after it
+   * threw, and "your request is registered as SR-…" is precisely the kind of lie a caller
+   * would act on.
+   */
+  await notifyCustomerRequestReceived(request);
+  await notifySiteBusy(request, actor.userId);
+
   return getServiceRequestById(String(request._id), scope, actor);
 }
 
@@ -478,8 +669,15 @@ export async function listServiceRequests(
     if (assignmentFilter) filter.$and = [assignmentFilter];
   }
 
-  if (query.status) filter.status = query.status;
-  if (query.requestType) filter.requestType = query.requestType;
+  // `status` is the narrower answer, so it wins when a caller sends both.
+  if (query.status) {
+    filter.status = query.status;
+  } else if (query.stage) {
+    const stage = stageByKey(query.stage, await getRequestStages());
+    // An unknown stage key matches nothing rather than everything: a filter that
+    // silently widens is how you show a customer another organisation's work.
+    filter.status = { $in: stage ? [...stage.statuses] : [] };
+  }
   if (query.isUrgent !== undefined) filter.isUrgent = query.isUrgent;
   if (query.projectId) filter.project = new Types.ObjectId(query.projectId);
   if (query.buildingId) filter.building = new Types.ObjectId(query.buildingId);
@@ -508,7 +706,8 @@ export async function listServiceRequests(
   ]);
 
   const slaConfig = await getSlaConfig();
-  let items = rows.map((row) => toListItemDto(row, slaConfig));
+  const stages = await getRequestStages();
+  let items = rows.map((row) => toListItemDto(row, slaConfig, stages));
 
   // SLA state is derived, not stored, so it is filtered after mapping. The page
   // count still reflects the unfiltered total; this is documented as a known gap.
@@ -569,7 +768,8 @@ export async function getServiceRequestById(
   if (!request) {
     throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Хүсэлт олдсонгүй.');
   }
-  return await toDetailDto(request);
+  const detail = await toDetailDto(request);
+  return scope.mode === 'CUSTOMER' ? narrowDetailForCustomer(detail) : detail;
 }
 
 /**
@@ -594,10 +794,20 @@ export async function assignServiceRequest(
     );
   }
 
+  /*
+   * Held outside the validation block so the customer notification can name them.
+   *
+   * The same read already had to happen to check that nobody inactive is being assigned, so
+   * naming them costs nothing extra; doing it in a second query below would.
+   */
+  let assignedNames: string[] = [];
+
   if (input.employeeIds.length > 0) {
     const employees = await Employee.find({
       _id: { $in: input.employeeIds.map((id) => new Types.ObjectId(id)) },
     }).select('status firstName lastName');
+
+    assignedNames = employees.map((employee) => `${employee.lastName} ${employee.firstName}`);
 
     if (employees.length !== input.employeeIds.length) {
       throw AppError.badRequest(ERROR_CODES.VALIDATION_ERROR, 'Сонгосон ажилтан олдсонгүй.', [
@@ -670,6 +880,11 @@ export async function assignServiceRequest(
     excludeUserId: actor.userId,
   });
 
+  // ...and the customer, who until now watched their request sit at "Шинэ" with no sign
+  // that anyone had picked it up. The schema refuses an assignment naming neither an
+  // employee nor a team, so reaching this line always means somebody is on it.
+  await notifyCustomerAssigned(request, assignedNames, previousEmployees.length > 0);
+
   return getServiceRequestById(requestId, scope, actor);
 }
 
@@ -684,6 +899,14 @@ export async function changeServiceRequestStatus(
 
   const from: ServiceRequestStatus = request.status;
   const to = input.status;
+  /*
+   * The assignment AS IT STOOD when the request moved.
+   *
+   * Captured before the UNASSIGNED branch below empties it, because being taken off a job
+   * is exactly the kind of change the person holding it must hear about — and reading the
+   * field after the mutation would address that message to nobody.
+   */
+  const assignedWhenChanged = [...request.assignedEmployees];
 
   /*
    * WHO the caller is allowed to be, before WHAT they are allowed to do.
@@ -770,16 +993,27 @@ export async function changeServiceRequestStatus(
     newValue: { status: to },
   });
 
-  await notify({
-    event: 'SERVICE_REQUEST_STATUS_CHANGED',
-    title: `${request.requestNumber} төлөв "${SERVICE_REQUEST_STATUS_LABELS[to]}" боллоо`,
-    body: input.reason ?? null,
-    entityType: 'Work',
-    entityId: request._id,
-    linkPath: `/service-requests/${String(request._id)}`,
-    permission: 'service_request.view',
-    excludeUserId: actor.userId,
+  await notifyStatusChanged({
+    request: {
+      _id: request._id,
+      requestNumber: request.requestNumber,
+      customer: request.customer,
+      assignedEmployees: assignedWhenChanged,
+    },
+    to,
+    reason: input.reason ?? null,
+    actorUserId: actor.userId,
   });
+
+  /*
+   * The MANUAL completion path also earns the customer a survey.
+   *
+   * The common route to COMPLETED is a conclusion being approved, handled in
+   * `advanceOnConclusion`. This is the other one, and issuing from only the first would miss
+   * every hand-finished request without anything anywhere reporting the miss. The emitter is
+   * idempotent and never throws, so calling it from both is safe.
+   */
+  if (to === 'COMPLETED') await issueSurveyInvitation(request._id);
 
   return getServiceRequestById(requestId, scope, actor);
 }
@@ -795,11 +1029,20 @@ export async function extendSla(
 
   const previousDueAt = request.slaDueAt;
   request.slaExtendedMinutes += input.additionalMinutes;
+  /*
+   * The equipment window is re-read and re-applied, not left out.
+   *
+   * This recomputes from `slaStartedAt` rather than adding to the current deadline, so
+   * whatever window it is given IS the window. Omitting the equipment hours here would
+   * quietly rebase a 24-hour call onto the global urgent six - an extension that SHORTENS
+   * the deadline by sixteen hours while reporting that it granted two more.
+   */
   request.slaDueAt = computeSlaDueAt(
     request.slaStartedAt,
     request.isUrgent,
     request.slaExtendedMinutes,
     await getSlaConfig(),
+    await equipmentSlaHoursFor(request.objectType),
   );
   request.slaExtensionReason = input.reason;
   await request.save();
@@ -830,31 +1073,37 @@ export async function getDispatchBoard(
 ): Promise<DispatchBoardDto> {
   // Resolved once so every column reports SLA state against the same configuration.
   const slaConfig = await getSlaConfig();
+  const boardStages = await getRequestStages();
   const scopeFilter = customerScopeFilter(scope);
 
   const columns = await Promise.all(
-    // A column may cover more than one status — the open column covers NEW and
-    // UNASSIGNED — so both the page and the count match on the whole set.
-    DISPATCH_BOARD_COLUMNS.map(async (column) => {
-      const statuses = [...column.statuses];
-      const filter = { status: { $in: statuses }, ...scopeFilter };
+    // One column per stage the administrator put on the board. A stage may cover more
+    // than one status — the open stage covers NEW and UNASSIGNED — so both the page and
+    // the count match on the whole set. Cancelled work is off the board by default: it is
+    // findable in a filter, but a column of dead jobs answers no question a dispatcher has.
+    boardStages
+      .filter((stage) => stage.onBoard)
+      .map(async (stage) => {
+        const statuses = [...stage.statuses];
+        const filter = { status: { $in: statuses }, ...scopeFilter };
 
-      const [rows, total] = await Promise.all([
-        ServiceRequest.find(filter)
-          .populate([...LOCATION_POPULATE])
-          .sort({ isUrgent: -1, slaDueAt: 1 })
-          .limit(limitPerColumn),
-        ServiceRequest.countDocuments(filter),
-      ]);
+        const [rows, total] = await Promise.all([
+          ServiceRequest.find(filter)
+            .populate([...LOCATION_POPULATE])
+            .sort({ isUrgent: -1, slaDueAt: 1 })
+            .limit(limitPerColumn),
+          ServiceRequest.countDocuments(filter),
+        ]);
 
-      return {
-        id: column.id,
-        statuses,
-        label: column.label,
-        total,
-        items: rows.map((row) => toListItemDto(row, slaConfig)),
-      };
-    }),
+        return {
+          id: stage.key,
+          statuses,
+          label: stage.label,
+          colour: stage.colour,
+          total,
+          items: rows.map((row) => toListItemDto(row, slaConfig, boardStages)),
+        };
+      }),
   );
 
   return { columns, generatedAt: new Date().toISOString() };

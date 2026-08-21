@@ -1,5 +1,4 @@
 import {
-  TAX_UNSET_NOTE,
   generateMonthlyInvoicesSchema,
   type InvoiceGenerationCandidateDto,
 } from '@monhorus/shared';
@@ -13,7 +12,13 @@ import { useToast } from '../../components/ui/ToastProvider';
 import { ApiError } from '../../lib/api-client';
 import { addDaysToToday, currentMonthInput, todayDateInput } from '../../lib/calendar-date';
 import { invoiceService } from '../../services/invoice.service';
+import { settingsService } from '../../services/settings.service';
 import { Field, TextInput } from '../employees/FormControls';
+
+/** Today plus the configured due-day count, as a `yyyy-mm-dd` value for a date input. */
+function addDays(days: number): string {
+  return addDaysToToday(days);
+}
 
 /**
  * Monthly invoice run (requirements 12.1).
@@ -21,6 +26,11 @@ import { Field, TextInput } from '../employees/FormControls';
  * The preview shows exactly what would be produced before anything is written, including
  * the customers that are already invoiced for the period. Requirements 12.3 forbids a
  * duplicate, so those are shown as blocked rather than being silently dropped.
+ *
+ * The due date defaults to `finance.invoice_due_days`, the same setting the single-invoice
+ * drawer reads. This drawer used to hardcode 30, so a tenant with a 14-day term got 14 on
+ * a one-off invoice and 30 on the whole monthly run — the two paths disagreed on the term
+ * for the same customer.
  */
 export function GenerateInvoicesDrawer({
   open,
@@ -35,14 +45,36 @@ export function GenerateInvoicesDrawer({
 
   const [billingPeriod, setBillingPeriod] = useState(() => currentMonthInput());
   const [issueDate, setIssueDate] = useState(() => todayDateInput());
-  const [dueDate, setDueDate] = useState(() => addDaysToToday(30));
+  const [dueDate, setDueDate] = useState(() => addDays(30));
 
   const [candidates, setCandidates] = useState<InvoiceGenerationCandidateDto[]>([]);
-  const [taxPercent, setTaxPercent] = useState(0);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    let cancelled = false;
+
+    // The due-day default comes from the finance settings, exactly as `InvoiceFormDrawer`
+    // reads it, so neither path hardcodes the term. A failed read leaves the 30 already in
+    // state: it is the shipped default for this setting, not a figure invented here.
+    void settingsService
+      .get()
+      .then((settings) => {
+        if (cancelled) return;
+        const dueDays = settings.groups
+          .flatMap((group) => group.entries)
+          .find((entry) => entry.key === 'finance.invoice_due_days');
+        setDueDate(addDays(Number(dueDays?.value ?? 30)));
+      })
+      .catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -55,7 +87,6 @@ export function GenerateInvoicesDrawer({
       .then((preview) => {
         if (cancelled) return;
         setCandidates(preview.candidates as InvoiceGenerationCandidateDto[]);
-        setTaxPercent(preview.taxPercent);
         // Anything already invoiced starts unselected: it cannot be created again.
         setSelected(
           new Set(
@@ -143,13 +174,6 @@ export function GenerateInvoicesDrawer({
     >
       <div className="space-y-4">
         {error && <Alert variant="error">{error}</Alert>}
-        {taxPercent === 0 && <Alert variant="info">{TAX_UNSET_NOTE}</Alert>}
-
-        <Alert variant="info">
-          Идэвхтэй үйлчилгээний нөхцөлтэй харилцагч бүрд сарын тогтмол төлбөрөөр нэхэмжлэл
-          үүснэ.
-        </Alert>
-
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <Field label="Тайлант үе" required>
             <TextInput type="month" value={billingPeriod} onChange={setBillingPeriod} disabled={submitting} />

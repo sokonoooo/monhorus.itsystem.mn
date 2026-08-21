@@ -1,14 +1,18 @@
 import {
   EMPLOYEE_STATUS_LABELS,
-  RISK_LEVEL_LABELS,
   SERVICE_REQUEST_STATUS_LABELS,
   SLA_STATE_LABELS,
   type EmployeeStatus,
   type RiskLevel,
+  type ServiceRequestStageRefDto,
   type ServiceRequestStatus,
   type SlaState,
 } from '@monhorus/shared';
 import type { ReactElement } from 'react';
+
+import { useRiskBands } from '../../hooks/use-risk-bands';
+import { riskLabelOf, riskPaletteOf } from './risk-palette';
+import { STAGE_BADGE_STYLES } from './stage-palette';
 
 /**
  * Status colour mapping follows the Phase 1 palette:
@@ -22,7 +26,6 @@ const GREEN = 'bg-green-50 text-green-700 ring-green-200';
 const YELLOW = 'bg-amber-50 text-amber-700 ring-amber-200';
 const ORANGE = 'bg-orange-50 text-orange-700 ring-orange-200';
 const RED = 'bg-red-50 text-red-700 ring-red-200';
-const BLACK = 'bg-stone-800 text-stone-50 ring-stone-700';
 const GREY = 'bg-slate-100 text-slate-600 ring-slate-200';
 const BLUE = 'bg-blue-50 text-blue-700 ring-blue-200';
 
@@ -56,7 +59,29 @@ const REQUEST_STATUS_STYLES: Record<ServiceRequestStatus, string> = {
   CANCELLED: GREY,
 };
 
-export function RequestStatusBadge({ status }: { status: ServiceRequestStatus }): ReactElement {
+/**
+ * What a request is, said the way the business says it.
+ *
+ * The STAGE is what gets painted when the server sent one: fourteen engine statuses are
+ * roles the rules are made of, while a stage is the administrator's own name for the step,
+ * and a screen that printed the status directly would contradict the naming in Тохиргоо.
+ *
+ * `status` stays required and stays the fallback, for two kinds of caller: a payload from
+ * before stages existed, and a screen that genuinely holds nothing but a status. Neither
+ * should render an empty chip, and neither is a reason to make every call site thread a
+ * stage through.
+ */
+export function RequestStatusBadge({
+  status,
+  stage,
+}: {
+  status: ServiceRequestStatus;
+  stage?: ServiceRequestStageRefDto | null;
+}): ReactElement {
+  if (stage) {
+    return <span className={`${BASE} ${STAGE_BADGE_STYLES[stage.colour]}`}>{stage.label}</span>;
+  }
+
   return (
     <span className={`${BASE} ${REQUEST_STATUS_STYLES[status]}`}>
       {SERVICE_REQUEST_STATUS_LABELS[status]}
@@ -101,35 +126,22 @@ export function SlaBadge({
   );
 }
 
-const RISK_STYLES: Record<RiskLevel, string> = {
-  NORMAL: GREEN,
-  ATTENTION: YELLOW,
-  SCHEDULE_REPAIR: ORANGE,
-  CRITICAL: RED,
-  OUT_OF_SERVICE: BLACK,
-};
-
 /**
- * The same five risk colours, for surfaces that are not badges.
+ * The band's own chip.
  *
- * The floor-plan markers read from this rather than defining a palette of their own, so a
- * red pin on the plan is the same red as the badge in the table beside it. `UNASSESSED` is
- * grey, which is what "no finding yet" is everywhere else in the app.
+ * The colour comes from the CONFIGURED band rather than from a map keyed on the level: an
+ * administrator names and colours the ladder in Тохиргоо, and a chip painted from a
+ * hardcoded table would contradict the legend beside it the moment one was recoloured. The
+ * floor-plan markers resolve the same way — `riskPaletteOf(...).badge` — so a red pin on a
+ * plan is the same red as the badge in the table beside it.
  */
-export const RISK_SURFACE_STYLES: Record<RiskLevel | 'UNASSESSED', string> = {
-  ...RISK_STYLES,
-  UNASSESSED: GREY,
-};
-
 export function RiskBadge({ level, score }: { level: RiskLevel; score?: number | null }): ReactElement {
+  const bands = useRiskBands();
+
   return (
-    <span className={`${BASE} ${RISK_STYLES[level]}`}>
-      {RISK_LEVEL_LABELS[level]}
+    <span className={`${BASE} ${riskPaletteOf(level, bands).badge}`}>
+      {riskLabelOf(level, bands)}
       {typeof score === 'number' ? ` (${score})` : ''}
     </span>
   );
-}
-
-export function UrgentBadge(): ReactElement {
-  return <span className={`${BASE} ${RED}`}>Яаралтай</span>;
 }

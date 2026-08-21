@@ -340,6 +340,9 @@ class _ConclusionEditorScreenState extends ConsumerState<ConclusionEditorScreen>
                                 conclusion: conclusion,
                                 recommendation: recommendation,
                               ),
+                      onAttributeChanged: (String key, String value) => ref
+                          .read(conclusionEditorProvider(_ref).notifier)
+                          .patchDraftAttribute(draft.objectId, key, value),
                       onRemove: writable && !draft.isReadOnly
                           ? () => _confirmRemove(draft)
                           : null,
@@ -620,88 +623,92 @@ class _EquipmentPickerSheetState extends ConsumerState<_EquipmentPickerSheet> {
     final AsyncValue<List<ObjectListItemModel>> equipment =
         ref.watch(conclusionEquipmentProvider(widget.floorId));
 
-    return Container(
-      decoration: const BoxDecoration(
-        color: EmployeeTokens.white,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
-      ),
+    // Material rather than a decorated Container: the checkbox rows below are ListTiles,
+    // and a ListTile paints its selection fill and ink splash onto the nearest Material
+    // ancestor. A DecoratedBox carrying the background sits in front of that surface and
+    // hides both, which Flutter asserts on in debug.
+    return ConstrainedBox(
       constraints: BoxConstraints(
         maxHeight: MediaQuery.sizeOf(context).height * 0.85,
       ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: <Widget>[
-          const SheetHandle(),
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 16),
-            child: FieldLabel('Тоноглол сонгох'),
-          ),
-          Flexible(
-            child: equipment.when(
-              loading: () => const Padding(
-                padding: EdgeInsets.all(24),
-                child: Center(child: CircularProgressIndicator()),
-              ),
-              error: (Object _, StackTrace __) => Padding(
-                padding: const EdgeInsets.all(24),
-                child: Text('Тоноглол ачаалж чадсангүй.', style: EmployeeTokens.rowSub),
-              ),
-              data: (List<ObjectListItemModel> items) => items.isEmpty
-                  ? Padding(
-                      padding: const EdgeInsets.all(24),
-                      child: Text(
-                        'Энэ давхарт ашиглалтад байгаа тоноглол бүртгэгдээгүй байна.',
-                        style: EmployeeTokens.rowSub,
+      child: Material(
+        color: EmployeeTokens.white,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(18)),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            const SheetHandle(),
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 16),
+              child: FieldLabel('Тоноглол сонгох'),
+            ),
+            Flexible(
+              child: equipment.when(
+                loading: () => const Padding(
+                  padding: EdgeInsets.all(24),
+                  child: Center(child: CircularProgressIndicator()),
+                ),
+                error: (Object _, StackTrace __) => Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Text('Тоноглол ачаалж чадсангүй.', style: EmployeeTokens.rowSub),
+                ),
+                data: (List<ObjectListItemModel> items) => items.isEmpty
+                    ? Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: Text(
+                          'Энэ давхарт ашиглалтад байгаа тоноглол бүртгэгдээгүй байна.',
+                          style: EmployeeTokens.rowSub,
+                        ),
+                      )
+                    : ListView(
+                        shrinkWrap: true,
+                        children: <Widget>[
+                          for (final ObjectListItemModel object in items)
+                            CheckboxListTile(
+                              value: _picked.contains(object.id),
+                              onChanged: (bool? on) => setState(() {
+                                if (on == true) {
+                                  _picked.add(object.id);
+                                } else {
+                                  _picked.remove(object.id);
+                                }
+                              }),
+                              title: Text(
+                                object.code.isEmpty
+                                    ? object.name
+                                    : '${object.code} · ${object.name}',
+                                style: EmployeeTokens.rowTitle,
+                              ),
+                              subtitle: Text(
+                                <String>[
+                                  if (object.objectType?.name != null) object.objectType!.name,
+                                  if (object.status != null) object.status!.label,
+                                ].join(' · '),
+                                style: EmployeeTokens.rowSub,
+                              ),
+                            ),
+                        ],
                       ),
-                    )
-                  : ListView(
-                      shrinkWrap: true,
-                      children: <Widget>[
-                        for (final ObjectListItemModel object in items)
-                          CheckboxListTile(
-                            value: _picked.contains(object.id),
-                            onChanged: (bool? on) => setState(() {
-                              if (on == true) {
-                                _picked.add(object.id);
-                              } else {
-                                _picked.remove(object.id);
-                              }
-                            }),
-                            title: Text(
-                              object.code.isEmpty
-                                  ? object.name
-                                  : '${object.code} · ${object.name}',
-                              style: EmployeeTokens.rowTitle,
-                            ),
-                            subtitle: Text(
-                              <String>[
-                                if (object.objectType?.name != null) object.objectType!.name,
-                                if (object.status != null) object.status!.label,
-                              ].join(' · '),
-                              style: EmployeeTokens.rowSub,
-                            ),
-                          ),
-                      ],
-                    ),
+              ),
             ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-            child: WorkButton(
-              label: 'Сонгосныг нэмэх (${_picked.length})',
-              onPressed: _picked.isEmpty
-                  ? null
-                  : () {
-                      final List<ObjectListItemModel> chosen =
-                          (equipment.value ?? const <ObjectListItemModel>[])
-                              .where((ObjectListItemModel object) =>
-                                  _picked.contains(object.id))
-                              .toList();
-                      Navigator.of(context).pop(chosen);
-                    },
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+              child: WorkButton(
+                label: 'Сонгосныг нэмэх (${_picked.length})',
+                onPressed: _picked.isEmpty
+                    ? null
+                    : () {
+                        final List<ObjectListItemModel> chosen =
+                            (equipment.value ?? const <ObjectListItemModel>[])
+                                .where((ObjectListItemModel object) =>
+                                    _picked.contains(object.id))
+                                .toList();
+                        Navigator.of(context).pop(chosen);
+                      },
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

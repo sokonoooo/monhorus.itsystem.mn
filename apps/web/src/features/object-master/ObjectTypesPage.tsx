@@ -1,18 +1,21 @@
 import {
+  MAX_OBJECT_TYPE_ICON_BYTES,
   OBJECT_CATEGORIES,
   OBJECT_CATEGORY_LABELS,
   OBJECT_ICONS,
   OBJECT_ICON_LABELS,
+  OBJECT_TYPE_ICON_MIME,
   PERMISSIONS,
   createObjectTypeSchema,
   updateObjectTypeSchema,
   type ObjectCategory,
   type ObjectIcon,
+  type ObjectTypeAttributeDto,
   type ObjectTypeDto,
   type ObjectTypeListQuery,
   type PaginatedData,
 } from '@monhorus/shared';
-import { useCallback, useEffect, useMemo, useState, type ReactElement } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
 import { Alert } from '../../components/ui/Alert';
@@ -34,9 +37,40 @@ import {
 import { useAuth } from '../../contexts/auth-context';
 import { useTableColumns } from '../../hooks/use-table-columns';
 import { ApiError } from '../../lib/api-client';
+import { authorisedFileUrl } from '../../lib/file-url';
 import { objectTypeService } from '../../services/object-master.service';
 import { Field, SelectInput, TextInput } from '../employees/FormControls';
+import { ObjectTypeAttributesEditor } from './ObjectTypeAttributesEditor';
 import { ObjectCategoryBadge } from '../projects/objects/ObjectBadges';
+import { ObjectTypeIcon } from '../projects/plan-icons';
+
+/** Roughly how large the icon may be, in the words the hint and the error both use. */
+const ICON_LIMIT_KB = Math.round(MAX_OBJECT_TYPE_ICON_BYTES / 1024);
+
+/**
+ * Why a chosen file cannot be an icon, or null when nothing is obviously wrong with it.
+ *
+ * THIS IS NOT A SECURITY CHECK, and nothing downstream may be simplified on the strength
+ * of it. Both rules are the browser's word for what the user picked: a `File.type` is
+ * whatever the OS guessed from the extension, and a size is a number the page could not
+ * verify. The gate is the server — `POST /files/object-type-icons` caps the request at
+ * MAX_OBJECT_TYPE_ICON_BYTES, refuses any content type but OBJECT_TYPE_ICON_MIME, and
+ * then PARSES the bytes and stores only the parser's sanitised output. Anything posted
+ * straight at the endpoint meets all of that and none of this. What this buys is a user
+ * who is told "that is a PNG" in the form instead of by a round trip.
+ *
+ * The limits themselves come from the shared constants, so the message and the server
+ * cannot drift apart.
+ */
+function iconFileProblem(file: File): string | null {
+  if (file.type !== OBJECT_TYPE_ICON_MIME) {
+    return 'Зөвхөн SVG өргөтгөлтэй файл байршуулна уу.';
+  }
+  if (file.size > MAX_OBJECT_TYPE_ICON_BYTES) {
+    return `Айкон ${ICON_LIMIT_KB}KB-аас хэтрэхгүй байх ёстой.`;
+  }
+  return null;
+}
 
 /**
  * Section 4.1 equipment type registry.
@@ -65,8 +99,38 @@ function TypeDrawer({
   const [showOnPlan, setShowOnPlan] = useState(false);
   const [insidePanel, setInsidePanel] = useState(false);
   const [generatesConclusion, setGeneratesConclusion] = useState(true);
+  const [canCreateCall, setCanCreateCall] = useState(false);
+  /*
+   * Held as a string, like every other numeric field in this app: a number input reports ''
+   * while being cleared, and Number('') is 0 - which here would read as a zero-hour SLA
+   * rather than as "not filled in yet".
+   */
+  const [callSlaHours, setCallSlaHours] = useState('');
   const [icon, setIcon] = useState<ObjectIcon>('OTHER');
   const [isActive, setIsActive] = useState(true);
+  /** What objects of this type must record beyond their category's own fields (4.1). */
+  const [attributes, setAttributes] = useState<ObjectTypeAttributeDto[]>([]);
+
+  // -- Custom icon -----------------------------------------------------------
+  /** The uploaded file the type will carry, or null for "no custom icon". */
+  const [iconFileId, setIconFileId] = useState<string | null>(null);
+  /**
+   * Whether the icon was touched at all in this session of the drawer.
+   *
+   * This is the whole reason a PATCH can leave an icon alone. `iconFileId` on the update
+   * payload is three-valued — absent leaves it, an id replaces it, `null` clears it — and
+   * a form that always sent its state would have no way to say "absent". Editing a type's
+   * name would then re-send the icon it already had, and worse, editing a type whose icon
+   * had not loaded would clear it.
+   */
+  const [iconTouched, setIconTouched] = useState(false);
+  /** Object url for a file chosen in this drawer, shown before anything is saved. */
+  const [localPreview, setLocalPreview] = useState<string | null>(null);
+  /** Object url for the icon the type is already saved with, when editing one. */
+  const [savedPreview, setSavedPreview] = useState<string | null>(null);
+  const [iconUploading, setIconUploading] = useState(false);
+  const [iconError, setIconError] = useState<string | null>(null);
+  const iconInputRef = useRef<HTMLInputElement>(null);
 
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -76,6 +140,11 @@ function TypeDrawer({
     if (target === null) return;
     setFormError(null);
     setFieldErrors({});
+    setIconError(null);
+    setIconTouched(false);
+    setLocalPreview(null);
+    setIconFileId(existing?.iconFileId ?? null);
+    if (iconInputRef.current) iconInputRef.current.value = '';
 
     if (existing) {
       setCode(existing.code);
@@ -85,8 +154,18 @@ function TypeDrawer({
       setShowOnPlan(existing.showOnPlan);
       setInsidePanel(existing.insidePanel);
       setGeneratesConclusion(existing.generatesConclusion);
+      setCanCreateCall(existing.canCreateCall);
+      setCallSlaHours(existing.callSlaHours === null ? '' : String(existing.callSlaHours));
       setIcon(existing.icon);
       setIsActive(existing.isActive);
+      // Copied rather than referenced: the editor replaces rows wholesale, and holding the
+      // list row's own objects would let an unsaved edit show up in the table behind.
+      setAttributes(
+        existing.attributes.map((attribute) => ({
+          ...attribute,
+          options: attribute.options.map((option) => ({ ...option })),
+        })),
+      );
     } else {
       setCode('');
       setName('');
@@ -95,10 +174,104 @@ function TypeDrawer({
       setShowOnPlan(false);
       setInsidePanel(false);
       setGeneratesConclusion(true);
+      setCanCreateCall(false);
+      setCallSlaHours('');
       setIcon('OTHER');
       setIsActive(true);
+      setAttributes([]);
     }
   }, [target, existing]);
+
+  /**
+   * The icon the type is already saved with.
+   *
+   * `GET /files/:id` requires the bearer token, so the stored icon cannot be a bare `src`
+   * any more than an employee photo can: it is fetched and turned into an object url,
+   * which is revoked when the drawer moves to another type or closes.
+   */
+  useEffect(() => {
+    const path = existing?.iconUrl ?? null;
+    if (target === null || !path) {
+      setSavedPreview(null);
+      return undefined;
+    }
+
+    let cancelled = false;
+    let objectUrl: string | null = null;
+
+    void authorisedFileUrl(path)
+      .then((url) => {
+        if (cancelled) {
+          URL.revokeObjectURL(url);
+          return;
+        }
+        objectUrl = url;
+        setSavedPreview(url);
+      })
+      // An icon that will not load is not worth an error in a form about something else;
+      // the fallback glyph is what the plan draws in that case anyway.
+      .catch(() => setSavedPreview(null));
+
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [target, existing]);
+
+  /** A locally previewed file lives as long as the document unless it is let go of. */
+  useEffect(
+    () => () => {
+      if (localPreview) URL.revokeObjectURL(localPreview);
+    },
+    [localPreview],
+  );
+
+  /**
+   * What the preview shows: the file just chosen, else the one already saved.
+   *
+   * The saved icon is only shown while `iconFileId` still names it. Removing it sets that
+   * to null, and the preview has to go with it — the point of Remove is to see the type
+   * fall back to its built-in glyph before saving, not after.
+   */
+  const previewUrl =
+    localPreview ?? (iconFileId !== null && iconFileId === existing?.iconFileId ? savedPreview : null);
+  const hasIcon = iconFileId !== null;
+
+  async function handleIconPicked(file: File | undefined): Promise<void> {
+    if (!file) return;
+    setIconError(null);
+
+    const problem = iconFileProblem(file);
+    if (problem) {
+      setIconError(problem);
+      // The rejected file is dropped, so picking the same one again re-runs the check.
+      if (iconInputRef.current) iconInputRef.current.value = '';
+      return;
+    }
+
+    setIconUploading(true);
+    try {
+      const uploaded = await objectTypeService.uploadIcon(file);
+      setIconFileId(uploaded.id);
+      setIconTouched(true);
+      // Previewed from the local file rather than by fetching what was just sent: the
+      // bytes are already here, and an `<img>` of an object url cannot run what is in it.
+      setLocalPreview(URL.createObjectURL(file));
+    } catch (caught) {
+      setIconError(caught instanceof ApiError ? caught.message : 'Айкон хуулж чадсангүй.');
+    } finally {
+      setIconUploading(false);
+      if (iconInputRef.current) iconInputRef.current.value = '';
+    }
+  }
+
+  function handleIconRemoved(): void {
+    setIconFileId(null);
+    setIconTouched(true);
+    setLocalPreview(null);
+    setIconError(null);
+    if (iconInputRef.current) iconInputRef.current.value = '';
+  }
 
   async function handleSubmit(): Promise<void> {
     setFormError(null);
@@ -113,7 +286,14 @@ function TypeDrawer({
           showOnPlan,
           insidePanel,
           generatesConclusion,
+          canCreateCall,
+          // Null rather than 0 when blank, and dropped entirely when calls are off, so the
+          // server is never asked to store hours for a type nobody can call about.
+          callSlaHours: canCreateCall && callSlaHours.trim() !== '' ? Number(callSlaHours) : null,
           icon,
+          attributes,
+          // Sent only when there is one to claim; the endpoint treats absent as "none".
+          ...(iconFileId !== null ? { iconFileId } : {}),
         })
       : updateObjectTypeSchema.safeParse({
           name: name.trim(),
@@ -121,8 +301,21 @@ function TypeDrawer({
           showOnPlan,
           insidePanel,
           generatesConclusion,
+          canCreateCall,
+          callSlaHours: canCreateCall && callSlaHours.trim() !== '' ? Number(callSlaHours) : null,
           icon,
           isActive,
+          // Always sent, unlike the icon below: the whole list is what the editor holds, so
+          // "as it now stands" is the only thing it can say, and every change to it — an
+          // added row, a removed one, a new order — is expressed the same way.
+          attributes,
+          /*
+            The three-valued field, and the key is deliberately absent unless the icon was
+            touched. Absent leaves the type's icon exactly as it is, an id replaces it, and
+            an explicit null clears it back to the built-in glyph. Spreading the state
+            unconditionally would make "I renamed a type" mean "and re-stated its icon".
+          */
+          ...(iconTouched ? { iconFileId } : {}),
         });
 
     if (!parsed.success) {
@@ -182,13 +375,6 @@ function TypeDrawer({
       <div className="space-y-4">
         {formError && <Alert variant="error">{formError}</Alert>}
 
-        {!isNew && (
-          <Alert variant="info">
-            Код болон ангиллыг үүсгэсний дараа өөрчлөхгүй. Аль хэдийн бүртгэгдсэн объектууд
-            хүчингүй болохоос сэргийлж байна.
-          </Alert>
-        )}
-
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field label="Код" required={isNew} error={fieldErrors.code}>
             <TextInput
@@ -224,6 +410,73 @@ function TypeDrawer({
           </Field>
         </div>
 
+        {/*
+          The custom icon, beside the built-in one it overrides rather than replaces.
+
+          The enum picker above stays required on purpose: it is what every client that
+          has not learned about uploads still draws, and what this type falls back to the
+          moment the file is removed or fails to load.
+        */}
+        <div>
+          <label htmlFor="type-icon-file" className={FILTER_LABEL}>
+            Тусгай айкон (SVG)
+          </label>
+
+          <div className="flex items-start gap-3">
+            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-slate-50 text-slate-500 ring-1 ring-inset ring-slate-200">
+              {previewUrl ? (
+                /*
+                  An `<img>`, never markup inlined into this document by React's raw-HTML
+                  escape hatch — for a file the server has not seen yet least of all. An SVG
+                  is a document: put into this page its script would run as this page, in
+                  this session. Inside an `<img>` the browser treats it as a picture and
+                  executes nothing, which is the layer that has to hold if sanitising ever
+                  does not. A test pins the absence of the escape hatch in this file.
+                */
+                <img
+                  src={previewUrl}
+                  alt="Сонгосон айкон"
+                  className="h-8 w-8 object-contain"
+                  draggable={false}
+                />
+              ) : (
+                <ObjectTypeIcon icon={icon} className="h-6 w-6" />
+              )}
+            </div>
+
+            <div className="min-w-0 flex-1 space-y-1">
+              <input
+                id="type-icon-file"
+                ref={iconInputRef}
+                type="file"
+                accept={`${OBJECT_TYPE_ICON_MIME},.svg`}
+                disabled={submitting || iconUploading}
+                onChange={(event) => void handleIconPicked(event.target.files?.[0])}
+                className="block w-full text-xs text-slate-600 file:mr-2 file:rounded file:border-0 file:bg-slate-100 file:px-2 file:py-1 file:text-xs file:text-slate-700"
+              />
+              <p className="text-xs text-slate-500">
+                SVG, хамгийн ихдээ {ICON_LIMIT_KB}KB. Оруулаагүй бол дээрх тэмдэглэгээг
+                ашиглана.
+              </p>
+              {iconUploading && <p className="text-xs text-slate-500">Айкон хуулж байна…</p>}
+              {iconError && <p className="text-xs text-red-600">{iconError}</p>}
+              {fieldErrors.iconFileId && (
+                <p className="text-xs text-red-600">{fieldErrors.iconFileId}</p>
+              )}
+              {hasIcon && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleIconRemoved}
+                  disabled={submitting || iconUploading}
+                >
+                  Айкон устгах
+                </Button>
+              )}
+            </div>
+          </div>
+        </div>
+
         <div>
           <label htmlFor="type-description" className={FILTER_LABEL}>
             Тайлбар
@@ -239,6 +492,45 @@ function TypeDrawer({
         </div>
 
         <fieldset aria-label="Тохиргоо" className="space-y-2">
+          <label className="flex items-start gap-2 text-sm text-slate-700">
+            <input
+              type="checkbox"
+              checked={canCreateCall}
+              onChange={(event) => setCanCreateCall(event.target.checked)}
+              disabled={submitting}
+              className="mt-0.5 h-4 w-4 rounded border-slate-300"
+            />
+            <span>
+              Дуудлага үүсгэх боломжтой эсэх
+              <span className="block text-xs text-slate-500">
+                Идэвхтэй бол энэ төрлийг сонгож дуудлага үүсгэнэ. Дуудлагын SLA хугацаа
+                доорх утгаар бодогдоно.
+              </span>
+            </span>
+          </label>
+
+          {/*
+            Shown only when calls are enabled, because the hours mean nothing otherwise -
+            and required then, because the server refuses the pair apart. Same conditional
+            shape as `isActive` below, which is likewise only meaningful in one state.
+          */}
+          {canCreateCall && (
+            <Field
+              label="Дуудлагын SLA хугацаа (цаг)"
+              required
+              error={fieldErrors.callSlaHours}
+              hint="Жишээ: гэрэл 24 цаг, автомат залгуур 6 цаг. Яаралтай эсэх нь энэ хугацааг өөрчлөхгүй."
+            >
+              <TextInput
+                value={callSlaHours}
+                onChange={setCallSlaHours}
+                type="number"
+                placeholder="24"
+                disabled={submitting}
+              />
+            </Field>
+          )}
+
           <label className="flex items-start gap-2 text-sm text-slate-700">
             <input
               type="checkbox"
@@ -295,6 +587,20 @@ function TypeDrawer({
             </label>
           )}
         </fieldset>
+
+        <ObjectTypeAttributesEditor
+          value={attributes}
+          onChange={setAttributes}
+          disabled={submitting}
+          /*
+            Read off the SAVED type rather than off the editor's own state, so a key that
+            objects may already carry values under stays fixed while a row added in this
+            session stays editable. Empty when registering a new type, where nothing can be
+            stored against anything yet.
+          */
+          savedKeys={new Set((existing?.attributes ?? []).map((attribute) => attribute.key))}
+          fieldErrors={fieldErrors}
+        />
       </div>
     </Drawer>
   );
@@ -418,6 +724,11 @@ export function ObjectTypesPage(): ReactElement {
       render: (row) => <span className="text-slate-700">{OBJECT_ICON_LABELS[row.icon]}</span>,
     },
     {
+      key: 'createdBy',
+      header: 'Үүсгэсэн',
+      render: (row) => <span className="text-slate-700">{row.createdByName ?? '-'}</span>,
+    },
+    {
       key: 'actions',
       header: 'Үйлдэл',
       align: 'right',
@@ -526,6 +837,9 @@ export function ObjectTypesPage(): ReactElement {
           columns={columnState.visibleColumns}
           rows={data?.items ?? []}
           rowKey={(row) => row.id}
+          // Numbered off the response rather than the query, so a request in flight can
+          // never number the rows on screen against the page they did not come from.
+          numbering={{ page: data?.page ?? 1, limit: data?.limit ?? 50 }}
           loading={loading}
           error={error}
           onRetry={() => void load()}

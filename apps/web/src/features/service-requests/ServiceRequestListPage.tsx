@@ -1,16 +1,11 @@
 import {
   PERMISSIONS,
-  SERVICE_REQUEST_STATUSES,
-  SERVICE_REQUEST_STATUS_LABELS,
-  SERVICE_REQUEST_TYPES,
-  SERVICE_REQUEST_TYPE_LABELS,
   SLA_STATES,
   SLA_STATE_LABELS,
   type ServiceRequestListItemDto,
-  type ServiceRequestListQuery,
   type ServiceRequestStatus,
-  type ServiceRequestType,
   type SlaState,
+  type ServiceRequestListQuery,
 } from '@monhorus/shared';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
@@ -18,7 +13,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Button } from '../../components/ui/Button';
 import { ColumnPicker } from '../../components/ui/ColumnPicker';
 import { DataTable, Pagination, type Column } from '../../components/ui/DataTable';
-import { RequestStatusBadge, SlaBadge, UrgentBadge } from '../../components/ui/DomainBadges';
+import { RequestStatusBadge, SlaBadge } from '../../components/ui/DomainBadges';
 import { PageHeader } from '../../components/ui/PageHeader';
 import { RowActions } from '../../components/ui/RowActions';
 import { SearchField } from '../../components/ui/SearchField';
@@ -26,19 +21,24 @@ import { SubNav } from '../../components/ui/SubNav';
 import { FILTER_BAR, FILTER_LABEL, FILTER_SELECT } from '../../components/ui/control-styles';
 import { SERVICE_REQUEST_TABS } from '../../config/navigation';
 import { useAuth } from '../../contexts/auth-context';
+import { useRequestStages } from '../../hooks/use-request-stages';
 import { useTableColumns } from '../../hooks/use-table-columns';
 import { ApiError } from '../../lib/api-client';
-import { serviceRequestService } from '../../services/service-request.service';
+import {
+  serviceRequestService,
+} from '../../services/service-request.service';
 
 export function ServiceRequestListPage(): ReactElement {
   const { can } = useAuth();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
 
+  const stages = useRequestStages();
+
   const query = useMemo<ServiceRequestListQuery>(() => {
     const page = Number.parseInt(searchParams.get('page') ?? '1', 10);
+    const stage = searchParams.get('stage');
     const status = searchParams.get('status');
-    const requestType = searchParams.get('requestType');
     const slaState = searchParams.get('slaState');
     const search = searchParams.get('search');
     const isUrgent = searchParams.get('isUrgent');
@@ -47,8 +47,11 @@ export function ServiceRequestListPage(): ReactElement {
       page: Number.isFinite(page) && page > 0 ? page : 1,
       limit: 20,
       ...(search ? { search } : {}),
+      ...(stage ? { stage } : {}),
+      // `status` is no longer offered by the dropdown, but a bookmark or a link pasted into
+      // a chat still carries one. The server takes it as the narrower of the two, so an old
+      // link keeps filtering exactly as it did.
       ...(status ? { status: status as ServiceRequestStatus } : {}),
-      ...(requestType ? { requestType: requestType as ServiceRequestType } : {}),
       ...(slaState ? { slaState: slaState as SlaState } : {}),
       ...(isUrgent === 'true' ? { isUrgent: true } : {}),
     };
@@ -95,8 +98,23 @@ export function ServiceRequestListPage(): ReactElement {
     setSearchParams(next);
   }
 
-  const hasFilters = ['search', 'status', 'requestType', 'slaState', 'isUrgent'].some((key) =>
-    searchParams.get(key),
+  /**
+   * Picking a stage also drops any `status` the URL arrived with.
+   *
+   * The server takes the exact status as the narrower of the two, so a leftover one from a
+   * pasted link would quietly outrank the choice just made on screen.
+   */
+  function selectStage(value: string): void {
+    const next = new URLSearchParams(searchParams);
+    next.delete('status');
+    next.delete('page');
+    if (value) next.set('stage', value);
+    else next.delete('stage');
+    setSearchParams(next);
+  }
+
+  const hasFilters = ['search', 'stage', 'status', 'requestType', 'slaState', 'isUrgent'].some(
+    (key) => searchParams.get(key),
   );
 
   const columns: ReadonlyArray<Column<ServiceRequestListItemDto>> = [
@@ -105,18 +123,6 @@ export function ServiceRequestListPage(): ReactElement {
       header: 'Дугаар',
       render: (row) => (
         <span className="whitespace-nowrap font-medium text-slate-900">{row.requestNumber}</span>
-      ),
-    },
-    {
-      key: 'urgent',
-      header: 'Яаралтай',
-      render: (row) => (row.isUrgent ? <UrgentBadge /> : <span className="text-slate-400">-</span>),
-    },
-    {
-      key: 'requestType',
-      header: 'Төрөл',
-      render: (row) => (
-        <span className="text-slate-700">{SERVICE_REQUEST_TYPE_LABELS[row.requestType]}</span>
       ),
     },
     {
@@ -178,7 +184,11 @@ export function ServiceRequestListPage(): ReactElement {
       header: 'Баг',
       render: (row) => <span className="text-slate-700">{row.assignedTeam?.name ?? '-'}</span>,
     },
-    { key: 'status', header: 'Төлөв', render: (row) => <RequestStatusBadge status={row.status} /> },
+    {
+      key: 'status',
+      header: 'Төлөв',
+      render: (row) => <RequestStatusBadge status={row.status} stage={row.stage} />,
+    },
     {
       key: 'sla',
       header: 'SLA',
@@ -192,6 +202,11 @@ export function ServiceRequestListPage(): ReactElement {
           {new Date(row.createdAt).toLocaleString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' })}
         </span>
       ),
+    },
+    {
+      key: 'createdBy',
+      header: 'Үүсгэсэн',
+      render: (row) => <span className="text-slate-700">{row.createdByName ?? '-'}</span>,
     },
     {
       key: 'actions',
@@ -238,41 +253,30 @@ export function ServiceRequestListPage(): ReactElement {
           />
         </div>
 
+        {/*
+          Stages, not statuses. Fourteen engine statuses in a dropdown asked the operator to
+          know that ON_SITE and IN_PROGRESS are the same step of the job; the nine stages are
+          the steps the business actually recognises, and the server expands the key back to
+          the statuses it covers. Hidden stages are configured to stay out of pickers.
+        */}
         <div>
-          <label htmlFor="request-status" className={FILTER_LABEL}>
+          <label htmlFor="request-stage" className={FILTER_LABEL}>
             Төлөв
           </label>
           <select
-            id="request-status"
-            value={searchParams.get('status') ?? ''}
-            onChange={(event) => updateParam('status', event.target.value)}
+            id="request-stage"
+            value={searchParams.get('stage') ?? ''}
+            onChange={(event) => selectStage(event.target.value)}
             className={FILTER_SELECT}
           >
             <option value="">Бүх төлөв</option>
-            {SERVICE_REQUEST_STATUSES.map((status) => (
-              <option key={status} value={status}>
-                {SERVICE_REQUEST_STATUS_LABELS[status]}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div>
-          <label htmlFor="request-type" className={FILTER_LABEL}>
-            Төрөл
-          </label>
-          <select
-            id="request-type"
-            value={searchParams.get('requestType') ?? ''}
-            onChange={(event) => updateParam('requestType', event.target.value)}
-            className={FILTER_SELECT}
-          >
-            <option value="">Бүх төрөл</option>
-            {SERVICE_REQUEST_TYPES.map((type) => (
-              <option key={type} value={type}>
-                {SERVICE_REQUEST_TYPE_LABELS[type]}
-              </option>
-            ))}
+            {stages
+              .filter((stage) => !stage.hidden)
+              .map((stage) => (
+                <option key={stage.key} value={stage.key}>
+                  {stage.label}
+                </option>
+              ))}
           </select>
         </div>
 
@@ -321,6 +325,9 @@ export function ServiceRequestListPage(): ReactElement {
           columns={columnState.visibleColumns}
           rows={data?.items ?? []}
           rowKey={(row) => row.id}
+          // Numbered off the response rather than the query, so a request in flight can
+          // never number the rows on screen against the page they did not come from.
+          numbering={{ page: data?.page ?? 1, limit: data?.limit ?? 20 }}
           loading={loading}
           error={error}
           onRetry={() => void load()}

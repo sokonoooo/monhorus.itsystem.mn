@@ -6,14 +6,24 @@ import {
   WORK_REPORT_REQUIREMENT_LABELS,
   WORK_REPORT_STATUS_LABELS,
   saveWorkReportSchema,
+  validateAttributeValues,
   type MaterialUnit,
   type ObjectListItemDto,
+  type ObjectTypeAttributeDto,
   type ObjectNodeDto,
   type WorkReportDto,
   type WorkReportPhotoDto,
   type WorkReportStatus,
 } from '@monhorus/shared';
-import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type Dispatch,
+  type ReactElement,
+  type SetStateAction,
+} from 'react';
 
 import { Alert } from '../../components/ui/Alert';
 import { Button } from '../../components/ui/Button';
@@ -34,6 +44,11 @@ import { objectMasterService } from '../../services/object-master.service';
 import { objectService } from '../../services/object.service';
 import { workReportService } from '../../services/service-request.service';
 import { Field, SelectInput, TextInput } from '../employees/FormControls';
+import {
+  ObjectAttributeFields,
+  toAttributeDrafts,
+  toAttributePayload,
+} from '../projects/objects/ObjectAttributeFields';
 import { ScoreBar } from '../projects/objects/ObjectBadges';
 
 const STATUS_STYLES: Record<WorkReportStatus, string> = {
@@ -63,8 +78,13 @@ interface MaterialRow {
 /**
  * What was used on the job, typed by hand.
  *
- * Requirements 19.2 keeps V1 at "нэр/тоо": there is no catalogue to pick from and no stock
- * balance to draw down, so a row is a name, a quantity and a unit.
+ * Requirements 19.2 keeps V1 at "нэр/тоо": there is no stock balance to draw down, so a
+ * row is a name, a quantity and a unit.
+ *
+ * The name is free text. A catalogue does exist — `/materials` is mounted on the backend
+ * and `services/material.service.ts` is a complete client — but nothing on this screen
+ * calls it, so every name typed here is un-normalised and two spellings of one item do
+ * not reconcile. Wiring the picker is a decision, not a defect fix.
  */
 function MaterialEditor({
   rows,
@@ -240,6 +260,18 @@ interface AssessmentRow {
   observation: string;
   conclusion: string;
   recommendation: string;
+  /**
+   * The equipment type's own declared fields (4.1), or null while they are still loading.
+   *
+   * NULL IS LOAD-BEARING, NOT A PLACEHOLDER. A declared attribute missing from a saved row
+   * is a declared attribute CLEARED, so a row that does not yet know what the type asks — or
+   * what the equipment already answered — must send nothing at all rather than an empty set.
+   * `toAssessmentPayload` omits the key entirely while this is null, which the API reads as
+   * "not asked" and leaves the equipment untouched.
+   */
+  attributes: readonly ObjectTypeAttributeDto[] | null;
+  /** The answers as their controls hold them; parsed once, on save. */
+  attributeDrafts: Record<string, string>;
 }
 
 /**
@@ -261,11 +293,28 @@ function EquipmentAssessments({
   rows,
   disabled,
   onChange,
+  showAttributeErrors,
 }: {
   buildingId: string | null;
   rows: readonly AssessmentRow[];
   disabled: boolean;
-  onChange: (next: AssessmentRow[]) => void;
+  /**
+   * The state setter itself, not a plain callback.
+   *
+   * Adding a piece of equipment fires a fetch for its type's fields, and the row has to be
+   * patched when that lands — by which time `rows` in this closure is stale. A functional
+   * update is what makes that patch safe against anything the user changed in between.
+   */
+  onChange: Dispatch<SetStateAction<AssessmentRow[]>>;
+  /**
+   * Whether a save has already been refused over these fields.
+   *
+   * A report names several pieces of equipment, so opening the drawer with every required
+   * attribute already in red would be a wall of complaint about work nobody has started. The
+   * messages appear once a save has actually been attempted, and from then on they update as
+   * the technician types.
+   */
+  showAttributeErrors: boolean;
 }): ReactElement {
   const [floors, setFloors] = useState<ObjectNodeDto[]>([]);
   const [floorId, setFloorId] = useState('');
@@ -311,8 +360,51 @@ function EquipmentAssessments({
         observation: '',
         conclusion: '',
         recommendation: '',
+        /*
+          Both come off the picked row itself — the list carries what the type declares and
+          what this equipment has already answered, so adding equipment costs no round trip.
+
+          Starting the fields from the STORED answers is what makes them safe to send back: a
+          declared attribute missing from a saved row is a declared attribute cleared, so a
+          blank draft would wipe what somebody recorded on an earlier visit.
+        */
+        attributes: object.objectType?.attributes ?? [],
+        attributeDrafts: toAttributeDrafts(
+          object.objectType?.attributes ?? [],
+          object.attributeValues,
+        ),
       },
     ]);
+  }
+
+  /**
+   * The type's own refusals for one row, keyed as `ObjectAttributeFields` reads them.
+   *
+   * Computed rather than stored: the same shared function the backend enforces with, run
+   * against what the row currently holds, so a message appears and clears as the technician
+   * types instead of only after a rejected save. `showAttributeErrors` is what keeps them
+   * out of sight until a save has actually been attempted.
+   */
+  function attributeErrorsOf(row: AssessmentRow): Record<string, string> {
+    if (!showAttributeErrors || !row.attributes) return {};
+    const errors: Record<string, string> = {};
+    for (const issue of validateAttributeValues(
+      row.attributes,
+      toAttributePayload(row.attributes, row.attributeDrafts),
+    )) {
+      errors[issue.field] = issue.message;
+    }
+    return errors;
+  }
+
+  function patchAttribute(objectId: string, key: string, value: string): void {
+    onChange(
+      rows.map((row) =>
+        row.objectId === objectId
+          ? { ...row, attributeDrafts: { ...row.attributeDrafts, [key]: value } }
+          : row,
+      ),
+    );
   }
 
   function patch(objectId: string, changes: Partial<AssessmentRow>): void {
@@ -321,11 +413,7 @@ function EquipmentAssessments({
 
   return (
     <div className="space-y-3">
-      {!buildingId ? (
-        <Alert variant="info">
-          Энэ хүсэлт барилга заагаагүй тул тоноглол сонгох боломжгүй.
-        </Alert>
-      ) : (
+      {buildingId ? (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field label="Давхар">
             <SelectInput
@@ -354,7 +442,7 @@ function EquipmentAssessments({
             />
           </Field>
         </div>
-      )}
+      ) : null}
 
       {rows.length === 0 ? (
         <p className="rounded-lg bg-slate-50 p-3 text-xs text-slate-500">
@@ -415,6 +503,32 @@ function EquipmentAssessments({
                   />
                 </Field>
               </div>
+
+              {/*
+                What this equipment's TYPE asks about it (requirements 4.1).
+
+                Per row, because a report may name a panel and a breaker and they declare
+                different things. Rendered from the definitions that arrived with the row, so
+                nothing here names a field. Absent for a type that declares none, and absent
+                while the definitions are still loading.
+
+                The answers are saved onto the EQUIPMENT rather than onto this finding: the
+                score and the narrative above are what this visit observed, while "this
+                breaker is fused" is true between visits.
+              */}
+              {row.attributes && row.attributes.length > 0 && (
+                <div className="mt-2 border-t border-slate-200 pt-2">
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    <ObjectAttributeFields
+                      attributes={row.attributes}
+                      drafts={row.attributeDrafts}
+                      onChange={(key, next) => patchAttribute(row.objectId, key, next)}
+                      disabled={disabled}
+                      fieldErrors={attributeErrorsOf(row)}
+                    />
+                  </div>
+                </div>
+              )}
             </li>
           ))}
         </ul>
@@ -450,6 +564,8 @@ function ReportDrawer({
   const [revisitDate, setRevisitDate] = useState('');
   const [materials, setMaterials] = useState<MaterialRow[]>([]);
   const [assessments, setAssessments] = useState<AssessmentRow[]>([]);
+  /** Set once a save has been refused over a type's required fields. See the editor prop. */
+  const [attributesRefused, setAttributesRefused] = useState(false);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -491,6 +607,8 @@ function ReportDrawer({
         observation: entry.observation ?? '',
         conclusion: entry.conclusion ?? '',
         recommendation: entry.recommendation ?? '',
+        attributes: entry.objectTypeAttributes,
+        attributeDrafts: toAttributeDrafts(entry.objectTypeAttributes, entry.attributeValues),
       })),
       ...report.objects
         .filter(
@@ -505,6 +623,14 @@ function ReportDrawer({
           observation: '',
           conclusion: '',
           recommendation: '',
+          /*
+            Named in an earlier draft but never written up, so the report carries no
+            definitions for it. Left null rather than guessed at: the row asks nothing and,
+            crucially, sends nothing, so re-saving a draft cannot clear answers it never
+            showed. Removing and re-adding the equipment loads them.
+          */
+          attributes: null,
+          attributeDrafts: {},
         })),
     ]);
     setBeforePhotos(report.beforePhotos);
@@ -544,6 +670,31 @@ function ReportDrawer({
     setFormError(null);
     setFieldErrors({});
 
+    /**
+     * The type's own required fields, checked before anything is sent.
+     *
+     * The same shared function the backend enforces with, run per row because each piece of
+     * equipment declares its own. A row whose definitions never loaded is skipped: it sends
+     * no attributes at all, so there is nothing to be required about.
+     *
+     * Refused here rather than round-tripped so the technician is told which equipment is
+     * short, on a form that may be listing four of them.
+     */
+    const shortRow = assessments.find(
+      (row) =>
+        row.attributes !== null &&
+        validateAttributeValues(row.attributes, toAttributePayload(row.attributes, row.attributeDrafts))
+          .length > 0,
+    );
+    if (shortRow) {
+      setAttributesRefused(true);
+      setFormError(
+        `"${shortRow.name}" тоноглолын шаардлагатай үзүүлэлт дутуу байна.`,
+      );
+      return;
+    }
+    setAttributesRefused(false);
+
     const parsed = saveWorkReportSchema.safeParse({
       score: score.trim() === '' ? null : Number(score),
       conclusion: conclusion.trim() || null,
@@ -569,6 +720,11 @@ function ReportDrawer({
         conclusion: row.conclusion.trim() || null,
         recommendation: row.recommendation.trim() || null,
         photoIds: [],
+        // Omitted entirely while the definitions are unknown — absent means "not asked",
+        // and an empty object would mean "the answer to everything is nothing".
+        ...(row.attributes
+          ? { attributeValues: toAttributePayload(row.attributes, row.attributeDrafts) }
+          : {}),
       })),
       materials: materials
         .filter((row) => row.name.trim().length > 0)
@@ -739,6 +895,7 @@ function ReportDrawer({
             rows={assessments}
             disabled={saving}
             onChange={setAssessments}
+            showAttributeErrors={attributesRefused}
           />
         </div>
 
@@ -1007,10 +1164,23 @@ type ReportPane = 'none' | 'report' | 'edit' | 'return';
 export function WorkReportPanel({
   requestId,
   buildingId = null,
+  onRequestMoved,
 }: {
   requestId: string;
   /** Where the call was. Null leaves the equipment picker unusable and says so. */
   buildingId?: string | null;
+  /**
+   * Called when an action here has ALSO moved the request itself.
+   *
+   * Submitting a conclusion advances the request to REPORT_SUBMITTED and approving one
+   * completes it — `advanceOnConclusion` on the backend, called from `submitWorkReport`
+   * and `approveWorkReport`. Neither response carries the request, so a page holding one
+   * keeps a status that went stale the moment either button was pressed, and goes on
+   * offering the transitions the OLD status allowed. Pressing one of those produces
+   * «"COMPLETED" төлвөөс "COMPLETED" төлөв рүү шилжих боломжгүй» — a refusal the reader
+   * cannot make sense of, because their screen still says the request is somewhere else.
+   */
+  onRequestMoved?: () => void;
 }): ReactElement {
   const { can } = useAuth();
   const { notify } = useToast();
@@ -1041,10 +1211,21 @@ export function WorkReportPanel({
     void load();
   }, [load]);
 
-  async function run(action: () => Promise<WorkReportDto>, message: string): Promise<void> {
+  /**
+   * Runs one conclusion action.
+   *
+   * `movesRequest` is passed by the two call sites whose action also advances the request,
+   * rather than inferred here, so that a new action has to state which it is.
+   */
+  async function run(
+    action: () => Promise<WorkReportDto>,
+    message: string,
+    movesRequest = false,
+  ): Promise<void> {
     setBusy(true);
     try {
       setReport(await action());
+      if (movesRequest) onRequestMoved?.();
       notify(message, 'success');
     } catch (caught) {
       notify(caught instanceof ApiError ? caught.message : 'Гүйцэтгэж чадсангүй.', 'error');
@@ -1094,7 +1275,11 @@ export function WorkReportPanel({
                 loading={busy}
                 disabled={!report.isComplete}
                 onClick={() =>
-                  void run(() => workReportService.submit(requestId), 'Хянуулахаар илгээлээ.')
+                  void run(
+                    () => workReportService.submit(requestId),
+                    'Хянуулахаар илгээлээ.',
+                    true,
+                  )
                 }
               >
                 Хянуулахаар илгээх
@@ -1104,7 +1289,9 @@ export function WorkReportPanel({
               <>
                 <Button
                   loading={busy}
-                  onClick={() => void run(() => workReportService.approve(requestId), 'Батлагдлаа.')}
+                  onClick={() =>
+                    void run(() => workReportService.approve(requestId), 'Батлагдлаа.', true)
+                  }
                 >
                   Батлах
                 </Button>

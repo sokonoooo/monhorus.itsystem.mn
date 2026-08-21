@@ -27,6 +27,13 @@ export const AUDIT_ACTIONS = [
   'LoggedOut',
   'AccountLocked',
   'TokenReuseDetected',
+  // Self-service password recovery. Request and completion are separate rows because they
+  // are separate events with different actors: the request is made by whoever typed an
+  // address into a public form and is not proof of anything, while the completion is the
+  // one that actually changed a credential. A request with no matching completion is the
+  // signal worth looking for, and folding them together would hide it.
+  'PasswordResetRequested',
+  'PasswordResetCompleted',
   // Planned work. These are named rather than folded into the generic vocabulary
   // because each is a distinct governance event that must be filterable on its own:
   // an overdue breach is written by the system with no human actor, and the report

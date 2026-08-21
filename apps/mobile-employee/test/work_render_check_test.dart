@@ -4,6 +4,8 @@
 // dev backend, including the malformed `assignedEmployeeId` the server emits when it
 // populates the relation — that one is asserted on directly, because a regression
 // there would send a stringified Mongoose document to an endpoint expecting an id.
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -24,6 +26,7 @@ import 'package:monhorus_employee/features/employee/work/presentation/providers/
 import 'package:monhorus_employee/features/employee/work/presentation/screens/planned_work_detail_screen.dart';
 import 'package:monhorus_employee/features/employee/work/presentation/screens/service_request_detail_screen.dart';
 import 'package:monhorus_employee/features/employee/work/presentation/screens/work_tab_screen.dart';
+import 'package:monhorus_employee/features/employee/work/presentation/widgets/work_ui.dart';
 
 Map<String, dynamic> _work() => <String, dynamic>{
       'id': 'w1',
@@ -77,10 +80,16 @@ Map<String, dynamic> _work() => <String, dynamic>{
           'progressPercent': 28.6,
         },
       ],
+      // Catalogue-backed, and carrying all three server-owned figures. The invariant
+      // is the backend's: 12 + 28 == 40. Nothing here is recomputed on the device, so
+      // the fixture states the remainder rather than letting the app subtract.
       'materials': <dynamic>[
         <String, dynamic>{
+          'materialItemId': 'm1',
           'name': 'Кабель VVG 3x4',
           'quantity': 40,
+          'consumedQuantity': 12,
+          'remainingQuantity': 28,
           'unit': 'METRE',
         },
       ],
@@ -137,6 +146,19 @@ Map<String, dynamic> _work() => <String, dynamic>{
           ],
           'beforePhotos': <dynamic>[],
           'afterPhotos': <dynamic>[],
+          // The whole of the work's 12 метр consumed total, drawn by this sub-task.
+          'materialUsage': <dynamic>[
+            <String, dynamic>{
+              'id': 'mu1',
+              'taskId': 't1',
+              'materialItemId': 'm1',
+              'materialName': 'Кабель VVG 3x4',
+              'quantity': 12,
+              'unit': 'METRE',
+              'recordedByName': 'Батаа Энхтөр',
+              'recordedAt': '2026-07-29T06:30:00.000Z',
+            },
+          ],
           // The live backend emits a stringified document here when populated.
           'assignedEmployeeId':
               "{\n  _id: new ObjectId('6a6a1dc9cf308958351efe19'),\n}",
@@ -232,6 +254,34 @@ class _StubDetailCapturingProgress extends PlannedWorkDetailNotifier {
   }
 }
 
+/// Captures the material-usage request the sheet sends, and can refuse it.
+///
+/// The refusal path is the one worth stubbing: over-consumption is decided by the
+/// server against a pool other sub-tasks share, so the sheet's only job on a 400 is to
+/// stay open and print what the backend said — under the quantity field, where the
+/// number that has to change is.
+class _StubDetailCapturingMaterials extends PlannedWorkDetailNotifier {
+  static RecordTaskMaterialUsageRequest? lastRequest;
+
+  /// Set to make the next write fail. Null lets it succeed.
+  static Failure? refusal;
+
+  @override
+  Future<PlannedWorkModel> build(String plannedWorkId) async =>
+      PlannedWorkModel.fromJson(_work());
+
+  @override
+  Future<ApiResult<PlannedWorkModel>> recordMaterialUsage({
+    required String taskId,
+    required RecordTaskMaterialUsageRequest request,
+  }) async {
+    lastRequest = request;
+    final Failure? failure = refusal;
+    if (failure != null) return FailureResult<PlannedWorkModel>(failure);
+    return Success<PlannedWorkModel>(PlannedWorkModel.fromJson(_work()));
+  }
+}
+
 /// Captures what the Дүгнэлт editor sends, without a repository behind it.
 ///
 /// The write matters as much as the absence of an exception: a sheet whose controllers
@@ -311,6 +361,20 @@ class _StubInspectionDraft extends InspectionReportNotifier {
       );
 }
 
+/// The same draft, with a save that NEVER ANSWERS.
+///
+/// Not a failure and not a slow success: a request that hangs. `_InspectionReportSheetState`
+/// clears `_busy` on the failure branch and on no other, so this is the state the sheet is
+/// left in when the network stalls — and the sheet is opened with `isDismissible: false`
+/// and `enableDrag: false`, which on iOS leaves the footer as the only exit there is.
+class _StubInspectionHungSave extends _StubInspectionDraft {
+  @override
+  Future<ApiResult<InspectionReportModel>> save(
+    UpdateInspectionReportRequest request,
+  ) =>
+      Completer<ApiResult<InspectionReportModel>>().future;
+}
+
 /// The seeded TECHNICIAN permission set, verbatim from `GET /auth/me` on the dev
 /// backend after `migrate:technician-permissions`. `employee.view` is deliberately
 /// absent: the role no longer holds it, and the app no longer asks for it.
@@ -355,7 +419,6 @@ Map<String, dynamic> _request({
       'floor': <String, dynamic>{'id': 'f', 'name': '3-р давхар'},
       if (deviceName != null)
         'device': <String, dynamic>{'id': 'd', 'name': deviceName},
-      'requestType': 'REPAIR',
       'isUrgent': isUrgent,
       'status': status,
       'slaState': slaState,
@@ -1303,6 +1366,235 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  /// MATERIAL CONSUMPTION, the write itself.
+  ///
+  /// The quantity on the wire is ABSOLUTE for the (sub-task, material) pair, so what is
+  /// asserted is the exact figure typed — not an increment added to anything. A sheet
+  /// that "helpfully" summed the typed number onto what the pool already showed would
+  /// double-count every retry on a flaky connection, which is precisely the failure the
+  /// absolute contract exists to prevent.
+  testWidgets('the material sheet sends the typed quantity as the absolute figure', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 1200));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    _StubDetailCapturingMaterials.lastRequest = null;
+    _StubDetailCapturingMaterials.refusal = null;
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: <Override>[
+          currentUserProvider.overrideWithValue(_user),
+          workIdentityProvider.overrideWith((Ref ref) async => _assignedIdentity),
+          plannedWorkDetailProvider
+              .overrideWith(_StubDetailCapturingMaterials.new),
+          inspectionReportProvider.overrideWith(_StubInspectionBlocked.new),
+        ],
+        child: const MaterialApp(
+          home: PlannedWorkDetailScreen(plannedWorkId: 'w1'),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // t2 has drawn nothing yet, so its control offers to record rather than to correct.
+    await tester.scrollUntilVisible(
+      find.text('Материал зарцуулалт бүртгэх'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Материал зарцуулалт бүртгэх'));
+    await tester.pumpAndSettle();
+
+    // The pool is on screen BEFORE anything is typed: registered, used and remaining,
+    // each exactly as the server sent it.
+    final Finder sheet = find.byType(BottomSheet);
+    expect(find.descendant(of: sheet, matching: find.text('Бүртгэсэн')),
+        findsOneWidget);
+    expect(find.descendant(of: sheet, matching: find.text('Зарцуулсан')),
+        findsOneWidget);
+    expect(find.descendant(of: sheet, matching: find.text('40')), findsOneWidget);
+    expect(find.descendant(of: sheet, matching: find.text('12')), findsOneWidget);
+    expect(find.descendant(of: sheet, matching: find.text('28')), findsOneWidget);
+
+    final Finder quantityField = find.descendant(
+      of: find.byKey(const Key('material-quantity-field')),
+      matching: find.byType(TextField),
+    );
+    // Nothing recorded for this sub-task, so nothing is pre-filled — the pre-fill is a
+    // correction of an existing entry, never a suggested amount.
+    expect(tester.widget<TextField>(quantityField).controller?.text, '');
+
+    await tester.enterText(quantityField, '15');
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Зарцуулалт хадгалах'));
+    await tester.pumpAndSettle();
+
+    final RecordTaskMaterialUsageRequest? sent =
+        _StubDetailCapturingMaterials.lastRequest;
+    expect(sent, isNotNull);
+    expect(sent!.materialItemId, 'm1');
+    expect(sent.quantity, 15);
+    expect(sent.toJson(), <String, dynamic>{
+      'materialItemId': 'm1',
+      'quantity': 15.0,
+    });
+
+    // Accepted, so the sheet is gone.
+    expect(find.text('Материалын зарцуулалт'), findsNothing);
+
+    // The correction case, on the sub-task that HAS drawn something: the field opens on
+    // the recorded 12, because the write replaces that figure rather than adding to it.
+    // An empty field here would rewrite a recorded 12 to whatever was typed next.
+    await tester.scrollUntilVisible(
+      find.text('Материал зарцуулалт засах'),
+      -300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Материал зарцуулалт засах'));
+    await tester.pumpAndSettle();
+
+    expect(
+      tester
+          .widget<TextField>(
+            find.descendant(
+              of: find.byKey(const Key('material-quantity-field')),
+              matching: find.byType(TextField),
+            ),
+          )
+          .controller
+          ?.text,
+      '12',
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  /// OVER-CONSUMPTION. The pool is shared and the server owns it, so the device does no
+  /// ceiling check of its own — it sends, and prints the refusal. The sheet must stay
+  /// open with the typed figure intact: the fix is a smaller number in the same field,
+  /// and a technician who has to re-open the sheet to make it has been sent backwards.
+  testWidgets('a refused material quantity keeps the sheet open and names the limit', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 1200));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    _StubDetailCapturingMaterials.lastRequest = null;
+    _StubDetailCapturingMaterials.refusal = const ServerFailure(
+      'Материалын үлдэгдэл хүрэлцэхгүй байна.',
+      code: 'VALIDATION_ERROR',
+      fieldErrors: <String, String>{
+        'quantity': 'Үлдэгдэл 28 метр байна.',
+      },
+    );
+    addTearDown(() => _StubDetailCapturingMaterials.refusal = null);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: <Override>[
+          currentUserProvider.overrideWithValue(_user),
+          workIdentityProvider.overrideWith((Ref ref) async => _assignedIdentity),
+          plannedWorkDetailProvider
+              .overrideWith(_StubDetailCapturingMaterials.new),
+          inspectionReportProvider.overrideWith(_StubInspectionBlocked.new),
+        ],
+        child: const MaterialApp(
+          home: PlannedWorkDetailScreen(plannedWorkId: 'w1'),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(
+      find.text('Материал зарцуулалт бүртгэх'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Материал зарцуулалт бүртгэх'));
+    await tester.pumpAndSettle();
+
+    final Finder quantityField = find.descendant(
+      of: find.byKey(const Key('material-quantity-field')),
+      matching: find.byType(TextField),
+    );
+    await tester.enterText(quantityField, '99');
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Зарцуулалт хадгалах'));
+    await tester.pumpAndSettle();
+
+    // It was sent — the refusal is the server's, not a guess the device made from the
+    // remaining figure it happens to be displaying.
+    expect(_StubDetailCapturingMaterials.lastRequest?.quantity, 99);
+
+    // Still open, still holding what was typed, with the backend's own sentences: the
+    // general one in the banner and the field-specific one under the field it named.
+    expect(find.text('Материалын зарцуулалт'), findsOneWidget);
+    expect(tester.widget<TextField>(quantityField).controller?.text, '99');
+    expect(find.text('Материалын үлдэгдэл хүрэлцэхгүй байна.'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('material-quantity-field')),
+        matching: find.text('Үлдэгдэл 28 метр байна.'),
+      ),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  /// The readout. Бүртгэсэн alone was all the Материал card ever showed, which on a job
+  /// that consumes anything is the least useful of the three: a technician standing at
+  /// the reel needs to know what is LEFT before deciding what to draw. All three come
+  /// from the server, and the card prints them rather than subtracting.
+  testWidgets('the materials card shows registered, used and remaining', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 1400));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: <Override>[
+          currentUserProvider.overrideWithValue(_user),
+          workIdentityProvider.overrideWith((Ref ref) async => _assignedIdentity),
+          plannedWorkDetailProvider.overrideWith(_StubDetail.new),
+          inspectionReportProvider.overrideWith(_StubInspectionBlocked.new),
+        ],
+        child: const MaterialApp(
+          home: PlannedWorkDetailScreen(plannedWorkId: 'w1'),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // The sub-task's own ledger row, which is where the work's 12 метр came from.
+    await tester.scrollUntilVisible(
+      find.text('ЗАРЦУУЛСАН МАТЕРИАЛ (1)'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.text('· Кабель VVG 3x4 — 12 метр · Батаа Энхтөр'),
+      findsOneWidget,
+    );
+
+    await tester.scrollUntilVisible(
+      find.text('Кабель VVG 3x4'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('Бүртгэсэн 40 метр · Зарцуулсан 12 метр'),
+      findsOneWidget,
+    );
+    expect(find.text('Үлдсэн 28 метр'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('an unassigned work is read-only and says why', (
     WidgetTester tester,
   ) async {
@@ -2200,6 +2492,74 @@ void main() {
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
   });
+
+  /// THE TRAP, AND THE WAY OUT OF IT.
+  ///
+  /// The sheet is opened with `isDismissible: false` and `enableDrag: false` — deliberately,
+  /// so a part-written report survives a stray tap on the scrim — which makes the footer's
+  /// "Болих" the only exit on a platform with no hardware back key. It used to be nulled
+  /// for the whole of a save, and `_busy` is cleared on the failure branch and on no other,
+  /// so a save that hung or never answered left an employee with a sheet they could not
+  /// close and a screen they could not leave. That is the reported "trapped on the Planned
+  /// Work page", and this is the save that never answers.
+  testWidgets('a save that never answers still leaves a way out of the report sheet', (
+    WidgetTester tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 1200));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: <Override>[
+          currentUserProvider.overrideWithValue(_user),
+          workIdentityProvider.overrideWith((Ref ref) async => _assignedIdentity),
+          plannedWorkDetailProvider.overrideWith(_StubDetailAwaitingReport.new),
+          inspectionReportProvider.overrideWith(_StubInspectionHungSave.new),
+        ],
+        child: const MaterialApp(
+          home: PlannedWorkDetailScreen(plannedWorkId: 'w1'),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(
+      find.text('Тайлан бичих'),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Тайлан бичих'));
+    await tester.pumpAndSettle();
+    expect(find.text('Үзлэгийн тайлан бичих'), findsOneWidget);
+
+    await tester.tap(find.text('Тайлан хадгалах'));
+    // `pump`, never `pumpAndSettle`: the save pill is spinning and the request is never
+    // coming back, so a settle here would time out — which is precisely the condition the
+    // employee is in.
+    await tester.pump();
+
+    // The save is in flight and refuses a second press...
+    final WorkButton save = tester.widget<WorkButton>(
+      find.widgetWithText(WorkButton, 'Тайлан хадгалах'),
+    );
+    expect(save.busy, isTrue);
+    expect(save.onPressed, isNull);
+
+    // ...and the way out is still there and still live.
+    final WorkButton cancel = tester.widget<WorkButton>(
+      find.widgetWithText(WorkButton, 'Болих'),
+    );
+    expect(cancel.onPressed, isNotNull);
+
+    await tester.tap(find.text('Болих'));
+    await tester.pump();
+    // Long enough for the sheet's exit transition, and no settle for the same reason.
+    await tester.pump(const Duration(seconds: 1));
+
+    expect(find.text('Үзлэгийн тайлан бичих'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
 }
 
 
@@ -2360,7 +2720,6 @@ ServiceRequestDetailModel _detailFor({
       'building': <String, dynamic>{'id': 'b', 'name': 'Төв байр'},
       if (deviceName != null)
         'device': <String, dynamic>{'id': 'd', 'name': deviceName},
-      'requestType': 'REPAIR',
       'status': 'UNASSIGNED',
       'isUrgent': false,
       'description': 'Лифт зогссон.',

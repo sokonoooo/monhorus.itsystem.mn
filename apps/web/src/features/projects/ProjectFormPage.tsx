@@ -19,7 +19,14 @@ import { projectService } from '../../services/project.service';
 import { dispatchService } from '../../services/service-request.service';
 import { Field, SelectInput, TextInput } from '../employees/FormControls';
 
-/** Project create and edit, section 4.2 fields. */
+/**
+ * Project create and edit, section 4.2 fields.
+ *
+ * There is no code field on either half of this form. `PRJ-001` is drawn by the server
+ * from a per-customer counter, so on create there is nothing for the browser to say, and
+ * on edit `updateProjectSchema` is `.strict()` — sending a code is refused outright rather
+ * than ignored. The code is still shown wherever the project is read.
+ */
 export function ProjectFormPage(): ReactElement {
   const { projectId } = useParams<{ projectId: string }>();
   const isEdit = Boolean(projectId);
@@ -30,7 +37,6 @@ export function ProjectFormPage(): ReactElement {
   const [employees, setEmployees] = useState<DispatchCandidateDto[]>([]);
 
   const [customerId, setCustomerId] = useState('');
-  const [code, setCode] = useState('');
   const [name, setName] = useState('');
   const [contractNumber, setContractNumber] = useState('');
   const [responsibleEmployeeId, setResponsibleEmployeeId] = useState('');
@@ -63,7 +69,6 @@ export function ProjectFormPage(): ReactElement {
           const project = await projectService.getProject(projectId);
           if (cancelled) return;
           setCustomerId(project.customerId);
-          setCode(project.code);
           setName(project.name);
           setContractNumber(project.contractNumber ?? '');
           setResponsibleEmployeeId(project.responsibleEmployeeId ?? '');
@@ -101,12 +106,8 @@ export function ProjectFormPage(): ReactElement {
     };
 
     const parsed = isEdit
-      ? updateProjectSchema.safeParse({ ...shared, code: code.trim().toUpperCase(), isActive })
-      : createProjectSchema.safeParse({
-          ...shared,
-          customerId,
-          code: code.trim().toUpperCase(),
-        });
+      ? updateProjectSchema.safeParse({ ...shared, isActive })
+      : createProjectSchema.safeParse({ ...shared, customerId });
 
     if (!parsed.success) {
       const errors: Record<string, string> = {};
@@ -172,13 +173,6 @@ export function ProjectFormPage(): ReactElement {
       <div className="space-y-4 rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
         {formError && <Alert variant="error">{formError}</Alert>}
 
-        {isEdit && (
-          <Alert variant="info">
-            Байгууллагыг өөрчлөхгүй. Доор бүртгэгдсэн барилга, давхар, объектууд тухайн
-            байгууллагад хамаарна.
-          </Alert>
-        )}
-
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
           <Field label="Байгууллага" required error={fieldErrors.customerId}>
             <SelectInput
@@ -187,14 +181,6 @@ export function ProjectFormPage(): ReactElement {
               placeholder="Байгууллага сонгох"
               options={customers.map((customer) => ({ value: customer.id, label: customer.name }))}
               disabled={submitting || isEdit}
-            />
-          </Field>
-
-          <Field label="Код" required error={fieldErrors.code}>
-            <TextInput
-              value={code}
-              onChange={(value) => setCode(value.toUpperCase())}
-              disabled={submitting}
             />
           </Field>
 

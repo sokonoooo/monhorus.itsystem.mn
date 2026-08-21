@@ -88,13 +88,13 @@ abstract class WorkRepository {
     SaveWorkReportRequest request,
   );
 
-  Future<ApiResult<WorkReportModel>> submitWorkReport(String requestId);
-
-  /// Approves a submitted conclusion, on `service_request.approve_report`.
+  /// Hands the conclusion in for review. THE LAST STEP THIS APP TAKES ON ONE.
   ///
-  /// There is no `returnWorkReport`, deliberately: returning stays office-only on
-  /// `service_request.change_status`.
-  Future<ApiResult<WorkReportModel>> approveWorkReport(String requestId);
+  /// There is no `approveWorkReport` beside it and no `returnWorkReport` either. Both are
+  /// the office's acts, performed on the web admin: approving is somebody other than the
+  /// author accepting the work, and returning is a judgement passed on it. A field client
+  /// for either would be this app settling its own conclusion.
+  Future<ApiResult<WorkReportModel>> submitWorkReport(String requestId);
 
   Future<ApiResult<WorkReportPhotoModel>> uploadWorkReportPhoto(CapturedPhoto photo);
 
@@ -114,6 +114,19 @@ abstract class WorkRepository {
     required String plannedWorkId,
     required String taskId,
     required RecordTaskProgressRequest request,
+  });
+
+  /// Records what one sub-task consumed of one material registered on the work, and
+  /// returns the re-read record.
+  ///
+  /// Separate from [recordTaskProgress] because the API is, and because the figures
+  /// are different in kind: progress is how much of the sub-task is done, this is how
+  /// much of the work's material pool it took. The quantity is absolute for the pair,
+  /// so the same call repeated is a correction rather than a second draw.
+  Future<ApiResult<PlannedWorkModel>> recordTaskMaterialUsage({
+    required String plannedWorkId,
+    required String taskId,
+    required RecordTaskMaterialUsageRequest request,
   });
 
   /// Attaches one evidence photo to a sub-task and returns the re-read record.

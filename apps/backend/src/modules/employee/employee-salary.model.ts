@@ -41,7 +41,13 @@ export interface IEmployeeSalary {
 
 const employeeSalarySchema = new Schema<IEmployeeSalary>(
   {
-    employee: { type: Schema.Types.ObjectId, ref: 'Employee', required: true, index: true },
+    // No `index: true` here. It would auto-name a plain index `employee_1`, which is
+    // the same name the unique partial index below auto-generates, and MongoDB rejects
+    // the second with IndexKeySpecsConflict. The plain index won the race, so the
+    // uniqueness guarantee was silently absent and two open salary periods could exist
+    // for one employee. Mongoose's "Duplicate schema index on {employee:1}" warning was
+    // reporting exactly this. Lookups are served by the compound index below.
+    employee: { type: Schema.Types.ObjectId, ref: 'Employee', required: true },
     grade: { type: String, default: null, trim: true, maxlength: 64 },
     baseSalary: { type: Number, required: true, min: 0 },
     currency: { type: String, enum: SUPPORTED_CURRENCIES, default: 'MNT' },
