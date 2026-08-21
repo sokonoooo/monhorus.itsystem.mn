@@ -63,6 +63,9 @@ export const OVERALL_SAFETY_LABELS: Record<RiskLevel, string> = {
   SCHEDULE_REPAIR: 'Засвар шаардлагатай',
   ATTENTION: 'Анхаарах шаардлагатай',
   NORMAL: 'Аюулгүй / Хэвийн',
+  BAND_6: 'Түвшин 6',
+  BAND_7: 'Түвшин 7',
+  BAND_8: 'Түвшин 8',
 };
 
 /**

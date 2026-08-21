@@ -29,9 +29,18 @@ import type {
   ProjectDto,
   ReportResultDto,
   ReportRollupDto,
+  RiskBandConfig,
   RiskSummaryDto,
   ServiceRequestListItemDto,
+  ServiceRequestStage,
 } from '@monhorus/shared';
+import {
+  DEFAULT_RISK_BANDS,
+  DEFAULT_SERVICE_REQUEST_STAGES,
+  resolveRiskBands,
+} from '@monhorus/shared';
+
+import type { VocabularyDto } from '../services/vocabulary.service';
 
 /**
  * Shared test fixtures.
@@ -99,6 +108,61 @@ export function makeServiceRequest(
     slaRemainingMinutes: 300,
     ...overrides,
   };
+}
+
+/**
+ * A `GET /vocabulary` payload — the words and colours an administrator has configured.
+ *
+ * `useRequestStages` and `useRiskBands` both read this one endpoint, so a screen with a
+ * stage filter, a band name, a band colour or a score boundary cannot be tested without it.
+ * It is deliberately NOT `GET /settings`: that is gated on `settings.view`, which a customer
+ * does not hold, and the portal is one of the callers.
+ *
+ * The ladder and the stage list are PARAMETERS, never defaults the assertions lean on. The
+ * point of most of these tests is that the screen reads the configured values rather than
+ * the bundled ones, so a test proving that passes cut points unlike the shipped 81/61/41/21.
+ */
+export function makeVocabulary(
+  overrides: {
+    stages?: readonly ServiceRequestStage[];
+    bands?: readonly RiskBandConfig[];
+  } = {},
+): VocabularyDto {
+  const stages = overrides.stages ?? DEFAULT_SERVICE_REQUEST_STAGES;
+  const bands = overrides.bands ?? DEFAULT_RISK_BANDS;
+
+  return {
+    requestStages: stages.map((stage) => ({
+      key: stage.key,
+      label: stage.label,
+      colour: stage.colour,
+      statuses: [...stage.statuses],
+      hidden: stage.hidden,
+    })),
+    // Resolved exactly as the server resolves them — sorted, with each band's upper bound
+    // derived from the next one's minimum — and served worst-first, so a fixture cannot
+    // quietly disagree with the endpoint about what a band covers.
+    riskBands: [...resolveRiskBands(bands)].reverse().map((band) => ({
+      level: band.key,
+      label: band.label,
+      colour: band.colour,
+      min: band.min,
+      max: band.max,
+    })),
+  };
+}
+
+/**
+ * The shipped ladder with its cut points moved, keeping every name and colour.
+ *
+ * `minScores` is worst-first, matching `DEFAULT_RISK_BANDS`, so `[0, 30, 50, 70, 90]` reads
+ * in the same order the constant is written in.
+ */
+export function makeRiskBandsAt(minScores: readonly number[]): RiskBandConfig[] {
+  return DEFAULT_RISK_BANDS.map((band, index) => ({
+    ...band,
+    minScore: minScores[index] ?? band.minScore,
+  }));
 }
 
 export function makePlannedWorkListItem(

@@ -96,9 +96,15 @@ class OpenRequestCard extends StatelessWidget {
                 ),
                 const SizedBox(width: 6),
               ],
+              // The stage the server groups this request under, when it sent one:
+              // that is the word the dispatch board prints for the same job, and a
+              // list row's only job is to say where the work has got to. The status
+              // label is the fallback and carries an administrator's rename too.
               EmployeePill.status(
-                label: request.status?.label ?? 'Эзэнгүй',
-                color: _toneOf(request.status?.band),
+                label: request.stepLabel ?? 'Эзэнгүй',
+                color: Tone.named(request.stage?.colour)?.foreground ??
+                    Tone.named(request.status?.stageColour)?.foreground ??
+                    _toneOf(request.status?.band),
               ),
             ],
           ),

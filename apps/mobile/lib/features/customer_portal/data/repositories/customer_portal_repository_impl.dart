@@ -6,6 +6,7 @@ import '../../../../core/error/failure.dart';
 import '../../../../core/network/api_result.dart';
 import '../../../../core/network/paginated_data.dart';
 import '../../domain/entities/customer_scope.dart';
+import '../../domain/entities/server_vocabulary.dart';
 import '../../domain/entities/service_request_enums.dart';
 import '../../domain/repositories/customer_portal_repository.dart';
 import '../datasources/customer_portal_remote_data_source.dart';
@@ -177,6 +178,11 @@ class CustomerPortalRepositoryImpl implements CustomerPortalRepository {
   @override
   Future<ApiResult<List<CallableObjectTypeModel>>> listCallableObjectTypes() {
     return _guard(() => _remote.listCallableObjectTypes());
+  }
+
+  @override
+  Future<ApiResult<ServerVocabulary>> getVocabulary() {
+    return _guard(() => _remote.getVocabulary());
   }
 
   @override

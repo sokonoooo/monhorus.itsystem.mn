@@ -1,7 +1,5 @@
 import {
   PERMISSIONS,
-  SERVICE_REQUEST_STATUSES,
-  SERVICE_REQUEST_STATUS_LABELS,
   type ServiceRequestListItemDto,
   type ServiceRequestListQuery,
 } from '@monhorus/shared';
@@ -14,6 +12,7 @@ import { PageHeader } from '../../components/ui/PageHeader';
 import { SearchField } from '../../components/ui/SearchField';
 import { FILTER_BAR, FILTER_LABEL, FILTER_SELECT } from '../../components/ui/control-styles';
 import { useAuth } from '../../contexts/auth-context';
+import { useRequestStages } from '../../hooks/use-request-stages';
 import { ApiError } from '../../lib/api-client';
 import { portalService } from '../../services/portal.service';
 import { PortalStatusBadge } from './PortalBadges';
@@ -55,8 +54,11 @@ export function PortalRequestListPage(): ReactElement {
   const [searchDraft, setSearchDraft] = useState(searchParams.get('search') ?? '');
 
   const page = Number(searchParams.get('page') ?? '1');
+  const stage = searchParams.get('stage') ?? '';
   const status = searchParams.get('status') ?? '';
   const search = searchParams.get('search') ?? '';
+
+  const stages = useRequestStages();
 
   function updateParam(key: string, value: string): void {
     const next = new URLSearchParams(searchParams);
@@ -64,6 +66,21 @@ export function PortalRequestListPage(): ReactElement {
     else next.delete(key);
     // A narrower filter invalidates the cursor; page 4 of a shorter list reads as "empty".
     if (key !== 'page') next.delete('page');
+    setSearchParams(next);
+  }
+
+  /**
+   * Picking a stage also drops any `status` the URL arrived with.
+   *
+   * The server takes the exact status as the narrower of the two, so a leftover one from a
+   * bookmark would quietly outrank the choice just made on screen.
+   */
+  function selectStage(value: string): void {
+    const next = new URLSearchParams(searchParams);
+    next.delete('status');
+    next.delete('page');
+    if (value) next.set('stage', value);
+    else next.delete('stage');
     setSearchParams(next);
   }
 
@@ -77,6 +94,9 @@ export function PortalRequestListPage(): ReactElement {
     const query: ServiceRequestListQuery = {
       page: Number.isFinite(page) && page > 0 ? page : 1,
       limit: PAGE_SIZE,
+      ...(stage ? { stage } : {}),
+      // The dropdown no longer offers one, but a bookmark from before stages still carries
+      // it, and the server honours the exact status as the narrower filter.
       ...(status ? { status: status as ServiceRequestListQuery['status'] } : {}),
       ...(search ? { search } : {}),
     };
@@ -96,7 +116,7 @@ export function PortalRequestListPage(): ReactElement {
     } finally {
       if (requestId === requestIdRef.current) setLoading(false);
     }
-  }, [page, status, search]);
+  }, [page, stage, status, search]);
 
   useEffect(() => {
     void load();
@@ -120,7 +140,7 @@ export function PortalRequestListPage(): ReactElement {
     {
       key: 'status',
       header: 'Төлөв',
-      render: (row) => <PortalStatusBadge status={row.status} />,
+      render: (row) => <PortalStatusBadge status={row.status} stage={row.stage} />,
     },
     {
       key: 'createdAt',
@@ -158,22 +178,29 @@ export function PortalRequestListPage(): ReactElement {
           />
         </div>
 
+        {/*
+          Stages, not statuses. A customer has no reason to know that REPORT_SUBMITTED,
+          VERIFICATION and COMPLETED are three separate things inside the office — the
+          administrator decides which steps are worth naming, and this offers those.
+        */}
         <div>
-          <label htmlFor="portal-status" className={FILTER_LABEL}>
+          <label htmlFor="portal-stage" className={FILTER_LABEL}>
             Төлөв
           </label>
           <select
-            id="portal-status"
-            value={status}
-            onChange={(event) => updateParam('status', event.target.value)}
+            id="portal-stage"
+            value={stage}
+            onChange={(event) => selectStage(event.target.value)}
             className={FILTER_SELECT}
           >
             <option value="">Бүх төлөв</option>
-            {SERVICE_REQUEST_STATUSES.map((value) => (
-              <option key={value} value={value}>
-                {SERVICE_REQUEST_STATUS_LABELS[value]}
-              </option>
-            ))}
+            {stages
+              .filter((option) => !option.hidden)
+              .map((option) => (
+                <option key={option.key} value={option.key}>
+                  {option.label}
+                </option>
+              ))}
           </select>
         </div>
       </div>

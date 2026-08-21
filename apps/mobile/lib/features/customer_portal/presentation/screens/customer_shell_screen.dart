@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../../core/push/push_messaging.dart';
 import '../../../auth/presentation/providers/auth_provider.dart';
 import '../../domain/entities/customer_scope.dart';
+import '../../domain/entities/server_vocabulary.dart';
 import '../providers/customer_portal_providers.dart';
 import '../theme/customer_tokens.dart';
 import '../widgets/create_request_sheet.dart';
@@ -81,9 +82,21 @@ class _CustomerShellScreenState extends ConsumerState<CustomerShellScreen>
     final CustomerScope scope = ref.watch(customerScopeProvider);
     final bool fabVisible = canCreate && scope is ResolvedCustomerScope;
 
+    // Reading it here is what starts it: one small GET, shared by all four tabs, that
+    // replaces the compiled-in stage and risk-band words with whatever this
+    // installation calls them. It cannot fail in a way the reader sees — see
+    // `serverVocabularyProvider` — so there is no state to render off it here.
+    ref.watch(serverVocabularyProvider);
+
     return Scaffold(
       backgroundColor: CustomerTokens.bg,
       body: IndexedStack(
+        // Keyed on the vocabulary, so the answer landing rebuilds the tabs the once.
+        // Three of the four bodies are const widgets and a const widget is
+        // canonicalised, so this frame's rebuild would otherwise stop at the stack and
+        // leave those elements painting the words they were first built with. The key
+        // changes at most once a session, and never at all when the read failed.
+        key: ValueKey<int>(serverVocabularyRevision),
         index: _index,
         children: <Widget>[
           CustomerHomeScreen(onOpenTab: _select),

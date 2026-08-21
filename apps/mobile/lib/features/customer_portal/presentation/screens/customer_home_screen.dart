@@ -81,13 +81,13 @@ class CustomerHomeScreen extends ConsumerWidget {
             stair: summary == null || !summary.coversEveryBuilding
                 ? const <RiskStairStep>[]
                 : <RiskStairStep>[
-                    for (final RiskLevel level in RiskLevel.values)
+                    for (final RiskLevel level in riskBandsInUse())
                       (
                         band: level.solidBackground,
                         count: summary.countOf(level),
                         label: level.shortLabel.toUpperCase(),
                       ),
-                    // The five bands only ever account for the devices somebody has
+                    // The bands only ever account for the devices somebody has
                     // assessed. Without this column the figures on the hero sum to
                     // fewer devices than the customer owns, with nothing saying so.
                     // Added only when there are some, so the common case keeps the
@@ -291,8 +291,14 @@ class _HomeBody extends StatelessWidget {
   static int _criticalRank(BuildingModel building) =>
       building.riskSummary.hasCritical ? 1 : 0;
 
-  /// `RiskLevel.values` runs best-first, so a higher index is a worse band. An
+  /// The enum is declared best-first, so a higher index is a worse band. An
   /// unassessed building has no band at all and sorts below every one of them.
+  ///
+  /// The three reserved keys sit past OUT_OF_SERVICE in that order, so a configured
+  /// spare sorts as the worst thing present. That is the safe direction to be wrong in
+  /// — it surfaces the building rather than burying it — and this app has no way to
+  /// know where an administrator meant their band to sit: `/vocabulary` reports the
+  /// ladder's names and colours, not what each band demands.
   static int _severity(BuildingModel building) =>
       building.riskSummary.worstLevel?.index ?? -1;
 

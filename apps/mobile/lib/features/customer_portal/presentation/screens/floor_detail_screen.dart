@@ -357,10 +357,13 @@ class _HistoryTab extends ConsumerWidget {
                       onThisFloor[i].requestNumber,
                       if (onThisFloor[i].device != null)
                         onThisFloor[i].device!.name,
-                      onThisFloor[i].status?.label ?? '',
+                      // The stage the server groups the request under, when it sent
+                      // one: this row reports where the work has got to, and that is
+                      // the word the office uses for it. Falls back to the status.
+                      onThisFloor[i].stepLabel ?? '',
                     ].where((String part) => part.isNotEmpty).join(' · '),
                     meta: formatEventStamp(onThisFloor[i].createdAt),
-                    tone: onThisFloor[i].status?.tone ?? AccentTone.neutral,
+                    tone: onThisFloor[i].stepTone,
                     icon: onThisFloor[i].isUrgent
                         ? Icons.priority_high
                         : Icons.assignment_outlined,

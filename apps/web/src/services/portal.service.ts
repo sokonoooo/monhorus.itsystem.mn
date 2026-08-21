@@ -11,6 +11,7 @@ import type {
   ObjectListItemDto,
   ProjectDto,
   PaginatedData,
+  PortalSummaryDto,
   PlannedWorkDto,
   PlannedWorkListItemDto,
   PlannedWorkAction,
@@ -18,7 +19,6 @@ import type {
   ServiceRequestAttachmentDto,
   ServiceRequestDetailDto,
   ServiceRequestListItemDto,
-  ServiceRequestListQuery,
   SubmitSurveyResponseInput,
   SurveyFormDto,
   SurveyPendingItemDto,
@@ -27,6 +27,7 @@ import type {
 } from '@monhorus/shared';
 
 import { ApiError, apiClient, unwrap } from '../lib/api-client';
+import type { ServiceRequestListQuery } from '@monhorus/shared';
 
 function toParams(query: Record<string, unknown>): Record<string, string | number> {
   const params: Record<string, string | number> = {};
@@ -265,6 +266,18 @@ export const portalService = {
         params: toParams({ page: 1, limit: 100, ...query }),
       }),
     );
+  },
+
+  /**
+   * The two history series the home screen draws.
+   *
+   * The one portal read that is not a list endpoint asked politely. Months cannot be
+   * derived from a page — a page is a page, and counting it understates every month the
+   * moment there is more work than fits — so the window is computed on the server, scoped
+   * to the caller's own organisation, and returned whole.
+   */
+  async summary(): Promise<PortalSummaryDto> {
+    return unwrap(await apiClient.get<ApiResponse<PortalSummaryDto>>('/portal/summary'));
   },
 
   async getBuilding(buildingId: string): Promise<BuildingDto> {

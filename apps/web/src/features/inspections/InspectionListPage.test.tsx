@@ -1,4 +1,4 @@
-import { PERMISSIONS, SETTING_KEYS, type SettingEntryDto, type SettingsDto } from '@monhorus/shared';
+import { DEFAULT_RISK_BANDS, PERMISSIONS } from '@monhorus/shared';
 import { screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -7,51 +7,26 @@ import { ApiError } from '../../lib/api-client';
 import { objectService } from '../../services/object.service';
 import { projectService } from '../../services/project.service';
 import { inspectionService } from '../../services/report.service';
-import { settingsService } from '../../services/settings.service';
+import { vocabularyService } from '../../services/vocabulary.service';
 import {
   makeInspection,
   makeInspectionSummary,
   makePage,
+  makeRiskBandsAt,
+  makeVocabulary,
 } from '../../test/fixtures';
 import { renderWithAuth } from '../../test/render';
 import { InspectionListPage } from './InspectionListPage';
 
-function evalEntry(key: SettingEntryDto['key'], value: number): SettingEntryDto {
-  return {
-    key,
-    group: 'evaluation',
-    label: key,
-    hint: '',
-    type: 'integer',
-    value,
-    defaultValue: value,
-    isOverridden: true,
-    min: 1,
-    max: 100,
-    unit: 'оноо',
-    updatedByName: null,
-    updatedAt: null,
-  };
-}
-
-/** Thresholds deliberately unlike the shipped 81/61/41/21, so a fallback would be visible. */
-function evaluationSettings(): SettingsDto {
-  return {
-    canManage: true,
-    groups: [
-      {
-        group: 'evaluation',
-        label: 'Үнэлгээ',
-        description: '',
-        entries: [
-          evalEntry(SETTING_KEYS.EVAL_NORMAL_MIN, 90),
-          evalEntry(SETTING_KEYS.EVAL_ATTENTION_MIN, 70),
-          evalEntry(SETTING_KEYS.EVAL_SCHEDULE_REPAIR_MIN, 50),
-          evalEntry(SETTING_KEYS.EVAL_CRITICAL_MIN, 30),
-        ],
-      },
-    ],
-  };
+/**
+ * Cut points deliberately unlike the shipped 81/61/41/21, so a fallback would be visible.
+ *
+ * The four thresholds are now one configured ladder published by `GET /vocabulary`, so it is
+ * stated whole rather than as four scalar settings keys; the numbers are the same ones this
+ * file has always run against.
+ */
+function evaluationSettings() {
+  return makeVocabulary({ bands: makeRiskBandsAt([0, 30, 50, 70, 90]) });
 }
 
 describe('InspectionListPage', () => {
@@ -61,7 +36,7 @@ describe('InspectionListPage', () => {
     vi.spyOn(objectService, 'customers').mockResolvedValue([]);
     vi.spyOn(projectService, 'listProjects').mockResolvedValue(makePage([]));
     vi.spyOn(inspectionService, 'summary').mockResolvedValue(makeInspectionSummary());
-    vi.spyOn(settingsService, 'get').mockResolvedValue(evaluationSettings());
+    vi.spyOn(vocabularyService, 'get').mockResolvedValue(evaluationSettings());
   });
 
   it('lists device conclusions with their location and conclusion text', async () => {
@@ -178,7 +153,7 @@ describe('InspectionListPage', () => {
    */
   it('says nothing about the bands when the thresholds cannot be read', async () => {
     const get = vi
-      .spyOn(settingsService, 'get')
+      .spyOn(vocabularyService, 'get')
       .mockRejectedValue(new ApiError('Энэ үйлдлийг хийх эрх байхгүй байна.', 'FORBIDDEN', 403));
     vi.spyOn(inspectionService, 'list').mockResolvedValue(makePage([makeInspection()]));
 
@@ -188,6 +163,53 @@ describe('InspectionListPage', () => {
     await waitFor(() => expect(screen.queryByText(/81-100%/)).not.toBeInTheDocument());
     expect(screen.queryByText(/%\s*Хэвийн/)).not.toBeInTheDocument();
     expect(screen.queryByText(/0-20% Ашиглах боломжгүй/)).not.toBeInTheDocument();
+  });
+
+  /**
+   * A stored ladder with a hole in it must read as UNKNOWN, not as the shipped one.
+   *
+   * `riskBandsOf` substitutes `DEFAULT_RISK_BANDS` for a ladder that fails validation, which
+   * is exactly the "bundled values presented as the rule" answer this screen refuses — so
+   * the hook checks validity before that call and returns null instead.
+   */
+  it('says nothing about the bands when the stored ladder does not tile 0-100', async () => {
+    vi.spyOn(vocabularyService, 'get').mockResolvedValue({
+      requestStages: [],
+      // Nothing starts at 0, so a score below 30 falls in no band at all.
+      riskBands: [
+        { level: 'NORMAL', label: 'Хэвийн', colour: 'green', min: 95, max: 100 },
+        { level: 'OUT_OF_SERVICE', label: 'Ашиглах боломжгүй', colour: 'black', min: 30, max: 94 },
+      ],
+    });
+    vi.spyOn(inspectionService, 'list').mockResolvedValue(makePage([makeInspection()]));
+
+    renderWithAuth(<InspectionListPage />, { permissions: [PERMISSIONS.OBJECT_MASTER_VIEW] });
+
+    expect(await screen.findByRole('table')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText(/%\s*Хэвийн/)).not.toBeInTheDocument());
+    expect(screen.queryByText(/81-100%/)).not.toBeInTheDocument();
+  });
+
+  /**
+   * The band NAME is the administrator's, not the bundle's — the point of a configurable
+   * ladder. It reaches the row, the filter and the legend alike.
+   */
+  it('prints the configured band name rather than the shipped wording', async () => {
+    vi.spyOn(vocabularyService, 'get').mockResolvedValue(
+      makeVocabulary({
+        bands: DEFAULT_RISK_BANDS.map((band) =>
+          band.key === 'CRITICAL' ? { ...band, label: 'Яаралтай' } : band,
+        ),
+      }),
+    );
+    vi.spyOn(inspectionService, 'list').mockResolvedValue(
+      makePage([makeInspection({ riskLevel: 'CRITICAL', score: 38 })]),
+    );
+
+    renderWithAuth(<InspectionListPage />, { permissions: [PERMISSIONS.OBJECT_MASTER_VIEW] });
+
+    await waitFor(() => expect(screen.getAllByText('Яаралтай').length).toBeGreaterThan(0));
+    expect(screen.queryByText('21-40% Ноцтой эрсдэлтэй')).not.toBeInTheDocument();
   });
 
   it('offers the prototype filter set', async () => {

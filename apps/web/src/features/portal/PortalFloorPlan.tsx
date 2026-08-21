@@ -1,14 +1,18 @@
-import {
-  RISK_LEVELS,
-  RISK_LEVEL_LABELS,
-  type FloorPlanDto,
-  type ObjectListItemDto,
-  type PlanPositionDto,
-  type RiskLevel,
+import type {
+  FloorPlanDto,
+  ObjectListItemDto,
+  PlanPositionDto,
+  RiskLevel,
 } from '@monhorus/shared';
 import { useEffect, useState, type ReactElement } from 'react';
 
-import { RISK_SURFACE_STYLES } from '../../components/ui/DomainBadges';
+import {
+  riskLabelOf,
+  riskLevelsInOrder,
+  riskPaletteOf,
+  type RiskBandView,
+} from '../../components/ui/risk-palette';
+import { useRiskBands } from '../../hooks/use-risk-bands';
 import { EmptyState } from '../../components/ui/States';
 import { authorisedFileUrl } from '../../lib/file-url';
 import { useAuthorisedFileUrls } from '../../lib/use-authorised-file-urls';
@@ -22,8 +26,8 @@ function bandOf(object: ObjectListItemDto): RiskLevel | null {
   return object.latestAssessment?.riskLevel ?? null;
 }
 
-function bandLabel(level: RiskLevel | null): string {
-  return level === null ? UNASSESSED_LABEL : RISK_LEVEL_LABELS[level];
+function bandLabel(level: RiskLevel | null, bands: readonly RiskBandView[] | null): string {
+  return level === null ? UNASSESSED_LABEL : riskLabelOf(level, bands);
 }
 
 /**
@@ -42,10 +46,17 @@ function isDrawable(position: PlanPositionDto | null | undefined): position is P
   return Number.isFinite(x) && Number.isFinite(y) && x >= 0 && x <= 1 && y >= 0 && y <= 1;
 }
 
-/** Severity as a sortable number. `RISK_LEVELS` is declared best-first, so index IS order. */
-function severityOf(object: ObjectListItemDto): number {
+/**
+ * Severity as a sortable number.
+ *
+ * Read off the CONFIGURED ladder, best-first, so a higher index is a worse band. It cannot
+ * come from `RISK_LEVELS`: that list is the storage vocabulary and its order is the order
+ * the keys were reserved in, which stops being severity the moment an administrator re-cuts
+ * the bands or names a spare. An unassessed object sorts below every band at -1.
+ */
+function severityOf(object: ObjectListItemDto, order: readonly RiskLevel[]): number {
   const level = bandOf(object);
-  return level === null ? -1 : RISK_LEVELS.indexOf(level);
+  return level === null ? -1 : order.indexOf(level);
 }
 
 /**
@@ -60,11 +71,13 @@ function severityOf(object: ObjectListItemDto): number {
  */
 export function planMarkerObjects(
   objects: readonly ObjectListItemDto[],
+  bands?: readonly RiskBandView[] | null,
 ): readonly ObjectListItemDto[] {
+  const order = riskLevelsInOrder(bands);
   return objects
     .filter((object) => object.objectType?.showOnPlan === true && isDrawable(object.planPosition))
     .slice()
-    .sort((a, b) => severityOf(a) - severityOf(b));
+    .sort((a, b) => severityOf(a, order) - severityOf(b, order));
 }
 
 /** Objects that belong on a plan but are not on one. A failed coordinate counts here too. */
@@ -92,6 +105,9 @@ export function PortalFloorPlan({
 }): ReactElement {
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [imageFailed, setImageFailed] = useState(false);
+  // Marker colour and marker name both come from the configured ladder: a customer reading
+  // this plan must see the same band names and hues the staff console shows.
+  const bands = useRiskBands();
 
   /**
    * Custom type icons, fetched once per DISTINCT icon rather than once per marker.
@@ -154,7 +170,7 @@ export function PortalFloorPlan({
     );
   }
 
-  const markers = planMarkerObjects(objects);
+  const markers = planMarkerObjects(objects, bands);
 
   return (
     <div className="relative mx-auto w-fit">
@@ -167,7 +183,7 @@ export function PortalFloorPlan({
       {imageUrl !== null &&
         markers.map((object) => {
           const level = bandOf(object);
-          const label = `${object.name} · ${bandLabel(level)}`;
+          const label = `${object.name} · ${bandLabel(level, bands)}`;
           return (
             <button
               key={object.id}
@@ -187,7 +203,7 @@ export function PortalFloorPlan({
                 is the CSS spelling of centring the marker on its stored point.
               */
               className={`absolute flex -translate-x-1/2 -translate-y-1/2 items-center gap-1 whitespace-nowrap rounded-full px-1.5 py-1 text-[10px] font-semibold shadow-sm ring-2 ring-inset focus:outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600 ${
-                RISK_SURFACE_STYLES[level ?? 'UNASSESSED']
+                riskPaletteOf(level, bands).badge
               }`}
             >
               <ObjectTypeGlyph

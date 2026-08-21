@@ -4,7 +4,6 @@ import {
   PERMISSIONS,
   createObjectAssessmentSchema,
   createObjectSchema,
-  riskLevelFor,
   updateObjectSchema,
   validateAttributeValues,
   type CustomerDto,
@@ -23,6 +22,7 @@ import { ErrorState, Skeleton } from '../../../components/ui/States';
 import { useToast } from '../../../components/ui/ToastProvider';
 import { FIELD_TEXTAREA, FILTER_LABEL } from '../../../components/ui/control-styles';
 import { useAuth } from '../../../contexts/auth-context';
+import { riskLevelForScore } from '../../../components/ui/risk-palette';
 import { useRiskBands } from '../../../hooks/use-risk-bands';
 import { ApiError } from '../../../lib/api-client';
 import { objectService } from '../../../services/object.service';
@@ -429,12 +429,16 @@ export function ObjectFormPage(): ReactElement {
   /**
    * The band the typed score falls into, or null when no score was typed.
    *
-   * Resolved with the shared `riskLevelFor` against the configured bands, the same call the
-   * backend makes, so the form asks for exactly the fields the backend is about to demand.
+   * Resolved against the configured bands the server publishes, so the form asks for exactly
+   * the fields the backend is about to demand. `riskLevelForScore` rather than the shared
+   * `riskLevelFor` because the bands here come from `/vocabulary` — and because it falls back
+   * to the worst CONFIGURED band instead of the literal `OUT_OF_SERVICE` key, which an
+   * installation that renamed its bottom band does not use.
    */
   const parsedScore = initialScore.trim() === '' ? Number.NaN : Number(initialScore.trim());
   const scoreTyped = Number.isFinite(parsedScore);
-  const initialRiskLevel = scoreTyped && bands !== null ? riskLevelFor(parsedScore, bands) : null;
+  const initialRiskLevel =
+    scoreTyped && bands !== null ? riskLevelForScore(parsedScore, bands) : null;
   // Section 10.1: the red and black bands require a conclusion, a recommendation and the
   // action taken. Nothing here decides where those bands start.
   const redOrBlack = initialRiskLevel === 'CRITICAL' || initialRiskLevel === 'OUT_OF_SERVICE';

@@ -3,7 +3,6 @@ import {
   LOAD_INCOMPLETE_REASON_LABELS,
   OBJECT_CATEGORY_LABELS,
   OBJECT_STATUS_LABELS,
-  RISK_LEVEL_LABELS,
   type LoadValueDto,
   type ObjectCategory,
   type ObjectStatus,
@@ -11,6 +10,13 @@ import {
   type RiskSummaryDto,
 } from '@monhorus/shared';
 import type { ReactElement } from 'react';
+
+import {
+  riskLabelOf,
+  riskPaletteOf,
+  type RiskBandView,
+} from '../../../components/ui/risk-palette';
+import { useRiskBands } from '../../../hooks/use-risk-bands';
 
 const BASE =
   'inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset whitespace-nowrap';
@@ -46,39 +52,15 @@ export function ObjectStatusBadge({ status }: { status: ObjectStatus }): ReactEl
   return <span className={`${BASE} ${STATUS_STYLES[status]}`}>{OBJECT_STATUS_LABELS[status]}</span>;
 }
 
-/**
- * Band colours for the legend swatches and the count chips.
+/*
+ * Band colour is resolved through `risk-palette.ts`, never from a table keyed on the level.
  *
- * Deliberately the same five hues as `BAND_SOLID_STYLES`. A legend drawn in a different
- * shade from the thing it explains is worse than no legend, so these move together.
+ * The dot on a legend swatch (`.dot`) and the solid fill on a score chip (`.solid`) are the
+ * same hue by construction, because they are two fields of one palette entry: a legend drawn
+ * in a different shade from the thing it explains is worse than no legend. `.solid` carries
+ * its own ink for the same reason it always did — amber at this weight cannot hold white
+ * text at a readable contrast, so that colour takes dark ink and legibility decides it.
  */
-const SCORE_DOT_STYLES: Record<RiskLevel, string> = {
-  NORMAL: 'bg-green-600',
-  ATTENTION: 'bg-amber-400',
-  SCHEDULE_REPAIR: 'bg-orange-500',
-  CRITICAL: 'bg-red-600',
-  OUT_OF_SERVICE: 'bg-stone-900',
-};
-
-/**
- * The band as a filled colour, requirement item 3 on page 3: the үнэлгээ is told apart by
- * colour, not by a word.
- *
- * The fill is solid rather than a tint with a coloured dot beside it. A dot two pixels wide
- * is not a colour difference anyone reads while scanning a column, which is what the earlier
- * version amounted to.
- *
- * Text colour is set per band rather than white throughout: yellow at the weight the
- * requirement asks for cannot carry white text at a readable contrast, so that one band
- * takes dark text. Legibility decides this, not consistency.
- */
-const BAND_SOLID_STYLES: Record<RiskLevel, string> = {
-  NORMAL: 'bg-green-600 text-white',
-  ATTENTION: 'bg-amber-400 text-amber-950',
-  SCHEDULE_REPAIR: 'bg-orange-500 text-white',
-  CRITICAL: 'bg-red-600 text-white',
-  OUT_OF_SERVICE: 'bg-stone-900 text-white',
-};
 
 /**
  * A single object's үнэлгээ, as a percent in its band colour (requirement 10.1).
@@ -101,6 +83,10 @@ export function ScorePercent({
   score: number | null;
   showLabel?: boolean;
 }): ReactElement {
+  // Read here rather than threaded from the page: this chip appears in fourteen call sites
+  // across seven features, and the hook holds one module-level cache for all of them.
+  const bands = useRiskBands();
+
   if (level === null || score === null) {
     return (
       <span
@@ -112,12 +98,12 @@ export function ScorePercent({
     );
   }
 
-  const label = RISK_LEVEL_LABELS[level];
+  const label = riskLabelOf(level, bands);
 
   return (
     <span className="inline-flex items-center gap-2 whitespace-nowrap">
       <span
-        className={`inline-flex min-w-[3rem] items-center justify-center rounded-md px-2 py-0.5 text-sm font-semibold tabular-nums ${BAND_SOLID_STYLES[level]}`}
+        className={`inline-flex min-w-[3rem] items-center justify-center rounded-md px-2 py-0.5 text-sm font-semibold tabular-nums ${riskPaletteOf(level, bands).solid}`}
         title={label}
         aria-label={`${label} ${score}%`}
       >
@@ -151,23 +137,24 @@ export function ScoreBar({
 /**
  * What each colour means, and the band it covers.
  *
- * The boundaries are read from settings rather than printed as constants, so the legend
- * cannot drift from the thresholds actually in force.
+ * EVERYTHING here comes from the bands it is handed — the boundaries, the names and the
+ * colours alike — so the legend cannot drift from the ladder actually in force. It takes the
+ * whole `RiskBand` rather than a bare range for exactly that reason: a legend that resolved
+ * its own colours would be a second opinion about the configuration it is explaining.
+ *
+ * Only the bands passed in are drawn, which is also how the three reserved spare keys stay
+ * off the screen: an administrator who has not configured a sixth band has no sixth band.
  */
-export function RiskLegend({
-  bands,
-}: {
-  bands: readonly { level: RiskLevel; min: number; max: number }[];
-}): ReactElement {
+export function RiskLegend({ bands }: { bands: readonly RiskBandView[] }): ReactElement {
   return (
     <div className="flex flex-wrap gap-x-4 gap-y-1">
       {bands.map((band) => (
         <span key={band.level} className="flex items-center gap-1.5 text-[11px] text-slate-600">
           <span
-            className={`h-2.5 w-2.5 rounded-sm ${SCORE_DOT_STYLES[band.level]}`}
+            className={`h-2.5 w-2.5 rounded-sm ${riskPaletteOf(band.level, bands).dot}`}
             aria-hidden="true"
           />
-          {band.min}-{band.max}% {RISK_LEVEL_LABELS[band.level]}
+          {band.min}-{band.max}% {riskLabelOf(band.level, bands)}
         </span>
       ))}
     </div>
@@ -182,6 +169,8 @@ export function RiskLegend({
  * three colours, because collapsing five bands into three would invent a mapping.
  */
 export function RiskSummaryCell({ summary }: { summary: RiskSummaryDto }): ReactElement {
+  const bands = useRiskBands();
+
   if (summary.counts.length === 0 && summary.unassessedCount === 0) {
     return <span className="whitespace-nowrap text-xs text-slate-400">-</span>;
   }
@@ -191,12 +180,12 @@ export function RiskSummaryCell({ summary }: { summary: RiskSummaryDto }): React
       {summary.counts.map((entry) => (
         <span
           key={entry.level}
-          title={RISK_LEVEL_LABELS[entry.level]}
-          aria-label={`${RISK_LEVEL_LABELS[entry.level]} ${entry.count}`}
+          title={riskLabelOf(entry.level, bands)}
+          aria-label={`${riskLabelOf(entry.level, bands)} ${entry.count}`}
           className="inline-flex items-center gap-1 rounded-md bg-slate-50 px-1.5 py-0.5 text-xs ring-1 ring-inset ring-slate-200"
         >
           <span
-            className={`h-2 w-2 shrink-0 rounded-full ${SCORE_DOT_STYLES[entry.level]}`}
+            className={`h-2 w-2 shrink-0 rounded-full ${riskPaletteOf(entry.level, bands).dot}`}
             aria-hidden="true"
           />
           <span className="font-medium text-slate-900">{entry.count}</span>

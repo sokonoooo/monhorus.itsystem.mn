@@ -20,7 +20,12 @@ class ServiceRequestCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final ServiceRequestStatus? status = request.status;
-    final AccentTone statusTone = status?.tone ?? AccentTone.neutral;
+    // The stage the server groups this request under, when it sent one: that is the
+    // word the office and the dispatch board print for the same job, and a list row's
+    // only job is to say where the work has got to. Falls back to the status, which
+    // carries an administrator's rename of its own where the two are one to one.
+    final String? step = request.stepLabel;
+    final AccentTone statusTone = request.stepTone;
     final double? fraction = status?.progress;
     final Color railColor = request.isUrgent
         ? CustomerTokens.red
@@ -71,8 +76,7 @@ class ServiceRequestCard extends StatelessWidget {
                         tone: AccentTone.red,
                         showDot: true,
                       ),
-                    if (status != null)
-                      StatusPill(label: status.label, tone: statusTone),
+                    if (step != null) StatusPill(label: step, tone: statusTone),
                   ],
                 ),
                 const SizedBox(height: 6),

@@ -162,7 +162,7 @@ export function OpenServiceRequestsPage(): ReactElement {
       header: 'Төхөөрөмж',
       render: (row) => <span className="text-slate-700">{row.device?.name ?? '-'}</span>,
     },
-    { key: 'status', header: 'Төлөв', render: (row) => <RequestStatusBadge status={row.status} /> },
+    { key: 'status', header: 'Төлөв', render: (row) => <RequestStatusBadge status={row.status} stage={row.stage} /> },
     {
       key: 'sla',
       header: 'SLA',

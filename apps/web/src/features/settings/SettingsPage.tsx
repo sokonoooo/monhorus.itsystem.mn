@@ -1,5 +1,12 @@
 import { MAX_COMPANY_LOGO_BYTES } from '@monhorus/shared';
-import type { SettingEntryDto, SettingKey, SettingValue, SettingsDto } from '@monhorus/shared';
+import type {
+  RiskBandConfig,
+  ServiceRequestStage,
+  SettingEntryDto,
+  SettingKey,
+  SettingValue,
+  SettingsDto,
+} from '@monhorus/shared';
 import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react';
 
 import { Alert } from '../../components/ui/Alert';
@@ -9,7 +16,11 @@ import { ErrorState, Skeleton } from '../../components/ui/States';
 import { useToast } from '../../components/ui/ToastProvider';
 import { ApiError } from '../../lib/api-client';
 import { authorisedFileUrl } from '../../lib/file-url';
+import { invalidateRequestStages } from '../../hooks/use-request-stages';
+import { invalidateRiskBands } from '../../hooks/use-risk-bands';
 import { settingsService } from '../../services/settings.service';
+import { RiskBandListField } from './RiskBandListField';
+import { StageListField } from './StageListField';
 
 import {
   FIELD_INPUT,
@@ -38,6 +49,131 @@ function isFileEntry(entry: SettingEntryDto): boolean {
 }
 
 /**
+ * Whether this entry is an ordered list rather than a single value.
+ *
+ * `workflow.request_stages` is one of two, and it is what makes a draft something other
+ * than a string: order is the configuration, so the array has to survive editing as an
+ * array instead of being flattened into text and parsed back.
+ */
+function isStagesEntry(entry: SettingEntryDto): boolean {
+  return entry.type === 'stages';
+}
+
+/**
+ * Whether this entry is the risk ladder — the other structured value.
+ *
+ * Same shape of problem as `stages` and handled by the same machinery: a list of records
+ * saved whole, with no per-row endpoint. It is kept a separate branch rather than folded
+ * into one "list" branch because the two lists have nothing in common beyond being arrays —
+ * different rows, different validation, different editor.
+ */
+function isRiskBandsEntry(entry: SettingEntryDto): boolean {
+  return entry.type === 'riskBands';
+}
+
+/** True for either structured entry: the ones whose draft is a list, not text. */
+function isListEntry(entry: SettingEntryDto): boolean {
+  return isStagesEntry(entry) || isRiskBandsEntry(entry);
+}
+
+/**
+ * What a control holds while it is being edited.
+ *
+ * A scalar stays a string all the way to the payload — that is what lets a half-typed
+ * number exist without being coerced on every keystroke. A `stages` or `riskBands` entry
+ * cannot: it is a list of records, so its draft is the list itself.
+ *
+ * The two list shapes are never confused at runtime because the ENTRY decides which
+ * accessor is called, and an entry's type never changes — the catalogue declares it. That
+ * is what the casts below rest on; nothing here inspects a row to guess which list it is.
+ */
+type Draft = string | readonly ServiceRequestStage[] | readonly RiskBandConfig[];
+
+function textDraft(draft: Draft | undefined): string {
+  return typeof draft === 'string' ? draft : '';
+}
+
+function listDraft(draft: Draft | undefined): readonly unknown[] {
+  return typeof draft === 'string' ? [] : (draft ?? []);
+}
+
+function stagesDraft(draft: Draft | undefined): readonly ServiceRequestStage[] {
+  return listDraft(draft) as readonly ServiceRequestStage[];
+}
+
+function riskBandsDraft(draft: Draft | undefined): readonly RiskBandConfig[] {
+  return listDraft(draft) as readonly RiskBandConfig[];
+}
+
+/** The stage list carried by a `SettingValue`, which the union also allows to be a scalar. */
+function stagesValue(value: SettingValue): readonly ServiceRequestStage[] {
+  return Array.isArray(value) ? (value as readonly ServiceRequestStage[]) : [];
+}
+
+/** The same, for the risk ladder. */
+function riskBandsValue(value: SettingValue): readonly RiskBandConfig[] {
+  return Array.isArray(value) ? (value as readonly RiskBandConfig[]) : [];
+}
+
+/**
+ * A stage list reduced to the things that make it that configuration.
+ *
+ * Compared field by field, in order, rather than by `JSON.stringify` of the objects: the
+ * editor rebuilds a row from a spread, and a spread need not preserve key order, so two
+ * identical stages could serialise differently and report the form dirty when nothing has
+ * been changed.
+ */
+function stagesFingerprint(stages: readonly ServiceRequestStage[]): string {
+  return JSON.stringify(
+    stages.map((stage) => [
+      stage.key,
+      stage.label,
+      stage.colour,
+      [...stage.statuses],
+      stage.entryStatus,
+      stage.hidden,
+      stage.onBoard,
+    ]),
+  );
+}
+
+/** The same treatment for the risk ladder, and for the same key-order reason. */
+function riskBandsFingerprint(bands: readonly RiskBandConfig[]): string {
+  return JSON.stringify(
+    bands.map((band) => [
+      band.key,
+      band.label,
+      band.colour,
+      band.minScore,
+      band.requiresConclusion,
+      band.requiresRecommendation,
+      band.decommissions,
+      band.notifies,
+    ]),
+  );
+}
+
+/**
+ * Server rejections that belong to one entry's rows, re-pathed relative to that entry.
+ *
+ * The API paths a fault at `workflow.request_stages.0.label`, while the control drawing
+ * that row knows only its own index. Stripping the prefix here is the same convention the
+ * survey option editor is handed (`options.0.value`), so a server rejection lands on the
+ * exact input a client-side one would.
+ */
+function scopedFieldErrors(
+  fieldErrors: Record<string, string>,
+  key: string,
+): Record<string, string> {
+  const prefix = `${key}.`;
+  const scoped: Record<string, string> = {};
+  for (const [path, message] of Object.entries(fieldErrors)) {
+    if (path.startsWith(prefix)) scoped[path.slice(prefix.length)] = message;
+  }
+  return scoped;
+}
+
+/**
  * Whether the draft for this entry travels as text rather than as a number.
  *
  * `file` holds the id of a stored file. It is only incidentally a string of digits and
@@ -49,12 +185,25 @@ function isTextValued(entry: SettingEntryDto): boolean {
   return entry.type === 'string' || isFileEntry(entry);
 }
 
-function isChanged(entry: SettingEntryDto, draft: string): boolean {
+function isChanged(entry: SettingEntryDto, draft: Draft | undefined): boolean {
+  // The whole list is the value, so "changed" is structural: a renamed stage, a reordered
+  // row and a status moved between stages are all the same kind of edit here.
+  if (isStagesEntry(entry)) {
+    return stagesFingerprint(stagesDraft(draft)) !== stagesFingerprint(stagesValue(entry.value));
+  }
+  // Same rule for the ladder: a renamed band, a moved cut point and a toggled behaviour are
+  // all one kind of edit, and the row order is part of the value.
+  if (isRiskBandsEntry(entry)) {
+    return (
+      riskBandsFingerprint(riskBandsDraft(draft)) !==
+      riskBandsFingerprint(riskBandsValue(entry.value))
+    );
+  }
   // A file compares like a string, and notably an empty draft IS a change: clearing the
   // logo is expressed by saving '' over the id, so the numeric branch's "blank means the
   // user is mid-edit, not finished" rule must not apply to it.
-  if (isTextValued(entry)) return draft !== String(entry.value);
-  return draft !== '' && Number(draft) !== Number(entry.value);
+  if (isTextValued(entry)) return textDraft(draft) !== String(entry.value);
+  return textDraft(draft) !== '' && Number(textDraft(draft)) !== Number(entry.value);
 }
 
 /** What the logo endpoint accepts. Stated for both the picker filter and the check below. */
@@ -262,11 +411,28 @@ function LogoField({
   );
 }
 
+/**
+ * Drops the vocabulary every other screen has cached.
+ *
+ * Both hooks hold their answer for the page's lifetime, which is right — bands and stages
+ * change about once a year and every list showing a score would otherwise re-fetch them —
+ * but this page is the one place that MAKES them change. Without this an administrator
+ * renames a band, saves, walks to the list beside it and sees the old name until they
+ * reload, which reads as the save having failed.
+ *
+ * Called after any write, not only after a stage or band write: a reset is a change too,
+ * and the check to tell which key moved would cost more than the re-fetch it saves.
+ */
+function invalidateVocabulary(): void {
+  invalidateRiskBands();
+  invalidateRequestStages();
+}
+
 export function SettingsPage(): ReactElement {
   const { notify } = useToast();
 
   const [data, setData] = useState<SettingsDto | null>(null);
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -274,10 +440,17 @@ export function SettingsPage(): ReactElement {
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
   function seedDrafts(next: SettingsDto): void {
-    const seeded: Record<string, string> = {};
+    const seeded: Record<string, Draft> = {};
     for (const group of next.groups) {
       for (const entry of group.entries) {
-        seeded[entry.key] = String(entry.value);
+        // A stage list is seeded as a copy rather than as the response's own array, so an
+        // edit cannot reach back into `data` and quietly move what the dirty check compares
+        // against — which would make the form look clean the moment it stopped being.
+        seeded[entry.key] = isStagesEntry(entry)
+          ? stagesValue(entry.value).map((stage) => ({ ...stage, statuses: [...stage.statuses] }))
+          : isRiskBandsEntry(entry)
+            ? riskBandsValue(entry.value).map((band) => ({ ...band }))
+            : String(entry.value);
       }
     }
     setDrafts(seeded);
@@ -303,7 +476,7 @@ export function SettingsPage(): ReactElement {
 
   const entries = data?.groups.flatMap((group) => group.entries) ?? [];
   const changedKeys = entries
-    .filter((entry) => isChanged(entry, drafts[entry.key] ?? ''))
+    .filter((entry) => isChanged(entry, drafts[entry.key]))
     .map((entry) => entry.key);
 
   function describe(caught: unknown): string {
@@ -326,13 +499,21 @@ export function SettingsPage(): ReactElement {
       if (!changedKeys.includes(entry.key)) continue;
       // `isTextValued`, not `type === 'string'`: a file id put through `Number(...)` is NaN,
       // which serialises as null and would clear the logo instead of setting it.
-      payload[entry.key] = isTextValued(entry)
-        ? (drafts[entry.key] ?? '')
-        : Number(drafts[entry.key]);
+      if (isStagesEntry(entry)) {
+        // Sent whole. The list has no per-row endpoint, and its order is part of the value.
+        payload[entry.key] = stagesDraft(drafts[entry.key]);
+      } else if (isRiskBandsEntry(entry)) {
+        payload[entry.key] = riskBandsDraft(drafts[entry.key]);
+      } else if (isTextValued(entry)) {
+        payload[entry.key] = textDraft(drafts[entry.key]);
+      } else {
+        payload[entry.key] = Number(textDraft(drafts[entry.key]));
+      }
     }
 
     try {
       const next = await settingsService.update(payload);
+      invalidateVocabulary();
       setData(next);
       seedDrafts(next);
       notify(`${changedKeys.length} тохиргоо хадгалагдлаа.`, 'success');
@@ -349,6 +530,7 @@ export function SettingsPage(): ReactElement {
     setFieldErrors({});
     try {
       const next = await settingsService.reset(key);
+      invalidateVocabulary();
       setData(next);
       seedDrafts(next);
       notify('Анхны утгад буцаалаа.', 'success');
@@ -413,28 +595,51 @@ export function SettingsPage(): ReactElement {
 
             <div className="space-y-4">
               {group.entries.map((entry) => {
-                const draft = drafts[entry.key] ?? '';
+                const draft = drafts[entry.key];
                 const dirty = isChanged(entry, draft);
                 const fieldError = fieldErrors[entry.key];
+                // Neither list fits the 260px control column the scalars share, so it takes
+                // the whole row and its caption sits above it.
+                const wide = isListEntry(entry);
 
                 return (
                   <div
                     key={entry.key}
-                    className="grid grid-cols-1 gap-2 border-b border-slate-100 pb-4 last:border-0 last:pb-0 md:grid-cols-[minmax(0,1fr)_260px]"
+                    className={`grid grid-cols-1 gap-2 border-b border-slate-100 pb-4 last:border-0 last:pb-0 ${
+                      wide ? '' : 'md:grid-cols-[minmax(0,1fr)_260px]'
+                    }`}
                   >
                     <div className="min-w-0">
-                      <label
-                        htmlFor={`setting-${entry.key}`}
-                        className="block break-words text-sm font-medium text-slate-800"
-                      >
-                        {entry.label}
-                      </label>
+                      {/* A `label` names one control, and the stage editor is a fieldset of
+                          many with its own legend; pointing an htmlFor at an id that is not
+                          there would only give the group a broken association. */}
+                      {wide ? (
+                        <p className="block break-words text-sm font-medium text-slate-800">
+                          {entry.label}
+                        </p>
+                      ) : (
+                        <label
+                          htmlFor={`setting-${entry.key}`}
+                          className="block break-words text-sm font-medium text-slate-800"
+                        >
+                          {entry.label}
+                        </label>
+                      )}
                       <p className="mt-0.5 break-words text-xs text-slate-500">{entry.hint}</p>
                       {entry.isOverridden && (
                         <p className="mt-1 text-xs text-amber-700">
-                          Анхны утга {String(entry.defaultValue)}
-                          {entry.unit ? ` ${entry.unit}` : ''}. Өөрчилсөн:{' '}
-                          {entry.updatedByName ?? '-'}
+                          {/* A stage list has no scalar to quote back, and printing the
+                              array would read as [object Object]; who changed it is the
+                              part that is still worth saying. */}
+                          {wide ? (
+                            'Анхны тохиргооноос өөрчилсөн.'
+                          ) : (
+                            <>
+                              Анхны утга {String(entry.defaultValue)}
+                              {entry.unit ? ` ${entry.unit}` : ''}.{' '}
+                            </>
+                          )}
+                          Өөрчилсөн: {entry.updatedByName ?? '-'}
                         </p>
                       )}
                       {fieldError && <p className="mt-1 text-xs text-red-600">{fieldError}</p>}
@@ -443,15 +648,36 @@ export function SettingsPage(): ReactElement {
                     <div className="flex items-start gap-2">
                       <div className="flex-1">
                         {/*
-                          A file is the one type that is not a box you type into, so it is
-                          the one branch here. It writes to the same drafts map as every
-                          other control, which is what lets the dirty count, Буцаах and
-                          Хадгалах stay entirely unaware of it.
+                          The three types that are not a box you type into. All of them
+                          write to the same drafts map as every other control, which is what
+                          lets the dirty count, Буцаах and Хадгалах stay entirely unaware of
+                          them — a stage list or a risk ladder is simply a draft that
+                          happens to be an array.
                         */}
-                        {isFileEntry(entry) ? (
+                        {isRiskBandsEntry(entry) ? (
+                          <RiskBandListField
+                            value={riskBandsDraft(draft)}
+                            onChange={(next) =>
+                              setDrafts((current) => ({ ...current, [entry.key]: next }))
+                            }
+                            readOnly={readOnly}
+                            saving={saving}
+                            fieldErrors={scopedFieldErrors(fieldErrors, entry.key)}
+                          />
+                        ) : isStagesEntry(entry) ? (
+                          <StageListField
+                            value={stagesDraft(draft)}
+                            onChange={(next) =>
+                              setDrafts((current) => ({ ...current, [entry.key]: next }))
+                            }
+                            readOnly={readOnly}
+                            saving={saving}
+                            fieldErrors={scopedFieldErrors(fieldErrors, entry.key)}
+                          />
+                        ) : isFileEntry(entry) ? (
                           <LogoField
                             inputId={`setting-${entry.key}`}
-                            value={draft}
+                            value={textDraft(draft)}
                             onChange={(next) =>
                               setDrafts((current) => ({ ...current, [entry.key]: next }))
                             }
@@ -466,7 +692,7 @@ export function SettingsPage(): ReactElement {
                               step={entry.type === 'ratio' ? '0.01' : '1'}
                               {...(entry.min === undefined ? {} : { min: entry.min })}
                               {...(entry.max === undefined ? {} : { max: entry.max })}
-                              value={draft}
+                              value={textDraft(draft)}
                               onChange={(event) =>
                                 setDrafts((current) => ({
                                   ...current,

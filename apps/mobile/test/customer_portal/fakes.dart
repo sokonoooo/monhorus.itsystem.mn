@@ -17,6 +17,7 @@ import 'package:monhorus_mobile/features/customer_portal/data/models/project_mod
 import 'package:monhorus_mobile/features/customer_portal/data/models/service_request_model.dart';
 import 'package:monhorus_mobile/features/customer_portal/data/models/survey_model.dart';
 import 'package:monhorus_mobile/features/customer_portal/domain/entities/customer_scope.dart';
+import 'package:monhorus_mobile/features/customer_portal/domain/entities/server_vocabulary.dart';
 import 'package:monhorus_mobile/features/customer_portal/domain/entities/service_request_enums.dart';
 import 'package:monhorus_mobile/features/customer_portal/domain/repositories/customer_portal_repository.dart';
 import 'package:monhorus_mobile/features/customer_portal/presentation/providers/customer_portal_providers.dart';
@@ -688,6 +689,8 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
     this.failure,
     this.uploadFailure,
     this.surveySubmitFailure,
+    this.vocabulary = ServerVocabulary.empty,
+    this.vocabularyFailure,
     this.buildingPageSize = 100,
   })  : fileBytes = fileBytes ?? Uint8List(0),
         pendingSurveys = pendingSurveys ?? const <SurveyPendingItemModel>[],
@@ -703,6 +706,23 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
         requestDetail = requestDetail ?? serviceRequestFixture();
 
   final List<BuildingModel> buildings;
+
+  /// What `GET /vocabulary` answers with.
+  ///
+  /// Empty by default, and deliberately so: that is the state every screen has to keep
+  /// working in, and it is what the compiled-in labels and colours are for. A test that
+  /// cares about an administrator's renaming passes one in.
+  final ServerVocabulary vocabulary;
+
+  /// Makes the vocabulary read fail on its own, without failing everything else.
+  ///
+  /// Separate from [failure] because the interesting case is the asymmetric one: a
+  /// portal whose data loads perfectly and whose vocabulary call did not, which must
+  /// look exactly like a portal that never had one.
+  final Failure? vocabularyFailure;
+
+  /// How many times the vocabulary was asked for. It should be once a session.
+  int vocabularyReads = 0;
 
   /// How many buildings one page of `GET /buildings` returns. Defaults to the
   /// schema's own cap, so the ordinary test sees a single page.
@@ -935,6 +955,14 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
   @override
   Future<ApiResult<List<CallableObjectTypeModel>>> listCallableObjectTypes() async =>
       _result(callableObjectTypes);
+
+  @override
+  Future<ApiResult<ServerVocabulary>> getVocabulary() async {
+    vocabularyReads++;
+    final Failure? refusal = vocabularyFailure;
+    if (refusal != null) return FailureResult<ServerVocabulary>(refusal);
+    return _result(vocabulary);
+  }
 
   @override
   Future<ApiResult<ServiceRequestDetailModel>> createServiceRequest(

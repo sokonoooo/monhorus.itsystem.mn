@@ -3,9 +3,17 @@ import type {
   ServiceRequestStatus,
   SlaState,
 } from '../constants/service-request';
+import type { StageColour } from '../constants/service-request-stage';
 import type { EmployeeRefDto } from './employee.types';
 import type { PlanPositionDto } from './object-master.types';
 import type { ObjectBreadcrumbDto } from './object.types';
+
+/** The stage a request is shown under: stable key, administrator's name, palette colour. */
+export interface ServiceRequestStageRefDto {
+  key: string;
+  label: string;
+  colour: StageColour;
+}
 
 export interface ServiceRequestListItemDto {
   id: string;
@@ -27,6 +35,18 @@ export interface ServiceRequestListItemDto {
   planPosition?: PlanPositionDto | null;
   isUrgent: boolean;
   status: ServiceRequestStatus;
+  /**
+   * The stage the status belongs to, resolved by the server from the configured grouping.
+   *
+   * Sent alongside `status`, never instead of it: the raw status is what the engine and
+   * the audit trail speak, while the stage is what a screen should show. A client that
+   * renders `status` directly will disagree with the administrator's naming, which is the
+   * whole reason this field exists.
+   *
+   * Optional on the type so a client written before stages existed still compiles; the
+   * server always sends it.
+   */
+  stage?: ServiceRequestStageRefDto | null;
   assignedEmployees: EmployeeRefDto[];
   assignedTeam: { id: string; name: string } | null;
   /**
@@ -107,6 +127,8 @@ export interface ServiceRequestListQuery {
   limit?: number;
   search?: string;
   status?: ServiceRequestStatus;
+  /** A stage key; the server expands it to that stage's statuses. `status` wins if both. */
+  stage?: string;
   isUrgent?: boolean;
   slaState?: SlaState;
   customerId?: string;
@@ -157,11 +179,16 @@ export interface ExtendSlaRequest {
 }
 
 export interface DispatchBoardColumnDto {
-  /** Stable key from DISPATCH_BOARD_COLUMNS. Not a status: the open column covers two. */
-  id: DispatchBoardColumnId;
+  /**
+   * The stage key this column shows. Not a status: a stage covers one or more of them,
+   * and which ones is the administrator's configuration, not a constant.
+   */
+  id: string;
   /** Every status this column collects, so a consumer never has to re-derive the mapping. */
   statuses: ServiceRequestStatus[];
   label: string;
+  /** Palette colour for the column heading, from the stage configuration. */
+  colour?: StageColour;
   total: number;
   items: ServiceRequestListItemDto[];
 }

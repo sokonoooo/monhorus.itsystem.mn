@@ -16,6 +16,7 @@ import '../../data/models/survey_model.dart';
 import '../../data/repositories/customer_portal_repository_impl.dart';
 import '../../domain/entities/customer_scope.dart';
 import '../../domain/entities/risk_level.dart';
+import '../../domain/entities/server_vocabulary.dart';
 import '../../domain/repositories/customer_portal_repository.dart';
 
 // -- Dependency graph --------------------------------------------------------
@@ -88,6 +89,43 @@ final Provider<bool> canViewObjectHistoryProvider = Provider<bool>((Ref ref) {
   final AppUser? user = ref.watch(currentUserProvider);
   if (user == null) return false;
   return user.has(PermissionKeys.objectMasterView);
+});
+
+// -- Vocabulary ---------------------------------------------------------------
+
+/// Reads `GET /vocabulary` once per session and installs the answer.
+///
+/// Riverpod caches the future, so the four tabs share one request. Watched by the
+/// shell, which is what starts it: there is nothing to fetch before somebody is signed
+/// in, and the endpoint is authenticated.
+///
+/// Keyed on the account id rather than on the whole [AppUser]. `/auth/me` is
+/// re-requested on mount to refresh the permission set and each answer is a new object;
+/// watching the object itself would re-fetch the vocabulary every time one landed, for
+/// words that cannot have changed.
+///
+/// **Every failure resolves to [ServerVocabulary.empty] on purpose.** A 401, a 403, a
+/// 500, a timeout, a phone with no signal, a body this binary could not parse - none of
+/// them is installed, and every label and colour in the portal stays the one it was
+/// compiled with. There is no error state to render and no retry to offer, because
+/// there is nothing for the reader to do about it and nothing missing from their
+/// screen: this call decides what the words are called, not whether there are any.
+/// Note the deliberate absence of [_unwrap]: unwrapping would throw the failure into
+/// `AsyncValue.error`, and an error is exactly what this must not become.
+final FutureProvider<ServerVocabulary> serverVocabularyProvider =
+    FutureProvider<ServerVocabulary>((Ref ref) async {
+  final String? userId =
+      ref.watch(currentUserProvider.select((AppUser? user) => user?.id));
+  if (userId == null) return ServerVocabulary.empty;
+
+  final ApiResult<ServerVocabulary> result =
+      await ref.watch(customerPortalRepositoryProvider).getVocabulary();
+
+  final ServerVocabulary? vocabulary = result.dataOrNull;
+  if (vocabulary == null) return ServerVocabulary.empty;
+
+  installServerVocabulary(vocabulary);
+  return vocabulary;
 });
 
 // -- Helpers -----------------------------------------------------------------

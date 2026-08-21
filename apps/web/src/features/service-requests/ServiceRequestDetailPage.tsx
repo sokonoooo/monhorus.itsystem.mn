@@ -42,7 +42,7 @@ function Card({ title, children }: { title: string; children: ReactNode }): Reac
 
 export function ServiceRequestDetailPage(): ReactElement {
   const { requestId } = useParams<{ requestId: string }>();
-  const { can } = useAuth();
+  const { can, isAdmin } = useAuth();
   const { notify } = useToast();
 
   const [request, setRequest] = useState<ServiceRequestDetailDto | null>(null);
@@ -195,7 +195,22 @@ export function ServiceRequestDetailPage(): ReactElement {
    * there rather than pre-judged here.
    */
   const isUnclaimed = request.assignedEmployees.length === 0 && request.assignedTeam === null;
-  const canClaim = can(PERMISSIONS.SERVICE_REQUEST_CLAIM) && isUnclaimed;
+
+  /*
+   * An administrator is not offered it at all.
+   *
+   * Claiming puts the CALLER on the job, so it only means something for somebody who will
+   * go and do it. An administrator dispatches the work instead, and the endpoint agrees
+   * with that reading already: `resolveClaimant` refuses an account with no employee card
+   * behind it, so on the usual admin login the button was a control that could only ever
+   * answer «Таны бүртгэл ажилтны картад холбогдоогүй». Hiding it removes a refusal from
+   * behind a click, which is the same reason a team-assigned request does not offer it.
+   *
+   * The role rather than the permission, because the ADMIN role legitimately carries
+   * `service_request.claim` — it is what lets an administrator hold the key for the
+   * technicians they manage — and the question here is who the button is FOR.
+   */
+  const canClaim = can(PERMISSIONS.SERVICE_REQUEST_CLAIM) && isUnclaimed && !isAdmin;
 
   return (
     <>
@@ -228,7 +243,7 @@ export function ServiceRequestDetailPage(): ReactElement {
         <div className="space-y-4">
           <Card title="Төлөв">
             <div className="mb-3 flex flex-wrap items-center gap-2">
-              <RequestStatusBadge status={request.status} />
+              <RequestStatusBadge status={request.status} stage={request.stage} />
               <SlaBadge state={request.slaState} remainingMinutes={request.slaRemainingMinutes} />
             </div>
             <Row

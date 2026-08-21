@@ -1,8 +1,4 @@
-import {
-  PERMISSIONS,
-  RISK_LEVEL_LABELS,
-  type ObjectDetailDto,
-} from '@monhorus/shared';
+import { PERMISSIONS, type ObjectDetailDto } from '@monhorus/shared';
 import { useCallback, useEffect, useState, type ReactElement } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 
@@ -10,7 +6,9 @@ import { Alert } from '../../components/ui/Alert';
 import { Button } from '../../components/ui/Button';
 import { PageHeader } from '../../components/ui/PageHeader';
 import { ErrorState, Skeleton } from '../../components/ui/States';
+import { riskLabelOf } from '../../components/ui/risk-palette';
 import { useAuth } from '../../contexts/auth-context';
+import { useRiskBands } from '../../hooks/use-risk-bands';
 import { ApiError } from '../../lib/api-client';
 import { portalService } from '../../services/portal.service';
 
@@ -45,6 +43,8 @@ export function PortalObjectDetailPage(): ReactElement {
     objectId: string;
   }>();
   const navigate = useNavigate();
+  // The band names in force, so a customer reads the operator's own wording.
+  const bands = useRiskBands();
   const { can } = useAuth();
 
   const canRaise = can(PERMISSIONS.PORTAL_SERVICE_REQUEST_CREATE);
@@ -144,7 +144,7 @@ export function PortalObjectDetailPage(): ReactElement {
                 />
                 <Row
                   label="Эрсдэлийн түвшин"
-                  value={assessment.riskLevel ? RISK_LEVEL_LABELS[assessment.riskLevel] : '-'}
+                  value={assessment.riskLevel ? riskLabelOf(assessment.riskLevel, bands) : '-'}
                 />
                 <Row label="Огноо" value={formatDateTime(assessment.assessedAt)} />
               </dl>

@@ -9,7 +9,10 @@ import {
   type ExtendSlaInput,
   type PaginatedData,
   type ServiceRequestDetailDto,
+  stageByKey,
+  stageOfStatus,
   type ServiceRequestListItemDto,
+  type ServiceRequestStage,
   type SlaConfig,
   type ObjectBreadcrumbDto,
   type ServiceRequestAttachmentDto,
@@ -42,7 +45,7 @@ import { toEmployeeRefDto } from '../employee/employee.mapper';
 import { Customer, ObjectNode } from '../objects/object.models';
 import { StoredFile } from '../storage/stored-file.model';
 import { computeSlaDueAt, evaluateSla } from './sla.service';
-import { getSlaConfig } from '../settings/settings.service';
+import { getRequestStages, getSlaConfig } from '../settings/settings.service';
 import {
   ServiceRequest,
   nextRequestNumber,
@@ -84,6 +87,7 @@ const LOCATION_POPULATE = [
 export function toListItemDto(
   request: WithId<IServiceRequest>,
   config: SlaConfig,
+  stages: readonly ServiceRequestStage[],
 ): ServiceRequestListItemDto {
   const sla = evaluateSla({
     status: request.status,
@@ -103,9 +107,12 @@ export function toListItemDto(
     )
     .map((entry) => toEmployeeRefDto(entry));
 
+  const stage = stageOfStatus(request.status, stages);
+
   return {
     id: String(request._id),
     requestNumber: request.requestNumber,
+    stage: stage ? { key: stage.key, label: stage.label, colour: stage.colour } : null,
     customer: ref(request.customer as unknown as NamedRef),
     project: ref(request.project as unknown as NamedRef),
     building: ref(request.building as unknown as NamedRef),
@@ -221,7 +228,7 @@ function narrowDetailForCustomer(detail: ServiceRequestDetailDto): ServiceReques
 export async function toDetailDto(
   request: WithId<IServiceRequest>,
 ): Promise<ServiceRequestDetailDto> {
-  const base = toListItemDto(request, await getSlaConfig());
+  const base = toListItemDto(request, await getSlaConfig(), await getRequestStages());
 
   return {
     ...base,
@@ -662,7 +669,15 @@ export async function listServiceRequests(
     if (assignmentFilter) filter.$and = [assignmentFilter];
   }
 
-  if (query.status) filter.status = query.status;
+  // `status` is the narrower answer, so it wins when a caller sends both.
+  if (query.status) {
+    filter.status = query.status;
+  } else if (query.stage) {
+    const stage = stageByKey(query.stage, await getRequestStages());
+    // An unknown stage key matches nothing rather than everything: a filter that
+    // silently widens is how you show a customer another organisation's work.
+    filter.status = { $in: stage ? [...stage.statuses] : [] };
+  }
   if (query.isUrgent !== undefined) filter.isUrgent = query.isUrgent;
   if (query.projectId) filter.project = new Types.ObjectId(query.projectId);
   if (query.buildingId) filter.building = new Types.ObjectId(query.buildingId);
@@ -691,7 +706,8 @@ export async function listServiceRequests(
   ]);
 
   const slaConfig = await getSlaConfig();
-  let items = rows.map((row) => toListItemDto(row, slaConfig));
+  const stages = await getRequestStages();
+  let items = rows.map((row) => toListItemDto(row, slaConfig, stages));
 
   // SLA state is derived, not stored, so it is filtered after mapping. The page
   // count still reflects the unfiltered total; this is documented as a known gap.
@@ -1057,31 +1073,37 @@ export async function getDispatchBoard(
 ): Promise<DispatchBoardDto> {
   // Resolved once so every column reports SLA state against the same configuration.
   const slaConfig = await getSlaConfig();
+  const boardStages = await getRequestStages();
   const scopeFilter = customerScopeFilter(scope);
 
   const columns = await Promise.all(
-    // A column may cover more than one status — the open column covers NEW and
-    // UNASSIGNED — so both the page and the count match on the whole set.
-    DISPATCH_BOARD_COLUMNS.map(async (column) => {
-      const statuses = [...column.statuses];
-      const filter = { status: { $in: statuses }, ...scopeFilter };
+    // One column per stage the administrator put on the board. A stage may cover more
+    // than one status — the open stage covers NEW and UNASSIGNED — so both the page and
+    // the count match on the whole set. Cancelled work is off the board by default: it is
+    // findable in a filter, but a column of dead jobs answers no question a dispatcher has.
+    boardStages
+      .filter((stage) => stage.onBoard)
+      .map(async (stage) => {
+        const statuses = [...stage.statuses];
+        const filter = { status: { $in: statuses }, ...scopeFilter };
 
-      const [rows, total] = await Promise.all([
-        ServiceRequest.find(filter)
-          .populate([...LOCATION_POPULATE])
-          .sort({ isUrgent: -1, slaDueAt: 1 })
-          .limit(limitPerColumn),
-        ServiceRequest.countDocuments(filter),
-      ]);
+        const [rows, total] = await Promise.all([
+          ServiceRequest.find(filter)
+            .populate([...LOCATION_POPULATE])
+            .sort({ isUrgent: -1, slaDueAt: 1 })
+            .limit(limitPerColumn),
+          ServiceRequest.countDocuments(filter),
+        ]);
 
-      return {
-        id: column.id,
-        statuses,
-        label: column.label,
-        total,
-        items: rows.map((row) => toListItemDto(row, slaConfig)),
-      };
-    }),
+        return {
+          id: stage.key,
+          statuses,
+          label: stage.label,
+          colour: stage.colour,
+          total,
+          items: rows.map((row) => toListItemDto(row, slaConfig, boardStages)),
+        };
+      }),
   );
 
   return { columns, generatedAt: new Date().toISOString() };

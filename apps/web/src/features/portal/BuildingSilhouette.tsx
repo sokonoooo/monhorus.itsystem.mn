@@ -1,30 +1,39 @@
-import { RISK_LEVELS, RISK_LEVEL_LABELS, type FloorDto, type RiskLevel } from '@monhorus/shared';
+import type { FloorDto, RiskLevel } from '@monhorus/shared';
 import type { ReactElement } from 'react';
 
-/** Solid severity fills — the same computed ramp the portal charts use. */
-const RISK_FILL: Record<RiskLevel | 'UNASSESSED', string> = {
-  NORMAL: '#15803d',
-  ATTENTION: '#fcd34d',
-  SCHEDULE_REPAIR: '#f97316',
-  CRITICAL: '#991b1b',
-  OUT_OF_SERVICE: '#1c1917',
-  UNASSESSED: '#cbd5e1',
-};
+import {
+  riskLabelOf,
+  riskLevelsInOrder,
+  riskPaletteOf,
+  type RiskBandView,
+} from '../../components/ui/risk-palette';
+import { useRiskBands } from '../../hooks/use-risk-bands';
 
-/** Fills dark enough that white text on them clears contrast; the rest take ink. */
-const LIGHT_FILLS = new Set<RiskLevel | 'UNASSESSED'>(['ATTENTION', 'UNASSESSED']);
+/*
+ * Fill, ink and name all resolve through `risk-palette.ts`: `.fill` is the same computed
+ * ramp the portal charts use, and `.fillIsLight` is what decides whether a floor's number is
+ * drawn in dark ink rather than white — a fill this pale cannot carry white text.
+ */
+
+/** What a floor with nothing scored on it is called. An absence, never a band. */
+const UNASSESSED_LABEL = 'Үнэлгээ хийгээгүй';
 
 /**
  * The worst band present on a floor.
  *
- * `RISK_LEVELS` is ordered least to most severe, so the last one with anything in it is the
- * answer. A floor with nothing assessed is UNASSESSED rather than NORMAL — "not looked at"
- * must never render as "fine", which is the whole reason the summary carries the two counts
- * separately.
+ * Severity is the ORDER OF THE LADDER, so the list is asked for it rather than `RISK_LEVELS`
+ * — which is a storage vocabulary that also carries three unconfigured spares. It reads
+ * best-first, so the last entry with anything in it is the answer. A floor with nothing
+ * assessed is UNASSESSED rather than NORMAL — "not looked at" must never render as "fine",
+ * which is the whole reason the summary carries the two counts separately.
  */
-export function worstRiskLevel(floor: FloorDto): RiskLevel | 'UNASSESSED' {
-  for (let index = RISK_LEVELS.length - 1; index >= 0; index -= 1) {
-    const level = RISK_LEVELS[index]!;
+export function worstRiskLevel(
+  floor: FloorDto,
+  bands?: readonly RiskBandView[] | null,
+): RiskLevel | 'UNASSESSED' {
+  const levels = riskLevelsInOrder(bands);
+  for (let index = levels.length - 1; index >= 0; index -= 1) {
+    const level = levels[index]!;
     const found = floor.riskSummary.counts.find((entry) => entry.level === level);
     if (found && found.count > 0) return level;
   }
@@ -62,6 +71,8 @@ export function BuildingSilhouette({
   onSelect?: (floor: FloorDto) => void;
   selectedFloorId?: string | null;
 }): ReactElement {
+  const bands = useRiskBands();
+
   if (floors.length === 0) {
     return (
       <p className="py-6 text-center text-sm text-slate-500">
@@ -79,10 +90,11 @@ export function BuildingSilhouette({
     1,
   );
 
-  // Only the bands actually standing in this building, worst last.
-  const present = [...new Set(ascending.map(worstRiskLevel))].sort(
-    (left, right) =>
-      [...RISK_LEVELS, 'UNASSESSED'].indexOf(left) - [...RISK_LEVELS, 'UNASSESSED'].indexOf(right),
+  // Only the bands actually standing in this building, worst last. UNASSESSED sorts to the
+  // end because it is not on the ladder at all — it is what is left when nothing scored.
+  const order: readonly (RiskLevel | 'UNASSESSED')[] = [...riskLevelsInOrder(bands), 'UNASSESSED'];
+  const present = [...new Set(ascending.map((floor) => worstRiskLevel(floor, bands)))].sort(
+    (left, right) => order.indexOf(left) - order.indexOf(right),
   );
 
   return (
@@ -90,7 +102,9 @@ export function BuildingSilhouette({
       <div className="overflow-x-auto pb-1">
         <ul className="flex items-end gap-1" aria-label="Барилгын харагдац">
           {ascending.map((floor) => {
-            const level = worstRiskLevel(floor);
+            const level = worstRiskLevel(floor, bands);
+            const palette = riskPaletteOf(level === 'UNASSESSED' ? null : level, bands);
+            const bandName = level === 'UNASSESSED' ? UNASSESSED_LABEL : riskLabelOf(level, bands);
             const selected = selectedFloorId === floor.id;
             const label =
               floor.floorNumber === null ? floor.name.slice(0, 3) : String(floor.floorNumber);
@@ -99,19 +113,17 @@ export function BuildingSilhouette({
                 <button
                   type="button"
                   onClick={() => onSelect?.(floor)}
-                  title={`${floor.name} — ${
-                    level === 'UNASSESSED' ? 'Үнэлгээ хийгээгүй' : RISK_LEVEL_LABELS[level]
-                  } · ${floor.objectCount} тоноглол`}
+                  title={`${floor.name} — ${bandName} · ${floor.objectCount} тоноглол`}
                   aria-label={`${floor.name}, ${
-                    level === 'UNASSESSED' ? 'үнэлгээ хийгээгүй' : RISK_LEVEL_LABELS[level]
+                    level === 'UNASSESSED' ? 'үнэлгээ хийгээгүй' : bandName
                   }`}
                   aria-current={selected ? 'true' : undefined}
                   className={`flex w-7 items-end justify-center rounded-t-md pb-1 text-[10px] font-semibold transition-transform hover:-translate-y-0.5 ${
-                    LIGHT_FILLS.has(level) ? 'text-slate-800' : 'text-white'
+                    palette.fillIsLight ? 'text-slate-800' : 'text-white'
                   } ${selected ? 'ring-2 ring-slate-900 ring-offset-1' : ''}`}
                   style={{
                     height: `${barHeight(floor.floorNumber, tallest)}px`,
-                    backgroundColor: RISK_FILL[level],
+                    backgroundColor: palette.fill,
                   }}
                 >
                   {label}
@@ -130,9 +142,11 @@ export function BuildingSilhouette({
           <li key={level} className="flex items-center gap-1.5 text-xs text-slate-600">
             <span
               className="h-2.5 w-2.5 rounded-sm"
-              style={{ backgroundColor: RISK_FILL[level] }}
+              style={{
+                backgroundColor: riskPaletteOf(level === 'UNASSESSED' ? null : level, bands).fill,
+              }}
             />
-            {level === 'UNASSESSED' ? 'Үнэлгээ хийгээгүй' : RISK_LEVEL_LABELS[level]}
+            {level === 'UNASSESSED' ? UNASSESSED_LABEL : riskLabelOf(level, bands)}
           </li>
         ))}
       </ul>

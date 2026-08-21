@@ -3,6 +3,7 @@ import {
   type PermissionKey,
   type ServiceRequestAttachmentDto,
   type ServiceRequestDetailDto,
+  type UserRole,
   type WorkReportDto,
 } from '@monhorus/shared';
 import { screen, waitFor, within } from '@testing-library/react';
@@ -341,13 +342,49 @@ describe('ServiceRequestDetailPage claim action', () => {
     vi.spyOn(workReportService, 'get').mockRejectedValue(new Error('no report'));
   });
 
-  function renderAsClaimer(permissions: readonly PermissionKey[] = CLAIMER) {
+  /**
+   * Rendered as a TECHNICIAN, not on the harness default.
+   *
+   * The default is `admin`, and these cases were passing on it only incidentally — the
+   * action is for the person who will go and do the job. An administrator dispatches
+   * instead and is no longer offered it, which the case below asserts directly.
+   */
+  function renderAsClaimer(
+    permissions: readonly PermissionKey[] = CLAIMER,
+    role: UserRole = 'technician',
+  ) {
     return renderWithAuth(<ServiceRequestDetailPage />, {
       permissions,
+      role,
       route: `/service-requests/${REQUEST_ID}`,
       path: '/service-requests/:requestId',
     });
   }
+
+  it('does not offer the action to an administrator', async () => {
+    vi.spyOn(serviceRequestService, 'getById').mockResolvedValue(makeRequest());
+
+    renderAsClaimer(CLAIMER, 'admin');
+
+    // The page rendered, so this is the button being withheld rather than a failed load.
+    // By heading: the request number also appears in the breadcrumb.
+    expect(
+      await screen.findByRole('heading', { name: 'SR-202608-0001' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Өөртөө авах' })).not.toBeInTheDocument();
+  });
+
+  /** The permission is not the gate — an administrator holding it still is not offered it. */
+  it('does not offer the action to a head admin either', async () => {
+    vi.spyOn(serviceRequestService, 'getById').mockResolvedValue(makeRequest());
+
+    renderAsClaimer(CLAIMER, 'head_admin');
+
+    expect(
+      await screen.findByRole('heading', { name: 'SR-202608-0001' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Өөртөө авах' })).not.toBeInTheDocument();
+  });
 
   it('takes the request and shows the server’s updated record', async () => {
     vi.spyOn(serviceRequestService, 'getById').mockResolvedValue(makeRequest());

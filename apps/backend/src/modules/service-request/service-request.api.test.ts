@@ -1,4 +1,9 @@
-import { DISPATCH_BOARD_COLUMNS, PERMISSIONS, type PermissionKey } from '@monhorus/shared';
+import {
+  DEFAULT_SERVICE_REQUEST_STAGES,
+  PERMISSIONS,
+  stageOfStatus,
+  type PermissionKey,
+} from '@monhorus/shared';
 import type { Express } from 'express';
 import { Types } from 'mongoose';
 import request from 'supertest';
@@ -859,6 +864,83 @@ describe('service request customer scope', () => {
   });
 });
 
+describe('service request stages', () => {
+  /**
+   * The stage is what a screen shows; the status is what the engine and the audit trail
+   * speak. Both travel together so a client never has to re-derive the grouping.
+   */
+  it('reports the stage a status belongs to alongside the raw status', async () => {
+    await request(app)
+      .post(`${API}/service-requests`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(validRequest());
+
+    const response = await request(app)
+      .get(`${API}/service-requests`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(response.status).toBe(200);
+    const items = response.body.data.items as {
+      status: string;
+      stage: { key: string; label: string; colour: string } | null;
+    }[];
+    expect(items.length).toBeGreaterThan(0);
+
+    for (const item of items) {
+      const expected = stageOfStatus(
+        item.status as never,
+        DEFAULT_SERVICE_REQUEST_STAGES,
+      );
+      expect(item.stage?.key).toBe(expected?.key);
+      expect(item.stage?.label).toBe(expected?.label);
+    }
+  });
+
+  it('filters by stage across every status the stage covers', async () => {
+    await request(app)
+      .post(`${API}/service-requests`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(validRequest());
+
+    const open = await request(app)
+      .get(`${API}/service-requests`)
+      .query({ stage: 'OPEN', limit: 100 })
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(open.status).toBe(200);
+    const statuses = (open.body.data.items as { status: string }[]).map((row) => row.status);
+    // NEW and UNASSIGNED are one stage to an operator, so the filter must return both.
+    expect(statuses.every((status) => ['NEW', 'UNASSIGNED'].includes(status))).toBe(true);
+  });
+
+  it('matches nothing for a stage key that is not configured', async () => {
+    const response = await request(app)
+      .get(`${API}/service-requests`)
+      .query({ stage: 'NOT_A_STAGE' })
+      .set('Authorization', `Bearer ${token}`);
+
+    // Widening to "everything" here is how one organisation sees another's work.
+    expect(response.status).toBe(200);
+    expect(response.body.data.items).toHaveLength(0);
+  });
+
+  it('lets an exact status win when both are sent', async () => {
+    await request(app)
+      .post(`${API}/service-requests`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(validRequest());
+
+    const response = await request(app)
+      .get(`${API}/service-requests`)
+      .query({ stage: 'COMPLETED', status: 'NEW', limit: 100 })
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(response.status).toBe(200);
+    const statuses = (response.body.data.items as { status: string }[]).map((row) => row.status);
+    expect(statuses.every((status) => status === 'NEW')).toBe(true);
+  });
+});
+
 describe('dispatch board', () => {
   it('returns one column per board column, opening with the merged unassigned column', async () => {
     const response = await request(app)
@@ -866,7 +948,13 @@ describe('dispatch board', () => {
       .set('Authorization', `Bearer ${token}`);
 
     expect(response.status).toBe(200);
-    expect(response.body.data.columns).toHaveLength(DISPATCH_BOARD_COLUMNS.length);
+    // One column per stage the administrator put on the board. Cancelled work is
+    // configured off it: still findable in a filter, but not a column of its own.
+    const boardStages = DEFAULT_SERVICE_REQUEST_STAGES.filter((stage) => stage.onBoard);
+    expect(response.body.data.columns).toHaveLength(boardStages.length);
+    expect(response.body.data.columns.map((column: { id: string }) => column.id)).toEqual(
+      boardStages.map((stage) => stage.key),
+    );
     expect(response.body.data.columns[0].id).toBe('OPEN');
     expect(response.body.data.columns[0].statuses).toEqual(['NEW', 'UNASSIGNED']);
     expect(response.body.data.columns.map((column: { id: string }) => column.id)).toContain(

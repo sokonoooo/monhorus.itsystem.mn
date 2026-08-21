@@ -1,5 +1,12 @@
-import { RISK_LEVELS, RISK_LEVEL_LABELS, type BuildingDto, type RiskLevel } from '@monhorus/shared';
+import type { BuildingDto } from '@monhorus/shared';
 import type { ReactElement } from 'react';
+
+import {
+  riskLabelOf,
+  riskLevelsInOrder,
+  riskPaletteOf,
+  type RiskBandView,
+} from '../../components/ui/risk-palette';
 
 /**
  * The customer portal's charts.
@@ -21,6 +28,10 @@ import type { ReactElement } from 'react';
 /**
  * The severity ramp, and why it is not the badge colours.
  *
+ * The five hex values themselves now live in `risk-palette.ts` as the `.fill` field, because
+ * a floor silhouette and a bar chart have to be the same green and neither owns it. The
+ * REASONING is recorded here, where it was measured, and it constrains that field:
+ *
  * The badges are pale chips — `bg-red-50` behind dark text — which is right when the colour
  * sits behind a word that already says the answer. Here the fill IS the data, so it needs
  * weight. The hue identity is kept (green, amber, orange, red, near-black) so a red bar and
@@ -38,15 +49,12 @@ import type { ReactElement } from 'react';
  * amber and orange steps also sit under 3:1 against white, which obliges a visible label
  * rather than colour alone — every bar here carries its band name and count, so that
  * relief is present by construction rather than by promise.
+ *
+ * AN ADMINISTRATOR CAN NOW RE-PICK WHICH BAND TAKES WHICH OF THESE, and that is the limit of
+ * what the setting moves: the eight ramp entries stay as measured, and only the assignment
+ * of band to colour is theirs. A ladder that puts two bands on one colour is a ladder whose
+ * chart cannot be read, which is a legible mistake rather than a silent one.
  */
-const RISK_FILL: Record<RiskLevel | 'UNASSESSED', string> = {
-  NORMAL: '#15803d',
-  ATTENTION: '#fcd34d',
-  SCHEDULE_REPAIR: '#f97316',
-  CRITICAL: '#991b1b',
-  OUT_OF_SERVICE: '#1c1917',
-  UNASSESSED: '#cbd5e1',
-};
 
 export interface Slice {
   key: string;
@@ -69,7 +77,10 @@ export interface Slice {
  * bars is not hiding it: the count is stated in full beneath them, and it still drives the
  * headline when there is nothing assessed to report.
  */
-export function riskSlices(buildings: readonly BuildingDto[]): Slice[] {
+export function riskSlices(
+  buildings: readonly BuildingDto[],
+  bands?: readonly RiskBandView[] | null,
+): Slice[] {
   const totals = new Map<string, number>();
   for (const building of buildings) {
     for (const entry of building.riskSummary.counts) {
@@ -81,11 +92,13 @@ export function riskSlices(buildings: readonly BuildingDto[]): Slice[] {
     );
   }
 
-  const slices: Slice[] = RISK_LEVELS.map((level) => ({
+  // The configured ladder, not `RISK_LEVELS`: three of those keys are reserved spares that
+  // no assessment is ever stored as, and a bar for one would be a band that does not exist.
+  const slices: Slice[] = riskLevelsInOrder(bands).map((level) => ({
     key: level,
-    label: RISK_LEVEL_LABELS[level],
+    label: riskLabelOf(level, bands),
     count: totals.get(level) ?? 0,
-    fill: RISK_FILL[level],
+    fill: riskPaletteOf(level, bands).fill,
   }));
 
   // A band nobody is in is noise on a five-row chart, not information.
@@ -220,4 +233,163 @@ export function workSlices(
     count: totals[status] ?? 0,
     fill: WORK_STATUS_FILL[status] ?? '#94a3b8',
   })).filter((slice) => slice.count > 0);
+}
+
+/**
+ * A ring, for a distribution that sums to a whole.
+ *
+ * WHY A RING AND NOT MORE BARS. `BarChart` above compares magnitudes — "is this band worse
+ * than that one" — and deliberately scales to the largest slice so a 3 beside a 900 stays
+ * visible. These two answer a different question: what does the whole break down into. The
+ * total belongs in the middle, every part is a share of one circle, and the legend carries
+ * the names and the counts so colour is never the only channel.
+ *
+ * Drawn with one stroked circle per slice and a dash offset, so there is no path
+ * arithmetic to get wrong and no dependency to pull in.
+ */
+export function DonutChart({
+  slices,
+  centreValue,
+  centreLabel,
+  emptyMessage,
+}: {
+  slices: readonly Slice[];
+  centreValue: number;
+  centreLabel: string;
+  emptyMessage: string;
+}): ReactElement {
+  if (slices.length === 0) {
+    return <p className="py-6 text-center text-sm text-slate-500">{emptyMessage}</p>;
+  }
+
+  const total = slices.reduce((sum, slice) => sum + slice.count, 0);
+  const radius = 54;
+  const circumference = 2 * Math.PI * radius;
+
+  let offset = 0;
+  const arcs = slices.map((slice) => {
+    const length = total > 0 ? (circumference * slice.count) / total : 0;
+    const arc = { slice, length, offset };
+    offset += length;
+    return arc;
+  });
+
+  return (
+    <div className="flex items-center gap-5">
+      <svg
+        viewBox="0 0 150 150"
+        className="h-[150px] w-[150px] shrink-0"
+        role="img"
+        aria-label={`${centreLabel}: ${centreValue}`}
+      >
+        <g transform="rotate(-90 75 75)">
+          {arcs.map(({ slice, length, offset: start }) => (
+            <circle
+              key={slice.key}
+              cx={75}
+              cy={75}
+              r={radius}
+              fill="none"
+              stroke={slice.fill}
+              strokeWidth={22}
+              strokeDasharray={`${length} ${circumference - length}`}
+              strokeDashoffset={-start}
+            >
+              <title>{`${slice.label}: ${slice.count}`}</title>
+            </circle>
+          ))}
+        </g>
+        <text
+          x={75}
+          y={73}
+          textAnchor="middle"
+          className="fill-slate-900 text-2xl font-semibold tabular-nums"
+        >
+          {centreValue}
+        </text>
+        <text x={75} y={91} textAnchor="middle" className="fill-slate-500 text-[11px]">
+          {centreLabel}
+        </text>
+      </svg>
+
+      <ul className="min-w-0 flex-1">
+        {slices.map((slice) => (
+          <li key={slice.key} className="flex items-center gap-2 py-[3px]">
+            <span
+              className="h-2.5 w-2.5 shrink-0 rounded-sm"
+              style={{ backgroundColor: slice.fill }}
+            />
+            <span className="min-w-0 flex-1 truncate text-xs text-slate-700">{slice.label}</span>
+            <span className="shrink-0 tabular-nums text-xs font-medium text-slate-900">
+              {slice.count}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** `2026-08` as `8-р`, which is how a month axis reads in Mongolian. */
+export function monthTick(month: string): string {
+  const part = month.split('-')[1] ?? '';
+  return `${Number(part)}-р`;
+}
+
+/** One month's breakdown, already reduced to the bands worth drawing. */
+export interface StackedMonth {
+  month: string;
+  parts: readonly Slice[];
+}
+
+/**
+ * Stacked columns, for how a breakdown moved over the same months.
+ *
+ * The healthy band is left out by the caller, not here: on a customer's estate it is the
+ * overwhelming majority and it would compress every band they can act on into the top
+ * few pixels — the same reason `riskSlices` keeps UNASSESSED off the bar chart.
+ */
+export function StackedMonths({
+  months,
+  emptyMessage,
+}: {
+  months: readonly StackedMonth[];
+  emptyMessage: string;
+}): ReactElement {
+  const ceiling = Math.max(
+    ...months.map((entry) => entry.parts.reduce((sum, part) => sum + part.count, 0)),
+    1,
+  );
+
+  if (months.every((entry) => entry.parts.length === 0)) {
+    return <p className="py-6 text-center text-sm text-slate-500">{emptyMessage}</p>;
+  }
+
+  return (
+    <div className="flex h-[180px] items-end gap-2" role="img" aria-label="Эрсдэлийн бүтэц">
+      {months.map((entry) => {
+        const total = entry.parts.reduce((sum, part) => sum + part.count, 0);
+        return (
+          <div key={entry.month} className="flex flex-1 flex-col items-center gap-1.5">
+            <div
+              className="flex w-full max-w-[38px] flex-col-reverse justify-start"
+              style={{ height: `${(total / ceiling) * 140}px` }}
+              title={`${monthTick(entry.month)}: ${total}`}
+            >
+              {entry.parts.map((part) => (
+                <div
+                  key={part.key}
+                  style={{
+                    height: `${total > 0 ? (part.count / total) * 100 : 0}%`,
+                    backgroundColor: part.fill,
+                  }}
+                />
+              ))}
+            </div>
+            <span className="text-[10px] text-slate-400">{monthTick(entry.month)}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
 }

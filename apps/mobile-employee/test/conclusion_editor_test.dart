@@ -1192,7 +1192,10 @@ void main() {
 
     final Finder card = find.byType(EquipmentAssessmentCard);
 
-    for (final RiskLevel level in RiskLevel.values) {
+    // The bands in use, which with no vocabulary read is the documented five. The
+    // reserved keys are deliberately absent: naming «Түвшин 6» on a scoring card would
+    // offer a band no assessment can be graded into.
+    for (final RiskLevel level in documentedRiskBands) {
       expect(
         find.descendant(of: card, matching: find.textContaining(level.label)),
         findsWidgets,

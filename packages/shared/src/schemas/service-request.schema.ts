@@ -115,6 +115,14 @@ export const serviceRequestListQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(100).default(20),
   search: z.string().trim().max(200).optional(),
   status: z.enum(SERVICE_REQUEST_STATUSES).optional(),
+  /**
+   * Filter by the operator's stage rather than one engine status.
+   *
+   * Kept beside `status` instead of replacing it: a stage covers several statuses and is
+   * configuration, while `status` is exact and is what the audit trail and older saved
+   * links speak. When both arrive, `status` wins as the narrower of the two.
+   */
+  stage: z.string().trim().max(40).optional(),
   isUrgent: booleanQuerySchema.optional(),
   slaState: z.enum(SLA_STATES).optional(),
   customerId: objectIdSchema.optional(),

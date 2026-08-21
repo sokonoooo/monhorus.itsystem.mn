@@ -328,7 +328,7 @@ export function CustomerDetailPage(): ReactElement {
                           </p>
                         </div>
                         <div className="flex shrink-0 items-center gap-2">
-                          <RequestStatusBadge status={entry.status} />
+                          <RequestStatusBadge status={entry.status} stage={entry.stage} />
                           <SlaBadge
                             state={entry.slaState}
                             remainingMinutes={entry.slaRemainingMinutes}

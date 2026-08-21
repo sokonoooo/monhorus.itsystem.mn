@@ -27,6 +27,8 @@ export '../../../project/domain/entities/risk_level.dart'
 /// Persisted lifecycle state. Changed only through the transition endpoint.
 enum PlannedWorkLifecycleStatus {
   draft('DRAFT'),
+  pendingApproval('PENDING_APPROVAL'),
+  rejected('REJECTED'),
   planned('PLANNED'),
   started('STARTED'),
   paused('PAUSED'),
@@ -50,6 +52,8 @@ enum PlannedWorkLifecycleStatus {
 /// read by the server and is never persisted or selectable.
 enum PlannedWorkEffectiveStatus {
   draft('DRAFT', 'Төсөл'),
+  pendingApproval('PENDING_APPROVAL', 'Хүлээгдэж буй'),
+  rejected('REJECTED', 'Буцаагдсан'),
   planned('PLANNED', 'Төлөвлөгдсөн'),
   started('STARTED', 'Хэрэгжиж байна'),
   paused('PAUSED', 'Түр зогссон'),
@@ -87,9 +91,11 @@ enum PlannedWorkEffectiveStatus {
   Color get tone {
     switch (this) {
       case PlannedWorkEffectiveStatus.overdue:
+      case PlannedWorkEffectiveStatus.rejected:
         return EmployeeTokens.red;
       case PlannedWorkEffectiveStatus.started:
       case PlannedWorkEffectiveStatus.paused:
+      case PlannedWorkEffectiveStatus.pendingApproval:
         return EmployeeTokens.yellow;
       case PlannedWorkEffectiveStatus.completed:
       case PlannedWorkEffectiveStatus.archived:

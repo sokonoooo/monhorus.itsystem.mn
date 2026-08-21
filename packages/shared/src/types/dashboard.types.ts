@@ -70,6 +70,20 @@ export interface DashboardTrendPoint {
   completed: number;
 }
 
+/**
+ * One month of the request-count line.
+ *
+ * A separate shape from `DashboardTrendPoint` rather than a reused one: that carries two
+ * series over days and this carries one over months, and a type that served both would
+ * have to make `completed` optional — which is how a chart ends up drawing an absent
+ * series as a flat zero.
+ */
+export interface DashboardMonthPoint {
+  /** `YYYY-MM` in the configured timezone. */
+  month: string;
+  count: number;
+}
+
 export interface DashboardPlannedWorkSummary {
   total: number;
   inProgress: number;
@@ -142,6 +156,8 @@ export interface DashboardSummaryDto {
   requests?: DashboardRequestSummary;
   requestsByStatus?: readonly DashboardSlice[];
   trend?: readonly DashboardTrendPoint[];
+  /** Six months of raised-request counts. Same scope rules as `trend`. */
+  monthlyTrend?: readonly DashboardMonthPoint[];
   plannedWork?: DashboardPlannedWorkSummary;
   risk?: DashboardRiskSummary;
   finance?: DashboardFinanceSummary;

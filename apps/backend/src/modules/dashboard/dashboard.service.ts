@@ -22,6 +22,7 @@ import {
   type DashboardSummaryDto,
   type DashboardTodayItem,
   type DashboardTodaySummary,
+  type DashboardMonthPoint,
   type DashboardTrendPoint,
   type DashboardWorkloadRow,
   type RiskLevel,
@@ -33,6 +34,7 @@ import { AppError } from '../../common/errors/app-error';
 import { ERROR_CODES } from '../../common/errors/error-codes';
 import type { AuthContext } from '../../common/types/express';
 import { dayBounds, dayBoundsAgo, localDateString, monthStart } from '../../common/utils/day-bounds.util';
+import { monthEnd, monthWindow, windowStart } from '../../common/utils/month-window.util';
 import { env } from '../../config/env';
 import { listCustomWidgets } from './dashboard-insight.service';
 import { DashboardLayout, type IDashboardWidgetPreference } from './dashboard-layout.model';
@@ -59,6 +61,9 @@ const ACTIVE_REQUEST_STATUSES: readonly ServiceRequestStatus[] = [
 const SETTLED_REQUEST_STATUSES: readonly ServiceRequestStatus[] = ['COMPLETED', 'CANCELLED'];
 
 const TREND_DAYS = 14;
+
+/** How far the long view reaches. Six, matching the span the portal risk history uses. */
+const MONTHLY_TREND_MONTHS = 6;
 const TODAY_ITEM_LIMIT = 40;
 const WORKLOAD_ROW_LIMIT = 8;
 
@@ -311,6 +316,51 @@ async function trendBlock(
     });
   }
   return points;
+}
+
+/**
+ * Six months of raised-request counts.
+ *
+ * The long view beside the fourteen-day one. They answer different questions — "what is
+ * happening this fortnight" and "is the workload growing" — and a reader looking for the
+ * second in a daily line has to do the arithmetic themselves.
+ *
+ * Bucketed in the pipeline with an explicit `timezone`, which `$dateToString` supports and
+ * the day-level trend above cannot use because it needs the same boundary the rest of that
+ * block already computes in JavaScript.
+ *
+ * Every month in the window is returned, including the empty ones: a gap in a series reads
+ * as "no data" and a zero reads as "nothing happened", and those are different answers.
+ */
+async function monthlyTrendBlock(
+  now: Date,
+  scope: FilterQuery<IServiceRequest> | null,
+): Promise<DashboardMonthPoint[]> {
+  const timeZone = env.APP_TIMEZONE;
+  const months = monthWindow(now, timeZone, MONTHLY_TREND_MONTHS);
+
+  const rows = await ServiceRequest.aggregate<{ _id: string; count: number }>([
+    {
+      $match: withScope<IServiceRequest>(
+        {
+          createdAt: {
+            $gte: windowStart(months, timeZone),
+            $lt: monthEnd(months[months.length - 1]!, timeZone),
+          },
+        },
+        scope,
+      ),
+    },
+    {
+      $group: {
+        _id: { $dateToString: { format: '%Y-%m', date: '$createdAt', timezone: timeZone } },
+        count: { $sum: 1 },
+      },
+    },
+  ]);
+
+  const found = new Map(rows.map((row) => [row._id, row.count]));
+  return months.map((month) => ({ month, count: found.get(month) ?? 0 }));
 }
 
 async function plannedWorkBlock(
@@ -641,6 +691,7 @@ export async function buildDashboardSummary(actor: AuthContext): Promise<Dashboa
     summary.requests = block.requests;
     summary.requestsByStatus = block.byStatus;
     summary.trend = await trendBlock(now, requestScope);
+    summary.monthlyTrend = await monthlyTrendBlock(now, requestScope);
   }
 
   if (permissions.has(PERMISSIONS.PLANNED_WORK_VIEW)) {

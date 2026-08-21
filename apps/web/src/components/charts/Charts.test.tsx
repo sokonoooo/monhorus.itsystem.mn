@@ -122,3 +122,28 @@ describe('ProgressChart', () => {
     expect(screen.getByRole('img', { name: 'Гүйцэтгэл: 100%' })).toBeInTheDocument();
   });
 });
+
+describe('LineChart axis ticks', () => {
+  it('reads a month key as a month and a day key as a date', () => {
+    const { rerender } = render(
+      <LineChart
+        title="Хүсэлт сараар"
+        labels={['2026-03', '2026-04']}
+        series={[{ key: 'raised', label: 'Бүртгэгдсэн', colour: '#2563eb', values: [3, 5] }]}
+      />,
+    );
+
+    // A bare "03" here would be indistinguishable from a day number.
+    expect(screen.getByText('3-р')).toBeInTheDocument();
+
+    rerender(
+      <LineChart
+        title="Хүсэлтийн урсгал"
+        labels={['2026-03-08', '2026-03-09']}
+        series={[{ key: 'created', label: 'Шинэ', colour: '#2563eb', values: [3, 5] }]}
+      />,
+    );
+
+    expect(screen.getByText('03.08')).toBeInTheDocument();
+  });
+});

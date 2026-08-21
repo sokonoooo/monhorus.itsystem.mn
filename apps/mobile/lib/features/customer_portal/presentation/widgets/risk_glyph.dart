@@ -17,6 +17,8 @@ import '../theme/customer_tokens.dart';
 ///   * `OUT_OF_SERVICE` - filled square. Terminal, blocked, stopped.
 ///   * `unassessed` (null) - hollow thin-outline circle. The absence of data, not a
 ///     low score.
+///   * `BAND_6` / `BAND_7` / `BAND_8` - filled hexagon. A generated mark for a band an
+///     administrator configured; see the painter.
 ///
 /// Escalation reads as: closed -> draining -> turned -> hazard -> stopped.
 class RiskGlyph extends StatelessWidget {
@@ -132,7 +134,43 @@ class RiskGlyphPainter extends CustomPainter {
             ..strokeWidth = _stroke(edge)
             ..isAntiAlias = true,
         );
+
+      case RiskLevel.band6:
+      case RiskLevel.band7:
+      case RiskLevel.band8:
+        // A generated mark, not a designed one, and that is the honest thing to draw.
+        //
+        // The five shapes above are a vocabulary: circle -> drained circle -> diamond
+        // -> triangle -> square spells out an escalation, and each was chosen against
+        // the others so the pair a colour-blind reader cannot separate by hue is still
+        // separable by outline. A reserved band has no place on that ladder - an
+        // administrator decides where it sits and what it means - so there is no
+        // position for a sixth shape to encode and nothing for this file to claim.
+        //
+        // A filled hexagon is what is left: solid like the graded bands rather than
+        // hollow like the unassessed ring, six-sided so it is neither the diamond nor
+        // the square, and still one recognisable silhouette at 8px. For a configured
+        // band the meaning is carried by its colour and its name, both of which come
+        // from the administrator; the five documented bands keep the shapes drawn for
+        // them.
+        canvas.drawPath(_hexagon(centre, radius), fill);
     }
+  }
+
+  /// A pointy-top regular hexagon. The literals are cos/sin of the six vertices at 60
+  /// degree steps from due north, written out for the same reason the triangle's are:
+  /// the geometry is fixed and reads clearer than the arithmetic behind it.
+  static Path _hexagon(Offset centre, double radius) {
+    final double wide = radius * 0.866;
+    final double tall = radius * 0.5;
+    return Path()
+      ..moveTo(centre.dx, centre.dy - radius)
+      ..lineTo(centre.dx + wide, centre.dy - tall)
+      ..lineTo(centre.dx + wide, centre.dy + tall)
+      ..lineTo(centre.dx, centre.dy + radius)
+      ..lineTo(centre.dx - wide, centre.dy + tall)
+      ..lineTo(centre.dx - wide, centre.dy - tall)
+      ..close();
   }
 
   /// A hairline that stays visible at 8px and does not become a blob at 14px.

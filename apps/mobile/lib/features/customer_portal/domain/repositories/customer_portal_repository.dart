@@ -9,6 +9,7 @@ import '../../data/models/project_model.dart';
 import '../../data/models/service_request_model.dart';
 import '../../data/models/survey_model.dart';
 import '../entities/customer_scope.dart';
+import '../entities/server_vocabulary.dart';
 import '../entities/service_request_enums.dart';
 
 /// Read surface of the customer portal.
@@ -85,6 +86,13 @@ abstract interface class CustomerPortalRepository {
   /// The equipment types this account may raise a call against, with the SLA window each
   /// one implies.
   Future<ApiResult<List<CallableObjectTypeModel>>> listCallableObjectTypes();
+
+  /// The stage and risk-band names and colours this installation is configured with.
+  ///
+  /// Takes no scope: the vocabulary is a property of the installation rather than of
+  /// the customer. A failure here is not an error a screen renders - the caller keeps
+  /// the words compiled into the binary. See `serverVocabularyProvider`.
+  Future<ApiResult<ServerVocabulary>> getVocabulary();
 
   Future<ApiResult<ServiceRequestDetailModel>> createServiceRequest(
     CreateServiceRequestRequestModel request,

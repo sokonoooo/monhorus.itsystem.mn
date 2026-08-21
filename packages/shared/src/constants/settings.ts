@@ -34,14 +34,27 @@ import {
  * 2 MB. A letterhead is drawn a centimetre tall on a page; anything approaching this is
  * already far more detail than the document can show.
  */
+import {
+  DEFAULT_RISK_BANDS,
+  resolveRiskBands,
+  validateRiskBands,
+  type RiskBandConfig,
+} from './risk-band';
+import {
+  DEFAULT_SERVICE_REQUEST_STAGES,
+  validateStages,
+  type ServiceRequestStage,
+} from './service-request-stage';
+
 export const MAX_COMPANY_LOGO_BYTES = 2 * 1024 * 1024;
 
-export const SETTING_GROUPS = ['general', 'sla', 'evaluation', 'finance'] as const;
+export const SETTING_GROUPS = ['general', 'sla', 'workflow', 'evaluation', 'finance'] as const;
 export type SettingGroup = (typeof SETTING_GROUPS)[number];
 
 export const SETTING_GROUP_LABELS: Record<SettingGroup, string> = {
   general: 'Ерөнхий',
   sla: 'SLA',
+  workflow: 'Ажлын урсгал',
   evaluation: 'Үнэлгээний түвшин',
   finance: 'Санхүү',
 };
@@ -49,11 +62,18 @@ export const SETTING_GROUP_LABELS: Record<SettingGroup, string> = {
 export const SETTING_GROUP_DESCRIPTIONS: Record<SettingGroup, string> = {
   general: 'Байгууллагын нэр, лого, валют.',
   sla: 'Яаралтай болон энгийн дуудлагын хугацаа, анхааруулгын босго.',
-  evaluation: '0-100 оноог 5 түвшинд хуваах босго.',
+  workflow:
+    'Үйлчилгээний хүсэлтийн үе шат: нэр, өнгө, аль төлвүүдийг нэгтгэхийг тохируулна.',
+  evaluation: '0-100 оноог хэдэн түвшинд хуваах, тус бүрийн нэр, өнгө, доод оноо.',
   finance: 'Нэхэмжлэлийн татвар, төлөх хугацаа.',
 };
 
 export const SETTING_KEYS = {
+  /**
+   * The stages an operator sees, each grouping one or more engine statuses. See
+   * `service-request-stage.ts` for why the engine keeps fourteen while the board shows nine.
+   */
+  REQUEST_STAGES: 'workflow.request_stages',
   COMPANY_NAME: 'general.company_name',
   /**
    * Who carried the inspection out, printed as "Үзлэг хийсэн" on a report cover.
@@ -77,10 +97,12 @@ export const SETTING_KEYS = {
    * Lower bound of each band. The top band runs to 100 and the bottom band runs to 0, so
    * four thresholds fully describe five bands and they cannot overlap or leave a gap.
    */
-  EVAL_NORMAL_MIN: 'evaluation.normal_min',
-  EVAL_ATTENTION_MIN: 'evaluation.attention_min',
-  EVAL_SCHEDULE_REPAIR_MIN: 'evaluation.schedule_repair_min',
-  EVAL_CRITICAL_MIN: 'evaluation.critical_min',
+  /**
+   * The whole risk ladder — how many bands, their names, colours, cut points and what
+   * each one demands. Supersedes the four scalar thresholds this replaced; see
+   * `scripts/migrate-risk-bands.ts` for how an existing installation carries over.
+   */
+  EVAL_RISK_BANDS: 'evaluation.risk_bands',
 
   /**
    * Requirements 12.2 sources tax from the finance settings but never states a rate, so
@@ -94,7 +116,17 @@ export const SETTING_KEYS = {
 
 export type SettingKey = (typeof SETTING_KEYS)[keyof typeof SETTING_KEYS];
 
-export type SettingValue = string | number;
+/**
+ * A setting is usually a scalar an administrator types. `stages` is the exception: it is
+ * an ordered list, and order is the configuration — there is no separate sort field, the
+ * array *is* the sequence, which is the same rule the equipment-type attribute editor
+ * follows.
+ */
+export type SettingValue =
+  | string
+  | number
+  | readonly ServiceRequestStage[]
+  | readonly RiskBandConfig[];
 
 export interface SettingDefinition {
   key: SettingKey;
@@ -108,7 +140,7 @@ export interface SettingDefinition {
    * table has no file column and does not need one — but the UI renders a picker and the
    * consumer resolves the id to bytes.
    */
-  type: 'string' | 'integer' | 'ratio' | 'percent' | 'file';
+  type: 'string' | 'integer' | 'ratio' | 'percent' | 'file' | 'stages' | 'riskBands';
   default: SettingValue;
   min?: number;
   max?: number;
@@ -117,6 +149,26 @@ export interface SettingDefinition {
 }
 
 export const SETTING_DEFINITIONS: Record<SettingKey, SettingDefinition> = {
+  [SETTING_KEYS.REQUEST_STAGES]: {
+    key: SETTING_KEYS.REQUEST_STAGES,
+    group: 'workflow',
+    label: 'Хүсэлтийн үе шат',
+    hint:
+      'Жагсаалт, самбар, шүүлтүүрт харагдах үе шат. Хэд хэдэн төлвийг нэг үе шатанд ' +
+      'нэгтгэж болно; төлөв бүр яг нэг үе шатанд хамаарна.',
+    type: 'stages',
+    default: DEFAULT_SERVICE_REQUEST_STAGES,
+  },
+  [SETTING_KEYS.EVAL_RISK_BANDS]: {
+    key: SETTING_KEYS.EVAL_RISK_BANDS,
+    group: 'evaluation',
+    label: 'Эрсдэлийн түвшин',
+    hint:
+      '0-100 оноог хуваах түвшин. Нэр, өнгө, доод оноог өөрчилж, түвшин нэмэх, хасах ' +
+      'боломжтой. Доод түвшин 0 оноогоор эхэлж, түвшнүүд хоорондоо завсаргүй байна.',
+    type: 'riskBands',
+    default: DEFAULT_RISK_BANDS,
+  },
   [SETTING_KEYS.COMPANY_NAME]: {
     key: SETTING_KEYS.COMPANY_NAME,
     group: 'general',
@@ -193,50 +245,6 @@ export const SETTING_DEFINITIONS: Record<SettingKey, SettingDefinition> = {
     max: 0.99,
   },
 
-  [SETTING_KEYS.EVAL_NORMAL_MIN]: {
-    key: SETTING_KEYS.EVAL_NORMAL_MIN,
-    group: 'evaluation',
-    label: 'Хэвийн (ногоон) доод оноо',
-    hint: 'Энэ оноо ба түүнээс дээш нь хэвийн. Үндсэн утга 81.',
-    type: 'integer',
-    default: 81,
-    min: 1,
-    max: 100,
-    unit: 'оноо',
-  },
-  [SETTING_KEYS.EVAL_ATTENTION_MIN]: {
-    key: SETTING_KEYS.EVAL_ATTENTION_MIN,
-    group: 'evaluation',
-    label: 'Анхаарах (шар) доод оноо',
-    hint: 'Үндсэн утга 61.',
-    type: 'integer',
-    default: 61,
-    min: 1,
-    max: 100,
-    unit: 'оноо',
-  },
-  [SETTING_KEYS.EVAL_SCHEDULE_REPAIR_MIN]: {
-    key: SETTING_KEYS.EVAL_SCHEDULE_REPAIR_MIN,
-    group: 'evaluation',
-    label: 'Ойрын хугацаанд засварлах (улбар шар) доод оноо',
-    hint: 'Үндсэн утга 41.',
-    type: 'integer',
-    default: 41,
-    min: 1,
-    max: 100,
-    unit: 'оноо',
-  },
-  [SETTING_KEYS.EVAL_CRITICAL_MIN]: {
-    key: SETTING_KEYS.EVAL_CRITICAL_MIN,
-    group: 'evaluation',
-    label: 'Ноцтой эрсдэлтэй (улаан) доод оноо',
-    hint: 'Үүнээс доош нь ашиглах боломжгүй (хар). Үндсэн утга 21.',
-    type: 'integer',
-    default: 21,
-    min: 1,
-    max: 100,
-    unit: 'оноо',
-  },
 
   [SETTING_KEYS.FINANCE_TAX_PERCENT]: {
     key: SETTING_KEYS.FINANCE_TAX_PERCENT,
@@ -305,51 +313,50 @@ export function slaConfigOf(settings: SettingsMap): SlaConfig {
   };
 }
 
-const BAND_ORDER: readonly RiskLevel[] = RISK_LEVELS;
-
-const BAND_LABELS: Record<RiskLevel, string> = {
-  NORMAL: 'Хэвийн',
-  ATTENTION: 'Анхаарах шаардлагатай',
-  SCHEDULE_REPAIR: 'Ойрын хугацаанд засварлах',
-  CRITICAL: 'Ноцтой эрсдэлтэй',
-  OUT_OF_SERVICE: 'Ашиглах боломжгүй',
-};
-
-const BAND_COLOURS: Record<RiskLevel, RiskBand['colour']> = {
-  NORMAL: 'green',
-  ATTENTION: 'yellow',
-  SCHEDULE_REPAIR: 'orange',
-  CRITICAL: 'red',
-  OUT_OF_SERVICE: 'black',
-};
-
 /**
- * Builds the five bands from the four configured thresholds.
+ * The configured risk ladder, resolved to the shape every consumer already reads.
  *
- * Each band runs from its own minimum up to one below the next band's minimum, so the
- * bands always tile 0..100 with no overlap and no gap regardless of the thresholds.
+ * A stored ladder that does not tile 0..100 is discarded rather than served: a score that
+ * matched no band would be stored as whatever the fallback happened to be, and a silently
+ * mis-banded assessment is worse than an ignored override.
  */
 export function riskBandsOf(settings: SettingsMap): RiskBand[] {
-  const minimums: Record<RiskLevel, number> = {
-    NORMAL: Number(settings[SETTING_KEYS.EVAL_NORMAL_MIN]),
-    ATTENTION: Number(settings[SETTING_KEYS.EVAL_ATTENTION_MIN]),
-    SCHEDULE_REPAIR: Number(settings[SETTING_KEYS.EVAL_SCHEDULE_REPAIR_MIN]),
-    CRITICAL: Number(settings[SETTING_KEYS.EVAL_CRITICAL_MIN]),
-    OUT_OF_SERVICE: 0,
-  };
+  const stored = settings[SETTING_KEYS.EVAL_RISK_BANDS];
+  const configured =
+    Array.isArray(stored) && validateRiskBands(stored as RiskBandConfig[]).length === 0
+      ? (stored as readonly RiskBandConfig[])
+      : DEFAULT_RISK_BANDS;
 
-  return BAND_ORDER.map((level, index) => {
-    // The band above this one, whose minimum sets this band's ceiling. The top band has
-    // no predecessor and runs to 100.
-    const above = index === 0 ? undefined : BAND_ORDER[index - 1];
-    return {
-      level,
-      min: minimums[level],
-      max: above === undefined ? 100 : minimums[above] - 1,
-      labelMn: BAND_LABELS[level],
-      colour: BAND_COLOURS[level],
-    };
-  });
+  // Highest score first, which is the order `RISK_BANDS` shipped in and every existing
+  // consumer already iterates — the configured ladder is stored worst-first because that
+  // reads better in the editor, so it is reversed here rather than at each call site.
+  return [...resolveRiskBands(configured)]
+    .reverse()
+    .map((band) => ({
+      level: band.key,
+      min: band.min,
+      max: band.max,
+      labelMn: band.label,
+      colour: band.colour,
+      requiresConclusion: band.requiresConclusion,
+      requiresRecommendation: band.requiresRecommendation,
+      decommissions: band.decommissions,
+      notifies: band.notifies,
+    }));
+}
+
+/**
+ * The configured stages, falling back to the shipped default.
+ *
+ * A stored value that no longer describes every status is discarded rather than used: a
+ * partial mapping would leave requests with no stage to appear under, and silently losing
+ * rows from a board is worse than ignoring a bad override.
+ */
+export function requestStagesOf(settings: SettingsMap): readonly ServiceRequestStage[] {
+  const stored = settings[SETTING_KEYS.REQUEST_STAGES];
+  if (!Array.isArray(stored)) return DEFAULT_SERVICE_REQUEST_STAGES;
+  const stages = stored as readonly ServiceRequestStage[];
+  return validateStages(stages).length === 0 ? stages : DEFAULT_SERVICE_REQUEST_STAGES;
 }
 
 export function riskLevelFor(score: number, bands: readonly RiskBand[]): RiskLevel {
@@ -382,38 +389,13 @@ export function validateSettings(settings: SettingsMap): SettingIssue[] {
     });
   }
 
-  const thresholds: { key: SettingKey; label: string; value: number }[] = [
-    {
-      key: SETTING_KEYS.EVAL_NORMAL_MIN,
-      label: 'Хэвийн',
-      value: Number(settings[SETTING_KEYS.EVAL_NORMAL_MIN]),
-    },
-    {
-      key: SETTING_KEYS.EVAL_ATTENTION_MIN,
-      label: 'Анхаарах',
-      value: Number(settings[SETTING_KEYS.EVAL_ATTENTION_MIN]),
-    },
-    {
-      key: SETTING_KEYS.EVAL_SCHEDULE_REPAIR_MIN,
-      label: 'Ойрын хугацаанд засварлах',
-      value: Number(settings[SETTING_KEYS.EVAL_SCHEDULE_REPAIR_MIN]),
-    },
-    {
-      key: SETTING_KEYS.EVAL_CRITICAL_MIN,
-      label: 'Ноцтой эрсдэлтэй',
-      value: Number(settings[SETTING_KEYS.EVAL_CRITICAL_MIN]),
-    },
-  ];
-
-  // Strictly descending, otherwise a score could fall into two bands or into none.
-  for (let index = 1; index < thresholds.length; index += 1) {
-    const higher = thresholds[index - 1]!;
-    const lower = thresholds[index]!;
-    if (lower.value >= higher.value) {
-      issues.push({
-        key: lower.key,
-        message: `"${lower.label}" босго нь "${higher.label}" босгоос бага байх ёстой.`,
-      });
+  // The ladder must still tile 0..100 after an edit; `validateRiskBands` owns those rules
+  // so the same answer is given whether the check runs here, in the API schema, or in the
+  // form the administrator is typing into.
+  const bands = settings[SETTING_KEYS.EVAL_RISK_BANDS];
+  if (Array.isArray(bands)) {
+    for (const message of validateRiskBands(bands as RiskBandConfig[])) {
+      issues.push({ key: SETTING_KEYS.EVAL_RISK_BANDS, message });
     }
   }
 

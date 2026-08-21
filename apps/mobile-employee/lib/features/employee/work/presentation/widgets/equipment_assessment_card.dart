@@ -240,7 +240,7 @@ class _EquipmentAssessmentCardState extends ConsumerState<EquipmentAssessmentCar
             // names are interpolated from the enum so they cannot drift from the chips.
             Text(
               'Эрсдэлийн түвшнийг систем оноогоор тодорхойлно: '
-              '${RiskLevel.values.map((RiskLevel level) => level.label).join(' · ')}',
+              '${riskBandsInUse().map((RiskLevel level) => level.label).join(' · ')}',
               style: EmployeeTokens.rowSub,
             ),
 

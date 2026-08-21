@@ -8,6 +8,51 @@ import 'service_request_vocabulary.dart';
 /// does not have to reach into the project feature's model file to name its type.
 export '../project/data/models/object_models.dart' show PlanPositionModel;
 
+/// The coarse workflow step the server groups a request under — the `stage` block on
+/// both service-request DTOs.
+///
+/// Sent alongside `status`, not instead of it, and the two answer different questions.
+/// `status` is what the engine is doing and what the transition rules are written
+/// against: ON_SITE is what unlocks the conclusion, UNASSIGNED is what puts a job back
+/// in the claim pool. A stage is what the business calls that step, grouped and named
+/// by an administrator — the shipped ladder folds ON_SITE and IN_PROGRESS into one
+/// «Гүйцэтгэж байна».
+///
+/// So a control keeps reading `status`, and a label that only reports where the job is
+/// prefers this: it is the name the office and the dispatch board use for the same
+/// request, and printing a different word on the technician's phone is how two people
+/// looking at one job end up describing it differently.
+///
+/// Null on an older server, and on a status the administrator's ladder covers nowhere.
+/// Every reader falls back to the status label for both cases.
+class ServiceRequestStageRef {
+  const ServiceRequestStageRef({
+    required this.key,
+    required this.label,
+    required this.colour,
+  });
+
+  /// Stable across renames.
+  final String key;
+
+  final String label;
+
+  /// A name from `STAGE_COLOURS`, resolved to a triad by `Tone.named`.
+  final String colour;
+
+  static ServiceRequestStageRef? fromJson(Object? json) {
+    if (json is! Map<String, dynamic>) return null;
+    final String? key = parseString(json['key']);
+    final String? label = parseString(json['label']);
+    if (key == null || label == null || label.isEmpty) return null;
+    return ServiceRequestStageRef(
+      key: key,
+      label: label,
+      colour: parseString(json['colour']) ?? '',
+    );
+  }
+}
+
 /// Mirrors `ServiceRequestListItemDto` — one row of `GET /service-requests`.
 ///
 /// Shared rather than owned by a tab, for the same reason `service_request_vocabulary
@@ -26,6 +71,7 @@ class ServiceRequestListItemModel {
     required this.device,
     required this.isUrgent,
     required this.status,
+    required this.stage,
     required this.slaState,
     required this.slaDueAt,
     required this.slaRemainingMinutes,
@@ -42,6 +88,11 @@ class ServiceRequestListItemModel {
   final NamedRef? device;
   final bool isUrgent;
   final ServiceRequestStatus? status;
+
+  /// What this installation calls the step [status] belongs to. See
+  /// [ServiceRequestStageRef].
+  final ServiceRequestStageRef? stage;
+
   final SlaState? slaState;
   final DateTime? slaDueAt;
 
@@ -67,6 +118,7 @@ class ServiceRequestListItemModel {
       device: NamedRef.fromJson(json['device']),
       isUrgent: parseBool(json['isUrgent']),
       status: ServiceRequestStatus.fromWire(parseString(json['status'])),
+      stage: ServiceRequestStageRef.fromJson(json['stage']),
       slaState: SlaState.fromWire(parseString(json['slaState'])),
       slaDueAt: parseDate(json['slaDueAt']),
       slaRemainingMinutes: parseInt(json['slaRemainingMinutes']),
@@ -75,6 +127,13 @@ class ServiceRequestListItemModel {
       createdAt: parseDate(json['createdAt']),
     );
   }
+
+  /// The step name to print, best available first.
+  ///
+  /// The stage is preferred because it is the word the dispatch board and the office
+  /// use for this request; the status label is the fallback, and it carries the
+  /// administrator's rename too whenever their stage covers exactly one status.
+  String? get stepLabel => stage?.label ?? status?.label;
 
   /// What a list card calls this request.
   ///
@@ -202,6 +261,7 @@ class ServiceRequestDetailModel {
     required this.branch,
     required this.isUrgent,
     required this.status,
+    required this.stage,
     required this.slaState,
     required this.slaDueAt,
     required this.slaRemainingMinutes,
@@ -229,6 +289,11 @@ class ServiceRequestDetailModel {
   final String? branch;
   final bool isUrgent;
   final ServiceRequestStatus? status;
+
+  /// What this installation calls the step [status] belongs to. See
+  /// [ServiceRequestStageRef].
+  final ServiceRequestStageRef? stage;
+
   final SlaState? slaState;
   final DateTime? slaDueAt;
   final int? slaRemainingMinutes;
@@ -274,6 +339,7 @@ class ServiceRequestDetailModel {
       branch: parseString(json['branch']),
       isUrgent: parseBool(json['isUrgent']),
       status: ServiceRequestStatus.fromWire(parseString(json['status'])),
+      stage: ServiceRequestStageRef.fromJson(json['stage']),
       slaState: SlaState.fromWire(parseString(json['slaState'])),
       slaDueAt: parseDate(json['slaDueAt']),
       slaRemainingMinutes: parseInt(json['slaRemainingMinutes']),
@@ -320,6 +386,10 @@ class ServiceRequestDetailModel {
         if (ref != null && ref.name.isNotEmpty) ref.name,
     ].join(' · ');
   }
+
+  /// The step name to print, stage first. See
+  /// [ServiceRequestListItemModel.stepLabel].
+  String? get stepLabel => stage?.label ?? status?.label;
 
   /// The heading, chosen the same way a list card chooses one, so the title does not
   /// change under the reader when the fetch lands.

@@ -2,9 +2,12 @@ import {
   PLANNED_WORK_STATUS_LABELS,
   SERVICE_REQUEST_STATUS_LABELS,
   type PlannedWorkEffectiveStatus,
+  type ServiceRequestStageRefDto,
   type ServiceRequestStatus,
 } from '@monhorus/shared';
 import type { ReactElement } from 'react';
+
+import { STAGE_BADGE_STYLES } from '../../components/ui/stage-palette';
 
 const BASE =
   'inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset whitespace-nowrap';
@@ -43,7 +46,28 @@ const PORTAL_STATUS_STYLES: Record<ServiceRequestStatus, string> = {
   CANCELLED: RED,
 };
 
-export function PortalStatusBadge({ status }: { status: ServiceRequestStatus }): ReactElement {
+/**
+ * The stage when the server sent one, the raw status only as a fallback.
+ *
+ * A customer reading «Гүйцэтгэж байна» is reading the administrator's own name for the
+ * step, and the stage colour comes with it: the grouping below was this file's guess at
+ * what a customer cares about, while a stage IS that grouping, made explicit and
+ * configurable. Overriding it with the portal's own palette would put a different colour
+ * on the same word the office is looking at.
+ *
+ * `PORTAL_STATUS_STYLES` still answers for a payload from before stages existed.
+ */
+export function PortalStatusBadge({
+  status,
+  stage,
+}: {
+  status: ServiceRequestStatus;
+  stage?: ServiceRequestStageRefDto | null;
+}): ReactElement {
+  if (stage) {
+    return <span className={`${BASE} ${STAGE_BADGE_STYLES[stage.colour]}`}>{stage.label}</span>;
+  }
+
   return (
     <span className={`${BASE} ${PORTAL_STATUS_STYLES[status]}`}>
       {SERVICE_REQUEST_STATUS_LABELS[status]}

@@ -192,6 +192,28 @@ describe('DashboardPage', () => {
     expect(await screen.findByRole('button', { name: 'Тохируулах' })).toBeInTheDocument();
   });
 
+  /**
+   * A scoped board has nothing to customise.
+   *
+   * The dialog lists the whole catalogue, and the blocks a scoped payload omits — risk,
+   * workload, finance, headcount — would be switches that turn on a widget rendering as
+   * nothing. Asserted through `isScoped` rather than a role name, because the API decides
+   * this from the caller's assignments and the screen must not form a second opinion.
+   */
+  it('hides the customise action from a caller whose board is their own work', async () => {
+    vi.spyOn(dashboardService, 'summary').mockResolvedValue(
+      makeDashboardSummary({ isScoped: true }),
+    );
+
+    render();
+
+    // Something rendered, so this is the button being absent rather than the page failing.
+    expect(
+      await screen.findByRole('heading', { name: 'Үйлчилгээний хүсэлтийн үзүүлэлт' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Тохируулах' })).not.toBeInTheDocument();
+  });
+
   /** Halves alone cannot express the shipped layout; the drawer must offer every width. */
   it('offers all four widths when customising a widget', async () => {
     const user = userEvent.setup();

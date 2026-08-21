@@ -8,6 +8,7 @@ import '../../../../core/network/dio_client.dart';
 import '../../../../core/network/paginated_data.dart';
 import '../../domain/entities/customer_scope.dart';
 import '../../domain/entities/object_master_enums.dart';
+import '../../domain/entities/server_vocabulary.dart';
 import '../../domain/entities/service_request_enums.dart';
 import '../models/notification_model.dart';
 import '../models/object_master_model.dart';
@@ -302,6 +303,27 @@ class CustomerPortalRemoteDataSource {
       }),
       decoder: (Object? json) =>
           ServiceRequestAttachmentModel.fromJson(json! as Map<String, dynamic>),
+    );
+  }
+
+  /// GET /vocabulary.
+  ///
+  /// The third read on this class that takes no [ResolvedCustomerScope], and the only
+  /// one that is not about the caller at all: it answers what this installation calls
+  /// its workflow stages and risk bands, which is the same answer for everybody.
+  ///
+  /// Deliberately NOT `GET /settings`, which holds the same configuration and answers
+  /// 403 here - `settings.view` is admin, management and finance only, and a customer
+  /// reading the SLA thresholds and the finance keys in order to learn the word for
+  /// «Дууссан» is exactly what that route is closed against. `/vocabulary` needs
+  /// nothing but a session.
+  Future<ServerVocabulary> getVocabulary() {
+    return _client.request<ServerVocabulary>(
+      path: '/vocabulary',
+      method: 'GET',
+      decoder: (Object? json) => json is Map<String, dynamic>
+          ? ServerVocabulary.fromJson(json)
+          : ServerVocabulary.empty,
     );
   }
 

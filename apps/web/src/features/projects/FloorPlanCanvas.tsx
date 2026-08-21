@@ -20,7 +20,8 @@ import {
 } from 'react';
 
 import { Button } from '../../components/ui/Button';
-import { RISK_SURFACE_STYLES } from '../../components/ui/DomainBadges';
+import { riskPaletteOf } from '../../components/ui/risk-palette';
+import { useRiskBands } from '../../hooks/use-risk-bands';
 import {
   planSizeForAspect,
   toCanvasPoint,
@@ -154,6 +155,10 @@ type MarkerFlowNode = FlowNode<MarkerNodeData, 'planMarker'>;
  */
 function MarkerNode({ data }: NodeProps<MarkerFlowNode>): ReactElement {
   const zoom = useStore((state) => state.transform[2]);
+  // The pin takes the band's configured colour, so a red marker on the plan is the same red
+  // as the badge in the table beside it even after an administrator recolours the ladder.
+  // 'UNASSESSED' is not a band and resolves to grey, which is what absence looks like here.
+  const bands = useRiskBands();
   const { marker, selected, editing } = data;
   const label = `${marker.code} · ${marker.name}`;
   const showCode = selected || zoom >= LABEL_MIN_ZOOM;
@@ -179,7 +184,7 @@ function MarkerNode({ data }: NodeProps<MarkerFlowNode>): ReactElement {
           button is for: a focus stop and a name, so the plan can be read with a keyboard.
         */
         className={`flex items-center gap-1 whitespace-nowrap rounded-full px-1.5 py-1 text-[10px] font-semibold shadow-sm ring-2 ring-inset ${
-          RISK_SURFACE_STYLES[marker.riskLevel]
+          riskPaletteOf(marker.riskLevel === 'UNASSESSED' ? null : marker.riskLevel, bands).badge
         } ${
           selected ? 'outline outline-2 outline-offset-2 outline-blue-500' : ''
         } ${editing ? 'cursor-move' : 'cursor-pointer'}`}

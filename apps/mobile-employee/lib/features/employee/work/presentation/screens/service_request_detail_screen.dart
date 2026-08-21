@@ -814,7 +814,10 @@ class _SummaryCard extends StatelessWidget {
     final String where = resolved.isNotEmpty
         ? resolved
         : (location.isEmpty ? kNoValue : location);
-    final String? status = record?.status?.label ?? statusLabel;
+    // The stage first, for the same reason a list row prefers it: the header names
+    // where the job has got to, and that is the board's word for it. Falls back to the
+    // status label, then to whatever the list row handed over before the detail landed.
+    final String? status = record?.stepLabel ?? statusLabel;
     final String sla = record != null
         ? formatSlaRemaining(record.slaRemainingMinutes)
         : (slaLabel ?? kNoValue);
@@ -844,7 +847,9 @@ class _SummaryCard extends StatelessWidget {
             InfoRow(
               label: 'Төлөв',
               value: status,
-              tone: _toneOf(record?.status?.band),
+              tone: Tone.named(record?.stage?.colour)?.foreground ??
+                  Tone.named(record?.status?.stageColour)?.foreground ??
+                  _toneOf(record?.status?.band),
             ),
           if (record != null && record.assignedEmployees.isNotEmpty)
             InfoRow(

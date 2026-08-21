@@ -460,6 +460,20 @@ export interface LineSeries {
  * `hero` is for the one chart a page is built around: taller plot, bigger axis type, and
  * every category labelled instead of every second one.
  */
+/**
+ * An ISO-ish key as an axis tick.
+ *
+ * The series this chart draws are keyed by day (`YYYY-MM-DD`) or by month (`YYYY-MM`), and
+ * the two need different ticks: `08.20` reads as a date, while the same treatment on a
+ * month key leaves a bare `03` that a reader cannot tell from a day number. The shape
+ * decides, because the caller passing the key should not also have to pass its formatting.
+ */
+function axisTick(label: string): string {
+  const parts = label.split('-');
+  if (parts.length === 2) return `${Number(parts[1])}-р`;
+  return label.slice(5).replace('-', '.');
+}
+
 export function LineChart({
   title,
   hint,
@@ -635,7 +649,7 @@ export function LineChart({
                 className="fill-slate-500"
                 style={{ fontSize }}
               >
-                {label.slice(5).replace('-', '.')}
+                {axisTick(label)}
               </text>
             ) : null,
           )}

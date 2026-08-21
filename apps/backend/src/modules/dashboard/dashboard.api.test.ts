@@ -1,4 +1,5 @@
 import { DEFAULT_DASHBOARD_LAYOUT, PERMISSIONS } from '@monhorus/shared';
+import { Types } from 'mongoose';
 import type { Express } from 'express';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -221,6 +222,46 @@ describe('Dashboard API', () => {
     expect(trend[13]?.created).toBe(1);
     // Ascending by date, so the chart can plot it without sorting.
     expect(trend[0]!.date < trend[13]!.date).toBe(true);
+  });
+
+  /**
+   * The long view, beside the fourteen-day one.
+   *
+   * `createdAt` is stamped on insert and immutable under `timestamps: true`, so a fixture
+   * that needs a request in the past has to move it through the raw collection — a
+   * Mongoose `$set` on it is silently discarded, and a test written that way would pass by
+   * putting every fixture in the current month.
+   */
+  it('returns six months of raised requests, oldest first', async () => {
+    const backdate = async (id: string, monthsBack: number): Promise<void> => {
+      const now = new Date();
+      await ServiceRequest.collection.updateOne(
+        { _id: new Types.ObjectId(id) },
+        {
+          $set: {
+            createdAt: new Date(
+              Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - monthsBack, 15, 6),
+            ),
+          },
+        },
+      );
+    };
+
+    await backdate(await seedRequest(), 2);
+    await backdate(await seedRequest(), 2);
+    await seedRequest();
+
+    const monthly = (await summary()).monthlyTrend as { month: string; count: number }[];
+
+    expect(monthly).toHaveLength(6);
+    expect([...monthly].map((point) => point.month).sort()).toEqual(
+      monthly.map((point) => point.month),
+    );
+    expect(monthly[5]?.count).toBe(1);
+    expect(monthly[3]?.count).toBe(2);
+    // A month with nothing in it is a zero, not a missing point: the chart has to be able
+    // to tell "nothing happened" from "no data".
+    expect(monthly[4]?.count).toBe(0);
   });
 
   it('lists outstanding work for today rather than a log of what already happened', async () => {

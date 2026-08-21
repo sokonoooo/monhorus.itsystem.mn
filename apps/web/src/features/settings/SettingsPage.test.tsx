@@ -1,4 +1,12 @@
-import { PERMISSIONS, SETTING_KEYS, type SettingsDto } from '@monhorus/shared';
+import {
+  DEFAULT_RISK_BANDS,
+  DEFAULT_SERVICE_REQUEST_STAGES,
+  PERMISSIONS,
+  SETTING_KEYS,
+  type RiskBandConfig,
+  type ServiceRequestStage,
+  type SettingsDto,
+} from '@monhorus/shared';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -448,5 +456,336 @@ describe('SettingsPage branding', () => {
     await waitFor(() => {
       expect(update).toHaveBeenCalledWith({ [SETTING_KEYS.INSPECTION_COMPANY]: 'Шинэ ХХК' });
     });
+  });
+});
+
+/**
+ * The stage list: the one setting whose value is an ordered array rather than a scalar.
+ *
+ * What these hold in place is that being an array changes nothing about the page around it.
+ * The draft still lives in the same map, the dirty count still counts it as one key, and
+ * Хадгалах still sends only what changed — the difference is that the value it sends is the
+ * whole list, in the order shown, because that order IS the configuration.
+ */
+describe('SettingsPage stages', () => {
+  function stageSettings(overrides: Partial<SettingsDto> = {}): SettingsDto {
+    return {
+      canManage: true,
+      groups: [
+        {
+          group: 'workflow',
+          label: 'Ажлын урсгал',
+          description: 'Үйлчилгээний хүсэлтийн үе шат.',
+          entries: [
+            {
+              key: SETTING_KEYS.REQUEST_STAGES,
+              group: 'workflow',
+              label: 'Хүсэлтийн үе шат',
+              hint: 'Төлөв бүр яг нэг үе шатанд хамаарна.',
+              // The type that makes this a list editor instead of a text box.
+              type: 'stages',
+              value: DEFAULT_SERVICE_REQUEST_STAGES,
+              defaultValue: DEFAULT_SERVICE_REQUEST_STAGES,
+              isOverridden: false,
+              updatedByName: null,
+              updatedAt: null,
+            },
+          ],
+        },
+      ],
+      ...overrides,
+    };
+  }
+
+  function manager(): { permissions: readonly (typeof PERMISSIONS)[keyof typeof PERMISSIONS][] } {
+    return { permissions: [PERMISSIONS.SETTINGS_VIEW, PERMISSIONS.SETTINGS_MANAGE] };
+  }
+
+  /** The stage array the page actually sent, for the tests that assert on the payload. */
+  function sentStages(update: { mock: { calls: unknown[][] } }): ServiceRequestStage[] {
+    const payload = update.mock.calls[0]?.[0] as Record<string, unknown>;
+    return payload[SETTING_KEYS.REQUEST_STAGES] as ServiceRequestStage[];
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('renders every configured stage in its saved order', async () => {
+    vi.spyOn(settingsService, 'get').mockResolvedValue(stageSettings());
+
+    renderWithAuth(<SettingsPage />, manager());
+
+    expect(await screen.findByLabelText('Үе шат 1 нэр')).toHaveValue('Нээлттэй');
+    expect(screen.getByLabelText('Үе шат 6 нэр')).toHaveValue('Дууссан');
+    expect(screen.getByLabelText('Үе шат 9 нэр')).toHaveValue('Цуцалсан');
+    // Nine and no more: the fixture is the shipped default.
+    expect(screen.queryByLabelText('Үе шат 10 нэр')).toBeNull();
+  });
+
+  /**
+   * A rename is one changed key, and the key it changes is the label — never the stable
+   * identifier saved filters and board columns join on.
+   */
+  it('counts a renamed stage as one change and submits the whole list', async () => {
+    vi.spyOn(settingsService, 'get').mockResolvedValue(stageSettings());
+    const update = vi.spyOn(settingsService, 'update').mockResolvedValue(stageSettings());
+    const user = userEvent.setup();
+
+    renderWithAuth(<SettingsPage />, manager());
+
+    const label = await screen.findByLabelText('Үе шат 1 нэр');
+    await user.clear(label);
+    await user.type(label, 'Түр');
+
+    await user.click(screen.getByRole('button', { name: /Хадгалах \(1\)/ }));
+
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(1));
+    const stages = sentStages(update);
+    expect(stages).toHaveLength(9);
+    expect(stages[0]?.label).toBe('Түр');
+    expect(stages[0]?.key).toBe('OPEN');
+    expect(stages[0]?.statuses).toEqual(['NEW', 'UNASSIGNED']);
+  });
+
+  it('reorders the list when a row is moved up, and saves that order', async () => {
+    vi.spyOn(settingsService, 'get').mockResolvedValue(stageSettings());
+    const update = vi.spyOn(settingsService, 'update').mockResolvedValue(stageSettings());
+    const user = userEvent.setup();
+
+    renderWithAuth(<SettingsPage />, manager());
+
+    await user.click(await screen.findByLabelText('Хуваарилагдсан дээш'));
+
+    expect(screen.getByLabelText('Үе шат 1 нэр')).toHaveValue('Хуваарилагдсан');
+    expect(screen.getByLabelText('Үе шат 2 нэр')).toHaveValue('Нээлттэй');
+
+    await user.click(screen.getByRole('button', { name: /Хадгалах \(1\)/ }));
+
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(1));
+    expect(sentStages(update).map((stage) => stage.key).slice(0, 2)).toEqual(['ASSIGNED', 'OPEN']);
+  });
+
+  /**
+   * The fault a stage editor exists to catch: a status pulled out of one group belongs to
+   * nothing until it is put into another, and a request in that status would then have
+   * nowhere to appear. It is reported as the admin edits, not after a rejected save.
+   */
+  it('reports a status that no longer belongs to any stage', async () => {
+    vi.spyOn(settingsService, 'get').mockResolvedValue(stageSettings());
+    const user = userEvent.setup();
+
+    renderWithAuth(<SettingsPage />, manager());
+
+    await user.click(await screen.findByLabelText('Үе шат 1: Шинэ'));
+
+    expect(
+      await screen.findByText('«NEW» төлөв ямар ч үе шатанд хамаарахгүй байна.'),
+    ).toBeVisible();
+  });
+
+  it('shows a read-only caller the configuration without a single control', async () => {
+    vi.spyOn(settingsService, 'get').mockResolvedValue(stageSettings({ canManage: false }));
+
+    renderWithAuth(<SettingsPage />, { permissions: [PERMISSIONS.SETTINGS_VIEW] });
+
+    // The stages are still readable — this is a view of the configuration, not a blank.
+    expect(await screen.findByText('Нээлттэй')).toBeInTheDocument();
+    // And so is what each one covers, which is the part a summary could quietly drop.
+    expect(screen.getByText('Дүгнэлт илгээсэн, Баталгаажуулах, Дууссан')).toBeInTheDocument();
+
+    expect(screen.queryByLabelText('Үе шат 1 нэр')).toBeNull();
+    expect(screen.queryAllByRole('textbox')).toHaveLength(0);
+    expect(screen.queryAllByRole('checkbox')).toHaveLength(0);
+    expect(screen.queryAllByRole('combobox')).toHaveLength(0);
+    expect(screen.queryByRole('button', { name: /устгах/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Үе шат нэмэх' })).toBeNull();
+  });
+});
+
+
+describe('SettingsPage risk bands', () => {
+  function bandSettings(overrides: Partial<SettingsDto> = {}): SettingsDto {
+    return {
+      canManage: true,
+      groups: [
+        {
+          group: 'evaluation',
+          label: 'Үнэлгээний түвшин',
+          description: '0-100 оноог хэдэн түвшинд хуваах.',
+          entries: [
+            {
+              key: SETTING_KEYS.EVAL_RISK_BANDS,
+              group: 'evaluation',
+              label: 'Эрсдэлийн түвшин',
+              hint: 'Доод түвшин 0 оноогоор эхэлнэ.',
+              // The type that makes this a ladder editor instead of a text box.
+              type: 'riskBands',
+              value: DEFAULT_RISK_BANDS,
+              defaultValue: DEFAULT_RISK_BANDS,
+              isOverridden: false,
+              updatedByName: null,
+              updatedAt: null,
+            },
+          ],
+        },
+      ],
+      ...overrides,
+    };
+  }
+
+  function manager(): { permissions: readonly (typeof PERMISSIONS)[keyof typeof PERMISSIONS][] } {
+    return { permissions: [PERMISSIONS.SETTINGS_VIEW, PERMISSIONS.SETTINGS_MANAGE] };
+  }
+
+  /** The ladder the page actually sent, for the tests that assert on the payload. */
+  function sentBands(update: { mock: { calls: unknown[][] } }): RiskBandConfig[] {
+    const payload = update.mock.calls[0]?.[0] as Record<string, unknown>;
+    return payload[SETTING_KEYS.EVAL_RISK_BANDS] as RiskBandConfig[];
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('renders every configured band in its saved order', async () => {
+    vi.spyOn(settingsService, 'get').mockResolvedValue(bandSettings());
+
+    renderWithAuth(<SettingsPage />, manager());
+
+    // Worst-first, the order the shipped ladder is written in.
+    expect(await screen.findByLabelText('Түвшин 1 нэр')).toHaveValue('Ашиглах боломжгүй');
+    expect(screen.getByLabelText('Түвшин 5 нэр')).toHaveValue('Хэвийн');
+    expect(screen.queryByLabelText('Түвшин 6 нэр')).toBeNull();
+  });
+
+  /**
+   * The top of a band cannot be typed — it is the next band's minimum minus one — so the
+   * range is the one thing on the row that only the editor can show. It is what makes a
+   * hole in the ladder visible before Хадгалах rather than after.
+   */
+  it('shows each band the score range it actually owns', async () => {
+    vi.spyOn(settingsService, 'get').mockResolvedValue(bandSettings());
+
+    renderWithAuth(<SettingsPage />, manager());
+
+    expect(await screen.findByText('0-20 оноо')).toBeInTheDocument();
+    expect(screen.getByText('41-60 оноо')).toBeInTheDocument();
+    expect(screen.getByText('81-100 оноо')).toBeInTheDocument();
+  });
+
+  /** A rename moves the label and nothing else: the key is what history joins on. */
+  it('counts a renamed band as one change and submits the whole ladder', async () => {
+    vi.spyOn(settingsService, 'get').mockResolvedValue(bandSettings());
+    const update = vi.spyOn(settingsService, 'update').mockResolvedValue(bandSettings());
+    const user = userEvent.setup();
+
+    renderWithAuth(<SettingsPage />, manager());
+
+    const label = await screen.findByLabelText('Түвшин 5 нэр');
+    await user.clear(label);
+    await user.type(label, 'Аюулгүй');
+
+    await user.click(screen.getByRole('button', { name: /Хадгалах \(1\)/ }));
+
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(1));
+    const bands = sentBands(update);
+    expect(bands).toHaveLength(5);
+    expect(bands[4]?.label).toBe('Аюулгүй');
+    expect(bands[4]?.key).toBe('NORMAL');
+    expect(bands[4]?.minScore).toBe(81);
+  });
+
+  it('saves a re-cut boundary and the colour picked for a band', async () => {
+    vi.spyOn(settingsService, 'get').mockResolvedValue(bandSettings());
+    const update = vi.spyOn(settingsService, 'update').mockResolvedValue(bandSettings());
+    const user = userEvent.setup();
+
+    renderWithAuth(<SettingsPage />, manager());
+
+    const minScore = await screen.findByLabelText('Түвшин 5 доод оноо');
+    await user.clear(minScore);
+    await user.type(minScore, '90');
+    await user.selectOptions(screen.getByLabelText('Түвшин 5 өнгө'), 'blue');
+
+    // The row above re-tiles on its own, which is the whole point of deriving the top.
+    expect(screen.getByText('61-89 оноо')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /Хадгалах \(1\)/ }));
+
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(1));
+    expect(sentBands(update)[4]).toMatchObject({ minScore: 90, colour: 'blue' });
+  });
+
+  /**
+   * The fault this editor exists to catch: the ladder must still tile 0..100 after an edit,
+   * or a score would land in no band at all. Reported as the admin types, not after a
+   * rejected save.
+   */
+  it('reports a ladder that no longer starts at zero', async () => {
+    vi.spyOn(settingsService, 'get').mockResolvedValue(bandSettings());
+    const user = userEvent.setup();
+
+    renderWithAuth(<SettingsPage />, manager());
+
+    const minScore = await screen.findByLabelText('Түвшин 1 доод оноо');
+    await user.clear(minScore);
+    await user.type(minScore, '5');
+
+    expect(await screen.findByText('Хамгийн доод түвшин 0 оноогоор эхэлнэ.')).toBeVisible();
+  });
+
+  /** Exactly one band may take the equipment out of service; it is an irreversible write. */
+  it('reports a second band that also decommissions', async () => {
+    vi.spyOn(settingsService, 'get').mockResolvedValue(bandSettings());
+    const user = userEvent.setup();
+
+    renderWithAuth(<SettingsPage />, manager());
+
+    await user.click(await screen.findByLabelText('Түвшин 2: Ашиглалтаас гаргана'));
+
+    expect(
+      await screen.findByText('Зөвхөн нэг түвшин тоноглолыг ашиглалтаас гаргана.'),
+    ).toBeVisible();
+  });
+
+  /**
+   * A new band can only take a key from the reserved list, so the vocabulary a score is
+   * STORED as never widens and no assessment ever needs rewriting.
+   */
+  it('gives a new band the next reserved key, and stops at the last one', async () => {
+    vi.spyOn(settingsService, 'get').mockResolvedValue(bandSettings());
+    const user = userEvent.setup();
+
+    renderWithAuth(<SettingsPage />, manager());
+
+    const add = await screen.findByRole('button', { name: 'Түвшин нэмэх' });
+    await user.click(add);
+    expect(screen.getByText('BAND_6')).toBeInTheDocument();
+
+    await user.click(add);
+    await user.click(add);
+    expect(screen.getByText('BAND_8')).toBeInTheDocument();
+    // Eight reserved keys, and no ninth to hand out.
+    expect(add).toBeDisabled();
+  });
+
+  it('shows a read-only caller the ladder without a single control', async () => {
+    vi.spyOn(settingsService, 'get').mockResolvedValue(bandSettings({ canManage: false }));
+
+    renderWithAuth(<SettingsPage />, { permissions: [PERMISSIONS.SETTINGS_VIEW] });
+
+    // Still readable — this is a view of the configuration, not a blank.
+    expect(await screen.findByText('Ашиглах боломжгүй')).toBeInTheDocument();
+    expect(screen.getByText('0-20')).toBeInTheDocument();
+    // And what the band demands, which is the part a summary could quietly drop.
+    expect(
+      screen.getByText('Дүгнэлт заавал, Зөвлөмж заавал, Ашиглалтаас гаргана, Мэдэгдэл илгээнэ'),
+    ).toBeInTheDocument();
+
+    expect(screen.queryByLabelText('Түвшин 1 нэр')).toBeNull();
+    expect(screen.queryAllByRole('checkbox')).toHaveLength(0);
+    expect(screen.queryAllByRole('combobox')).toHaveLength(0);
+    expect(screen.queryByRole('button', { name: 'Түвшин нэмэх' })).toBeNull();
   });
 });

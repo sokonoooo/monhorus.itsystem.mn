@@ -1,5 +1,6 @@
 import '../../domain/entities/risk_level.dart';
 import '../../domain/entities/service_request_enums.dart';
+import '../../presentation/theme/customer_tokens.dart';
 import 'json_utils.dart';
 import 'object_master_model.dart';
 
@@ -162,6 +163,56 @@ class ServiceRequestStatusHistoryModel {
   }
 }
 
+/// The coarse workflow step the server groups a request under - the `stage` block on
+/// both service-request DTOs.
+///
+/// Sent alongside `status`, not instead of it, and the two answer different questions.
+/// `status` is what the engine is doing and what the transition rules are written
+/// against: ON_SITE is what unlocks a conclusion, UNASSIGNED is what puts a job back in
+/// the claim pool. A stage is what the business calls that step, grouped and named by
+/// an administrator - the shipped ladder folds ON_SITE and IN_PROGRESS into one
+/// «Гүйцэтгэж байна».
+///
+/// So anything that reasons about a request keeps reading `status`, and a label that
+/// only reports where the work has got to prefers this: it is the word the office and
+/// the dispatch board use for the same request, and printing a different one on the
+/// customer's phone is how two people looking at one job end up describing it
+/// differently.
+///
+/// Null on an older server, and for a status the administrator's ladder covers nowhere.
+/// Every reader falls back to the status label for both cases.
+class ServiceRequestStageModel {
+  const ServiceRequestStageModel({
+    required this.key,
+    required this.label,
+    required this.colour,
+  });
+
+  /// Stable across renames.
+  final String key;
+
+  final String label;
+
+  /// A name from `STAGE_COLOURS`, resolved to a triad by `AccentTone.named`.
+  final String colour;
+
+  /// The triad to paint this stage in, or null when the palette has no answer for the
+  /// name and the caller should keep the status tone it already had.
+  AccentTone? get tone => AccentTone.named(colour);
+
+  static ServiceRequestStageModel? fromJson(Object? json) {
+    if (json is! Map<String, dynamic>) return null;
+    final Object? key = json['key'];
+    final Object? label = json['label'];
+    if (key is! String || label is! String || label.isEmpty) return null;
+    return ServiceRequestStageModel(
+      key: key,
+      label: label,
+      colour: json['colour'] is String ? json['colour']! as String : '',
+    );
+  }
+}
+
 /// Mirrors `ServiceRequestListItemDto` in
 /// packages/shared/src/types/service-request.types.ts.
 ///
@@ -180,6 +231,7 @@ class ServiceRequestListItemModel {
     required this.device,
     required this.isUrgent,
     required this.status,
+    required this.stage,
     required this.assignedEmployees,
     required this.assignedTeam,
     required this.createdAt,
@@ -198,6 +250,11 @@ class ServiceRequestListItemModel {
   final ObjectRefModel? device;
   final bool isUrgent;
   final ServiceRequestStatus? status;
+
+  /// What this installation calls the step [status] belongs to. See
+  /// [ServiceRequestStageModel].
+  final ServiceRequestStageModel? stage;
+
   final List<EmployeeRefModel> assignedEmployees;
   final ObjectRefModel? assignedTeam;
   final DateTime? createdAt;
@@ -222,6 +279,7 @@ class ServiceRequestListItemModel {
       device: ObjectRefModel.fromJson(json['device']),
       isUrgent: json['isUrgent'] as bool? ?? false,
       status: ServiceRequestStatus.fromWire(json['status'] as String?),
+      stage: ServiceRequestStageModel.fromJson(json['stage']),
       assignedEmployees: parseList(json['assignedEmployees'], EmployeeRefModel.fromJson),
       assignedTeam: ObjectRefModel.fromJson(json['assignedTeam']),
       createdAt: parseDate(json['createdAt']),
@@ -230,6 +288,18 @@ class ServiceRequestListItemModel {
       slaRemainingMinutes: (json['slaRemainingMinutes'] as num?)?.toInt(),
     );
   }
+
+  /// The step name to print, best available first.
+  ///
+  /// The stage is preferred because it is the word the office and the dispatch board
+  /// use for this request; the status label is the fallback, and it carries an
+  /// administrator's rename too whenever their stage covers exactly one status.
+  String? get stepLabel => stage?.label ?? status?.label;
+
+  /// The triad that goes with [stepLabel], neutral when the request carries neither a
+  /// stage nor a status this binary knows.
+  AccentTone get stepTone =>
+      stage?.tone ?? status?.tone ?? AccentTone.neutral;
 
   /// "Main Tower · 2-р давхар" - the location line under a request title.
   String get locationLine {
@@ -265,6 +335,7 @@ class ServiceRequestDetailModel extends ServiceRequestListItemModel {
     required super.device,
     required super.isUrgent,
     required super.status,
+    required super.stage,
     required super.assignedEmployees,
     required super.assignedTeam,
     required super.createdAt,
@@ -336,6 +407,7 @@ class ServiceRequestDetailModel extends ServiceRequestListItemModel {
       device: ObjectRefModel.fromJson(json['device']),
       isUrgent: json['isUrgent'] as bool? ?? false,
       status: ServiceRequestStatus.fromWire(json['status'] as String?),
+      stage: ServiceRequestStageModel.fromJson(json['stage']),
       assignedEmployees: parseList(json['assignedEmployees'], EmployeeRefModel.fromJson),
       assignedTeam: ObjectRefModel.fromJson(json['assignedTeam']),
       createdAt: parseDate(json['createdAt']),

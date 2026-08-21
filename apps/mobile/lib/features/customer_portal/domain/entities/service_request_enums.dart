@@ -1,11 +1,15 @@
 import '../../presentation/theme/customer_tokens.dart';
+import 'server_vocabulary.dart';
 
 /// Mirrors `ServiceRequestStatus` / `SERVICE_REQUEST_STATUS_LABELS` in
 /// packages/shared/src/constants/service-request.ts. All fourteen values, in the
 /// order the shared constant declares them.
 ///
-/// The tone is a presentation choice made here; the shared package assigns no colour
-/// to a status, so nothing is being mirrored incorrectly by adding one.
+/// The tone was a presentation choice made here, because the shared package assigns no
+/// colour to a status. It still is - as a DEFAULT. An administrator groups the fourteen
+/// statuses into named, coloured stages, and `GET /vocabulary` is where this app reads
+/// them; [label] and [tone] are getters over that answer so a rename reaches the card,
+/// the detail header and the timeline without any of them changing.
 enum ServiceRequestStatus {
   newRequest('NEW', 'Шинэ', AccentTone.blue),
   unassigned('UNASSIGNED', 'Хуваарилагдаагүй', AccentTone.yellow),
@@ -22,11 +26,28 @@ enum ServiceRequestStatus {
   returned('RETURNED', 'Буцаасан', AccentTone.orange),
   cancelled('CANCELLED', 'Цуцалсан', AccentTone.neutral);
 
-  const ServiceRequestStatus(this.wireValue, this.label, this.tone);
+  const ServiceRequestStatus(this.wireValue, this._bundledLabel, this._bundledTone);
 
   final String wireValue;
-  final String label;
-  final AccentTone tone;
+
+  /// The status name as `SERVICE_REQUEST_STATUS_LABELS` had it at build time.
+  final String _bundledLabel;
+
+  /// The triad this status was drawn in before an administrator could recolour it.
+  final AccentTone _bundledTone;
+
+  /// What this installation calls the step, falling back to the compiled name.
+  ///
+  /// A stage renames a status only when it covers that status alone - see
+  /// `serverStageLabelForStatus`, which explains why a coarser stage name must not be
+  /// substituted here. The timeline lists every status a request passed through, and
+  /// one word repeated three times down it would report three different events as the
+  /// same one.
+  String get label => serverStageLabelForStatus(wireValue) ?? _bundledLabel;
+
+  /// The colour of the stage this status sits in, falling back to the designed one.
+  AccentTone get tone =>
+      AccentTone.named(serverStageColourForStatus(wireValue)) ?? _bundledTone;
 
   static ServiceRequestStatus? fromWire(String? value) {
     if (value == null) return null;

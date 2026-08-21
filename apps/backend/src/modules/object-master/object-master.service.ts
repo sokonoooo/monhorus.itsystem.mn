@@ -1771,22 +1771,39 @@ export async function recordAssessment(
   const conclusion = input.conclusion?.trim() ?? '';
   const recommendation = input.recommendation?.trim() ?? '';
 
-  if (riskLevel === 'CRITICAL' || riskLevel === 'OUT_OF_SERVICE') {
-    if (!conclusion) issues.push({ field: 'conclusion', message: 'Улаан/хар төлөвт дүгнэлт заавал.' });
-    if (!recommendation) {
-      issues.push({ field: 'recommendation', message: 'Улаан/хар төлөвт зөвлөмж заавал.' });
+  /**
+   * What a band demands travels with the band, not with its name.
+   *
+   * Written as `riskLevel === 'CRITICAL' || riskLevel === 'OUT_OF_SERVICE'` this rule
+   * silently meant "the two bands that happened to be called that", so renaming one moved
+   * the safety gate with the word. The flags say what the band *is*, which is what the
+   * requirement actually describes.
+   */
+  const band = bands.find((entry) => entry.level === riskLevel) ?? null;
+  const bandName = band?.labelMn ?? riskLevel;
+
+  if (band?.requiresConclusion) {
+    if (!conclusion) {
+      issues.push({ field: 'conclusion', message: `«${bandName}» түвшинд дүгнэлт заавал.` });
     }
     if (!input.actionTaken?.trim()) {
-      issues.push({ field: 'actionTaken', message: 'Улаан/хар төлөвт авах арга хэмжээ заавал.' });
+      issues.push({
+        field: 'actionTaken',
+        message: `«${bandName}» түвшинд авах арга хэмжээ заавал.`,
+      });
     }
-  } else if (riskLevel === 'ATTENTION' || riskLevel === 'SCHEDULE_REPAIR') {
+  }
+
+  if (band?.requiresRecommendation) {
     if (!recommendation) {
-      issues.push({ field: 'recommendation', message: 'Шар/улбар шар төлөвт зөвлөмж заавал.' });
+      issues.push({ field: 'recommendation', message: `«${bandName}» түвшинд зөвлөмж заавал.` });
     }
-    if (!input.revisitRequired && !input.repairRequired) {
+    // Only bands that do not already demand a written conclusion ask for a follow-up
+    // instead: a band that demands both would make the conclusion redundant.
+    if (!band.requiresConclusion && !input.revisitRequired && !input.repairRequired) {
       issues.push({
         field: 'revisitRequired',
-        message: 'Шар/улбар шар төлөвт засвар эсвэл давтан үзлэгийн огноо заавал.',
+        message: `«${bandName}» түвшинд засвар эсвэл давтан үзлэг заавал.`,
       });
     }
   }
@@ -1885,8 +1902,9 @@ export async function recordAssessment(
     object.markModified('attributeValues');
   }
 
-  // Rule 17.9: a black-band object must not remain in active use.
-  if (riskLevel === 'OUT_OF_SERVICE' && object.status === 'ACTIVE') {
+  // Rule 17.9: an object in the band that takes equipment out of service must not remain
+  // in active use. Which band that is, is configuration — exactly one may carry the flag.
+  if (band?.decommissions && object.status === 'ACTIVE') {
     object.status = 'DECOMMISSIONED';
   }
 
@@ -1985,7 +2003,9 @@ export async function recordAssessment(
    * concerns are therefore exactly the people who WOULD schedule it, which is the desk
    * behind `dispatch.view` — ADMIN, MANAGEMENT and DISPATCH by default, plus head_admin.
    */
-  if (riskLevel !== 'NORMAL') {
+  // Every band except the healthy one reports. `!== 'NORMAL'` said the same thing only
+  // while the healthy band was called NORMAL.
+  if (band?.notifies) {
     await notify({
       event: 'RISK_ASSESSMENT_RAISED',
       title: `${object.name}: ${RISK_LEVEL_LABELS[riskLevel]} (${input.newScore}%)`,

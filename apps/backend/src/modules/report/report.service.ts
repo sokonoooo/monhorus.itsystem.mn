@@ -33,7 +33,7 @@ import { Customer } from '../objects/object.models';
 import { PlannedWork } from '../planned-work/planned-work.models';
 import { Report, ReportItem } from '../report-record/report-record.model';
 import { ServiceRequest } from '../service-request/service-request.model';
-import { getSettings } from '../settings/settings.service';
+import { getSettings, getRiskBands } from '../settings/settings.service';
 
 /**
  * Section 15.2 report catalogue.
@@ -394,6 +394,16 @@ async function customerReport(query: ReportQueryInput): Promise<ReportResultDto>
   // the footer. The four above are scoped to the customers ON THIS PAGE, because that is
   // what the rows need; the footer describes every customer the filter matches, so it
   // cannot reuse them.
+  /**
+   * Which bands count as "critical" is configuration, so the level names cannot be
+   * literals inside the pipeline: a renamed band would silently stop being counted and
+   * the number would still look plausible. A band that demands a written conclusion is
+   * the one an operator treats as serious.
+   */
+  const criticalBandKeys = (await getRiskBands())
+    .filter((band) => band.requiresConclusion)
+    .map((band) => band.level);
+
   const [requests, works, invoices, objects, wholeSet] = await Promise.all([
     ServiceRequest.aggregate<{ _id: Types.ObjectId; count: number }>([
       { $match: { customer: { $in: ids }, ...range } },
@@ -422,7 +432,7 @@ async function customerReport(query: ReportQueryInput): Promise<ReportResultDto>
           critical: {
             $sum: {
               $cond: [
-                { $in: ['$latestAssessment.riskLevel', ['CRITICAL', 'OUT_OF_SERVICE']] },
+                { $in: ['$latestAssessment.riskLevel', criticalBandKeys] },
                 1,
                 0,
               ],

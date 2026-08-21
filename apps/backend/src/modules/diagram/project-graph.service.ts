@@ -48,6 +48,11 @@ const RISK_TO_STATUS: Record<RiskLevel, DiagramNodeStatus> = {
   SCHEDULE_REPAIR: 'WARNING',
   CRITICAL: 'FAULT',
   OUT_OF_SERVICE: 'OFFLINE',
+  // A band an administrator added has no diagram semantics of its own, so it reads as a
+  // warning: visible, but not claiming a fault the configuration never asserted.
+  BAND_6: 'WARNING',
+  BAND_7: 'WARNING',
+  BAND_8: 'WARNING',
 };
 
 const CATEGORY_TO_KIND: Record<ObjectCategory, DiagramAssetKind> = {

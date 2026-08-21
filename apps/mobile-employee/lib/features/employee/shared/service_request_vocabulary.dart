@@ -12,7 +12,15 @@
 /// Labels are the backend's own Mongolian strings. Every `fromWire` degrades to null
 /// rather than throwing, so an enum value added by a newer API version renders as
 /// unknown instead of crashing a technician's screen.
+///
+/// The status labels here are DEFAULTS. An administrator may rename a workflow step,
+/// and `GET /vocabulary` is where this app reads what they called it — see
+/// `server_vocabulary.dart` beside this file, and [ServiceRequestStatus.label], which
+/// is a getter over that answer so the rename reaches every call site without one of
+/// them changing.
 library;
+
+import 'server_vocabulary.dart';
 
 /// A colour band, kept out of the presentation layer so a status can carry its
 /// severity without this file importing Flutter.
@@ -39,10 +47,25 @@ enum ServiceRequestStatus {
   returned('RETURNED', 'Буцаасан', SeverityBand.red),
   cancelled('CANCELLED', 'Цуцалсан', SeverityBand.neutral);
 
-  const ServiceRequestStatus(this.wireValue, this.label, this.band);
+  const ServiceRequestStatus(this.wireValue, this._bundledLabel, this.band);
 
   final String wireValue;
-  final String label;
+
+  /// The step name as `SERVICE_REQUEST_STATUS_LABELS` had it at build time.
+  final String _bundledLabel;
+
+  /// What this installation calls the step, falling back to the compiled name.
+  ///
+  /// A stage renames a status only when it covers that status alone — see
+  /// `serverStageLabelForStatus`, which explains why a coarser stage name must not be
+  /// substituted here. «Очсон» and «Гүйцэтгэж байна» are two moves a technician
+  /// chooses between, and one word for both would make the control unusable.
+  String get label => serverStageLabelForStatus(wireValue) ?? _bundledLabel;
+
+  /// The colour name of the stage this status sits in, or null when the server has
+  /// not been read or groups it under nothing. Resolved to a triad by `Tone.named`.
+  String? get stageColour => serverStageColourForStatus(wireValue);
+
   final SeverityBand band;
 
   static ServiceRequestStatus? fromWire(String? value) {

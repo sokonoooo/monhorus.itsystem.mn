@@ -1,18 +1,25 @@
-import { PERMISSIONS, type ObjectListItemDto } from '@monhorus/shared';
+import {
+  DEFAULT_SERVICE_REQUEST_STAGES,
+  PERMISSIONS,
+  type ObjectListItemDto,
+} from '@monhorus/shared';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { invalidateRequestStages } from '../../hooks/use-request-stages';
 import { ApiError } from '../../lib/api-client';
 import { objectService } from '../../services/object.service';
 import { portalService } from '../../services/portal.service';
 import { dispatchService, serviceRequestService } from '../../services/service-request.service';
+import { vocabularyService } from '../../services/vocabulary.service';
 import {
   makeBuilding,
   makeFloor,
   makeObjectListItem,
   makePage,
   makeServiceRequest,
+  makeVocabulary,
 } from '../../test/fixtures';
 import { renderWithAuth } from '../../test/render';
 import { planMarkerObjects, unplacedOnPlanCount } from './PortalFloorPlan';
@@ -88,6 +95,15 @@ function makeObject(overrides: Partial<ObjectListItemDto> = {}): ObjectListItemD
 describe('PortalRequestListPage', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    // Cached for the page's lifetime, which spans the cases below.
+    invalidateRequestStages();
+    // The unhappy path by default: the stage filter has to keep working on the shipped
+    // fallback alone. `/vocabulary` needs only a session — which is the point of it, since
+    // a customer holds no `settings.view` and this used to 403 for every one of them — so
+    // the refusal here now stands for a network failure rather than for a permission.
+    vi.spyOn(vocabularyService, 'get').mockRejectedValue(
+      new ApiError('Сүлжээний алдаа', 'NETWORK', 503, []),
+    );
   });
 
   it('lists the customer own requests', async () => {
@@ -144,6 +160,77 @@ describe('PortalRequestListPage', () => {
     expect(
       within(table).queryByRole('columnheader', { name: 'Яаралтай' }),
     ).not.toBeInTheDocument();
+  });
+
+  /**
+   * A customer reads the step, not the engine's status name. «Дүгнэлт илгээсэн» is a
+   * distinction inside the office; the stage groups it into «Дууссан», which is the whole
+   * point of the grouping being the administrator's to make.
+   */
+  it('paints the stage the server resolved rather than the raw status', async () => {
+    vi.spyOn(portalService, 'listRequests').mockResolvedValue(
+      makePage([
+        makeServiceRequest({
+          id: REQUEST_ID,
+          status: 'REPORT_SUBMITTED',
+          stage: { key: 'COMPLETED', label: 'Дууссан', colour: 'green' },
+        }),
+      ]),
+    );
+
+    renderPortal(<PortalRequestListPage />, '/portal/requests');
+
+    const table = await screen.findByRole('table');
+    expect(within(table).getByText('Дууссан')).toBeInTheDocument();
+    expect(within(table).queryByText('Дүгнэлт илгээсэн')).not.toBeInTheDocument();
+  });
+
+  /**
+   * Fourteen engine statuses in a customer's dropdown asked them to know which of
+   * «Очсон» and «Гүйцэтгэж байна» their job was in. The stages are the steps the business
+   * names, and they arrive here even though the settings read was refused.
+   */
+  it('filters by stage rather than listing every engine status', async () => {
+    const list = vi
+      .spyOn(portalService, 'listRequests')
+      .mockResolvedValue(makePage([makeServiceRequest({ id: REQUEST_ID })]));
+
+    const user = userEvent.setup();
+    renderPortal(<PortalRequestListPage />, '/portal/requests');
+
+    const select = await screen.findByLabelText('Төлөв');
+    expect(within(select).getAllByRole('option')).toHaveLength(
+      DEFAULT_SERVICE_REQUEST_STAGES.length + 1,
+    );
+    expect(within(select).queryByRole('option', { name: 'Очсон' })).not.toBeInTheDocument();
+
+    await user.selectOptions(select, 'IN_PROGRESS');
+
+    await waitFor(() => {
+      expect(list).toHaveBeenCalledWith(
+        expect.objectContaining({ stage: 'IN_PROGRESS', page: 1, limit: 20 }),
+      );
+    });
+  });
+
+  /** An administrator's renaming has to reach the customer's filter, or it renamed nothing. */
+  it('names the stages the way settings does when they can be read', async () => {
+    vi.spyOn(portalService, 'listRequests').mockResolvedValue(makePage([]));
+    vi.spyOn(vocabularyService, 'get').mockResolvedValue(
+      makeVocabulary({
+        stages: DEFAULT_SERVICE_REQUEST_STAGES.map((stage) =>
+          stage.key === 'OPEN' ? { ...stage, label: 'Хүлээн авсан' } : stage,
+        ),
+      }),
+    );
+
+    renderPortal(<PortalRequestListPage />, '/portal/requests');
+
+    const select = await screen.findByLabelText('Төлөв');
+    await waitFor(() => {
+      expect(within(select).getByRole('option', { name: 'Хүлээн авсан' })).toBeInTheDocument();
+    });
+    expect(within(select).queryByRole('option', { name: 'Нээлттэй' })).not.toBeInTheDocument();
   });
 
   it('offers a retry when the list fails rather than reading as empty', async () => {

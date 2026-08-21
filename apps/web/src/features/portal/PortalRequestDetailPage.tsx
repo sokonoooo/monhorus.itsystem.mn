@@ -1,6 +1,5 @@
 import {
   PERMISSIONS,
-  RISK_LEVEL_LABELS,
   type CustomerWorkReportDto,
   type ServiceRequestDetailDto,
   type SurveyPendingItemDto,
@@ -12,7 +11,9 @@ import { Alert } from '../../components/ui/Alert';
 import { Button } from '../../components/ui/Button';
 import { PageHeader } from '../../components/ui/PageHeader';
 import { ErrorState, Skeleton } from '../../components/ui/States';
+import { riskLabelOf } from '../../components/ui/risk-palette';
 import { useAuth } from '../../contexts/auth-context';
+import { useRiskBands } from '../../hooks/use-risk-bands';
 import { ApiError } from '../../lib/api-client';
 import { portalService } from '../../services/portal.service';
 import { PortalStatusBadge } from './PortalBadges';
@@ -52,6 +53,8 @@ export function PortalRequestDetailPage(): ReactElement {
   const navigate = useNavigate();
   const { can } = useAuth();
   const canSubmitSurvey = can(PERMISSIONS.PORTAL_SURVEY_SUBMIT);
+  // The band names in force, so a customer reads the operator's own wording.
+  const bands = useRiskBands();
 
   const [request, setRequest] = useState<ServiceRequestDetailDto | null>(null);
   const [survey, setSurvey] = useState<SurveyPendingItemDto | null>(null);
@@ -174,7 +177,7 @@ export function PortalRequestDetailPage(): ReactElement {
       <div className="space-y-4">
         <div className="rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
           <div className="mb-4 flex flex-wrap items-center gap-2">
-            <PortalStatusBadge status={request.status} />
+            <PortalStatusBadge status={request.status} stage={request.stage} />
           </div>
 
           <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
@@ -239,7 +242,7 @@ export function PortalRequestDetailPage(): ReactElement {
                 <Row label="Үнэлгээ" value={report.score === null ? '-' : `${report.score}`} />
                 <Row
                   label="Эрсдэлийн түвшин"
-                  value={report.riskLevel ? RISK_LEVEL_LABELS[report.riskLevel] : '-'}
+                  value={report.riskLevel ? riskLabelOf(report.riskLevel, bands) : '-'}
                 />
                 <Row label="Баталсан" value={formatDateTime(report.approvedAt)} />
               </dl>

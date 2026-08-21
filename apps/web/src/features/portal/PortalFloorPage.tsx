@@ -1,8 +1,7 @@
-import {
-  RISK_LEVEL_LABELS,
-  type FloorDto,
-  type FloorPlanDto,
-  type ObjectListItemDto,
+import type {
+  FloorDto,
+  FloorPlanDto,
+  ObjectListItemDto,
 } from '@monhorus/shared';
 import { useCallback, useEffect, useState, type ReactElement } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
@@ -13,6 +12,8 @@ import { PageHeader } from '../../components/ui/PageHeader';
 import { SearchField } from '../../components/ui/SearchField';
 import { EmptyState, ErrorState, Skeleton } from '../../components/ui/States';
 import { FILTER_LABEL } from '../../components/ui/control-styles';
+import { riskLabelOf } from '../../components/ui/risk-palette';
+import { useRiskBands } from '../../hooks/use-risk-bands';
 import { ApiError } from '../../lib/api-client';
 import { portalService } from '../../services/portal.service';
 import { filterFloorObjects } from '../projects/FloorDetailPage';
@@ -58,6 +59,8 @@ async function fetchAllFloorObjects(floorId: string): Promise<ObjectListItemDto[
 export function PortalFloorPage(): ReactElement {
   const { buildingId, floorId } = useParams<{ buildingId: string; floorId: string }>();
   const navigate = useNavigate();
+  // The band names in force, so a customer reads the operator's own wording.
+  const bands = useRiskBands();
 
   const [floor, setFloor] = useState<FloorDto | null>(null);
   const [plan, setPlan] = useState<FloorPlanDto | null>(null);
@@ -152,7 +155,7 @@ export function PortalFloorPage(): ReactElement {
       render: (row) => (
         <span className="text-slate-700">
           {row.latestAssessment?.riskLevel
-            ? RISK_LEVEL_LABELS[row.latestAssessment.riskLevel]
+            ? riskLabelOf(row.latestAssessment.riskLevel, bands)
             : 'Үнэлгээгүй'}
         </span>
       ),

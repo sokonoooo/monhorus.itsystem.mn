@@ -1,9 +1,4 @@
-import {
-  PERMISSIONS,
-  SETTING_KEYS,
-  type SettingEntryDto,
-  type SettingsDto,
-} from '@monhorus/shared';
+import { PERMISSIONS } from '@monhorus/shared';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -12,13 +7,14 @@ import { invalidateRiskBands } from '../../../hooks/use-risk-bands';
 import { objectMasterService, objectTypeService } from '../../../services/object-master.service';
 import { objectService } from '../../../services/object.service';
 import { projectService } from '../../../services/project.service';
-import { settingsService } from '../../../services/settings.service';
+import { vocabularyService } from '../../../services/vocabulary.service';
 import {
   makeFloor,
   makeObjectDetail,
   makeObjectListItem,
   makeObjectType,
   makePage,
+  makeVocabulary,
 } from '../../../test/fixtures';
 import { renderWithAuth } from '../../../test/render';
 import { ObjectFormPage } from './ObjectFormPage';
@@ -47,54 +43,21 @@ function renderFloorlessCreate() {
   });
 }
 
-function evalEntry(key: SettingEntryDto['key'], value: number): SettingEntryDto {
-  return {
-    key,
-    group: 'evaluation',
-    label: key,
-    hint: '',
-    type: 'integer',
-    value,
-    defaultValue: value,
-    isOverridden: false,
-    min: 1,
-    max: 100,
-    unit: 'оноо',
-    updatedByName: null,
-    updatedAt: null,
-  };
-}
-
 /**
- * The thresholds this installation runs, as the form would read them from Тохиргоо.
+ * The ladder this installation runs, as the form reads it from `GET /vocabulary`.
  *
- * The form resolves the red/black band from these and from nothing else, so a test of the
- * conditional fields has to state which thresholds are in force. These are the shipped
- * figures, which is what the band comments in this file refer to.
+ * The form resolves the red/black band from this and from nothing else, so a test of the
+ * conditional fields has to state which ladder is in force. `makeVocabulary` defaults to the
+ * shipped one — 81/61/41/21 — which is what the band comments in this file refer to.
  */
-function evaluationSettings(): SettingsDto {
-  return {
-    canManage: true,
-    groups: [
-      {
-        group: 'evaluation',
-        label: 'Үнэлгээ',
-        description: '',
-        entries: [
-          evalEntry(SETTING_KEYS.EVAL_NORMAL_MIN, 81),
-          evalEntry(SETTING_KEYS.EVAL_ATTENTION_MIN, 61),
-          evalEntry(SETTING_KEYS.EVAL_SCHEDULE_REPAIR_MIN, 41),
-          evalEntry(SETTING_KEYS.EVAL_CRITICAL_MIN, 21),
-        ],
-      },
-    ],
-  };
+function evaluationSettings() {
+  return makeVocabulary();
 }
 
 describe('ObjectFormPage', () => {
   beforeEach(() => {
     invalidateRiskBands();
-    vi.spyOn(settingsService, 'get').mockResolvedValue(evaluationSettings());
+    vi.spyOn(vocabularyService, 'get').mockResolvedValue(evaluationSettings());
     vi.spyOn(projectService, 'getFloor').mockResolvedValue(makeFloor());
     vi.spyOn(projectService, 'listFloors').mockResolvedValue(makePage([makeFloor()]));
     vi.spyOn(objectTypeService, 'list').mockResolvedValue(makePage([makeObjectType()]));
@@ -262,7 +225,7 @@ describe('ObjectFormPage', () => {
    */
   it('demands all three findings, without naming a band, when the thresholds cannot be read', async () => {
     invalidateRiskBands();
-    vi.spyOn(settingsService, 'get').mockRejectedValue(new Error('offline'));
+    vi.spyOn(vocabularyService, 'get').mockRejectedValue(new Error('offline'));
     const create = vi.spyOn(objectMasterService, 'create').mockResolvedValue(makeObjectDetail());
     const user = userEvent.setup();
 
@@ -845,7 +808,7 @@ describe('ObjectFormPage per-type attributes', () => {
 
   beforeEach(() => {
     invalidateRiskBands();
-    vi.spyOn(settingsService, 'get').mockResolvedValue(evaluationSettings());
+    vi.spyOn(vocabularyService, 'get').mockResolvedValue(evaluationSettings());
     vi.spyOn(projectService, 'getFloor').mockResolvedValue(makeFloor());
     vi.spyOn(projectService, 'listFloors').mockResolvedValue(makePage([makeFloor()]));
     vi.spyOn(objectMasterService, 'list').mockResolvedValue(makePage([]));

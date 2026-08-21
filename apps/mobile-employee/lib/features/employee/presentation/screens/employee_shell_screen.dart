@@ -7,6 +7,8 @@ import '../../home/presentation/providers/home_providers.dart';
 import '../../home/presentation/screens/home_tab_screen.dart';
 import '../../profile/presentation/screens/profile_tab_screen.dart';
 import '../../project/presentation/screens/project_tab_screen.dart';
+import '../../shared/server_vocabulary.dart';
+import '../../shared/server_vocabulary_provider.dart';
 import '../../work/presentation/screens/work_tab_screen.dart';
 import '../theme/employee_tokens.dart';
 
@@ -103,9 +105,21 @@ class _EmployeeShellScreenState extends ConsumerState<EmployeeShellScreen>
       },
     );
 
+    // Reading it here is what starts it: one small GET, shared by all four tabs, that
+    // replaces the compiled-in stage and risk-band words with whatever this
+    // installation calls them. It cannot fail in a way the reader sees — see
+    // `serverVocabularyProvider` — so there is no state to render off it here.
+    ref.watch(serverVocabularyProvider);
+
     return Scaffold(
       backgroundColor: EmployeeTokens.bg,
       body: IndexedStack(
+        // Keyed on the vocabulary, so the answer landing rebuilds the tabs the once.
+        // Each tab body is a const widget and a const widget is canonicalised, so
+        // this frame's rebuild would otherwise stop at the stack and leave four
+        // elements painting the words they were first built with. The key changes at
+        // most once a session, and never at all when the read failed.
+        key: ValueKey<int>(serverVocabularyRevision),
         index: _index,
         children: const <Widget>[
           HomeTabScreen(),

@@ -364,6 +364,10 @@ class PlannedWorkBoard {
           active.add(item);
         case PlannedWorkEffectiveStatus.planned:
         case PlannedWorkEffectiveStatus.draft:
+        // Neither has a crew yet — approval assigns one — so they sit with the
+        // drafts rather than in a technician's active queue.
+        case PlannedWorkEffectiveStatus.pendingApproval:
+        case PlannedWorkEffectiveStatus.rejected:
           upcoming.add(item);
         case PlannedWorkEffectiveStatus.completed:
         case PlannedWorkEffectiveStatus.archived:

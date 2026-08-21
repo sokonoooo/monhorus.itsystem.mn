@@ -183,6 +183,13 @@ class _ProgressTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final ServiceRequestStatus? status = request.status;
+    // The stage first on the header, for the same reason a list row prefers it: this
+    // block reports where the work has got to, and that is the board's word for it.
+    // The status label is the fallback and carries a one-to-one rename of its own, and
+    // `ink` remains the last resort for a status this binary cannot name at all.
+    final Color stepColour = request.stage?.tone?.foreground ??
+        status?.tone.foreground ??
+        CustomerTokens.ink;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -191,7 +198,7 @@ class _ProgressTab extends StatelessWidget {
         PanelCard(
           accent: request.isUrgent
               ? CustomerTokens.red
-              : (status?.tone.foreground ?? CustomerTokens.ink),
+              : stepColour,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
@@ -236,9 +243,9 @@ class _ProgressTab extends StatelessWidget {
                 cards: <Widget>[
                   MetricCard(
                     label: 'Төлөв',
-                    value: status?.label ?? '-',
+                    value: request.stepLabel ?? '-',
                     note: request.assigneeLine,
-                    valueColor: status?.tone.foreground ?? CustomerTokens.ink,
+                    valueColor: stepColour,
                   ),
                 ],
               ),
@@ -251,7 +258,7 @@ class _ProgressTab extends StatelessWidget {
                   fraction: fraction,
                   color: request.isUrgent
                       ? CustomerTokens.red
-                      : (status?.tone.foreground ?? CustomerTokens.ink),
+                      : stepColour,
                 ),
               ],
             ],

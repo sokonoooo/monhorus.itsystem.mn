@@ -85,7 +85,7 @@ class _FloorReportsScreenState extends ConsumerState<FloorReportsScreen> {
                   ref.invalidate(floorReportSummaryProvider(widget.floorId)),
               loading: const ProjectLoading(height: 132),
               builder: (BuildContext ctx, InspectionSummaryModel counts) {
-                final List<RiskLevel> bands = RiskLevel.values
+                final List<RiskLevel> bands = riskBandsInUse()
                     .where((RiskLevel level) => counts.countOf(level) > 0)
                     .toList(growable: false);
 
