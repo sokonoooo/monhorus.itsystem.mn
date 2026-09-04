@@ -67,39 +67,20 @@ enum ServiceRequestStatus {
 
   bool get isActive => !isTerminal;
 
-  /// How far along the workflow this status sits, 0 to 1 — or null when the status
-  /// is not a point on that workflow at all.
-  ///
-  /// Used only for the thin progress rail the prototype draws on a request card. It
-  /// is a display ordering of the statuses as the shared `DISPATCH_BOARD_COLUMNS`
-  /// lists them, not a claim about elapsed work. The backend reports no completion
-  /// figure for a service request — `GET /calendar` sends `progressPercent: null` for
-  /// one, because a request has no quantity to be a percentage of — so this is the
-  /// card's own positional reading and nothing more.
-  ///
-  /// Null for every status [order] does not contain. CANCELLED is the one that
-  /// mattered: it used to return 0.35, drawing a request that was called off as a
-  /// third of the way done, which is a figure nobody ever stated. UNASSIGNED,
-  /// WAITING, REVISIT_REQUIRED and RETURNED are null for the same reason — each sits
-  /// off the linear path, so there is no position to read. The card omits the rail
-  /// rather than drawing one at an invented fill.
-  double? get progress {
-    const List<ServiceRequestStatus> order = <ServiceRequestStatus>[
-      ServiceRequestStatus.newRequest,
-      ServiceRequestStatus.unassigned,
-      ServiceRequestStatus.assigned,
-      ServiceRequestStatus.accepted,
-      ServiceRequestStatus.onTheWay,
-      ServiceRequestStatus.onSite,
-      ServiceRequestStatus.inProgress,
-      ServiceRequestStatus.reportSubmitted,
-      ServiceRequestStatus.verification,
-      ServiceRequestStatus.completed,
-    ];
-    final int index = order.indexOf(this);
-    if (index < 0) return null;
-    return (index + 1) / order.length;
-  }
+  /*
+   * THERE IS NO `progress` HERE, AND THERE MUST NOT BE.
+   *
+   * A `progress` getter used to map ten of the fourteen statuses onto (index + 1) / 10
+   * and the card and the detail header drew it as a rail. The ordering was copied from
+   * the superseded `DISPATCH_BOARD_COLUMNS` — a board layout, not a measure of work —
+   * and the backend states no completion figure for a service request at all:
+   * `GET /calendar` sends `progressPercent: null` for one, because a request has no
+   * quantity to be a percentage of. So a customer read a precise-looking figure
+   * («60%» worth of fill on an ON_SITE call) that nothing in the product computes.
+   *
+   * What is left in its place is the step's NAME — [label], and the coarser `stage` the
+   * DTO carries — which is a fact the server sends and an administrator configures.
+   */
 }
 
 

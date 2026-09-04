@@ -249,18 +249,6 @@ class _ProgressTab extends StatelessWidget {
                   ),
                 ],
               ),
-              // Absent for a cancelled request, and for any status off the linear
-              // workflow: see [ServiceRequestStatus.progress]. A part-full rail on
-              // work that was called off is a completion figure nobody stated.
-              if (status?.progress case final double fraction) ...<Widget>[
-                const SizedBox(height: 10),
-                ProgressRail(
-                  fraction: fraction,
-                  color: request.isUrgent
-                      ? CustomerTokens.red
-                      : stepColour,
-                ),
-              ],
             ],
           ),
         ),

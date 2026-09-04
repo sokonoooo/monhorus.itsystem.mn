@@ -2,53 +2,43 @@
 //
 // Two of them, both of which looked like data and were not:
 //
-//   * A cancelled request drew a rail 35% full. Nothing on the wire says how far a
-//     request got — `GET /calendar` reports `progressPercent: null` for one, because
-//     a request has no quantity to be a percentage of — so the rail is the card's own
-//     positional reading of the status, and a status off that path has no position.
+//   * Every request card and the detail header drew a completion rail. Nothing on the
+//     wire says how far a request got — `GET /calendar` reports `progressPercent: null`
+//     for one, because a request has no quantity to be a percentage of — so the fill
+//     was this app's own reading of a status ordering copied from a dispatch board.
 //   * The home hero summed `riskSummary` over the first page of buildings and printed
 //     the result as the customer's whole estate. Past one page the stair, the headline
 //     and the "N БАРИЛГА" line were all short, with nothing saying so.
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monhorus_mobile/features/customer_portal/data/models/project_model.dart';
-import 'package:monhorus_mobile/features/customer_portal/domain/entities/service_request_enums.dart';
 import 'package:monhorus_mobile/features/customer_portal/presentation/screens/customer_home_screen.dart';
 import 'package:monhorus_mobile/features/customer_portal/presentation/screens/service_request_detail_screen.dart';
-import 'package:monhorus_mobile/features/customer_portal/presentation/widgets/customer_ui.dart';
 import 'package:monhorus_mobile/features/customer_portal/presentation/widgets/service_request_card.dart';
 
 import 'fakes.dart';
 
 void main() {
-  group('a cancelled request has no progress to draw', () {
-    test('CANCELLED reports no fraction at all', () {
-      expect(ServiceRequestStatus.cancelled.progress, isNull);
+  group('no request is drawn with a completion figure', () {
+    testWidgets('a card in flight draws no rail', (WidgetTester tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ServiceRequestCard(
+              request: serviceRequestFixture(status: 'IN_PROGRESS'),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // The card renders — otherwise "no rail" would pass for the wrong reason — and
+      // the step is still named. What is gone is the bar that read as a percentage.
+      expect(find.text('ГҮЙЦЭТГЭЖ БАЙНА'), findsOneWidget);
+      expect(find.byType(LinearProgressIndicator), findsNothing);
     });
 
-    test('so does every status that is not a point on the workflow', () {
-      // These sit off the linear path the rail reads. Each used to answer 0.35, the
-      // same invented third, which is what made the cancelled case easy to miss.
-      for (final ServiceRequestStatus status in <ServiceRequestStatus>[
-        ServiceRequestStatus.waiting,
-        ServiceRequestStatus.revisitRequired,
-        ServiceRequestStatus.returned,
-      ]) {
-        expect(status.progress, isNull, reason: '${status.wireValue} has no position');
-      }
-    });
-
-    test('the statuses on the path still report a rising fraction', () {
-      final double? newRequest = ServiceRequestStatus.newRequest.progress;
-      final double? inProgress = ServiceRequestStatus.inProgress.progress;
-      final double? completed = ServiceRequestStatus.completed.progress;
-
-      expect(newRequest, isNotNull);
-      expect(inProgress, greaterThan(newRequest!));
-      expect(completed, 1.0);
-    });
-
-    testWidgets('the card draws no rail for one', (WidgetTester tester) async {
+    testWidgets('nor does a cancelled one', (WidgetTester tester) async {
       await tester.pumpWidget(
         MaterialApp(
           home: Scaffold(
@@ -61,28 +51,13 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('ЦУЦАЛСАН'), findsOneWidget);
-      expect(find.byType(ProgressRail), findsNothing);
+      expect(find.byType(LinearProgressIndicator), findsNothing);
     });
 
-    testWidgets('but still draws one for a request that is under way',
+    testWidgets('and the detail header carries none either',
         (WidgetTester tester) async {
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: ServiceRequestCard(
-              request: serviceRequestFixture(status: 'IN_PROGRESS'),
-            ),
-          ),
-        ),
-      );
-      await tester.pumpAndSettle();
-
-      expect(find.byType(ProgressRail), findsOneWidget);
-    });
-
-    testWidgets('the detail screen omits it too', (WidgetTester tester) async {
       final FakeCustomerPortalRepository repository = FakeCustomerPortalRepository(
-        requestDetail: serviceRequestFixture(status: 'CANCELLED'),
+        requestDetail: serviceRequestFixture(status: 'IN_PROGRESS'),
       );
 
       tester.view.physicalSize = const Size(1170, 2532);
@@ -98,10 +73,8 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      // The screen really did render — otherwise "no rail" would pass for the wrong
-      // reason.
       expect(find.textContaining('SR-202607-0012'), findsWidgets);
-      expect(find.byType(ProgressRail), findsNothing);
+      expect(find.byType(LinearProgressIndicator), findsNothing);
     });
   });
 

@@ -125,6 +125,13 @@ class PermissionKeys {
   static const String plannedWorkUpdate = 'planned_work.update';
   static const String plannedWorkReschedule = 'planned_work.reschedule';
   static const String plannedWorkCancel = 'planned_work.cancel';
+
+  /// Deciding whether a request goes ahead — and, in the same act, who does it.
+  ///
+  /// A key of its own, deliberately not `change_status` (which DISPATCH and TECHNICIAN
+  /// both hold) and not `approve_report` (which means "sign off a finished job's
+  /// write-up"). Committing the company to the work is a third thing.
+  static const String plannedWorkApprove = 'planned_work.approve';
   static const String plannedWorkApproveReport = 'planned_work.approve_report';
   static const String dispatchAssign = 'dispatch.assign';
 

@@ -71,6 +71,91 @@ class ObjectMasterRefModel {
   }
 }
 
+/// One option of a SELECT attribute. Mirrors `ObjectAttributeOptionDto`.
+///
+/// The value is what is stored on the object; the label is what a person reads. Kept
+/// apart because a label may be edited freely without touching anything recorded.
+class ObjectAttributeOptionModel {
+  const ObjectAttributeOptionModel({required this.value, required this.label});
+
+  final String value;
+  final String label;
+
+  factory ObjectAttributeOptionModel.fromJson(Map<String, dynamic> json) {
+    final String value = json['value'] as String? ?? '';
+    return ObjectAttributeOptionModel(
+      value: value,
+      // A label that never arrived still has to render as something, and the stored
+      // value is the honest fallback.
+      label: json['label'] as String? ?? value,
+    );
+  }
+}
+
+/// One field an object TYPE demands of its objects. Mirrors `ObjectTypeAttributeDto`.
+///
+/// Administrator-defined at runtime, so this app renders whatever arrives and hardcodes
+/// no field of its own. The list comes in display order and is kept in it — there is no
+/// `sortOrder` on the wire, the array index IS the order.
+///
+/// The same model the employee app carries, so an attribute a technician answered reads
+/// on the customer's screen exactly as it did on the one it was entered from.
+class ObjectTypeAttributeModel {
+  const ObjectTypeAttributeModel({
+    required this.key,
+    required this.label,
+    required this.type,
+    required this.required,
+    required this.options,
+  });
+
+  /// The key the answer is stored under in `attributeValues`.
+  final String key;
+  final String label;
+  final ObjectAttributeType type;
+  final bool required;
+
+  /// Non-empty for [ObjectAttributeType.select], empty for every other kind.
+  final List<ObjectAttributeOptionModel> options;
+
+  factory ObjectTypeAttributeModel.fromJson(Map<String, dynamic> json) {
+    final String key = json['key'] as String? ?? '';
+    return ObjectTypeAttributeModel(
+      key: key,
+      label: json['label'] as String? ?? key,
+      type: ObjectAttributeType.fromWire(json['type'] as String?),
+      required: json['required'] as bool? ?? false,
+      options: parseList(json['options'], ObjectAttributeOptionModel.fromJson),
+    );
+  }
+
+  /// How a stored answer reads, or null when there is none.
+  ///
+  /// Mirrors `formatAttributeValue` in the shared package: a SELECT reads as its
+  /// option's label, a BOOLEAN as Тийм/Үгүй, and a value whose option was deleted falls
+  /// back to itself rather than vanishing — it is still what somebody recorded.
+  ///
+  /// `false` IS AN ANSWER. Only null and a blank string are absences, so a required
+  /// yes/no answered "Үгүй" renders as answered.
+  String? display(Object? value) {
+    if (value == null) return null;
+    if (value is String && value.trim().isEmpty) return null;
+
+    switch (type) {
+      case ObjectAttributeType.select:
+        for (final ObjectAttributeOptionModel option in options) {
+          if (option.value == value) return option.label;
+        }
+        return value.toString();
+      case ObjectAttributeType.boolean:
+        return value == true ? 'Тийм' : 'Үгүй';
+      case ObjectAttributeType.text:
+      case ObjectAttributeType.number:
+        return value.toString();
+    }
+  }
+}
+
 /// Mirrors the inline `objectType` reference on `ObjectListItemDto`
 /// (`{ id, code, name, icon, iconUrl, showOnPlan } | null`).
 class ObjectTypeRefModel {
@@ -81,11 +166,18 @@ class ObjectTypeRefModel {
     required this.icon,
     required this.iconUrl,
     required this.showOnPlan,
+    required this.attributes,
   });
 
   final String id;
   final String code;
   final String name;
+
+  /// The fields this type demands of its objects, in display order.
+  ///
+  /// Empty for a type that declares none, which is every type registered before they
+  /// existed — so a screen that finds nothing here behaves exactly as it did before.
+  final List<ObjectTypeAttributeModel> attributes;
 
   /// The built-in key, and the FALLBACK whenever there is no custom icon or the custom
   /// one cannot be drawn. Always present, so there is always something to draw.
@@ -132,6 +224,7 @@ class ObjectTypeRefModel {
       // null the server sends for most types.
       iconUrl: iconUrl is String && iconUrl.isNotEmpty ? iconUrl : null,
       showOnPlan: raw['showOnPlan'] as bool? ?? false,
+      attributes: parseList(raw['attributes'], ObjectTypeAttributeModel.fromJson),
     );
   }
 }
@@ -206,7 +299,14 @@ class LatestAssessmentModel {
   });
 
   final String id;
-  final int score;
+
+  /// 0-100, higher being better, or null when the record carries no figure.
+  ///
+  /// Nullable because the scale is INVERTED: `?? 0` put an absent reading at the bottom
+  /// of it, so a missing score displayed as the worst band there is rather than as
+  /// nothing. `previousScore` on the sibling model was left nullable throughout, which
+  /// is what the zero here was measured against.
+  final int? score;
   final RiskLevel? riskLevel;
   final DateTime? assessedAt;
   final String? assessedByName;
@@ -222,7 +322,7 @@ class LatestAssessmentModel {
     if (id is! String) return null;
     return LatestAssessmentModel(
       id: id,
-      score: parseInt(raw['score']) ?? 0,
+      score: parseInt(raw['score']),
       riskLevel: RiskLevel.fromWire(raw['riskLevel'] as String?),
       assessedAt: parseDate(raw['assessedAt']),
       assessedByName: raw['assessedByName'] as String?,
@@ -389,6 +489,7 @@ class ObjectListItemModel {
     required this.planPosition,
     required this.status,
     required this.latestAssessment,
+    required this.attributeValues,
     required this.calculatedLoad,
     required this.measuredLoadKw,
     required this.loadVariance,
@@ -415,6 +516,15 @@ class ObjectListItemModel {
   /// Null when the object has never been assessed. That is a distinct state from a
   /// low score and is rendered as "Үнэлгээгүй", never as a zero.
   final LatestAssessmentModel? latestAssessment;
+
+  /// What this object has answered for its type's declared attributes.
+  ///
+  /// Read it THROUGH `objectType.attributes`, which is what says how each key is
+  /// labelled and rendered: the bag may hold keys the type no longer declares, because
+  /// removing an attribute does not erase what was recorded against it, and those are
+  /// deliberately not shown.
+  final Map<String, Object?> attributeValues;
+
   final LoadValueModel calculatedLoad;
   final double? measuredLoadKw;
 
@@ -437,11 +547,30 @@ class ObjectListItemModel {
       planPosition: PlanPositionModel.fromJson(json['planPosition']),
       status: ObjectStatus.fromWire(json['status'] as String?),
       latestAssessment: LatestAssessmentModel.fromJson(json['latestAssessment']),
+      attributeValues: parseAttributeValues(json['attributeValues']),
       calculatedLoad: LoadValueModel.fromJson(json['calculatedLoad']),
       measuredLoadKw: parseDouble(json['measuredLoadKw']),
       loadVariance: LoadValueModel.fromJson(json['loadVariance']),
       createdAt: parseDate(json['createdAt']),
     );
+  }
+
+  /// The type's declared attributes paired with this object's answers, in the order the
+  /// administrator arranged them.
+  ///
+  /// Driven entirely by the definitions: an answer whose key the type no longer declares
+  /// is left out, because there is nothing left to say what it means or what it was
+  /// called. Attributes the type declares and nobody has answered ARE included, with a
+  /// null answer, so a screen can mark the gap rather than let it look like it does not
+  /// exist. Empty for a type declaring nothing, which is every type registered before
+  /// per-type attributes did.
+  List<({ObjectTypeAttributeModel attribute, String? display})> get typeAttributes {
+    final List<ObjectTypeAttributeModel> defs =
+        objectType?.attributes ?? const <ObjectTypeAttributeModel>[];
+    return <({ObjectTypeAttributeModel attribute, String? display})>[
+      for (final ObjectTypeAttributeModel def in defs)
+        (attribute: def, display: def.display(attributeValues[def.key])),
+    ];
   }
 
   int? get score => latestAssessment?.score;
@@ -476,6 +605,7 @@ class ObjectDetailModel extends ObjectListItemModel {
     required super.planPosition,
     required super.status,
     required super.latestAssessment,
+    required super.attributeValues,
     required super.calculatedLoad,
     required super.measuredLoadKw,
     required super.loadVariance,
@@ -535,6 +665,7 @@ class ObjectDetailModel extends ObjectListItemModel {
       planPosition: PlanPositionModel.fromJson(json['planPosition']),
       status: ObjectStatus.fromWire(json['status'] as String?),
       latestAssessment: LatestAssessmentModel.fromJson(json['latestAssessment']),
+      attributeValues: parseAttributeValues(json['attributeValues']),
       calculatedLoad: LoadValueModel.fromJson(json['calculatedLoad']),
       measuredLoadKw: parseDouble(json['measuredLoadKw']),
       loadVariance: LoadValueModel.fromJson(json['loadVariance']),
@@ -584,7 +715,11 @@ class ObjectAssessmentModel {
   final String id;
   final String objectId;
   final int? previousScore;
-  final int newScore;
+
+  /// Null when the entry carries no figure, for the same reason as
+  /// [LatestAssessmentModel.score]: zero is the worst reading on this scale, not an
+  /// absent one, and [previousScore] beside it was nullable all along.
+  final int? newScore;
   final RiskLevel? riskLevel;
   final String? assessedById;
   final String? assessedByName;
@@ -606,7 +741,7 @@ class ObjectAssessmentModel {
       id: json['id'] as String,
       objectId: json['objectId'] as String? ?? '',
       previousScore: parseInt(json['previousScore']),
-      newScore: parseInt(json['newScore']) ?? 0,
+      newScore: parseInt(json['newScore']),
       riskLevel: RiskLevel.fromWire(json['riskLevel'] as String?),
       assessedById: json['assessedById'] as String?,
       assessedByName: json['assessedByName'] as String?,

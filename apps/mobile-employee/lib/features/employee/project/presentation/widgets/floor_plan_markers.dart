@@ -27,9 +27,29 @@ List<ObjectListItemModel> planMarkersOf(List<ObjectListItemModel> objects) {
   // Worst band painted last, so it lands on top where two markers overlap. On a phone
   // they overlap often, and the one a technician must not lose is the severe one. An
   // unassessed object has no band and sits at the bottom of the pile.
+  //
+  // RANKED BY THE CONFIGURED LADDER, not by `RiskLevel.index`. This is the one file in
+  // the feature where `riskBandsInUse()` existed and was not used: the enum declares the
+  // three spare storage keys last, so a device in a band an administrator had configured
+  // partway up the ladder was painted on top of genuinely worse ones — the marker a
+  // technician must not lose was the marker underneath.
+  final List<RiskLevel> ladder = riskBandsInUse();
   placed.sort((ObjectListItemModel a, ObjectListItemModel b) =>
-      (a.riskLevel?.index ?? -1).compareTo(b.riskLevel?.index ?? -1));
+      _paintRank(ladder, a.riskLevel).compareTo(_paintRank(ladder, b.riskLevel)));
   return placed;
+}
+
+/// Where a marker sits in the pile: higher is painted later, and therefore on top.
+///
+/// An unassessed device is an unknown rather than a good result, so it sits at the very
+/// bottom — it is the one marker whose disappearance under another costs nothing.
+/// Immediately above it sits a device graded into a band the configured ladder no longer
+/// lists, which is a real assessment this build cannot place: it must not be ranked as
+/// severe on a guess, and it must not sink below "never looked at".
+int _paintRank(List<RiskLevel> ladder, RiskLevel? level) {
+  if (level == null) return -1;
+  final int at = ladder.indexOf(level);
+  return at < 0 ? 0 : at + 1;
 }
 
 /// Objects that belong on the plan but have never been placed. Reported as a count,

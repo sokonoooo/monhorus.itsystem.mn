@@ -249,12 +249,15 @@ class _PlanTab extends ConsumerWidget {
           value: objects,
           onRetry: () => ref.invalidate(floorObjectsProvider(floor.id)),
           builder: (BuildContext ctx, List<ObjectListItemModel> items) {
-            // Anything the backend banded below NORMAL. An unassessed object is
-            // deliberately not swept in here: it is an unknown, not a fault.
+            // Anything the backend banded below the healthiest band this installation
+            // configures — named as a position on that ladder rather than as the NORMAL
+            // key, which stopped being the healthy band the moment an administrator
+            // renamed or replaced it. An unassessed object is deliberately not swept in
+            // here: it is an unknown, not a fault.
             final List<ObjectListItemModel> needsAttention = items
                 .where((ObjectListItemModel object) =>
                     object.riskLevel != null &&
-                    object.riskLevel != RiskLevel.normal)
+                    riskNeedsAttention(object.riskLevel!))
                 .toList(growable: false);
 
             if (needsAttention.isEmpty) {

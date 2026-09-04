@@ -474,13 +474,24 @@ class _LifecycleActionsState extends ConsumerState<_LifecycleActions> {
   Widget build(BuildContext context) {
     if (widget.assignment.blocksWrites) return const SizedBox.shrink();
 
-    final List<PlannedWorkAvailableActionModel> offered = widget
+    // Everything the record allows and the caller may do, INCLUDING the one action this
+    // app cannot carry out. It is split rather than filtered away, because the two halves
+    // get opposite treatments: one is a button, and the other is a sentence.
+    final List<PlannedWorkAvailableActionModel> permitted = widget
         .work.availableActions
         .where((PlannedWorkAvailableActionModel entry) =>
             entry.action != null && widget.grants.allows(entry.action!))
         .toList(growable: false);
 
-    if (offered.isEmpty) return const SizedBox.shrink();
+    final List<PlannedWorkAvailableActionModel> offered = permitted
+        .where((PlannedWorkAvailableActionModel entry) => entry.action!.isOfferable)
+        .toList(growable: false);
+
+    // APPROVE, when the server has offered it and the caller holds the key for it.
+    final bool approvalIsElsewhere = permitted.any(
+        (PlannedWorkAvailableActionModel entry) => entry.action!.assignsCrew);
+
+    if (offered.isEmpty && !approvalIsElsewhere) return const SizedBox.shrink();
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(
@@ -492,6 +503,25 @@ class _LifecycleActionsState extends ConsumerState<_LifecycleActions> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
+          // SAID OUT LOUD RATHER THAN DRAWN AS A BUTTON.
+          //
+          // Approval and crew assignment are one decision server-side — the transition
+          // is refused without at least one employee — and this app has no crew picker,
+          // so an "Батлах" button here could only ever come back with the server's
+          // refusal. Silently dropping the action would be worse still: the reader holds
+          // the permission, the record is waiting on them, and nothing on the screen
+          // would say so. This is the same line the app already takes on approving a
+          // service-request conclusion, which is likewise an office act.
+          if (approvalIsElsewhere)
+            const NoticeBanner(
+              margin: EdgeInsets.only(bottom: 8),
+              tone: EmployeeTokens.yellow,
+              icon: Icons.how_to_reg_outlined,
+              title: 'Батлахдаа гүйцэтгэгчээ сонгоно',
+              text: 'Энэ ажлыг батлахын зэрэгцээ гүйцэтгэх ажилтныг нь заавал '
+                  'зааж өгдөг тул батлах үйлдлийг вэб системээс хийнэ. Буцаах '
+                  'бол доорх товчийг ашиглана уу.',
+            ),
           for (final PlannedWorkAvailableActionModel entry in offered)
             Padding(
               padding: const EdgeInsets.only(bottom: 8),
@@ -519,6 +549,12 @@ class _LifecycleActionsState extends ConsumerState<_LifecycleActions> {
     switch (action) {
       case PlannedWorkAction.plan:
         return Icons.event_outlined;
+      // Never reached — APPROVE is not offerable — but the switch is exhaustive so the
+      // next action added to the enum is a compile error rather than a blank button.
+      case PlannedWorkAction.approve:
+        return Icons.how_to_reg_outlined;
+      case PlannedWorkAction.reject:
+        return Icons.undo;
       case PlannedWorkAction.start:
         return Icons.play_arrow_outlined;
       case PlannedWorkAction.pause:

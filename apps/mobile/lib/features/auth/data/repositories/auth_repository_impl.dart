@@ -86,15 +86,27 @@ class AuthRepositoryImpl implements AuthRepository {
     } catch (error) {
       final Failure failure = _mapException(error);
 
-      // Offline start: fall back to the cached user so a technician in the field can
-      // still open the app. A network failure is not proof the session is invalid.
-      if (failure is NetworkFailure) {
+      // Three different answers, and they used to be two.
+      //
+      // OFFLINE START falls back to the cached user so a customer with no signal can
+      // still open the app: not reaching the server is no proof the session is invalid.
+      // Until the 5xx branch in `dio_client` existed, a backend outage arrived here as
+      // a NetworkFailure and took this path — opening the shell on a stale user whose
+      // every subsequent request then failed against the same outage.
+      //
+      // ONLY THE SERVER REFUSING THE CREDENTIAL proves the session is dead, so that is
+      // the sole case that discards it.
+      //
+      // Anything else — a 5xx, an unreadable reply — is reported as the failure it is:
+      // the app does not open on a cached user, and it does not sign the customer out
+      // over an outage they may not be able to re-authenticate through.
+      if (failure is AuthFailure) {
+        await _local.clear();
+      } else if (failure is NetworkFailure) {
         final UserModel? cached = await _local.readCachedUser();
         if (cached != null) {
           return Success<AppUser>(cached);
         }
-      } else {
-        await _local.clear();
       }
 
       return FailureResult<AppUser>(failure);

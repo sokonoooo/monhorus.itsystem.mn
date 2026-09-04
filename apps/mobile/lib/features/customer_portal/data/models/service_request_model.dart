@@ -470,7 +470,9 @@ class CustomerWorkReportModel {
   final int? score;
 
   /// The band the server derived from [score] against the thresholds in force. Never
-  /// derived on the device; see [RiskLevel.fromScore].
+  /// derived on the device: the cut points are an administrator's, this app is not told
+  /// them until `/vocabulary` answers, and a band derived here would disagree with the
+  /// one already stored on the record.
   final RiskLevel? riskLevel;
 
   final bool repairRequired;

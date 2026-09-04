@@ -270,3 +270,13 @@ String? serverRiskColour(String levelWire) => _installed.bandOf(levelWire)?.colo
 /// no device can be in. This is the list that says which ones are real.
 List<String> serverRiskLevels() =>
     _installed.bands.map((VocabularyBand band) => band.level).toList(growable: false);
+
+/// The lowest score this installation puts in a band, or null when it configures none.
+///
+/// Still never printed, for the reason [VocabularyBand.min] gives. It is read so the
+/// portal can answer questions ABOUT the ladder — where a band sits on the scale — from
+/// the administrator's own numbers instead of from cut points compiled in last release.
+int? serverRiskMin(String levelWire) => _installed.bandOf(levelWire)?.min;
+
+/// The highest score this installation puts in a band, or null when it configures none.
+int? serverRiskMax(String levelWire) => _installed.bandOf(levelWire)?.max;

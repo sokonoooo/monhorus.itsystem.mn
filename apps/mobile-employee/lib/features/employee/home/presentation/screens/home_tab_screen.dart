@@ -147,13 +147,24 @@ class _HomeHero extends StatelessWidget {
           : 'Өнөөдрийн ачааллыг ачаалж байна';
     }
     if (!data.isScoped) return 'Байгууллагын өнөөдрийн ачаалал';
+
+    // «Дор хаяж» — "at least" — when the lists were read only as far as the paging
+    // guard. Both figures are counted from the rows, so a truncated read makes each of
+    // them a floor; the sentence used to print the floor as the fact. The Төсөл tab
+    // already draws this distinction on its own counters («Эхний N» beside «Бүртгэлтэй»).
+    final String atLeast = data.isComplete ? '' : 'Дор хаяж ';
+
     if (data.overdueCount > 0) {
-      return '${data.overdueCount} ажил хугацаа хэтэрсэн';
+      return '$atLeast${data.overdueCount} ажил хугацаа хэтэрсэн';
     }
     if (data.activeCount > 0) {
-      return '${data.activeCount} идэвхтэй ажил хүлээгдэж байна';
+      return '$atLeast${data.activeCount} идэвхтэй ажил хүлээгдэж байна';
     }
-    return 'Хүлээгдэж буй ажил алга байна';
+    // "Nothing outstanding" is a strong claim and a partial read cannot make it: zero
+    // rows in the pages that were read says nothing about the pages that were not.
+    return data.isComplete
+        ? 'Хүлээгдэж буй ажил алга байна'
+        : 'Ачааллыг бүрэн уншиж чадсангүй';
   }
 
   /// The four figures, banded by the risk ramp so urgency is legible before a single
@@ -162,20 +173,27 @@ class _HomeHero extends StatelessWidget {
     if (data == null) return const <SteelStairBand>[];
 
     if (data.isScoped) {
+      // A trailing "+" on a figure the app could only read part of, matching the
+      // «Дор хаяж» in the sentence above it. There is no room for a note beside a stair
+      // figure, and a bare number over a truncated list is the one thing this screen
+      // must not print. The fourth figure carries none: it is the employee record's own
+      // lifetime count and does not depend on how much of a list was read.
+      final String more = data.isComplete ? '' : '+';
+
       return <SteelStairBand>[
         (
           band: EmployeeTokens.accent,
-          count: '${data.activeCount}',
+          count: '${data.activeCount}$more',
           label: 'ИДЭВХТЭЙ',
         ),
         (
           band: EmployeeTokens.orange,
-          count: '${data.inProgressCount}',
+          count: '${data.inProgressCount}$more',
           label: 'ХИЙГДЭЖ БУЙ',
         ),
         (
           band: EmployeeTokens.red,
-          count: '${data.overdueCount}',
+          count: '${data.overdueCount}$more',
           label: 'ХУГАЦАА ХЭТЭРСЭН',
         ),
         (

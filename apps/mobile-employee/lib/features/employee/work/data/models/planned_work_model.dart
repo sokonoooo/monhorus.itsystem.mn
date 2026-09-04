@@ -553,8 +553,10 @@ class PlannedWorkListItemModel {
       building: NamedRefModel.maybe(json['building']),
       lifecycleStatus:
           PlannedWorkLifecycleStatus.fromWire(json['lifecycleStatus'] as String?),
-      effectiveStatus:
-          PlannedWorkEffectiveStatus.fromWire(json['effectiveStatus'] as String?),
+      // The one non-nullable status in the app: a list row always carries one, and a
+      // value this build has never seen lands on PLANNED rather than blanking the row.
+      effectiveStatus: PlannedWorkEffectiveStatus.fromWireOrPlanned(
+          json['effectiveStatus'] as String?),
       plannedStartDate: parseDate(json['plannedStartDate']),
       plannedEndDate: parseDate(json['plannedEndDate']),
       actualStartDate: parseDate(json['actualStartDate']),

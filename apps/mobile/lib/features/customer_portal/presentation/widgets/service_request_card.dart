@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 
 import '../../data/models/service_request_model.dart';
-import '../../domain/entities/service_request_enums.dart';
 import '../theme/customer_tokens.dart';
 import 'customer_ui.dart';
 
@@ -19,17 +18,12 @@ class ServiceRequestCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final ServiceRequestStatus? status = request.status;
     // The stage the server groups this request under, when it sent one: that is the
     // word the office and the dispatch board print for the same job, and a list row's
     // only job is to say where the work has got to. Falls back to the status, which
     // carries an administrator's rename of its own where the two are one to one.
     final String? step = request.stepLabel;
     final AccentTone statusTone = request.stepTone;
-    final double? fraction = status?.progress;
-    final Color railColor = request.isUrgent
-        ? CustomerTokens.red
-        : statusTone.foreground;
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(
@@ -86,15 +80,6 @@ class ServiceRequestCard extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   style: CustomerTokens.rowSub,
                 ),
-                // Drawn only when the status has a position on the workflow to
-                // report. A cancelled request — and any status off the linear path —
-                // gets no rail at all, because a rail is a fill and every fill this
-                // card could pick for one would be invented. The status pill above
-                // already says what happened.
-                if (fraction != null) ...<Widget>[
-                  const SizedBox(height: 8),
-                  ProgressRail(fraction: fraction, color: railColor),
-                ],
               ],
             ),
           ),

@@ -262,6 +262,26 @@ class _OpenPool extends ConsumerWidget {
                       'харагдана.',
                 ),
         ),
+        // «Эзэнгүй» is the server's own count and the other two are counted from the
+        // rows. They describe the same population now — the pool is read to its end —
+        // and this is what is said on the one path where they cannot: three numbers in
+        // one strip that were measured over two different sets is the contradiction this
+        // banner exists to name.
+        if (!pool.isComplete)
+          NoticeBanner(
+            margin: const EdgeInsets.fromLTRB(
+              EmployeeTokens.gutter,
+              4,
+              EmployeeTokens.gutter,
+              10,
+            ),
+            tone: EmployeeTokens.yellow,
+            icon: Icons.more_horiz,
+            title: 'Яаралтай ба SLA-н тоо бүрэн биш',
+            text: 'Нээлттэй дуудлага хэт олон тул эхний ${pool.items.length} '
+                'мөрийг л уншлаа. "Яаралтай" болон "SLA эрсдэл" нь зөвхөн '
+                'эдгээрийг тоолсон бөгөөд "Эзэнгүй" нь серверийн бүтэн тоо юм.',
+          ),
         KpiStrip(
           tiles: <KpiTile>[
             KpiTile(value: '${pool.total}', label: 'Эзэнгүй'),
@@ -418,7 +438,7 @@ class _RequestBoard extends StatelessWidget {
       );
     }
 
-    final int dueToday = requests.dueTodayCount;
+    final int dueToday = requests.dueTodayCount();
     final int overdue = requests.overdueCount;
 
     return ListView(
@@ -452,6 +472,25 @@ class _RequestBoard extends StatelessWidget {
         // which was right while both were in one pane; printing that total above a list
         // of two requests would read as "5 идэвхтэй" over five rows the reader cannot
         // see. The combined figure for the whole day is the Нүүр tab's job.
+        // The three figures below are counted from the rows, so a read that stopped at
+        // the paging guard makes each of them a floor rather than a count. Saying so is
+        // the Төсөл tab's own pattern («Эхний N» in place of «Бүртгэлтэй») and it is the
+        // honest alternative to printing a confident number over a partial list.
+        if (!requests.isComplete)
+          NoticeBanner(
+            margin: const EdgeInsets.fromLTRB(
+              EmployeeTokens.gutter,
+              4,
+              EmployeeTokens.gutter,
+              10,
+            ),
+            tone: EmployeeTokens.yellow,
+            icon: Icons.more_horiz,
+            title: 'Доорх тоо бүрэн биш',
+            text: 'Хүсэлтийн жагсаалт хэт урт тул эхний ${requests.items.length} '
+                'мөрийг л уншлаа. Доорх тоонууд эдгээр мөрийг тоолсон бөгөөд '
+                'бодит тоо үүнээс их байж болно.',
+          ),
         if (!requests.isEmpty)
           KpiStrip(
             tiles: <KpiTile>[
@@ -542,6 +581,28 @@ class _PlannedBoard extends StatelessWidget {
               title: problem.title,
               text: problem.detail,
             ),
+          ),
+        // Same disclosure as the "Хүсэлт" segment above, and here the server's own
+        // `total` can be named outright: `PaginatedData.total` is carried on the board
+        // now rather than parsed and dropped, so a partial read can still say how many
+        // records there really are.
+        if (!board.isComplete)
+          NoticeBanner(
+            margin: const EdgeInsets.fromLTRB(
+              EmployeeTokens.gutter,
+              4,
+              EmployeeTokens.gutter,
+              10,
+            ),
+            tone: EmployeeTokens.yellow,
+            icon: Icons.more_horiz,
+            title: 'Доорх тоо бүрэн биш',
+            text: board.serverTotal == null
+                ? 'Жагсаалт хэт урт тул эхний ${board.total} ажлыг л уншлаа. '
+                    'Доорх тоонууд эдгээрийг тоолсон болно.'
+                : 'Танд нийт ${board.serverTotal} ажил байгаагаас эхний '
+                    '${board.total}-г нь уншлаа. Доорх тоонууд эдгээрийг '
+                    'тоолсон болно.',
           ),
         KpiStrip(
           tiles: <KpiTile>[

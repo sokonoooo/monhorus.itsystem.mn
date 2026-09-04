@@ -1,5 +1,6 @@
 import 'package:equatable/equatable.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../../shared/server_day.dart';
 
 import '../../../../../core/error/failure.dart';
 import '../../../../../core/network/api_result.dart';
@@ -211,6 +212,12 @@ final FutureProvider<CalendarMonthResult> calendarEventsProvider =
     // message intact; the view renders that rather than an exception string.
     failure: (Failure failure) => throw failure,
   );
+
+  // The Хуваарь tab reads `timezone` off every result and, until now, only printed it.
+  // Installing it here means a technician who opens the calendar before the home tab —
+  // or who holds no `dashboard.view` at all — still gets the server's day boundary for
+  // every «Өнөөдөр» figure elsewhere in the app. See `shared/server_day.dart`.
+  installServerTimezone(data.timezone);
 
   return CalendarMonthResult(
     events: data.events,

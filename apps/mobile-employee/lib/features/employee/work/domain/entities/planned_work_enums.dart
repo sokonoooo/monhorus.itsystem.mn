@@ -15,6 +15,12 @@ library;
 import 'package:flutter/material.dart';
 
 import '../../../presentation/theme/employee_tokens.dart';
+import '../../../shared/planned_work_vocabulary.dart';
+import '../../../shared/service_request_vocabulary.dart' show SeverityBand;
+
+/// The planned-work status vocabulary, which is shared with the Нүүр tab rather than
+/// transcribed a second time. See [PlannedWorkEffectiveStatus] below.
+export '../../../shared/planned_work_vocabulary.dart' show PlannedWorkStatus;
 
 /// `RiskLevel` is **not** declared here.
 ///
@@ -50,61 +56,40 @@ enum PlannedWorkLifecycleStatus {
   }
 }
 
-/// The status the UI displays and filters on. Adds OVERDUE, which is derived on
-/// read by the server and is never persisted or selectable.
-enum PlannedWorkEffectiveStatus {
-  draft('DRAFT', 'Төсөл'),
-  pendingApproval('PENDING_APPROVAL', 'Хүлээгдэж буй'),
-  rejected('REJECTED', 'Буцаагдсан'),
-  planned('PLANNED', 'Төлөвлөгдсөн'),
-  started('STARTED', 'Хэрэгжиж байна'),
-  paused('PAUSED', 'Түр зогссон'),
-  overdue('OVERDUE', 'Хугацаа хэтэрсэн'),
-  completed('COMPLETED', 'Дууссан'),
-  archived('ARCHIVED', 'Архивласан'),
-  cancelled('CANCELLED', 'Цуцлагдсан');
+/// The status the UI displays and filters on.
+///
+/// **Not declared here.** It is `PlannedWorkStatus` in
+/// `shared/planned_work_vocabulary.dart`, aliased under the name this feature's forty-odd
+/// call sites already use. The home tab used to carry a second copy of the same list with
+/// two statuses missing and a different idea of what "finished" means; there is one enum
+/// now and neither tab can drift from the other.
+///
+/// The alias keeps the name because the DISTINCTION it draws is real and worth keeping in
+/// the type name: [PlannedWorkLifecycleStatus] is what is persisted and what the transition
+/// endpoint accepts, while the effective status adds OVERDUE, which the server derives on
+/// read and nobody can select.
+typedef PlannedWorkEffectiveStatus = PlannedWorkStatus;
 
-  const PlannedWorkEffectiveStatus(this.wireValue, this.label);
-
-  final String wireValue;
-  final String label;
-
-  static PlannedWorkEffectiveStatus fromWire(String? value) {
-    return PlannedWorkEffectiveStatus.values.firstWhere(
-      (PlannedWorkEffectiveStatus status) => status.wireValue == value,
-      orElse: () => PlannedWorkEffectiveStatus.planned,
-    );
-  }
-
-  /// Still outstanding work: it sits in a technician's queue.
-  bool get isOpen =>
-      this == PlannedWorkEffectiveStatus.planned ||
-      this == PlannedWorkEffectiveStatus.started ||
-      this == PlannedWorkEffectiveStatus.paused ||
-      this == PlannedWorkEffectiveStatus.overdue;
-
-  bool get isFinished =>
-      this == PlannedWorkEffectiveStatus.completed ||
-      this == PlannedWorkEffectiveStatus.archived ||
-      this == PlannedWorkEffectiveStatus.cancelled;
-
-  /// Risk colour. Overdue is the only red state; a finished record is green; work in
-  /// flight is yellow; anything not yet begun is neutral.
+/// The employee palette for a status band.
+///
+/// Colour is presentation and stays with the feature, which is why the shared enum carries
+/// a [SeverityBand] and not a [Color]: `shared/planned_work_vocabulary.dart` is
+/// Flutter-free so both features' domain layers can read it.
+///
+/// Overdue and rejected are the red states; work in flight is yellow; a job that reached
+/// its end is green; anything not yet begun, or called off, is neutral.
+extension PlannedWorkStatusTone on PlannedWorkStatus {
   Color get tone {
-    switch (this) {
-      case PlannedWorkEffectiveStatus.overdue:
-      case PlannedWorkEffectiveStatus.rejected:
+    switch (band) {
+      case SeverityBand.red:
         return EmployeeTokens.red;
-      case PlannedWorkEffectiveStatus.started:
-      case PlannedWorkEffectiveStatus.paused:
-      case PlannedWorkEffectiveStatus.pendingApproval:
+      case SeverityBand.yellow:
         return EmployeeTokens.yellow;
-      case PlannedWorkEffectiveStatus.completed:
-      case PlannedWorkEffectiveStatus.archived:
+      case SeverityBand.green:
         return EmployeeTokens.green;
-      case PlannedWorkEffectiveStatus.draft:
-      case PlannedWorkEffectiveStatus.planned:
-      case PlannedWorkEffectiveStatus.cancelled:
+      case SeverityBand.ink:
+        return EmployeeTokens.ink;
+      case SeverityBand.neutral:
         return EmployeeTokens.muted;
     }
   }
@@ -198,21 +183,71 @@ enum PlannedWorkReportStatus {
 /// is computed server-side and is the only thing a button is rendered from. This
 /// enum exists to name the permission each action needs, so a control the API would
 /// refuse is not offered in the first place.
+///
+/// ALL EIGHT OF `PLANNED_WORK_ACTIONS` ARE HERE, and two of them are new. This enum
+/// carried six, so `fromWire` answered null for APPROVE and REJECT and
+/// `PlannedWorkAvailableActionModel` dropped them without a word — the server said the
+/// approval gate was open on this record and the app silently threw the sentence away.
+/// A dropped action is worse than an unoffered one: an unoffered action can at least be
+/// explained on screen, and [assignsCrew] is what lets the screen do that.
 enum PlannedWorkAction {
   plan('PLAN', 'planned_work.change_status'),
+
+  /// Accept the request AND staff it, in one decision.
+  ///
+  /// `PLANNED_WORK_ACTION_RULES.APPROVE.assignsCrew` is true and it is the only rule
+  /// that carries the flag: the approver names the employees as part of approving, and
+  /// the transition is refused without at least one. A work therefore cannot reach
+  /// PLANNED unstaffed — which is also why a PENDING_APPROVAL record has an empty crew,
+  /// and why the scope check has to admit `planned_work.approve` (see
+  /// [WorkGrants.hasPlannedWorkOversight]).
+  ///
+  /// It is parsed and it is NOT offered as a button. This app has no crew picker, and
+  /// building one is not a rename of an existing control: it needs the employee
+  /// directory, a multi-select and the team the work belongs to, none of which the field
+  /// app carries. A button that could only ever return "at least one employee is
+  /// required" is a promise the app cannot keep, so the screen says where approval is
+  /// done instead of pretending it can be done here.
+  approve('APPROVE', 'planned_work.approve', assignsCrew: true),
+
+  /// Send it back to its author with a reason, to be corrected and submitted again.
+  ///
+  /// Offered, unlike APPROVE, because it needs nothing this app cannot collect: the same
+  /// `planned_work.approve` key, and a reason, which the transition sheet already prompts
+  /// for on every action whose rule sets `requiresReason`.
+  reject('REJECT', 'planned_work.approve'),
   start('START', 'planned_work.change_status'),
   pause('PAUSE', 'planned_work.change_status'),
   resume('RESUME', 'planned_work.change_status'),
   complete('COMPLETE', 'planned_work.change_status'),
   cancel('CANCEL', 'planned_work.cancel');
 
-  const PlannedWorkAction(this.wireValue, this.permission);
+  const PlannedWorkAction(
+    this.wireValue,
+    this.permission, {
+    this.assignsCrew = false,
+  });
 
   final String wireValue;
 
   /// Mirrors `PLANNED_WORK_ACTION_RULES[...].permission`. The transition route has no
   /// router-level guard; it is enforced per action inside the service.
   final String permission;
+
+  /// The action assigns the crew and the server refuses to run it without one.
+  ///
+  /// Mirrors `PLANNED_WORK_ACTION_RULES[...].assignsCrew`, which only APPROVE sets. The
+  /// transition endpoint takes no employee list from this app, so an action carrying
+  /// this flag is parsed, counted and reported — and never drawn as a button.
+  final bool assignsCrew;
+
+  /// Whether this app can carry the action through to a server that would accept it.
+  ///
+  /// False for exactly the actions that need an input this client cannot collect. It is
+  /// a capability statement about the app, not a permission check and not a guess about
+  /// the record: `availableActions` still says whether the move is legal, and
+  /// [WorkGrants.allows] still says whether the caller may make it.
+  bool get isOfferable => !assignsCrew;
 
   static PlannedWorkAction? fromWire(String? value) {
     if (value == null) return null;
@@ -222,8 +257,14 @@ enum PlannedWorkAction {
     return null;
   }
 
-  /// CANCEL is destructive; everything else is a routine move.
-  bool get isDestructive => this == PlannedWorkAction.cancel;
+  /// Drawn as the recessive red button rather than the primary one.
+  ///
+  /// CANCEL calls the work off. REJECT hands it back to whoever raised it, which is
+  /// recoverable — they correct it and submit again — but it is still a refusal of
+  /// somebody else's request and not a step forward through the job, so it gets the same
+  /// deliberate, secondary treatment rather than sitting under the reader's thumb.
+  bool get isDestructive =>
+      this == PlannedWorkAction.cancel || this == PlannedWorkAction.reject;
 }
 
 /// Quantity unit, from `MATERIAL_UNITS`.

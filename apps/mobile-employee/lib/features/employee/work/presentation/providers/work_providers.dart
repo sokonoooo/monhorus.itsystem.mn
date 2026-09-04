@@ -11,6 +11,7 @@ import '../../../../auth/presentation/providers/auth_provider.dart';
 import '../../../home/presentation/providers/home_providers.dart';
 import '../../../identity/employee_self.dart';
 import '../../../identity/employee_self_provider.dart';
+import '../../../shared/server_day.dart';
 import '../../../shared/service_request_models.dart';
 import '../../../shared/service_request_vocabulary.dart';
 import '../../data/datasources/work_remote_data_source.dart';
@@ -42,6 +43,63 @@ T _unwrap<T>(ApiResult<T> result) => result.when(
       failure: (Failure failure) => throw failure,
     );
 
+/// A ceiling on every paging loop below, not on the list.
+///
+/// `totalPages` is the server's own arithmetic, and a server that miscounts it would spin
+/// an unbounded loop on a phone. Twenty pages of a hundred is two thousand records on one
+/// technician's plate — far past any real caseload, and the same ceiling the Төсөл tab
+/// walks a floor's devices under. Hitting it is reported rather than hidden; see
+/// [_WalkedList.isComplete].
+const int _maxListPages = 20;
+
+/// The whole of a paginated list, and whether it really is the whole of it.
+class _WalkedList<T> {
+  const _WalkedList(this.items, {required this.isComplete, required this.total});
+
+  final List<T> items;
+
+  /// False only when the loop guard stopped the walk, which is the one case where a
+  /// counter over [items] would understate the truth. The screen says so rather than
+  /// printing a confident number.
+  final bool isComplete;
+
+  /// The server's own count for the query, taken from the first page.
+  ///
+  /// It was parsed and thrown away at every one of these call sites. It is kept now
+  /// because it is the only figure in a truncated answer that is not a guess.
+  final int total;
+}
+
+/// Reads a list to its end, or to [_maxListPages], whichever comes first.
+///
+/// EVERY COUNTER ON THIS TAB IS COUNTED FROM THE ROWS, which is why this exists. "Идэвхтэй",
+/// "Өнөөдөр" and "Хэтэрсэн" are not figures the API publishes — no endpoint answers "how
+/// many of my planned works are overdue" — so the app has to hold the rows to count them,
+/// and holding one page of a hundred meant printing the size of a page as if it were the
+/// size of the queue. Pages are walked in order because the first response is what says
+/// how many there are.
+Future<_WalkedList<T>> _walkPages<T>(
+  Future<ApiResult<PaginatedData<T>>> Function(int page) read,
+) async {
+  final List<T> items = <T>[];
+  int total = 0;
+  bool complete = false;
+
+  for (int page = 1; page <= _maxListPages; page++) {
+    final PaginatedData<T> slice = _unwrap(await read(page));
+    if (page == 1) total = slice.total;
+    items.addAll(slice.items);
+    // An empty page means there is nothing further to read; carrying on would loop
+    // against a server that disagrees with its own `totalPages`.
+    if (slice.items.isEmpty || page >= slice.totalPages) {
+      complete = true;
+      break;
+    }
+  }
+
+  return _WalkedList<T>(items, isComplete: complete, total: total);
+}
+
 // -- Permissions -------------------------------------------------------------
 
 /// Live permission gates, read from the effective set `GET /auth/me` reported.
@@ -68,6 +126,9 @@ class WorkGrants {
       _permissions.contains(PermissionKeys.plannedWorkSubmitReport);
   bool get canApproveReport =>
       _permissions.contains(PermissionKeys.plannedWorkApproveReport);
+
+  /// Whether this caller may decide the approval gate — APPROVE and REJECT both.
+  bool get canApprove => _permissions.contains(PermissionKeys.plannedWorkApprove);
 
   /// Whether a specific lifecycle action may be offered. The record's
   /// `availableActions` says the action is legal for the record; this says it is
@@ -104,6 +165,18 @@ class WorkGrants {
     PermissionKeys.plannedWorkUpdate,
     PermissionKeys.plannedWorkReschedule,
     PermissionKeys.plannedWorkCancel,
+    /*
+     * `planned_work.approve` has to be here, and its absence was not a cosmetic gap.
+     *
+     * A PENDING_APPROVAL work has an EMPTY CREW BY CONSTRUCTION — approval is the act
+     * that assigns one — so a caller this app treats as scoped can never match a record
+     * in the approval queue. A role granted this key and nothing else would hold the
+     * permission, be shown an empty queue and no controls, and get no error to explain
+     * it. The backend's own `OVERSIGHT_PERMISSIONS` comment predicts exactly this, and
+     * says why nobody noticed: the seeded roles that carry this key also carry
+     * `planned_work.update` and were unscoped anyway.
+     */
+    PermissionKeys.plannedWorkApprove,
     PermissionKeys.plannedWorkApproveReport,
     PermissionKeys.dispatchAssign,
   };
@@ -306,6 +379,8 @@ class PlannedWorkBoard {
     required this.upcoming,
     required this.finished,
     this.identityProblem,
+    this.isComplete = true,
+    this.serverTotal,
   });
 
   final List<PlannedWorkListItemModel> overdue;
@@ -323,30 +398,50 @@ class PlannedWorkBoard {
   /// login until an administrator links it".
   final WorkIdentityProblem? identityProblem;
 
+  /// Whether these rows are the whole answer.
+  ///
+  /// False only when the paging loop hit its guard. Every figure below is counted from
+  /// the rows, so a partial read makes each of them a floor rather than a count, and the
+  /// screen has to say so instead of printing a confident number. See [serverTotal].
+  final bool isComplete;
+
+  /// The server's own count for the query, when one was reported.
+  ///
+  /// `PaginatedData.total` was parsed by the transport and dropped on the floor here, so
+  /// the one figure in the answer that did not depend on how much of it the app had read
+  /// was the one figure nothing used.
+  final int? serverTotal;
+
   bool get isEmpty =>
       overdue.isEmpty && active.isEmpty && upcoming.isEmpty && finished.isEmpty;
 
+  /// The rows this board is holding. Equal to [serverTotal] whenever [isComplete].
   int get total =>
       overdue.length + active.length + upcoming.length + finished.length;
 
   int get openCount => overdue.length + active.length + upcoming.length;
 
-  /// Records due before midnight tonight that are not finished yet.
+  /// Records due before the end of the SERVER'S day that are not finished yet.
+  ///
+  /// It used to build midnight out of `DateTime.now().toLocal()` — the handset's own
+  /// zone, which had no part in any of this. The backend decides what falls due today
+  /// against `env.APP_TIMEZONE` and publishes that zone on the dashboard and on every
+  /// calendar result, so a technician abroad, or a phone on automatic time zone at a
+  /// border, drew a different «Өнөөдөр» from the same rows than the dispatch board did.
+  /// See `shared/server_day.dart`, which falls back to the handset until the server's
+  /// zone has actually arrived.
   int dueTodayCount({DateTime? now}) {
-    final DateTime reference = (now ?? DateTime.now()).toLocal();
-    final DateTime endOfDay =
-        DateTime(reference.year, reference.month, reference.day, 23, 59, 59);
-
     return <PlannedWorkListItemModel>[...overdue, ...active, ...upcoming]
-        .where((PlannedWorkListItemModel item) {
-      final DateTime? due = item.plannedEndDate?.toLocal();
-      return due != null && !due.isAfter(endOfDay);
-    }).length;
+        .where((PlannedWorkListItemModel item) =>
+            isDueByEndOfServerDay(item.plannedEndDate, now: now))
+        .length;
   }
 
   factory PlannedWorkBoard.from(
     List<PlannedWorkListItemModel> items, {
     WorkIdentityProblem? identityProblem,
+    bool isComplete = true,
+    int? serverTotal,
   }) {
     final List<PlannedWorkListItemModel> overdue = <PlannedWorkListItemModel>[];
     final List<PlannedWorkListItemModel> active = <PlannedWorkListItemModel>[];
@@ -402,6 +497,8 @@ class PlannedWorkBoard {
       upcoming: upcoming,
       finished: finished,
       identityProblem: identityProblem,
+      isComplete: isComplete,
+      serverTotal: serverTotal,
     );
   }
 }
@@ -477,13 +574,21 @@ final FutureProvider<PlannedWorkBoard> plannedWorkBoardProvider =
   final WorkIdentity identity = await ref.watch(workIdentityProvider.future);
   final WorkRepository repository = ref.watch(workRepositoryProvider);
 
-  final PaginatedData<PlannedWorkListItemModel> page =
-      _unwrap(await repository.listPlannedWork());
+  // WALKED, NOT SAMPLED. This read a single `limit: 100` page and then counted "Идэвхтэй",
+  // "Өнөөдөр" and "Хэтэрсэн" off it, so a technician carrying more than a page of work was
+  // shown the size of the page. `PaginatedData.total` was parsed and discarded in the same
+  // line; it is kept now, and it is what the screen falls back to saying if the guard trips.
+  final _WalkedList<PlannedWorkListItemModel> walked =
+      await _walkPages<PlannedWorkListItemModel>(
+    (int page) => repository.listPlannedWork(page: page),
+  );
 
   return PlannedWorkBoard.from(
-    page.items,
+    walked.items,
     identityProblem:
         identity is UnresolvedWorkIdentity ? identity.problem : null,
+    isComplete: walked.isComplete,
+    serverTotal: walked.total,
   );
 });
 
@@ -501,6 +606,7 @@ class AssignedRequests {
     required this.items,
     this.notice,
     this.identityProblem,
+    this.isComplete = true,
   });
 
   static const AssignedRequests none =
@@ -517,6 +623,9 @@ class AssignedRequests {
   /// list is legitimately empty and completely indistinguishable from a quiet week.
   final WorkIdentityProblem? identityProblem;
 
+  /// Whether these rows are the whole answer; see [PlannedWorkBoard.isComplete].
+  final bool isComplete;
+
   bool get isEmpty => items.isEmpty;
 
   /// The requests still expecting something of the reader.
@@ -530,16 +639,16 @@ class AssignedRequests {
 
   int get activeCount => outstanding.length;
 
-  /// Outstanding rows whose SLA deadline falls before midnight tonight.
-  int get dueTodayCount {
-    final DateTime now = DateTime.now().toLocal();
-    final DateTime midnight =
-        DateTime(now.year, now.month, now.day, 23, 59, 59);
-    return outstanding.where((ServiceRequestListItemModel request) {
-      final DateTime? due = request.slaDueAt?.toLocal();
-      return due != null && !due.isAfter(midnight);
-    }).length;
-  }
+  /// Outstanding rows whose SLA deadline falls before the end of the SERVER'S day.
+  ///
+  /// The twin of [PlannedWorkBoard.dueTodayCount], and it had the same fault: midnight
+  /// was built from `DateTime.now().toLocal()`, so the handset's region decided which
+  /// deadlines counted as today's while the backend was deciding the same question
+  /// against `env.APP_TIMEZONE`.
+  int dueTodayCount({DateTime? now}) => outstanding
+      .where((ServiceRequestListItemModel request) =>
+          isDueByEndOfServerDay(request.slaDueAt, now: now))
+      .length;
 
   /// Past the deadline on the backend's own verdict — the computed `slaState`. Nothing
   /// here subtracts dates.
@@ -602,25 +711,36 @@ final FutureProvider<AssignedRequests> assignedRequestsProvider =
     );
   }
 
-  final ApiResult<PaginatedData<ServiceRequestListItemModel>> result =
-      await ref.watch(workRepositoryProvider).listAssignedServiceRequests();
+  // Walked rather than sampled, and the walk matters more here than anywhere else on the
+  // tab: the response carries the whole unclaimed pool as well as the reader's own work,
+  // so a hundred-row page can be almost entirely other people's rows and still be the only
+  // page the app ever read. The subtraction below then leaves a handful, and "Идэвхтэй"
+  // reported that handful as the reader's whole caseload.
+  try {
+    final _WalkedList<ServiceRequestListItemModel> walked =
+        await _walkPages<ServiceRequestListItemModel>(
+      (int page) => ref
+          .read(workRepositoryProvider)
+          .listAssignedServiceRequests(page: page),
+    );
 
-  return result.when(
-    success: (PaginatedData<ServiceRequestListItemModel> page) {
-      final List<ServiceRequestListItemModel> mine = page.items
-          .where((ServiceRequestListItemModel request) => request.isAssignedTo(
-                employeeId: identity.employeeId,
-                teamId: identity.teamId,
-              ))
-          .toList()
-        ..sort(_byOutstandingThenUrgency);
-      return AssignedRequests(items: mine);
-    },
-    failure: (Failure failure) => AssignedRequests(
+    final List<ServiceRequestListItemModel> mine = walked.items
+        .where((ServiceRequestListItemModel request) => request.isAssignedTo(
+              employeeId: identity.employeeId,
+              teamId: identity.teamId,
+            ))
+        .toList()
+      ..sort(_byOutstandingThenUrgency);
+
+    return AssignedRequests(items: mine, isComplete: walked.isComplete);
+  } on Failure catch (failure) {
+    // A failed read is a notice on the value rather than a thrown failure, exactly as it
+    // was before the walk: the rows and the explanation are independent facts.
+    return AssignedRequests(
       items: const <ServiceRequestListItemModel>[],
       notice: failure.message,
-    ),
-  );
+    );
+  }
 });
 
 /// Live work first, then whatever will breach first.
@@ -836,14 +956,28 @@ String _explainAction(Failure failure) {
 /// body, resolves the claimer from the session, and answers to `service_request.claim`,
 /// which a technician does hold. See [ClaimController].
 class OpenRequestPool {
-  const OpenRequestPool({required this.items, required this.total});
+  const OpenRequestPool({
+    required this.items,
+    required this.total,
+    this.isComplete = true,
+  });
 
   final List<ServiceRequestListItemModel> items;
 
-  /// The server's own count for the two statuses together, which can exceed
-  /// `items.length` when the pool is longer than the page the data source asked for.
-  /// Shown as-is; the app does not restate a figure the backend computed.
+  /// The server's own count for the two statuses together. Shown as-is; the app does not
+  /// restate a figure the backend computed.
   final int total;
+
+  /// Whether [items] is the whole pool [total] counts.
+  ///
+  /// THIS IS WHY THE WALK EXISTS. [urgentCount] and [slaRiskCount] are counted from the
+  /// rows and were rendered directly beside [total], which is the server's — two figures
+  /// over two different populations, side by side in one strip, with nothing to say that
+  /// "12 эзэнгүй" and "0 яаралтай" had been measured over different sets of requests. The
+  /// pool is now read to its end so the three figures describe the same rows, and when the
+  /// guard stops the walk the screen says the strip is partial rather than letting the
+  /// contradiction stand.
+  final bool isComplete;
 
   bool get isEmpty => items.isEmpty;
 
@@ -879,10 +1013,16 @@ final FutureProvider<OpenRequestPool> openRequestPoolProvider =
   }
 
   final WorkRepository repository = ref.watch(workRepositoryProvider);
-  final PaginatedData<ServiceRequestListItemModel> page =
-      _unwrap(await repository.listOpenServiceRequests());
+  final _WalkedList<ServiceRequestListItemModel> walked =
+      await _walkPages<ServiceRequestListItemModel>(
+    (int page) => repository.listOpenServiceRequests(page: page),
+  );
 
-  return OpenRequestPool(items: page.items, total: page.total);
+  return OpenRequestPool(
+    items: walked.items,
+    total: walked.total,
+    isComplete: walked.isComplete,
+  );
 });
 
 /// What the pool is currently doing about a claim.

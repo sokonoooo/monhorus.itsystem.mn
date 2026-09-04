@@ -243,13 +243,13 @@ void main() {
       expect(RiskLevel.band6.label, 'Хяналтад авах');
       expect(RiskLevel.band6.tone, AccentTone.purple);
 
-      // Best-first, in the enum's own order rather than the server's, so the legend and
-      // the hero stair keep reading as an escalation.
+      // In the server's own order, which `riskBandsOf` already emits best-first — so a
+      // spare sits where its cut points put it, not where the enum declares it.
       expect(riskBandsInUse(), <RiskLevel>[
         RiskLevel.normal,
         RiskLevel.attention,
-        RiskLevel.outOfService,
         RiskLevel.band6,
+        RiskLevel.outOfService,
       ]);
       expect(riskBandsInUse(), isNot(contains(RiskLevel.band7)));
     });
@@ -258,10 +258,12 @@ void main() {
         () {
       expect(RiskLevel.fromWire('BAND_7'), RiskLevel.band7);
 
-      // And no legacy score can be read into one: their range is empty on purpose.
-      for (int score = 0; score <= 100; score++) {
-        expect(RiskLevel.fromScore(score).index, lessThan(RiskLevel.band6.index));
-      }
+      // An unconfigured spare carries an EMPTY range, so nothing that reads a range can
+      // land on a band nobody defined — and a configured one takes the server's.
+      expect(RiskLevel.band7.configuredMax, lessThan(RiskLevel.band7.configuredMin));
+      installServerVocabulary(ServerVocabulary.fromJson(_configured()));
+      expect(RiskLevel.band6.configuredMin, 41);
+      expect(RiskLevel.band6.configuredMax, 60);
     });
   });
 

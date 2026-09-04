@@ -7,6 +7,7 @@ import '../../../../../core/network/paginated_data.dart';
 import '../../../../auth/domain/entities/app_user.dart';
 import '../../../../auth/presentation/providers/auth_provider.dart';
 import '../../../home/presentation/providers/home_providers.dart';
+import '../../../project/domain/repositories/project_repository.dart';
 import '../../../project/data/models/object_models.dart';
 import '../../../project/domain/entities/object_enums.dart';
 import '../../../project/data/models/project_models.dart';
@@ -825,16 +826,37 @@ final FutureProviderFamily<List<FloorModel>, String> conclusionFloorsProvider =
   return page.items;
 });
 
+/// A ceiling on the paging loop, not on the floor. The same twenty pages of a hundred the
+/// Төсөл tab walks a floor plan under.
+const int _maxEquipmentPages = 20;
+
 /// Equipment on one floor, filtered to what may actually be assessed.
+///
+/// EVERY PAGE, not the first hundred. `/floors/:id/objects` caps a page at 100 and this
+/// read took one, so on a floor with more than that the equipment picker simply did not
+/// offer the devices past the cut — and a picker that is missing the device in front of
+/// the technician is worse than a slow one: there is nothing on screen to suggest the
+/// list is short, so the finding gets recorded against the wrong device or not at all.
+/// The Төсөл tab's floor plan was fixed the same way and against the same cap.
 ///
 /// Decommissioned equipment is excluded: it is not in service, so a fresh finding about it
 /// is not a thing a technician should be recording. Anything the caller may not read never
 /// arrives here at all — the route is tenant-scoped server-side.
 final FutureProviderFamily<List<ObjectListItemModel>, String> conclusionEquipmentProvider =
     FutureProvider.family<List<ObjectListItemModel>, String>((Ref ref, String floorId) async {
-  final PaginatedData<ObjectListItemModel> page =
-      _unwrapResult(await ref.watch(projectRepositoryProvider).listFloorObjects(floorId));
-  return page.items
+  final ProjectRepository repository = ref.watch(projectRepositoryProvider);
+  final List<ObjectListItemModel> all = <ObjectListItemModel>[];
+
+  for (int page = 1; page <= _maxEquipmentPages; page++) {
+    final PaginatedData<ObjectListItemModel> slice =
+        _unwrapResult(await repository.listFloorObjects(floorId, page: page));
+    all.addAll(slice.items);
+    // An empty page means there is nothing further to read; carrying on would loop
+    // against a server that disagrees with its own `totalPages`.
+    if (slice.items.isEmpty || page >= slice.totalPages) break;
+  }
+
+  return all
       .where((ObjectListItemModel object) => object.status != ObjectStatus.decommissioned)
       .toList();
 });

@@ -170,9 +170,9 @@ class CalendarEventModel {
   ///
   ///   * Planned work settles twice — `COMPLETED` when the work is finished and
   ///     `ARCHIVED` once its report has been approved — and `CANCELLED` is called off.
-  ///     `GET /calendar` already drops cancelled planned work server-side
-  ///     (`status: { $ne: 'CANCELLED' }`), so that arm is a guard rather than an
-  ///     expectation.
+  ///     All three are [PlannedWorkStatus.isFinished]. `GET /calendar` already drops
+  ///     cancelled planned work server-side (`status: { $ne: 'CANCELLED' }`), so that
+  ///     arm is a guard rather than an expectation.
   ///   * A service request settles at `COMPLETED` or `CANCELLED`, which is exactly
   ///     [ServiceRequestStatus.isTerminal].
   ///
@@ -187,12 +187,13 @@ class CalendarEventModel {
   ///
   /// A status or a source this build does not recognise reads as unfinished. Dropping a
   /// row the app cannot classify would hide work; keeping it costs one line.
+  /// CANCELLED used to be re-added here — `parsed.isFinished || parsed == cancelled` —
+  /// because the home tab's own copy of the planned-work enum excluded it while the Ажил
+  /// tab's included it, and this getter needed the second answer. There is one enum now
+  /// and one definition of finished, so the correction is gone rather than moved.
   bool get isFinished => switch (source) {
-        CalendarSource.plannedWork => switch (PlannedWorkStatus.fromWire(status)) {
-            final PlannedWorkStatus parsed =>
-              parsed.isFinished || parsed == PlannedWorkStatus.cancelled,
-            null => false,
-          },
+        CalendarSource.plannedWork =>
+          PlannedWorkStatus.fromWire(status)?.isFinished ?? false,
         CalendarSource.serviceRequest =>
           ServiceRequestStatus.fromWire(status)?.isTerminal ?? false,
         null => false,

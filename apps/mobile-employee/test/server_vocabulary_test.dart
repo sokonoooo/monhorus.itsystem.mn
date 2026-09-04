@@ -249,13 +249,19 @@ void main() {
       expect(RiskLevel.band6.label, 'Хяналтад авах');
       expect(RiskLevel.band6.tone, Tone.purple);
 
-      // Best-first, in the enum's own order rather than the server's, so the legend
-      // and the stair keep reading as an escalation.
+      // BEST-FIRST, IN THE SERVER'S OWN ORDER. This used to assert the opposite —
+      // `[normal, attention, outOfService, band6]` — because the function re-sorted the
+      // ladder by the enum's declaration order, on the stated ground that the server
+      // publishes it worst-first. It does not: `riskBandsOf` in packages/shared reverses
+      // the stored ladder before serving it, so `GET /vocabulary` is already highest
+      // score first. The sort corrected nothing and buried the configured spare — 41-60,
+      // between ATTENTION and OUT_OF_SERVICE — at the end of every legend in the app,
+      // which is the one place its position carries meaning.
       expect(riskBandsInUse(), <RiskLevel>[
         RiskLevel.normal,
         RiskLevel.attention,
-        RiskLevel.outOfService,
         RiskLevel.band6,
+        RiskLevel.outOfService,
       ]);
       expect(riskBandsInUse(), isNot(contains(RiskLevel.band7)));
     });
