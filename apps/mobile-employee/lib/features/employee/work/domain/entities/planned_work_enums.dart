@@ -1,9 +1,11 @@
 /// The planned-work vocabulary, transcribed from
 /// `packages/shared/src/constants/planned-work.ts`.
 ///
-/// Every enum here parses defensively: an unrecognised wire value degrades to a
-/// neutral member rather than throwing, so a backend that gains a status in a later
-/// release does not crash a technician's phone in the field.
+/// Every enum here parses defensively, so a backend that gains a status in a later
+/// release does not crash a technician's phone in the field. Where a neutral member
+/// exists an unrecognised value degrades to it; where none does — [MaterialUnit],
+/// where every member is a real measure — `fromWire` returns null and the caller
+/// shows the server's own string rather than inventing one.
 ///
 /// Nothing in this file recomputes a value the server publishes. `effectiveStatus`,
 /// `progressPercent`, task `status` and `riskLevel` are all derived server-side; the
@@ -241,11 +243,64 @@ enum MaterialUnit {
   /// Lower-case so it reads inside a sentence: "нийт 20 цэг-с".
   final String label;
 
-  static MaterialUnit fromWire(String? value) {
-    return MaterialUnit.values.firstWhere(
-      (MaterialUnit unit) => unit.wireValue == value,
-      orElse: () => MaterialUnit.piece,
+  /// Null for a unit added to `MATERIAL_UNITS` after this build shipped, as
+  /// `NotificationEvent.fromWire` and `ServiceRequestStatus.fromWire` do it.
+  ///
+  /// This used to end `orElse: () => MaterialUnit.piece`, which is the one fallback a
+  /// unit must not have: a measure is half of what a quantity means, so folding an
+  /// unknown value onto PIECE printed 40 metres of cable back to the technician as 40
+  /// ширхэг — a wrong reading rather than an unknown one. Read through
+  /// [MaterialUnitValue], which keeps the server's own string for display.
+  static MaterialUnit? fromWire(String? value) {
+    if (value == null) return null;
+    for (final MaterialUnit unit in MaterialUnit.values) {
+      if (unit.wireValue == value) return unit;
+    }
+    return null;
+  }
+}
+
+/// A quantity's unit as the record carries it: the enum member when this build knows
+/// the wire value, and the server's own string when it does not.
+///
+/// The raw value is kept rather than dropped because a technician reading «40 TONNE»
+/// learns something true, while «40» alone loses the measure and «40 ширхэг» states a
+/// measure nobody recorded. Nothing here guesses: [label] is empty only when the
+/// record carried no unit at all.
+@immutable
+class MaterialUnitValue {
+  const MaterialUnitValue(this.known, this.wireValue);
+
+  factory MaterialUnitValue.fromWire(String? value) {
+    final String? raw = value?.trim();
+    return MaterialUnitValue(
+      MaterialUnit.fromWire(raw),
+      raw == null || raw.isEmpty ? null : raw,
     );
   }
+
+  /// A unit this build was compiled against, or null.
+  final MaterialUnit? known;
+
+  /// Exactly what the server sent, or null when it sent nothing.
+  final String? wireValue;
+
+  bool get isKnown => known != null;
+
+  /// «метр» for a known unit, the wire value for one this build does not know, and an
+  /// empty string when there is no unit to name. Never a substituted unit.
+  String get label => known?.label ?? wireValue ?? '';
+
+  @override
+  bool operator ==(Object other) =>
+      other is MaterialUnitValue &&
+      other.known == known &&
+      other.wireValue == wireValue;
+
+  @override
+  int get hashCode => Object.hash(known, wireValue);
+
+  @override
+  String toString() => 'MaterialUnitValue($label)';
 }
 

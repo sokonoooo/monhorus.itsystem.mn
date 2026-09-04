@@ -199,8 +199,10 @@ class _PreviewBody extends StatelessWidget {
               for (int i = 0; i < preview.materials.length; i++)
                 InfoRow(
                   label: preview.materials[i].name,
-                  value: '${formatQuantity(preview.materials[i].quantity)}'
-                      ' ${preview.materials[i].unit.label}',
+                  value: formatQuantityWithUnit(
+                    preview.materials[i].quantity,
+                    preview.materials[i].unit,
+                  ),
                   divider: i < preview.materials.length - 1,
                 ),
             ],
@@ -265,7 +267,7 @@ class _TaskLine extends StatelessWidget {
           const SizedBox(height: 4),
           Text(
             '${line.floorName} · ${formatQuantity(line.completedQuantity)}/'
-            '${formatQuantity(line.totalQuantity)} ${line.unit.label} · '
+            '${formatQuantityWithUnit(line.totalQuantity, line.unit)} · '
             '${formatPercent(line.progressPercent)}'
             '${line.score == null ? '' : ' · ${line.score} оноо'}'
             '${line.riskLevel == null ? '' : ' · ${line.riskLevel!.label}'}',

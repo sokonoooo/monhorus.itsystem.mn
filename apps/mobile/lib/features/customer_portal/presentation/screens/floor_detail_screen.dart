@@ -321,6 +321,12 @@ class _DevicesTab extends ConsumerWidget {
 /// building filter but not a floor one, so this fetches the building's requests and
 /// narrows them to this floor using the floor reference each row already carries.
 /// The heading says as much rather than implying a complete floor audit trail.
+///
+/// The provider walks the building's pages under a ceiling and reports whether it
+/// reached the end. That flag decides which sentence an empty result gets: a walk that
+/// finished may say this floor has no requests, and one cut short by the ceiling may
+/// only say none turned up in what it read. The two must not be printed as the same
+/// thing — the first is a fact about the floor, the second is a fact about the read.
 class _HistoryTab extends ConsumerWidget {
   const _HistoryTab({required this.buildingId, required this.floorId});
 
@@ -333,19 +339,23 @@ class _HistoryTab extends ConsumerWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
         const SectionCaption('Энэ давхрын хүсэлтүүд', topPadding: 0),
-        CustomerAsyncView<List<ServiceRequestListItemModel>>(
+        CustomerAsyncView<BuildingServiceHistory>(
           value: ref.watch(buildingServiceRequestsProvider(buildingId)),
           onRetry: () =>
               ref.invalidate(buildingServiceRequestsProvider(buildingId)),
-          builder: (BuildContext ctx, List<ServiceRequestListItemModel> items) {
-            final List<ServiceRequestListItemModel> onThisFloor = items
+          builder: (BuildContext ctx, BuildingServiceHistory history) {
+            final List<ServiceRequestListItemModel> onThisFloor = history.requests
                 .where((ServiceRequestListItemModel r) => r.floor?.id == floorId)
                 .toList(growable: false);
 
             if (onThisFloor.isEmpty) {
-              return const CustomerEmptyState(
+              return CustomerEmptyState(
                 icon: Icons.history_outlined,
-                message: 'Энэ давхарт бүртгэгдсэн үйлчилгээний хүсэлт алга байна.',
+                message: history.complete
+                    ? 'Энэ давхарт бүртгэгдсэн үйлчилгээний хүсэлт алга байна.'
+                    : 'Барилгын сүүлийн ${history.requests.length} хүсэлтээс энэ '
+                        'давхарт хамаарах нь олдсонгүй. Үүнээс өмнөх хүсэлт '
+                        'бүртгэгдсэн байж болзошгүй.',
               );
             }
 
@@ -381,7 +391,16 @@ class _HistoryTab extends ConsumerWidget {
             0,
           ),
           child: Text(
-            'Тухайн объектын бүрэн түүхийг объектын дэлгэрэнгүй хуудаснаас харна.',
+            <String>[
+              'Тухайн объектын бүрэн түүхийг объектын дэлгэрэнгүй хуудаснаас харна.',
+              // Printed whenever the walk stopped at its ceiling, list or no list: a
+              // timeline read from a truncated set is as incomplete as an empty one.
+              if (ref.watch(buildingServiceRequestsProvider(buildingId)).valueOrNull
+                      ?.complete ==
+                  false)
+                'Барилгын хүсэлтийн жагсаалт хэт урт тул зөвхөн сүүлийн үеийнхийг '
+                    'уншсан болно.',
+            ].join(' '),
             style: CustomerTokens.rowSub,
           ),
         ),

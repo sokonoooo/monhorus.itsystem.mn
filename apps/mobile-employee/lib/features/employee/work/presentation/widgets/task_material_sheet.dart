@@ -172,12 +172,11 @@ class _TaskMaterialSheetState extends ConsumerState<_TaskMaterialSheet> {
           context,
           message: typed <= 0
               ? '${updated.name}-н зарцуулалт устлаа — үлдэгдэл '
-                  '${formatQuantity(updated.remainingQuantity)} '
-                  '${updated.unit.label}'
-              : '${updated.name} · ${formatQuantity(typed)} '
-                  '${updated.unit.label} бүртгэгдлээ — үлдэгдэл '
-                  '${formatQuantity(updated.remainingQuantity)} '
-                  '${updated.unit.label}',
+                  '${formatQuantityWithUnit(updated.remainingQuantity, updated.unit)}'
+              : '${updated.name} · '
+                  '${formatQuantityWithUnit(typed, updated.unit)} бүртгэгдлээ — '
+                  'үлдэгдэл '
+                  '${formatQuantityWithUnit(updated.remainingQuantity, updated.unit)}',
           tone: EmployeeTokens.green,
         );
       },
@@ -290,7 +289,9 @@ class _TaskMaterialSheetState extends ConsumerState<_TaskMaterialSheet> {
                     const SizedBox(height: 6),
 
                     FieldLabel(
-                      selected == null
+                      // The unit is in brackets only when there is one to name;
+                      // an empty pair of brackets would read as a missing word.
+                      selected == null || selected.unit.label.isEmpty
                           ? 'Зарцуулсан тоо хэмжээ'
                           : 'Зарцуулсан тоо хэмжээ (${selected.unit.label})',
                     ),
@@ -318,8 +319,8 @@ class _TaskMaterialSheetState extends ConsumerState<_TaskMaterialSheet> {
                                 'хадгалагдана — өмнөх дээр нэмэгдэхгүй. 0 бол '
                                 'бүртгэл устаж, материал үлдэгдэлд буцна.'
                             : 'Энэ дэд ажил ${selected?.name ?? ''} материалаас '
-                                '${formatQuantity(existing.quantity)} '
-                                '${existing.unit.label} бүртгүүлсэн байна. '
+                                '${formatQuantityWithUnit(existing.quantity, existing.unit)} '
+                                'бүртгүүлсэн байна. '
                                 'Оруулсан тоо түүнийг ЗАСНА — дээр нь '
                                 'нэмэгдэхгүй. 0 бол бүртгэл устаж, материал '
                                 'үлдэгдэлд буцна.',
@@ -447,8 +448,8 @@ class _MaterialOption extends StatelessWidget {
             if (recorded != null) ...<Widget>[
               const SizedBox(height: 6),
               Text(
-                'Энэ дэд ажлаас: ${formatQuantity(recorded.quantity)} '
-                '${recorded.unit.label}'
+                'Энэ дэд ажлаас: '
+                '${formatQuantityWithUnit(recorded.quantity, recorded.unit)}'
                 '${recorded.recordedByName == null ? '' : ' · ${recorded.recordedByName}'}',
                 style: EmployeeTokens.microNote,
               ),

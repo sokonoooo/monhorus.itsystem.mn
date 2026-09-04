@@ -198,15 +198,26 @@ The web bundle's API origin is compiled in at **build** time, and this host cann
 (1.6 GB RAM, shared with four live sites — a `vite build` there risks OOM-killing a
 neighbour). So build on a workstation and ship artefacts.
 
+**Do not pass `VITE_API_BASE_URL` on the command line.** `apps/web/.env.production` is
+committed for exactly this reason and already carries
+`https://monhorus.itsystem.mn/api/v1`; a value given on the command line silently
+overrides it, and because the origin is compiled in there is no runtime configuration to
+correct the bundle afterwards. Until 2026-09-04 this section told you to override it with
+`http://103.87.255.221:3020/api/v1` and then `grep` the bundle for that same string — a
+check that passed precisely when the build was wrong, shipping an admin console pointed at
+the retired plain-HTTP host. If a build genuinely needs a different origin, edit
+`.env.production` for that build rather than overriding it here.
+
 ```bash
 # On the workstation
 npm ci
-npm run build
-VITE_API_BASE_URL=http://103.87.255.221:3020/api/v1 npm run build --workspace @monhorus/web
+npm run build            # apps/web/.env.production supplies VITE_API_BASE_URL
 
-# Verify before shipping: the bundle must carry the server origin and NOT localhost
-grep -ro "103.87.255.221:3020/api/v1" apps/web/dist/assets/ | head -1   # must match
-grep -ro "localhost:4000"             apps/web/dist/assets/ | head -1   # must be empty
+# Verify before shipping: the bundle must carry the TLS origin, and must carry neither
+# localhost nor the retired plain-HTTP origin
+grep -ro "monhorus.itsystem.mn/api/v1" apps/web/dist/assets/ | head -1   # must match
+grep -ro "localhost:4000"              apps/web/dist/assets/ | head -1   # must be empty
+grep -ro "103.87.255.221:3020"         apps/web/dist/assets/ | head -1   # must be empty
 
 tar czf monhorus.tar.gz --exclude=node_modules --exclude=.git --exclude='*.pdf' \
   --exclude=apps/mobile --exclude=apps/mobile-employee \
@@ -245,7 +256,8 @@ Plain HTTP was a hard blocker for the Flutter apps, not a style preference. iOS 
 `NSAppTransportSecurity` with `NSAllowsLocalNetworking` only, which exempts RFC1918
 addresses but not a public IP. Android release builds get the platform default of
 cleartext-blocked. **A release APK pointed at `http://103.87.255.221` cannot connect on
-either platform**, which is why the network security config in section 8 existed.
+either platform**, which is why the cleartext exception in section 8's network security
+config existed. That exception is gone; the file itself is kept, and section 8 says why.
 
 The A record was repointed to this host and the migration ran in full:
 
@@ -257,7 +269,9 @@ All four follow-on steps were completed together — doing fewer half-migrates t
 
 1. `CORS_ORIGINS=https://monhorus.itsystem.mn,http://103.87.255.221:3020`. Both, not one:
    the second keeps already-installed APKs working. Restart after editing.
-2. Web bundle rebuilt with `VITE_API_BASE_URL=https://monhorus.itsystem.mn/api/v1`.
+2. Web bundle rebuilt against `https://monhorus.itsystem.mn/api/v1`. That value moved
+   into the committed `apps/web/.env.production` at the same time, which is why section 6
+   no longer sets it on the command line.
 3. Both APKs rebuilt with the matching `--dart-define` (section 8).
 4. The cleartext exception is gone from `network_security_config.xml` in both apps. The
    file is kept, reduced to an explicit `cleartextTrafficPermitted="false"`, because the
@@ -287,11 +301,17 @@ Rebuilt and republished **2026-08-13** against the TLS origin. Downloadable from
 | | Employee | Customer |
 |---|---|---|
 | File | `monhorus-employee.apk` | `monhorus-customer.apk` |
-| applicationId | `mn.monhorus.monhorus_employee` | `mn.monhorus.monhorus_mobile` |
+| applicationId | `mn.itsystem.monhorusEmployee` | `mn.itsystem.monhorus` |
 | Label | Monhorus Employee | Monhorus Mobile |
 | Size | 55.0 MB | 53.5 MB |
 | minSdk / target | 24 (Android 7.0) / 36 | 24 / 36 |
 | API origin | `https://monhorus.itsystem.mn/api/v1` | same |
+
+`applicationId` is the identity Android and Firebase match on, and is what
+`adb uninstall` takes. It is **not** the Gradle `namespace`, which both modules keep at
+the original `mn.monhorus.monhorus_*` because it names the generated `R`/`BuildConfig`
+classes and renaming it buys nothing. The iOS bundle identifiers match the
+`applicationId`s above.
 
 The previous build is kept beside each as `*.apk.prev`, so a bad release can be rolled
 back by renaming rather than rebuilding.
@@ -321,8 +341,15 @@ workstation at `C:\dev` (Flutter 3.44.8 / Dart 3.12.2, Temurin JDK 17, Android S
 
 ```bash
 cd apps/mobile-employee     # and again in apps/mobile
-flutter build apk --release --dart-define=API_BASE_URL=http://103.87.255.221:3020/api/v1
+flutter build apk --release --dart-define=API_BASE_URL=https://monhorus.itsystem.mn/api/v1
 ```
+
+**The origin must be the `https://` one.** Both apps deny cleartext outright in
+`network_security_config.xml` (below), and iOS App Transport Security exempts only RFC1918
+addresses, not a public IP. An APK built against `http://103.87.255.221:3020/api/v1`
+therefore cannot open a socket at all — every request fails before it leaves the handset,
+and the login screen reports it as a lost connection rather than as a misconfiguration.
+Section 7 says the same thing; if these two ever disagree again, section 7 is right.
 
 **The `--dart-define` value is used verbatim** (`app_config.dart`) — only the unset
 fallback appends `/api/v1`, so it must be included here. Omitting the flag entirely
@@ -351,16 +378,24 @@ published APK.
 signing certificate: lose the keystore and no future build can update an installed app.
 Every phone would have to uninstall and reinstall, losing local data.
 
-### Cleartext, and what has to change for HTTPS
+### Cleartext is denied, and stays denied
 
 A release APK cannot reach a plaintext host by default. Both apps carry
 `android/app/src/main/res/xml/network_security_config.xml`, referenced from
-`main/AndroidManifest.xml`, permitting cleartext **to `103.87.255.221` only** with the
-base config still denying everything else. `minSdk` is pinned to 24 in both
-`build.gradle.kts` files because the attribute is ignored below API 24.
+`main/AndroidManifest.xml`. Until 2026-08-13 it permitted cleartext **to
+`103.87.255.221` only**, with the base config denying everything else. Since the TLS
+migration (section 7) that exception is gone: in both apps the file is now a bare
+`<base-config cleartextTrafficPermitted="false" />` and permits nothing.
 
-When the server moves to HTTPS (section 7), delete that file and the manifest attribute,
-then rebuild both apps with the `https://` origin.
+**The file is kept rather than deleted, and must not be deleted.** Without it the deny
+would be the platform default for `targetSdk >= 28` — and both modules take `targetSdk`
+from the Flutter SDK (`targetSdk = flutter.targetSdkVersion`) rather than pinning it, so
+the protection would rest on a number nobody in this repository chose. `minSdk` is pinned
+to 24 in both `build.gradle.kts` files because the attribute is ignored below API 24.
+
+The consequence for every release build is the one stated above: the `--dart-define`
+origin must be `https://`. There is no cleartext exception left to fall back on, in
+either app, on either platform.
 
 `DEPLOYMENT_UBUNTU.md` open question 16.4 says `apps/mobile/android/` is untracked. That
 is **no longer true** — 19 files under it are tracked, as is `scripts/run-mobile.sh`. Both
@@ -394,7 +429,17 @@ rehearsed restore. Run the ad-hoc commands above only for a one-off dump outside
 
 ## 10. Verification
 
+The TLS origin is what the web bundle and both current APKs are built against, so it is
+the one that has to answer. The legacy IP-and-port sites are checked as well because
+handsets carrying a pre-2026-08-13 build still depend on them (section 1). Both vhosts
+front the same backend, so a path that answers on `:3020` and 404s over TLS means the
+`:443` vhost is missing a proxy rule — and every current build talks only to `:443`.
+
 ```bash
+curl -s https://monhorus.itsystem.mn/health                   # the origin every current build uses
+curl -s -o /dev/null -w '%{http_code}\n' https://monhorus.itsystem.mn/any/deep/route  # 200 = SPA fallback
+curl -s -o /dev/null -w '%{http_code}\n' https://monhorus.itsystem.mn/apk/            # 200 = APK page
+
 curl -s http://103.87.255.221:3020/health                    # timezone echo proves env loaded
 curl -s -o /dev/null -w '%{http_code}\n' http://103.87.255.221:3020/any/deep/route   # 200 = SPA fallback
 curl -s -o /dev/null -w '%{http_code}\n' http://103.87.255.221:3021/                 # 200 = APK page

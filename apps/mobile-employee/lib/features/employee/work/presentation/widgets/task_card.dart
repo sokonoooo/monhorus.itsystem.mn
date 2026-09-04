@@ -93,7 +93,12 @@ class TaskCard extends StatelessWidget {
               Expanded(
                 child: _QuantityCell(
                   value: formatQuantity(task.totalQuantity),
-                  label: 'Нийт ${task.unit.label}',
+                  // Bare «Нийт» when the record names no unit: a heading that
+                  // named one the server did not send would mislabel the figure
+                  // under it.
+                  label: task.unit.label.isEmpty
+                      ? 'Нийт'
+                      : 'Нийт ${task.unit.label}',
                 ),
               ),
               const SizedBox(width: 7),
@@ -420,8 +425,8 @@ class _MaterialUsageBlock extends StatelessWidget {
           const SizedBox(height: 4),
           for (final TaskMaterialUsageModel row in usage)
             Text(
-              '· ${row.materialName} — ${formatQuantity(row.quantity)} '
-              '${row.unit.label}'
+              '· ${row.materialName} — '
+              '${formatQuantityWithUnit(row.quantity, row.unit)}'
               '${row.recordedByName == null ? '' : ' · ${row.recordedByName}'}',
               style: EmployeeTokens.rowSub.copyWith(
                 color: EmployeeTokens.ink2,

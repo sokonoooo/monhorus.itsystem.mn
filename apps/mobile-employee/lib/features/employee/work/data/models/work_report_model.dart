@@ -212,9 +212,11 @@ class WorkReportMaterialModel {
   /// `num` rather than `double`, so a quantity of 3 goes back as `3` and not as `3.0`.
   final num quantity;
 
-  /// The WIRE value, not a [MaterialUnit]. `MaterialUnit.fromWire` folds anything it does
-  /// not recognise onto PIECE, which on a field this app only relays would quietly rewrite
-  /// a unit added after this build shipped into the wrong one.
+  /// The WIRE value, not a [MaterialUnit]: this field is relayed back to the server
+  /// verbatim, so it must survive a round trip through a build that does not know the
+  /// unit. (`MaterialUnit.fromWire` no longer invents one either — it returns null and
+  /// the display side keeps the raw string — but parsing it here would still be a
+  /// detour on a field nothing on this screen reads.)
   final String unit;
 
   /// Null for an entry the server's own schema would refuse back.

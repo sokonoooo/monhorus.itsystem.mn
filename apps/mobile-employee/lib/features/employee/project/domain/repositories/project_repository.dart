@@ -30,7 +30,15 @@ abstract class ProjectRepository {
 
   Future<ApiResult<FloorPlanModel?>> getFloorPlan(String floorId);
 
-  Future<ApiResult<PaginatedData<ObjectListItemModel>>> listFloorObjects(String floorId);
+  /// One page of the devices linked to a floor.
+  ///
+  /// [page] is exposed because `/floors/:id/objects` caps a page at 100 and a caller
+  /// that draws the plan or counts the unplaced has to read every one of them;
+  /// `PaginatedData.totalPages` says how many there are.
+  Future<ApiResult<PaginatedData<ObjectListItemModel>>> listFloorObjects(
+    String floorId, {
+    int page,
+  });
 
   Future<ApiResult<ObjectDetailModel>> getObject(String objectId);
 

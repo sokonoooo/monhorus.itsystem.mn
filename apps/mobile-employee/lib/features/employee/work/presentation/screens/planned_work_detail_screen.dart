@@ -1406,7 +1406,9 @@ class _MaterialRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final String unit = material.unit.label;
+    // Blank for a unit the record does not carry, so the three figures below print
+    // as bare numbers rather than borrowing a measure nobody recorded.
+    final String unit = material.unit.label.isEmpty ? '' : ' ${material.unit.label}';
 
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 9),
@@ -1431,7 +1433,7 @@ class _MaterialRow extends StatelessWidget {
               ),
               const SizedBox(width: 12),
               Text(
-                'Үлдсэн ${formatQuantity(material.remainingQuantity)} $unit',
+                'Үлдсэн ${formatQuantity(material.remainingQuantity)}$unit',
                 textAlign: TextAlign.right,
                 style: EmployeeTokens.detailValue.copyWith(
                   color: material.remainingQuantity <= 0
@@ -1443,8 +1445,8 @@ class _MaterialRow extends StatelessWidget {
           ),
           const SizedBox(height: 3),
           Text(
-            'Бүртгэсэн ${formatQuantity(material.quantity)} $unit · '
-            'Зарцуулсан ${formatQuantity(material.consumedQuantity)} $unit',
+            'Бүртгэсэн ${formatQuantity(material.quantity)}$unit · '
+            'Зарцуулсан ${formatQuantity(material.consumedQuantity)}$unit',
             style: EmployeeTokens.microNote,
           ),
         ],

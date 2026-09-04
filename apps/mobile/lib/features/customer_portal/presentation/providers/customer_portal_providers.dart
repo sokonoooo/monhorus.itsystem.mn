@@ -149,6 +149,13 @@ ResolvedCustomerScope _requireScope(Ref ref) {
   throw ServerFailure(unavailable.detail, code: 'CUSTOMER_SCOPE_UNAVAILABLE');
 }
 
+/// A ceiling on every paging loop below, and on none of the things being counted.
+///
+/// `totalPages` is the server's own arithmetic; an unbounded loop against a server
+/// that miscounts it would never return. Twenty pages of 100 is the same ceiling the
+/// admin web's floor screen walks under.
+const int _maxPagesWalked = 20;
+
 /// Every building the customer owns, not just the first page of them.
 ///
 /// `buildingListQuerySchema` caps `limit` at 100, so no single request can be assumed
@@ -251,15 +258,32 @@ final FutureProviderFamily<FloorPlanModel?, String> floorPlanProvider =
   return _unwrap(await repository.getFloorPlan(floorId));
 });
 
+/// Every object on the floor, not the first hundred.
+///
+/// `objectListQuerySchema` caps `limit` at 100, so a single request silently lost every
+/// object past the first page — a floor with 120 of them drew 100 pins and gave no hint
+/// that twenty were missing. Worse, the plan tab counts the unplaced from this same
+/// list: «Планд байрлуулаагүй N төхөөрөмж байна» computed over a truncated read is a
+/// figure that reads as an all-clear about objects nobody was ever shown. Pages are
+/// walked in order because the first response is what says how many there are.
 final FutureProviderFamily<List<ObjectListItemModel>, String> floorObjectsProvider =
     FutureProvider.family<List<ObjectListItemModel>, String>(
         (Ref ref, String floorId) async {
   final CustomerPortalRepository repository =
       ref.watch(customerPortalRepositoryProvider);
-  final PaginatedData<ObjectListItemModel> page = _unwrap(
-    await repository.listObjects(_requireScope(ref), floorId: floorId),
-  );
-  return page.items;
+  final ResolvedCustomerScope scope = _requireScope(ref);
+
+  final List<ObjectListItemModel> all = <ObjectListItemModel>[];
+  for (int page = 1; page <= _maxPagesWalked; page++) {
+    final PaginatedData<ObjectListItemModel> slice = _unwrap(
+      await repository.listObjects(scope, floorId: floorId, page: page),
+    );
+    all.addAll(slice.items);
+    // An empty page means there is nothing further to read; carrying on would loop
+    // against a server that disagrees with its own `totalPages`.
+    if (slice.items.isEmpty || page >= slice.totalPages) break;
+  }
+  return List<ObjectListItemModel>.unmodifiable(all);
 });
 
 final FutureProviderFamily<ObjectDetailModel, String> objectDetailProvider =
@@ -295,22 +319,63 @@ final FutureProvider<List<ServiceRequestListItemModel>> customerServiceRequestsP
   return page.items;
 });
 
+/// What a walk over a building's requests came back with, and whether that is all of
+/// them.
+///
+/// [complete] is the whole point of the type. The floor history tab has to say either
+/// "this floor has no service history" or "none turned up in what we read", and those
+/// are different statements: only a walk that reached the end of the list has earned
+/// the first one. A bare list cannot tell the caller which it is holding, and the
+/// screen guessed — always the confident one.
+typedef BuildingServiceHistory = ({
+  List<ServiceRequestListItemModel> requests,
+  bool complete,
+});
+
 /// Requests raised against one building. Used for a floor's history tab, which the
 /// API has no dedicated endpoint for.
-final FutureProviderFamily<List<ServiceRequestListItemModel>, String>
+///
+/// `serviceRequestListQuerySchema` has no `floorId`, so a floor's history can only be
+/// found by reading the building's requests and narrowing them here. Read as a single
+/// page of 100 — newest first — a floor whose work is older than the building's most
+/// recent hundred requests came back empty, and the tab printed «Энэ давхарт
+/// бүртгэгдсэн үйлчилгээний хүсэлт алга байна»: an assertion of zero about a floor
+/// with a full service record. Every page is therefore walked, up to
+/// [_maxPagesWalked]; when the ceiling cuts the walk short, [BuildingServiceHistory
+/// .complete] is false and the screen qualifies what it says instead of claiming a
+/// zero it has not earned.
+final FutureProviderFamily<BuildingServiceHistory, String>
     buildingServiceRequestsProvider =
-    FutureProvider.family<List<ServiceRequestListItemModel>, String>(
+    FutureProvider.family<BuildingServiceHistory, String>(
         (Ref ref, String buildingId) async {
   final CustomerPortalRepository repository =
       ref.watch(customerPortalRepositoryProvider);
-  final PaginatedData<ServiceRequestListItemModel> page = _unwrap(
-    await repository.listServiceRequests(
-      _requireScope(ref),
-      buildingId: buildingId,
-      limit: 100,
-    ),
+  final ResolvedCustomerScope scope = _requireScope(ref);
+
+  final List<ServiceRequestListItemModel> all = <ServiceRequestListItemModel>[];
+  bool complete = false;
+  for (int page = 1; page <= _maxPagesWalked; page++) {
+    final PaginatedData<ServiceRequestListItemModel> slice = _unwrap(
+      await repository.listServiceRequests(
+        scope,
+        buildingId: buildingId,
+        page: page,
+        limit: 100,
+      ),
+    );
+    all.addAll(slice.items);
+    // Reaching the last page — or one the server answered empty — is what makes the
+    // read exhaustive. Falling out of the loop at the ceiling does not.
+    if (slice.items.isEmpty || page >= slice.totalPages) {
+      complete = true;
+      break;
+    }
+  }
+
+  return (
+    requests: List<ServiceRequestListItemModel>.unmodifiable(all),
+    complete: complete,
   );
-  return page.items;
 });
 
 final FutureProviderFamily<ServiceRequestDetailModel, String>
