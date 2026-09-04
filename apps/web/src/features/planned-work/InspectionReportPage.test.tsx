@@ -14,6 +14,7 @@ import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { ApiError } from '../../lib/api-client';
 import * as fileUrl from '../../lib/file-url';
 import { inspectionReportService } from '../../services/inspection-report.service';
 import { renderWithAuth } from '../../test/render';
@@ -363,6 +364,99 @@ describe('InspectionReportPage', () => {
     const overall = screen.getByRole('region', { name: 'Ерөнхий аюулгүй байдлын түвшин' });
     expect(within(overall).getByText('Үнэлгээгүй')).toBeInTheDocument();
     expect(within(overall).queryByText(OVERALL_SAFETY_LABELS.NORMAL)).not.toBeInTheDocument();
+  });
+
+  /**
+   * THE NARRATIVE MUST SURVIVE THE TRANSITION.
+   *
+   * «Хянуулахаар илгээх» read nothing from the form. It called `submit`, then reloaded —
+   * which re-seeded the fields from the stored copy — and SUBMITTED locks them. So a
+   * technician who typed the write-up and pressed the button they were told to press lost
+   * it outright, with no way back into the record short of asking for it to be returned.
+   *
+   * Chosen over refusing the transition: the person pressed submit with the text in front
+   * of them, so their intent is not in doubt, and the same PATCH the Хадгалах button uses
+   * carries it. Refusing would leave them staring at an error on a screen where the only
+   * remedy is a second button they did not know they needed.
+   */
+  it('saves an unsaved narrative before it submits the report', async () => {
+    await renderWithReport(makeReport(), [
+      PERMISSIONS.PLANNED_WORK_VIEW,
+      PERMISSIONS.PLANNED_WORK_SUBMIT_REPORT,
+    ]);
+    const order: string[] = [];
+    const update = vi
+      .spyOn(inspectionReportService, 'update')
+      .mockImplementation(async () => {
+        order.push('update');
+        return makeReport();
+      });
+    const submit = vi.spyOn(inspectionReportService, 'submit').mockImplementation(async () => {
+      order.push('submit');
+      return makeReport({ status: 'SUBMITTED' });
+    });
+    const user = userEvent.setup();
+
+    const narrative = screen.getByRole('region', { name: 'Тайлангийн бичвэр' });
+    const conclusion = within(narrative).getByLabelText('Дүгнэлт');
+    await user.clear(conclusion);
+    await user.type(conclusion, 'Гар бичмэл дүгнэлт');
+
+    await user.click(screen.getByRole('button', { name: 'Хянуулахаар илгээх' }));
+    const dialog = await screen.findByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: 'Хянуулахаар илгээх' }));
+
+    await waitFor(() => {
+      expect(submit).toHaveBeenCalled();
+    });
+    // Saved, and saved FIRST — a submit that landed before the PATCH would lock the report
+    // against it.
+    expect(order).toEqual(['update', 'submit']);
+    expect(update.mock.calls[0]![1]).toMatchObject({ conclusion: 'Гар бичмэл дүгнэлт' });
+  });
+
+  it('does not transition when the pre-submit save is refused', async () => {
+    await renderWithReport(makeReport(), [
+      PERMISSIONS.PLANNED_WORK_VIEW,
+      PERMISSIONS.PLANNED_WORK_SUBMIT_REPORT,
+    ]);
+    vi.spyOn(inspectionReportService, 'update').mockRejectedValue(
+      new ApiError('Тайлан хадгалагдсангүй.', 'VALIDATION_ERROR', 400),
+    );
+    const submit = vi.spyOn(inspectionReportService, 'submit');
+    const user = userEvent.setup();
+
+    const narrative = screen.getByRole('region', { name: 'Тайлангийн бичвэр' });
+    await user.type(within(narrative).getByLabelText('Зөвлөмж'), ' нэмэлт');
+
+    await user.click(screen.getByRole('button', { name: 'Хянуулахаар илгээх' }));
+    const dialog = await screen.findByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: 'Хянуулахаар илгээх' }));
+
+    expect(await screen.findByText(/Тайлан хадгалагдсангүй/)).toBeInTheDocument();
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  /** An untouched form must not fire a needless write on its way through the workflow. */
+  it('submits without a PATCH when nothing was typed', async () => {
+    await renderWithReport(makeReport(), [
+      PERMISSIONS.PLANNED_WORK_VIEW,
+      PERMISSIONS.PLANNED_WORK_SUBMIT_REPORT,
+    ]);
+    const update = vi.spyOn(inspectionReportService, 'update');
+    const submit = vi
+      .spyOn(inspectionReportService, 'submit')
+      .mockResolvedValue(makeReport({ status: 'SUBMITTED' }));
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole('button', { name: 'Хянуулахаар илгээх' }));
+    const dialog = await screen.findByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: 'Хянуулахаар илгээх' }));
+
+    await waitFor(() => {
+      expect(submit).toHaveBeenCalled();
+    });
+    expect(update).not.toHaveBeenCalled();
   });
 
   it('saves the narrative and both replacement lists through PATCH', async () => {

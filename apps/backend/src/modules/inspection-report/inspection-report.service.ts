@@ -24,7 +24,7 @@ import {
   type RiskLevel,
   type UpdateInspectionReportInput,
 } from '@monhorus/shared';
-import { Types, type HydratedDocument } from 'mongoose';
+import { Types, type FilterQuery, type HydratedDocument } from 'mongoose';
 
 import { AppError } from '../../common/errors/app-error';
 import { ERROR_CODES } from '../../common/errors/error-codes';
@@ -40,6 +40,7 @@ import {
   type IPlannedWork,
   type IPlannedWorkTask,
 } from '../planned-work/planned-work.models';
+import { resolveAssignedWorkFilter } from '../planned-work/planned-work.scope';
 import { getSettings } from '../settings/settings.service';
 import { StoredFile, type IStoredFile } from '../storage/stored-file.model';
 import { InspectionReport, type IInspectionReport } from './inspection-report.model';
@@ -60,8 +61,56 @@ const UNKNOWN_FLOOR_LABEL = 'Тодорхойгүй давхар';
 
 // -- Loading -----------------------------------------------------------------
 
-export async function findPlannedWorkOrThrow(plannedWorkId: string): Promise<Doc<IPlannedWork>> {
-  const work = await PlannedWork.findById(plannedWorkId);
+/**
+ * The one door into a planned work for this whole module, and it is scoped.
+ *
+ * IT USED TO BE A BARE `findById`, and that was the defect. `requirePlannedWorkAssignmentScope`
+ * is mounted above this router in `planned-work.routes.ts` but returns `next()`
+ * unconditionally for GET, HEAD and OPTIONS, on the stated premise that the loader beneath
+ * a read has already applied the same predicate. Beneath the three reads here it had not:
+ * `/inspection-report`, `/inspection-report/pdf` and `/inspection-report/readiness` are all
+ * keyed on `planned_work.view`, which every technician holds, so any technician read any
+ * job's consolidated report — the customer, the project, the building, the floors, the crew
+ * by name, and the id of every attachment, which `GET /files/:fileId` then redeems.
+ *
+ * WHY THE PREDICATE LIVES HERE rather than in a controller helper. Every one of the ten
+ * handlers loads its work through this function and nothing else in this module reaches
+ * `PlannedWork` by id, so putting it here is what stops a route added to this router later
+ * from being unscoped by omission. The actor is required rather than optional for the same
+ * reason: there is no signature that silently skips the check. There are no non-HTTP
+ * callers to accommodate — every caller is a request handler with an `AuthContext`.
+ *
+ * WHICH PREDICATE. `resolveAssignedWorkFilter`, the READ form, identical to what
+ * `getPlannedWorkById`, both list services and `findReadableWorkOrThrow` (the sibling
+ * `/report`, `/report/pdf` and `/report/photo-pdf` reads) apply. It returns null — meaning
+ * "add nothing" — for a caller holding an oversight OR a read-oversight key, so dispatch,
+ * management and finance keep full reach and only a caller bounded by assignment is bounded
+ * here. Null is never `{}`; see that function for why the distinction is load bearing.
+ *
+ * THE WRITES ARE UNAFFECTED. They already pass `assertPlannedWorkAssignmentScope` in the
+ * mounted guard, which runs first and is the stricter of the two: its unscoped set is a
+ * subset of this one, and its assigned case is the same `$or` evaluated per record. A
+ * caller who reaches a write handler at all therefore satisfies this filter too, and the
+ * write refusal stays the 403 it was rather than becoming a 404.
+ *
+ * ANSWERED AS NOT-FOUND, matching `getPlannedWorkById` and the sibling report reads, with
+ * the message this loader already raised for a genuinely absent work: replying "forbidden"
+ * would confirm the id names a real job and turn the endpoint into an oracle for probing
+ * identifiers.
+ */
+export async function findPlannedWorkOrThrow(
+  plannedWorkId: string,
+  actor: AuthContext,
+): Promise<Doc<IPlannedWork>> {
+  const assignmentFilter = await resolveAssignedWorkFilter<IPlannedWork>(actor);
+
+  // `_id` is left as the raw string so mongoose casts it exactly as `findById` did: a
+  // malformed id keeps producing the CastError the error handler already turns into a 400,
+  // rather than throwing out of `new Types.ObjectId` before the filter is built.
+  const filter: FilterQuery<IPlannedWork> = { _id: plannedWorkId };
+  if (assignmentFilter) filter.$and = [assignmentFilter];
+
+  const work = await PlannedWork.findOne(filter);
   if (!work) {
     throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Төлөвлөгөөт ажил олдсонгүй.');
   }

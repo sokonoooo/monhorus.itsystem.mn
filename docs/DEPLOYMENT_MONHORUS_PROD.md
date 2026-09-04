@@ -180,8 +180,9 @@ runuser -p -u monhorus -- node dist/scripts/sync-indexes.js --dry-run
 runuser -p -u monhorus -- node dist/scripts/sync-indexes.js
 ```
 
-On first run it created **205 indexes across 37 models**. Run it after every release that
-touches a schema index. It is idempotent.
+On first run it created **205 indexes across 37 models**. Because it is idempotent, the
+deploy procedure in section 6 runs it on *every* release rather than asking whoever is
+deploying to work out whether this one touched a schema index.
 
 It discovers models by walking the compiled tree for both `*.model.js` **and**
 `*.models.js` — five modules (planned-work, objects, org, material, object-master) use the
@@ -189,6 +190,19 @@ plural form, so a singular-only glob would silently skip them.
 
 `syncIndexes()` also drops indexes present on the collection but absent from the schema.
 An index added by hand from mongosh will be removed; `--dry-run` shows that first.
+
+**The boot now checks that this was actually done.** `config/index-drift.ts` diffs every
+model's declared indexes against the database at startup and logs the result with the
+phrase `schema indexes`, so drift is greppable in the journal the same way the RBAC
+warning is. A missing **unique** index is fatal and the process exits — it is not a
+performance matter but the silent removal of a correctness invariant, and nothing
+downstream would ever detect it. A missing ordinary index, or an index the schema no
+longer declares, is logged as a warning and the service starts. This does not build
+anything: `sync-indexes` remains the only thing that writes indexes.
+
+A brand-new database that has never had `sync-indexes` run against it will therefore
+refuse to serve. That is intended and it is not a deadlock — `sync-indexes.js` opens its
+own connection and does not need the API to be running.
 
 ---
 
@@ -230,11 +244,47 @@ Then on the server:
 tar xzf monhorus.tar.gz -C /srv/clients/monhorus
 cd /srv/clients/monhorus && npm ci --omit=dev
 sudo chmod -R a+rX /srv/clients/monhorus/apps/web/dist
+
+# 1. What the migrations WOULD do, against the new build. Both are dry by default and
+#    write nothing. Read the output; that is the point of the step.
+sudo bash -c 'set -a; . /etc/monhorus/backend.env; set +a
+cd /srv/clients/monhorus/apps/backend
+runuser -p -u monhorus -- node dist/scripts/sync-indexes.js --dry-run
+runuser -p -u monhorus -- node dist/scripts/converge-system-role-permissions.js'
+
+# 2. Apply them -- BEFORE the restart, so the service comes up against a database that
+#    already matches the code it is about to run. Both are idempotent and are run on
+#    every release rather than when someone recalls that this one "touched schema indexes
+#    or permissions": that judgement cannot be made reliably from a tarball, and only one
+#    half of it ever had a signal. On a release that changed neither, this is two no-ops.
+#    `--apply` grants missing defaults only; it never revokes without `--revoke-extra`.
+sudo bash -c 'set -a; . /etc/monhorus/backend.env; set +a
+cd /srv/clients/monhorus/apps/backend
+runuser -p -u monhorus -- node dist/scripts/sync-indexes.js
+runuser -p -u monhorus -- node dist/scripts/converge-system-role-permissions.js --apply'
+
+# 3. Now restart.
 sudo systemctl restart monhorus-api
-# then, if the release touched schema indexes or permissions:
-#   sync-indexes, and converge-system-role-permissions --apply
-sudo journalctl -u monhorus-api --since "2 minutes ago" | grep -i "default permissions"
+
+# 4. The boot reports on both. A healthy boot prints ONE line -- "Verified schema indexes
+#    against the database" -- and nothing about permissions. Anything else is a finding:
+#      "Missing UNIQUE schema indexes ..."   the service did NOT start; see below
+#      "Missing non-unique schema indexes"   queries will scan; re-run sync-indexes
+#      "... schema indexes the code no longer declares"  sync-indexes would drop them
+#      "... do not hold all of their default permissions"  grant them from the access screen
+sudo journalctl -u monhorus-api --since "2 minutes ago" \
+  | grep -iE "schema indexes|default permissions"
 ```
+
+**If the service does not come back, read that grep before anything else.** Since the
+index-drift check was added, a boot that finds a declared UNIQUE index missing from the
+database logs `Missing UNIQUE schema indexes` at fatal and exits rather than serving
+traffic — deliberately, because those indexes are the only thing preventing a duplicate
+invoice, and a process that boots without them is the process that writes the bad data.
+The fix is the `sync-indexes.js` line above, which needs no running API. Only if a
+degraded system is genuinely the better option mid-incident, set `ALLOW_INDEX_DRIFT=true`
+in `/etc/monhorus/backend.env`, restart, and remove it again afterwards; every boot that
+uses it says so at error level.
 
 ### Uploading files to this host
 
@@ -436,7 +486,10 @@ front the same backend, so a path that answers on `:3020` and 404s over TLS mean
 `:443` vhost is missing a proxy rule — and every current build talks only to `:443`.
 
 ```bash
-curl -s https://monhorus.itsystem.mn/health                   # the origin every current build uses
+# /health answers for its dependencies now: 200 only when Mongo is connected AND answered
+# a command just then, 503 with a Mongolian reason otherwise. Read the body, not just the
+# code -- data.database carries state, ping, pingMs, replicaSet and isPrimary.
+curl -s -w '\n%{http_code}\n' https://monhorus.itsystem.mn/health   # 200 + "status":"ok"
 curl -s -o /dev/null -w '%{http_code}\n' https://monhorus.itsystem.mn/any/deep/route  # 200 = SPA fallback
 curl -s -o /dev/null -w '%{http_code}\n' https://monhorus.itsystem.mn/apk/            # 200 = APK page
 
@@ -445,22 +498,29 @@ curl -s -o /dev/null -w '%{http_code}\n' http://103.87.255.221:3020/any/deep/rou
 curl -s -o /dev/null -w '%{http_code}\n' http://103.87.255.221:3021/                 # 200 = APK page
 ```
 
+**These next calls go over TLS, not the legacy origin.** The unauthenticated probes above
+deliberately hit `http://103.87.255.221:3020`, because pre-2026-08-13 handsets still
+depend on it. These do not: until 2026-09-04 this step posted a real admin password, and
+then carried the bearer token it returned, in clear text over the same plain-HTTP origin
+that section 6 greps the web bundle to *exclude* twelve lines earlier. Both vhosts front
+the same backend, so the TLS origin proves exactly as much.
+
 Login, and note the token path — **`data.tokens.accessToken`**, not `data.accessToken` as
 `DEPLOYMENT_UBUNTU.md` §13 states:
 
 ```bash
-TOKEN=$(curl -s -X POST http://103.87.255.221:3020/api/v1/auth/login \
+TOKEN=$(curl -s -X POST https://monhorus.itsystem.mn/api/v1/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"email":"...","password":"..."}' \
   | node -pe 'JSON.parse(require("fs").readFileSync(0)).data.tokens.accessToken')
-curl -s http://103.87.255.221:3020/api/v1/auth/me -H "Authorization: Bearer $TOKEN"
+curl -s https://monhorus.itsystem.mn/api/v1/auth/me -H "Authorization: Bearer $TOKEN"
 ```
 
 Health of the deeper invariants:
 
 ```bash
 mongosh --quiet "$MONGODB_URI" --eval 'rs.status().myState'   # 1 = PRIMARY; transactions real
-sudo journalctl -u monhorus-api | grep -iE "default permissions|does not support transactions"
+sudo journalctl -u monhorus-api | grep -iE "schema indexes|default permissions|does not support transactions"
 sudo ss -tlnp | grep -E ':4000|:27017'                        # both must be 127.0.0.1 only
 ```
 
@@ -617,8 +677,12 @@ Three things to know before you rely on it:
 - **`sync-indexes` is mandatory afterwards.** `config/database.ts` uses
   `autoIndex: !isProduction`, so nothing rebuilds indexes on boot. `mongorestore`
   restores the index set *as of the backup*, which is older than the deployed schema by
-  every release since. The gap makes queries slow, not broken, so nothing alerts you.
-  The script prints the exact commands (section 5) when it finishes.
+  every release since. The script prints the exact commands (section 5) when it finishes.
+  Note that the restore script restarts `monhorus-api` itself: if any index added since
+  the backup was a **unique** one, that restart will fail the boot check and the service
+  will stay down until `sync-indexes` has been run. Run it before assuming the restore
+  broke something. A missing ordinary index only makes queries slow, and for those the
+  boot warning in the journal is the only thing that will tell you.
 
 ### Rehearse it — before you need it
 

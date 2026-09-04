@@ -22,8 +22,16 @@ import * as service from './inspection-report.service';
  * service; these handlers only resolve the planned work and shape the envelope.
  */
 
+/**
+ * The planned work this request names, or a 404.
+ *
+ * The actor is passed because the load is scoped: `findPlannedWorkOrThrow` intersects the
+ * id with `resolveAssignedWorkFilter`, so a caller bounded by assignment cannot reach a job
+ * that is not theirs — see that function for why the predicate sits in the service and why
+ * the answer is not-found rather than forbidden.
+ */
 async function work(req: Request) {
-  return service.findPlannedWorkOrThrow(pathParam(req, 'plannedWorkId'));
+  return service.findPlannedWorkOrThrow(pathParam(req, 'plannedWorkId'), requireAuth(req));
 }
 
 export async function getReportHandler(

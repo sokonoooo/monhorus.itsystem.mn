@@ -62,6 +62,27 @@ const OPEN_STATUSES: ReadonlySet<ServiceRequestStatus> = new Set(
  */
 const SILHOUETTE_LIMIT = 6;
 
+/**
+ * THREE ANSWERS, NEVER TWO.
+ *
+ * Every fetch on this screen used to be held as `T | null`, where `null` meant "still
+ * loading" — and every failure handler set it to `[]` or back to `null`. So a rejected
+ * buildings request became an EMPTY ESTATE: the tiles' `loading` predicate flipped false
+ * and «Анхаарах тоноглол» printed a hard 0. A customer with a genuinely critical floor read
+ * a clean bill of health off a transport error, which is the one thing this product must
+ * never do — it may show an absence, it may not invent an all-clear.
+ *
+ * Failure is now a state of its own, so the render has to answer for it. Nothing here
+ * prints a figure while `failed`.
+ */
+type Loaded<T> =
+  | { readonly status: 'loading' }
+  | { readonly status: 'failed' }
+  | { readonly status: 'ready'; readonly data: T };
+
+const LOADING = { status: 'loading' } as const;
+const FAILED = { status: 'failed' } as const;
+
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
 }
@@ -105,12 +126,15 @@ function Metric({
   note,
   fill,
   loading,
+  failed = false,
 }: {
   label: string;
   value: number;
   note: string;
   fill: string;
   loading: boolean;
+  /** The figure could not be read. A dash is printed, NEVER a number. */
+  failed?: boolean;
 }): ReactElement {
   return (
     <div className="rounded-lg bg-slate-50 px-4 py-3 ring-1 ring-inset ring-slate-200">
@@ -118,12 +142,20 @@ function Metric({
         <span className="h-2.5 w-2.5 shrink-0 rounded-sm" style={{ backgroundColor: fill }} />
         <span className="truncate text-xs text-slate-600">{label}</span>
       </div>
-      {loading ? (
+      {failed ? (
+        // Hidden from the reader-out because it says nothing on its own; the note beneath
+        // carries the meaning, and neither of them is a quantity.
+        <p aria-hidden="true" className="mt-1.5 text-3xl font-semibold text-slate-300">
+          —
+        </p>
+      ) : loading ? (
         <Skeleton className="mt-2 h-8 w-14" />
       ) : (
         <p className="mt-1.5 text-3xl font-semibold tabular-nums text-slate-900">{value}</p>
       )}
-      <p className="mt-0.5 text-[11px] leading-snug text-slate-500">{note}</p>
+      <p className="mt-0.5 text-[11px] leading-snug text-slate-500">
+        {failed ? 'Ачаалж чадсангүй' : note}
+      </p>
     </div>
   );
 }
@@ -157,12 +189,20 @@ export function PortalHomePage(): ReactElement {
   const stages = useRequestStages();
 
   const [recent, setRecent] = useState<ServiceRequestListItemDto[] | null>(null);
-  const [buildings, setBuildings] = useState<BuildingDto[] | null>(null);
-  const [floorsOf, setFloorsOf] = useState<Record<string, readonly FloorDto[]>>({});
-  const [summary, setSummary] = useState<PortalSummaryDto | null>(null);
-  const [pendingSurveys, setPendingSurveys] = useState<SurveyPendingItemDto[]>([]);
+  const [buildings, setBuildings] = useState<Loaded<readonly BuildingDto[]>>(LOADING);
+  const [floorsOf, setFloorsOf] = useState<Record<string, Loaded<readonly FloorDto[]>>>({});
+  const [summary, setSummary] = useState<Loaded<PortalSummaryDto>>(LOADING);
+  const [pendingSurveys, setPendingSurveys] = useState<Loaded<readonly SurveyPendingItemDto[]>>(
+    LOADING,
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // Bumped by the retry affordances. Each fetch reruns on its own counter so pressing
+  // «Дахин оролдох» on one panel does not blank the two beside it that loaded fine.
+  const [buildingsAttempt, setBuildingsAttempt] = useState(0);
+  const [summaryAttempt, setSummaryAttempt] = useState(0);
+  const [surveysAttempt, setSurveysAttempt] = useState(0);
 
   const load = useCallback(async (): Promise<void> => {
     setLoading(true);
@@ -188,83 +228,97 @@ export function PortalHomePage(): ReactElement {
    * The buildings, and the floors of the first few.
    *
    * The floors are what the silhouette is drawn from — a building carries a roll-up but not
-   * a per-floor standing, and the whole point of the drawing is which floor. Failures are
-   * silent for the reason the charts' are: this screen's job is the request list, and a
-   * picture that cannot load should leave a gap rather than an error.
+   * a per-floor standing, and the whole point of the drawing is which floor.
+   *
+   * A failure is STATED. It used to be swallowed into an empty estate on the grounds that
+   * this screen's job is the request list, but the three equipment tiles are read off this
+   * call, and «0 анхаарах тоноглол» is not a gap — it is an all-clear the server never gave.
+   * The inner floors call is failed per building for the same reason: a card that says
+   * «12 давхар» over «давхар бүртгэгдээгүй» is telling the customer two different things.
    */
   useEffect(() => {
     if (!canSeeSites) return undefined;
     let cancelled = false;
+    setBuildings(LOADING);
+    setFloorsOf({});
 
     portalService
       .listBuildings({ page: 1, limit: 100 })
       .then(async (page) => {
         if (cancelled) return;
-        setBuildings([...page.items]);
+        setBuildings({ status: 'ready', data: page.items });
 
         const drawn = page.items.slice(0, SILHOUETTE_LIMIT);
         const loaded = await Promise.all(
           drawn.map(async (building) => {
             try {
               const floors = await portalService.listFloors(building.id, { page: 1, limit: 100 });
-              return [building.id, floors.items] as const;
+              return [building.id, { status: 'ready', data: floors.items }] as const;
             } catch {
-              return [building.id, [] as readonly FloorDto[]] as const;
+              return [building.id, FAILED] as const;
             }
           }),
         );
         if (!cancelled) setFloorsOf(Object.fromEntries(loaded));
       })
       .catch(() => {
-        if (!cancelled) setBuildings([]);
+        if (!cancelled) setBuildings(FAILED);
       });
 
     return () => {
       cancelled = true;
     };
-  }, [canSeeSites]);
+  }, [canSeeSites, buildingsAttempt]);
 
   useEffect(() => {
     let cancelled = false;
+    setSummary(LOADING);
     portalService
       .summary()
       .then((data) => {
-        if (!cancelled) setSummary(data);
+        if (!cancelled) setSummary({ status: 'ready', data });
       })
       .catch(() => {
-        if (!cancelled) setSummary(null);
+        // `null` used to mean both "loading" and "failed", so a rejected summary left the
+        // three panels beneath spinning a skeleton for ever with nothing to press.
+        if (!cancelled) setSummary(FAILED);
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [summaryAttempt]);
 
   useEffect(() => {
     if (!canSubmitSurvey) return undefined;
     let cancelled = false;
+    setPendingSurveys(LOADING);
     portalService
       .pendingSurveys()
       .then((items) => {
         if (cancelled) return;
-        setPendingSurveys(
-          items.filter((item) =>
+        setPendingSurveys({
+          status: 'ready',
+          data: items.filter((item) =>
             item.employees.some((entry) => !entry.isRated && !entry.isSkipped),
           ),
-        );
+        });
       })
       .catch(() => {
-        if (!cancelled) setPendingSurveys([]);
+        // The card is the ONLY in-app route to the rating form, so a swallowed failure
+        // removed the whole errand and said nothing.
+        if (!cancelled) setPendingSurveys(FAILED);
       });
     return () => {
       cancelled = true;
     };
-  }, [canSubmitSurvey]);
+  }, [canSubmitSurvey, surveysAttempt]);
 
-  const firstSurvey = pendingSurveys[0];
+  const surveyList = pendingSurveys.status === 'ready' ? pendingSurveys.data : [];
+  const firstSurvey = surveyList[0];
 
   /** Assessed equipment by band, and the two numbers the tiles quote from it. */
   const risk = useMemo(() => {
-    const slices = buildings ? riskSlices(buildings, bands) : [];
+    const slices = buildings.status === 'ready' ? riskSlices(buildings.data, bands) : [];
     const ladder = riskLevelsInOrder(bands);
     // Best-first, so the head of the ladder is the healthy band and everything after it is
     // something a customer can act on. Reading the ladder rather than naming a level keeps
@@ -286,16 +340,16 @@ export function PortalHomePage(): ReactElement {
    * ring below already reads; the two now cannot disagree.
    */
   const openCount = useMemo((): number => {
-    if (!summary) return 0;
-    return summary.requestsByStatus
+    if (summary.status !== 'ready') return 0;
+    return summary.data.requestsByStatus
       .filter((row) => OPEN_STATUSES.has(row.status))
       .reduce((sum, row) => sum + row.count, 0);
   }, [summary]);
 
   /** Requests folded into the operator's stages, so the ring names what the badges name. */
   const stageSlices = useMemo((): Slice[] => {
-    if (!summary) return [];
-    const counts = new Map(summary.requestsByStatus.map((row) => [row.status, row.count]));
+    if (summary.status !== 'ready') return [];
+    const counts = new Map(summary.data.requestsByStatus.map((row) => [row.status, row.count]));
     return stages
       .filter((stage) => !stage.hidden)
       .map((stage) => ({
@@ -317,9 +371,9 @@ export function PortalHomePage(): ReactElement {
    * the bar chart leaves UNASSESSED off.
    */
   const riskMonths = useMemo((): StackedMonth[] => {
-    if (!summary?.riskByMonth) return [];
+    if (summary.status !== 'ready' || !summary.data.riskByMonth) return [];
     const healthyKey = riskLevelsInOrder(bands)[0];
-    return summary.riskByMonth.map((entry) => ({
+    return summary.data.riskByMonth.map((entry) => ({
       month: entry.month,
       parts: entry.counts
         .filter((row) => row.level !== healthyKey)
@@ -332,16 +386,58 @@ export function PortalHomePage(): ReactElement {
     }));
   }, [summary, bands]);
 
-  const drawnBuildings = (buildings ?? []).slice(0, SILHOUETTE_LIMIT);
-  const undrawn = Math.max(0, (buildings?.length ?? 0) - drawnBuildings.length);
+  const buildingList = buildings.status === 'ready' ? buildings.data : [];
+  const drawnBuildings = buildingList.slice(0, SILHOUETTE_LIMIT);
+  const undrawn = Math.max(0, buildingList.length - drawnBuildings.length);
+  const unassessed = buildings.status === 'ready' ? unassessedTotal(buildings.data) : 0;
+
+  /** The retry every failed panel offers, in the chrome the error panels already use. */
+  function retry(onRetry: () => void): ReactElement {
+    return (
+      <Button size="sm" variant="secondary" onClick={onRetry}>
+        Дахин оролдох
+      </Button>
+    );
+  }
+
+  /**
+   * One building's drawing — or what happened instead.
+   *
+   * Three outcomes, because the floors call has three: not back yet, refused, and answered.
+   * The refused case is NOT the empty one: `BuildingSilhouette` prints «давхар
+   * бүртгэгдээгүй» for an empty list, and printing that under a card headed «12 давхар» is
+   * a contradiction the customer has to resolve on their own.
+   */
+  function silhouetteFor(building: BuildingDto): ReactElement {
+    const floors = floorsOf[building.id];
+    if (floors === undefined || floors.status === 'loading') {
+      return <Skeleton className="h-24 w-full" />;
+    }
+    if (floors.status === 'failed') {
+      return (
+        <p className="py-6 text-center text-sm text-slate-500">
+          Давхрын мэдээлэл ачаалж чадсангүй.
+        </p>
+      );
+    }
+    return (
+      <BuildingSilhouette
+        floors={floors.data}
+        // The route the router actually declares. This pointed at `/portal/floors/:id`,
+        // which nothing in the product serves, so every click on the drawing — the one
+        // element on this screen that says WHERE — landed on the not-found page.
+        onSelect={(floor) => navigate(`/portal/sites/${building.id}/floors/${floor.id}`)}
+      />
+    );
+  }
 
   return (
     <>
       <PageHeader
         title={user?.customerName ? `Сайн байна уу, ${user.customerName}` : 'Нүүр'}
         description={
-          buildings && buildings.length > 0
-            ? `${buildings.length} барилга · ${buildings.reduce((sum, item) => sum + item.floorCount, 0)} давхар · ${buildings.reduce((sum, item) => sum + item.objectCount, 0)} тоноглол`
+          buildingList.length > 0
+            ? `${buildingList.length} барилга · ${buildingList.reduce((sum, item) => sum + item.floorCount, 0)} давхар · ${buildingList.reduce((sum, item) => sum + item.objectCount, 0)} тоноглол`
             : 'Хүсэлтээ илгээж, явцыг нь хянана уу.'
         }
         actions={
@@ -356,13 +452,28 @@ export function PortalHomePage(): ReactElement {
           The survey prompt, first because it is the only thing on this page that asks
           something OF the customer rather than telling them something.
         */}
+        {pendingSurveys.status === 'failed' && (
+          <div
+            role="alert"
+            className="rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200"
+          >
+            <p className="text-sm font-semibold text-red-700">
+              Үнэлгээний жагсаалт ачаалж чадсангүй
+            </p>
+            <p className="mt-1 text-sm text-slate-700">
+              Үнэлгээ хүлээж буй ажил байгаа эсэхийг тодорхойлж чадсангүй. Дахин оролдоно уу.
+            </p>
+            <div className="mt-3">{retry(() => setSurveysAttempt((n) => n + 1))}</div>
+          </div>
+        )}
+
         {firstSurvey && (
           <div className="rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
             <p className="text-sm font-semibold text-slate-900">Үйлчилгээгээ үнэлнэ үү</p>
             <p className="mt-1 text-sm text-slate-700">
-              {pendingSurveys.length === 1
+              {surveyList.length === 1
                 ? `${firstSurvey.buildingName ?? firstSurvey.requestNumber} дэх ажил дууслаа. Ажилтныг үнэлээрэй.`
-                : `${firstSurvey.buildingName ?? firstSurvey.requestNumber} болон бусад ${pendingSurveys.length - 1} ажил үнэлгээ хүлээж байна.`}
+                : `${firstSurvey.buildingName ?? firstSurvey.requestNumber} болон бусад ${surveyList.length - 1} ажил үнэлгээ хүлээж байна.`}
             </p>
             <Button
               className="mt-3"
@@ -381,7 +492,8 @@ export function PortalHomePage(): ReactElement {
             value={openCount}
             note="Хаагдаагүй байгаа"
             fill="#2563eb"
-            loading={summary === null}
+            loading={summary.status === 'loading'}
+            failed={summary.status === 'failed'}
           />
           {canSeeSites && (
             <>
@@ -390,21 +502,24 @@ export function PortalHomePage(): ReactElement {
                 value={risk.attention}
                 note={`Үнэлэгдсэн ${risk.total} тоноглолоос`}
                 fill="#ea580c"
-                loading={buildings === null}
+                loading={buildings.status === 'loading'}
+                failed={buildings.status === 'failed'}
               />
               <Metric
                 label="Хэвийн тоноглол"
                 value={risk.healthy}
                 note="Сүүлийн үзлэгээр"
                 fill="#16a34a"
-                loading={buildings === null}
+                loading={buildings.status === 'loading'}
+                failed={buildings.status === 'failed'}
               />
               <Metric
                 label="Үнэлгээ хийгээгүй"
-                value={buildings ? unassessedTotal(buildings) : 0}
+                value={unassessed}
                 note="Үзлэг хийгдээгүй тоноглол"
                 fill="#94a3b8"
-                loading={buildings === null}
+                loading={buildings.status === 'loading'}
+                failed={buildings.status === 'failed'}
               />
             </>
           )}
@@ -427,8 +542,13 @@ export function PortalHomePage(): ReactElement {
               </Link>
             }
           >
-            {buildings === null ? (
+            {buildings.status === 'loading' ? (
               <Skeleton className="h-32 w-full" />
+            ) : buildings.status === 'failed' ? (
+              <ErrorState
+                description="Барилгын жагсаалт ачаалж чадсангүй. Тоноглолын байдлыг харуулах боломжгүй байна."
+                action={retry(() => setBuildingsAttempt((n) => n + 1))}
+              />
             ) : drawnBuildings.length === 0 ? (
               <p className="py-6 text-center text-sm text-slate-500">
                 Барилга бүртгэгдээгүй байна.
@@ -449,14 +569,7 @@ export function PortalHomePage(): ReactElement {
                           {building.floorCount} давхар · {building.objectCount} тоноглол
                         </span>
                       </div>
-                      {floorsOf[building.id] === undefined ? (
-                        <Skeleton className="h-24 w-full" />
-                      ) : (
-                        <BuildingSilhouette
-                          floors={floorsOf[building.id] ?? []}
-                          onSelect={(floor) => navigate(`/portal/floors/${floor.id}`)}
-                        />
-                      )}
+                      {silhouetteFor(building)}
                     </div>
                   ))}
                 </div>
@@ -480,8 +593,13 @@ export function PortalHomePage(): ReactElement {
         <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
           {canSeeSites && (
             <Panel title="Тоноглолын эрсдэл" hint="Сүүлийн үзлэгийн оноогоор түвшин тогтоогдоно.">
-              {buildings === null ? (
+              {buildings.status === 'loading' ? (
                 <Skeleton className="h-32 w-full" />
+              ) : buildings.status === 'failed' ? (
+                <ErrorState
+                  description="Тоноглолын эрсдэлийн мэдээлэл ачаалж чадсангүй."
+                  action={retry(() => setBuildingsAttempt((n) => n + 1))}
+                />
               ) : (
                 <>
                   <DonutChart
@@ -490,9 +608,9 @@ export function PortalHomePage(): ReactElement {
                     centreLabel="тоноглол"
                     emptyMessage="Тоноглолын үнэлгээ бүртгэгдээгүй байна."
                   />
-                  {unassessedTotal(buildings) > 0 && (
+                  {unassessed > 0 && (
                     <p className="mt-3 border-t border-slate-100 pt-3 text-xs text-slate-500">
-                      Үнэлгээ хийгээгүй: {unassessedTotal(buildings)} тоноглол
+                      Үнэлгээ хийгээгүй: {unassessed} тоноглол
                     </p>
                   )}
                 </>
@@ -501,8 +619,13 @@ export function PortalHomePage(): ReactElement {
           )}
 
           <Panel title="Хүсэлт үе шатаар" hint="Хүсэлт бүр үе шатны аль нэгэнд байрлана.">
-            {summary === null ? (
+            {summary.status === 'loading' ? (
               <Skeleton className="h-32 w-full" />
+            ) : summary.status === 'failed' ? (
+              <ErrorState
+                description="Хүсэлтийн нэгтгэл ачаалж чадсангүй."
+                action={retry(() => setSummaryAttempt((n) => n + 1))}
+              />
             ) : (
               <DonutChart
                 slices={stageSlices}
@@ -519,8 +642,13 @@ export function PortalHomePage(): ReactElement {
             title="Эрсдэлийн бүтэц"
             hint="Анхаарал шаардаж буй тоноглол сүүлийн зургаан сард."
           >
-            {summary === null ? (
+            {summary.status === 'loading' ? (
               <Skeleton className="h-40 w-full" />
+            ) : summary.status === 'failed' ? (
+              <ErrorState
+                description="Эрсдэлийн түүх ачаалж чадсангүй."
+                action={retry(() => setSummaryAttempt((n) => n + 1))}
+              />
             ) : (
               <StackedMonths
                 months={riskMonths}

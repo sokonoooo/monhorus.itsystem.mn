@@ -61,12 +61,59 @@ function joinNames(names: readonly string[]): string {
   return names.length > 0 ? names.join(', ') : '-';
 }
 
+/**
+ * The six free-text fields of the report, as the form holds them.
+ *
+ * Named because they travel together: they are seeded together, compared together to
+ * decide whether the form is dirty, and sent together in one PATCH.
+ */
+interface Narrative {
+  inspectedScope: string;
+  issueSummary: string;
+  conclusion: string;
+  recommendation: string;
+  replacementPanels: string;
+  replacementConnections: string;
+}
+
+const EMPTY_NARRATIVE: Narrative = {
+  inspectedScope: '',
+  issueSummary: '',
+  conclusion: '',
+  recommendation: '',
+  replacementPanels: '',
+  replacementConnections: '',
+};
+
+function narrativeOf(report: InspectionReportDto): Narrative {
+  return {
+    inspectedScope: report.inspectedScope ?? '',
+    issueSummary: report.issueSummary ?? '',
+    conclusion: report.conclusion ?? '',
+    recommendation: report.recommendation ?? '',
+    replacementPanels: report.replacementPanels.join('\n'),
+    replacementConnections: report.replacementConnections.join('\n'),
+  };
+}
+
 /** One editable line per row, which is how the printed report writes both lists. */
 function toLines(text: string): string[] {
   return text
     .split('\n')
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
+}
+
+/** The PATCH body, from whatever the six fields currently hold. */
+function narrativePayload(narrative: Narrative) {
+  return {
+    inspectedScope: narrative.inspectedScope.trim() || null,
+    issueSummary: narrative.issueSummary.trim() || null,
+    conclusion: narrative.conclusion.trim() || null,
+    recommendation: narrative.recommendation.trim() || null,
+    replacementPanels: toLines(narrative.replacementPanels),
+    replacementConnections: toLines(narrative.replacementConnections),
+  };
 }
 
 function HeadingRow({ label, value }: { label: string; value: string }): ReactElement {
@@ -195,14 +242,39 @@ export function InspectionReportPage(): ReactElement {
   const [attachmentUrls, setAttachmentUrls] = useState<Record<string, string>>({});
   const [preview, setPreview] = useState<InspectionReportAttachmentDto | null>(null);
 
+  /**
+   * What the six fields held when they were last seeded from the server.
+   *
+   * The dirty comparison needs a baseline, and the report object is not one: it is replaced
+   * on every reload, and half of these fields are `null`-or-string on it and always-string
+   * here. Keeping the seeded copy means "changed" is a comparison of like with like.
+   */
+  const [savedNarrative, setSavedNarrative] = useState<Narrative>(EMPTY_NARRATIVE);
+
   function seedNarrative(next: InspectionReportDto): void {
-    setInspectedScope(next.inspectedScope ?? '');
-    setIssueSummary(next.issueSummary ?? '');
-    setConclusion(next.conclusion ?? '');
-    setRecommendation(next.recommendation ?? '');
-    setReplacementPanels(next.replacementPanels.join('\n'));
-    setReplacementConnections(next.replacementConnections.join('\n'));
+    const seeded = narrativeOf(next);
+    setInspectedScope(seeded.inspectedScope);
+    setIssueSummary(seeded.issueSummary);
+    setConclusion(seeded.conclusion);
+    setRecommendation(seeded.recommendation);
+    setReplacementPanels(seeded.replacementPanels);
+    setReplacementConnections(seeded.replacementConnections);
+    setSavedNarrative(seeded);
   }
+
+  const narrative: Narrative = {
+    inspectedScope,
+    issueSummary,
+    conclusion,
+    recommendation,
+    replacementPanels,
+    replacementConnections,
+  };
+
+  /** Something is typed into the write-up that the server has not been told about. */
+  const narrativeDirty = (Object.keys(narrative) as (keyof Narrative)[]).some(
+    (key) => narrative[key] !== savedNarrative[key],
+  );
 
   const load = useCallback(async (): Promise<void> => {
     if (!plannedWorkId) return;
@@ -308,7 +380,28 @@ export function InspectionReportPage(): ReactElement {
       }
     };
 
-    const ok = await run(operation, `${action.label} үйлдэл гүйцэтгэгдлээ.`);
+    /*
+      SAVE FIRST, THEN TRANSITION.
+
+      This used to call the transition alone, and `run` reloads on success — re-seeding the
+      six fields from the stored copy — while SUBMITTED locks them against further editing.
+      A technician who typed the write-up and pressed «Хянуулахаар илгээх» without pressing
+      «Хадгалах» first therefore lost it outright, and could not reopen the record except by
+      having it returned.
+
+      Saving is the right resolution rather than refusing: the text is on the screen in
+      front of the person pressing the button, so what they meant is not in question, and
+      the PATCH is the same one the save button issues. If the save is refused the
+      transition does not happen at all — the throw propagates out of `run`, which reports
+      it — because a report locked against text it never received is the failure this
+      exists to prevent.
+    */
+    const ok = await run(async () => {
+      if (narrativeDirty) {
+        await inspectionReportService.update(plannedWorkId, narrativePayload(narrative));
+      }
+      return operation();
+    }, `${action.label} үйлдэл гүйцэтгэгдлээ.`);
     if (ok) setPendingAction(null);
   }
 
@@ -589,14 +682,10 @@ export function InspectionReportPage(): ReactElement {
                 onClick={() =>
                   void run(
                     () =>
-                      inspectionReportService.update(plannedWorkId!, {
-                        inspectedScope: inspectedScope.trim() || null,
-                        issueSummary: issueSummary.trim() || null,
-                        conclusion: conclusion.trim() || null,
-                        recommendation: recommendation.trim() || null,
-                        replacementPanels: toLines(replacementPanels),
-                        replacementConnections: toLines(replacementConnections),
-                      }),
+                      inspectionReportService.update(
+                        plannedWorkId!,
+                        narrativePayload(narrative),
+                      ),
                     'Тайлан хадгалагдлаа.',
                   )
                 }
@@ -739,6 +828,16 @@ export function InspectionReportPage(): ReactElement {
           className="rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200"
         >
           <h2 className="mb-3 text-sm font-semibold text-slate-900">Тайлангийн бичвэр</h2>
+
+          {/*
+            Said out loud, so the state is visible before the workflow button is pressed
+            rather than only implied by what happens afterwards.
+          */}
+          {editable && narrativeDirty && (
+            <p className="mb-3 text-xs text-amber-700">
+              Хадгалагдаагүй өөрчлөлт байна. Хянуулахаар илгээхэд хамт хадгалагдана.
+            </p>
+          )}
 
           <div className="space-y-3">
             <NarrativeField

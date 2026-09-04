@@ -15,7 +15,9 @@ import {
 import { Types } from 'mongoose';
 
 import { logger } from '../../config/logger';
+import { recordAudit } from '../audit/audit.service';
 import { appendAssessmentHistory } from '../object-master/assessment-history.service';
+import { applyBandSideEffects, bandFor } from '../object-master/band-effects';
 import { ObjectRecord } from '../object-master/object-master.models';
 import { toObjectTypeAttributeDtos } from '../object-master/object-type.service';
 import { ObjectNode } from '../objects/object.models';
@@ -316,6 +318,19 @@ export async function applyReportToEquipment(reportId: Types.ObjectId): Promise<
   const items = await ReportItem.find({ report: reportId });
   const touchedFloors = new Set<string>();
 
+  /**
+   * The ladder in force, resolved once for the whole report.
+   *
+   * Needed here because a score does more than move a head: rule 17.9 retires equipment
+   * that lands in the band carrying `decommissions`. That side effect used to exist only
+   * on the manual assessment screen, so the identical score arriving through a
+   * planned-work report, a service-request work report or a consolidated review moved the
+   * object's `score` and `riskLevel` and left it ACTIVE — still counted in the floor load,
+   * still offered as a panel to wire new circuits to, and never listed under «Ашиглалтаас
+   * гарсан». See `object-master/band-effects.ts`.
+   */
+  const bands = await getRiskBands();
+
   for (const item of items) {
     if (item.score === null || item.riskLevel === null) continue;
 
@@ -377,7 +392,31 @@ export async function applyReportToEquipment(reportId: Types.ObjectId): Promise<
       revisitRequired: object.latestAssessment?.revisitRequired ?? false,
       revisitDate: object.latestAssessment?.revisitDate ?? null,
     };
+
+    // Rule 17.9, from the same function the manual path calls. Idempotent: an object
+    // already out of service is left alone, so re-applying a corrected report — which is
+    // routine — cannot double-write or resurrect a status.
+    const statusChange = applyBandSideEffects(object, bandFor(item.riskLevel, bands));
+
     await object.save();
+
+    if (statusChange) {
+      /**
+       * Audited like the manual path audits it, and for the same reason: this is an
+       * irreversible write to the object's standing that no human explicitly asked for on
+       * this screen. The actor is whoever signed the report off — the only person this
+       * path can honestly name.
+       */
+      await recordAudit({
+        entityType: 'Object',
+        entityId: object._id,
+        action: 'StatusChanged',
+        actor: { id: assessedBy, role: null, label: assessedByName },
+        reason: `report ${report.reportNumber} scored into a band that decommissions`,
+        oldValue: { status: statusChange.from },
+        newValue: { status: statusChange.to, score: item.score, riskLevel: item.riskLevel },
+      });
+    }
 
     if (object.floor) touchedFloors.add(String(object.floor));
   }

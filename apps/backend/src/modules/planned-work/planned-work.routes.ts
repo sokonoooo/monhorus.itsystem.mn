@@ -89,7 +89,7 @@ plannedWorkRouter.use(authenticate, enforcePasswordChange);
  * READS ARE NOT UNGUARDED, they are guarded elsewhere — and that is the whole premise this
  * guard passes GETs through on. `planned-work.scope.ts` states it: by the time a read
  * reaches a handler, the loader beneath it has already applied the same predicate, which is
- * true of `getPlannedWorkById` and of the nested inspection-report reads.
+ * true of `getPlannedWorkById`.
  *
  * IT WAS NOT TRUE OF THE REPORT READS. `GET /:plannedWorkId/report`, `/report/pdf` and
  * `/report/photo-pdf` loaded through the raw `findPlannedWorkOrThrow`, so every holder of
@@ -97,6 +97,16 @@ plannedWorkRouter.use(authenticate, enforcePasswordChange);
  * print the PDF, or pull the photographic report of any job in the company: customer, site,
  * crew and photographs. They now go through [findReadableWorkOrThrow] below, which restores
  * the premise rather than qualifying it.
+ *
+ * AND IT WAS NOT TRUE OF THE NESTED INSPECTION-REPORT READS EITHER, which this comment
+ * asserted it was. `GET /inspection-report`, `/inspection-report/pdf` and
+ * `/inspection-report/readiness` are keyed on `planned_work.view`, are passed through by
+ * this guard because they are GETs, and loaded through that module's own bare `findById` —
+ * a fourth report-read family with the same exposure as the three above, missed when they
+ * were fixed and then covered over by this sentence. The predicate now lives in
+ * `inspection-report.service.findPlannedWorkOrThrow`, which every handler in that router
+ * loads through, so the premise holds for all ten of them rather than for the three writes
+ * this guard happens to catch. Anything added to that router inherits it.
  */
 plannedWorkRouter.use(
   '/:plannedWorkId/inspection-report',

@@ -59,6 +59,7 @@ import { riskBandLabelOf } from '../settings/risk-band.label';
 import { getRiskBands } from '../settings/settings.service';
 import { StoredFile, type IStoredFile } from '../storage/stored-file.model';
 import { appendAssessmentHistory } from './assessment-history.service';
+import { applyBandSideEffects, bandFor } from './band-effects';
 import { loadFiguresOf } from './load.service';
 import { objectTypeIconUrl, toObjectTypeAttributeDtos } from './object-type.service';
 import {
@@ -488,6 +489,78 @@ async function assertRelatedObject(
   }
   await assertSameBuilding(ownerBuildingId, related, field);
   return related._id;
+}
+
+// -- Partial technical blocks ------------------------------------------------
+
+/**
+ * Was this key SENT, or merely absent?
+ *
+ * The whole of the section 4.2 merge turns on the difference, and `??` cannot express it.
+ * The form puts an explicit `null` on the wire for a box the technician emptied, and
+ * `null ?? stored` is `stored` — so under `input.X ?? object.X ?? null` no technical field
+ * could ever be cleared. A technician who deleted a mis-entered 500 kW saw «Объект
+ * шинэчлэгдлээ.» and the 500 kW was still there, still feeding floor load, panel reserve
+ * and `loadVariance`.
+ *
+ * The key's PRESENCE is the signal instead — the same test `description` and `notes` use
+ * further down this very handler, and the same reasoning `mergeAttributeValues` writes out
+ * in `packages/shared`. An absent key still means "leave it as it is", so an update that
+ * mentions only `quantity` cannot wipe the rated power beside it.
+ *
+ * A key present with `undefined` counts as ABSENT. JSON cannot carry an explicit
+ * `undefined`, so no client can reach this branch; it exists so that a programmatic caller
+ * spelling an optional field out as `{ ratedPowerKw: undefined }` — which reads as "not
+ * provided" in TypeScript — cannot erase a value by accident.
+ */
+function wasSent<B extends object, K extends keyof B>(block: B, key: K): boolean {
+  return key in block && block[key] !== undefined;
+}
+
+/** A scalar §4.2 field: sent wins (including an explicit null), absent keeps what is stored. */
+function patchField<B extends object, K extends keyof B>(
+  block: B,
+  key: K,
+  stored: Exclude<B[K], undefined | null> | null | undefined,
+): Exclude<B[K], undefined | null> | null {
+  if (!wasSent(block, key)) return stored ?? null;
+  return (block[key] ?? null) as Exclude<B[K], undefined | null> | null;
+}
+
+/** As `patchField`, for the two date fields the payload carries as ISO strings. */
+function patchDate<B extends object, K extends keyof B>(
+  block: B,
+  key: K,
+  stored: Date | null | undefined,
+): Date | null {
+  if (!wasSent(block, key)) return stored ?? null;
+  const value = block[key] as unknown as string | Date | null;
+  return value ? new Date(value) : null;
+}
+
+/**
+ * As `patchField`, for the edges between objects.
+ *
+ * These were the worse half of the same bug, because they were guarded on TRUTHINESS
+ * (`input.circuit.panelId ? … : stored`) rather than on `??`. The explicit «Хэлхээнд
+ * холбохгүй» / «Самбарт байрлуулахгүй» option sends `null`, so choosing it changed
+ * nothing — and `equipment.circuit` is the one edge the section 11.5 load walk traverses,
+ * so the device's power went on being counted in a panel the user believed they had
+ * disconnected it from.
+ *
+ * `resolve` runs only for a real id, so clearing an edge never pays for a lookup and never
+ * has to satisfy `assertRelatedObject`: detaching from a decommissioned panel must stay
+ * possible even though attaching to one is refused.
+ */
+async function patchReference<B extends object, K extends keyof B>(
+  block: B,
+  key: K,
+  stored: Types.ObjectId | null | undefined,
+  resolve: (id: string) => Promise<Types.ObjectId>,
+): Promise<Types.ObjectId | null> {
+  if (!wasSent(block, key)) return stored ?? null;
+  const value = block[key] as unknown as string | null;
+  return value ? resolve(value) : null;
 }
 
 // -- Read --------------------------------------------------------------------
@@ -1286,84 +1359,86 @@ export async function updateObject(
   const ownerBuildingId =
     input.circuit || input.equipment ? await buildingOfFloor(object.floor) : null;
 
-  // Only the block belonging to this object's category is writable; the schema already
-  // rejects the others, and this is the second gate.
+  /**
+   * Only the block belonging to this object's category is writable; the schema already
+   * rejects the others, and this is the second gate.
+   *
+   * Every field below merges on the PRESENCE of its key — see `wasSent` and the three
+   * `patch*` helpers. Sent wins, including an explicit `null`, which is what clears the
+   * field; absent leaves what is stored, so a partial update never wipes a neighbour.
+   */
   if (object.category === 'PANEL' && input.panel) {
+    const panel = input.panel;
     object.panel = {
-      capacityKw: input.panel.capacityKw ?? object.panel?.capacityKw ?? null,
-      location: input.panel.location ?? object.panel?.location ?? null,
-      protection: input.panel.protection ?? object.panel?.protection ?? null,
+      capacityKw: patchField(panel, 'capacityKw', object.panel?.capacityKw),
+      location: patchField(panel, 'location', object.panel?.location),
+      protection: patchField(panel, 'protection', object.panel?.protection),
     };
   }
   if (object.category === 'CIRCUIT' && input.circuit) {
+    const circuit = input.circuit;
     object.circuit = {
-      panel: input.circuit.panelId
-        ? await assertRelatedObject(
-            input.circuit.panelId,
-            'PANEL',
-            object.customer,
-            'circuit.panelId',
-            ownerBuildingId,
-          )
-        : (object.circuit?.panel ?? null),
-      startPointObject: input.circuit.startPointObjectId
-        ? await assertRelatedObject(
-            input.circuit.startPointObjectId,
+      panel: await patchReference(circuit, 'panelId', object.circuit?.panel, (id) =>
+        assertRelatedObject(id, 'PANEL', object.customer, 'circuit.panelId', ownerBuildingId),
+      ),
+      startPointObject: await patchReference(
+        circuit,
+        'startPointObjectId',
+        object.circuit?.startPointObject,
+        (id) =>
+          assertRelatedObject(
+            id,
             'PANEL',
             object.customer,
             'circuit.startPointObjectId',
             ownerBuildingId,
-          )
-        : (object.circuit?.startPointObject ?? null),
-      endPointObject: input.circuit.endPointObjectId
-        ? await assertRelatedObject(
-            input.circuit.endPointObjectId,
+          ),
+      ),
+      endPointObject: await patchReference(
+        circuit,
+        'endPointObjectId',
+        object.circuit?.endPointObject,
+        (id) =>
+          assertRelatedObject(
+            id,
             'EQUIPMENT',
             object.customer,
             'circuit.endPointObjectId',
             ownerBuildingId,
-          )
-        : (object.circuit?.endPointObject ?? null),
-      breakerRating: input.circuit.breakerRating ?? object.circuit?.breakerRating ?? null,
-      cableType: input.circuit.cableType ?? object.circuit?.cableType ?? null,
-      cableSectionMm2: input.circuit.cableSectionMm2 ?? object.circuit?.cableSectionMm2 ?? null,
-      cableLengthM: input.circuit.cableLengthM ?? object.circuit?.cableLengthM ?? null,
-      permittedCapacityKw:
-        input.circuit.permittedCapacityKw ?? object.circuit?.permittedCapacityKw ?? null,
+          ),
+      ),
+      breakerRating: patchField(circuit, 'breakerRating', object.circuit?.breakerRating),
+      cableType: patchField(circuit, 'cableType', object.circuit?.cableType),
+      cableSectionMm2: patchField(circuit, 'cableSectionMm2', object.circuit?.cableSectionMm2),
+      cableLengthM: patchField(circuit, 'cableLengthM', object.circuit?.cableLengthM),
+      permittedCapacityKw: patchField(
+        circuit,
+        'permittedCapacityKw',
+        object.circuit?.permittedCapacityKw,
+      ),
     };
   }
   if (object.category === 'EQUIPMENT' && input.equipment) {
+    const equipment = input.equipment;
     object.equipment = {
-      circuit: input.equipment.circuitId
-        ? await assertRelatedObject(
-            input.equipment.circuitId,
-            'CIRCUIT',
-            object.customer,
-            'equipment.circuitId',
-            ownerBuildingId,
-          )
-        : (object.equipment?.circuit ?? null),
-      // Same "omitted means leave it alone" rule the circuit above follows, and the same
-      // reference gate. A mount is never inferred from a circuit or vice versa.
-      panel: input.equipment.panelId
-        ? await assertRelatedObject(
-            input.equipment.panelId,
-            'PANEL',
-            object.customer,
-            'equipment.panelId',
-            ownerBuildingId,
-          )
-        : (object.equipment?.panel ?? null),
-      ratedPowerKw: input.equipment.ratedPowerKw ?? object.equipment?.ratedPowerKw ?? null,
-      quantity: input.equipment.quantity ?? object.equipment?.quantity ?? null,
-      usageCoefficient:
-        input.equipment.usageCoefficient ?? object.equipment?.usageCoefficient ?? null,
-      installedAt: input.equipment.installedAt
-        ? new Date(input.equipment.installedAt)
-        : (object.equipment?.installedAt ?? null),
-      warrantyUntil: input.equipment.warrantyUntil
-        ? new Date(input.equipment.warrantyUntil)
-        : (object.equipment?.warrantyUntil ?? null),
+      circuit: await patchReference(equipment, 'circuitId', object.equipment?.circuit, (id) =>
+        assertRelatedObject(id, 'CIRCUIT', object.customer, 'equipment.circuitId', ownerBuildingId),
+      ),
+      // Same "sent means sent, absent means leave it alone" rule the circuit above
+      // follows, and the same reference gate. A mount is never inferred from a circuit or
+      // vice versa, and clearing one never clears the other.
+      panel: await patchReference(equipment, 'panelId', object.equipment?.panel, (id) =>
+        assertRelatedObject(id, 'PANEL', object.customer, 'equipment.panelId', ownerBuildingId),
+      ),
+      ratedPowerKw: patchField(equipment, 'ratedPowerKw', object.equipment?.ratedPowerKw),
+      quantity: patchField(equipment, 'quantity', object.equipment?.quantity),
+      usageCoefficient: patchField(
+        equipment,
+        'usageCoefficient',
+        object.equipment?.usageCoefficient,
+      ),
+      installedAt: patchDate(equipment, 'installedAt', object.equipment?.installedAt),
+      warrantyUntil: patchDate(equipment, 'warrantyUntil', object.equipment?.warrantyUntil),
     };
   }
 
@@ -1785,7 +1860,7 @@ export async function recordAssessment(
    * the safety gate with the word. The flags say what the band *is*, which is what the
    * requirement actually describes.
    */
-  const band = bands.find((entry) => entry.level === riskLevel) ?? null;
+  const band = bandFor(riskLevel, bands);
   const bandName = band?.labelMn ?? riskLevel;
 
   if (band?.requiresConclusion) {
@@ -1910,9 +1985,12 @@ export async function recordAssessment(
 
   // Rule 17.9: an object in the band that takes equipment out of service must not remain
   // in active use. Which band that is, is configuration — exactly one may carry the flag.
-  if (band?.decommissions && object.status === 'ACTIVE') {
-    object.status = 'DECOMMISSIONED';
-  }
+  //
+  // Through `band-effects` rather than inline, because `applyReportToEquipment` writes the
+  // same head from three other producers and used to skip this entirely: the identical
+  // score reached the object through a planned-work report and left it ACTIVE. One
+  // implementation, both doors.
+  applyBandSideEffects(object, band);
 
   await object.save();
 

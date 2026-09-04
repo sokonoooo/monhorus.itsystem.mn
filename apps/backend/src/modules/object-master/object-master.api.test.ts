@@ -2591,3 +2591,189 @@ describe('assessment escalation recipients', () => {
     expect(await inboxOf(technician.userId)).toHaveLength(0);
   });
 });
+
+/**
+ * Clearing a §4.2 technical field.
+ *
+ * Every field in the three per-category blocks used to merge as
+ * `input.X ?? object.X ?? null`, and the references as `input.X ? … : object.X`. Both read
+ * an explicit `null` — which is exactly what the form sends for a box the technician
+ * emptied and for the «Хэлхээнд холбохгүй» option — as "not sent", so NOTHING in section
+ * 4.2 could ever be cleared. The reply still said «Объект шинэчлэгдлээ.»
+ *
+ * These cases assert the clear on the way out AND on the load figures it feeds, because a
+ * stale 500 kW is not a display problem: it is still summed into the floor total, still
+ * eating the panel's reserve and still setting `loadVariance`.
+ */
+describe('clearing a section 4.2 technical field', () => {
+  async function detailOf(objectId: string): Promise<Record<string, any>> {
+    const response = await request(app)
+      .get(`${API}/objects-master/${objectId}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(response.status).toBe(200);
+    return response.body.data as Record<string, any>;
+  }
+
+  async function floorLoad(): Promise<Record<string, any>> {
+    const response = await request(app)
+      .get(`${API}/floors/${floorId}/load`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(response.status).toBe(200);
+    return response.body.data as Record<string, any>;
+  }
+
+  async function patchObject(
+    objectId: string,
+    body: Record<string, unknown>,
+  ): Promise<request.Response> {
+    return request(app)
+      .patch(`${API}/objects-master/${objectId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(body);
+  }
+
+  it('clears a mis-entered rated power, and the load stops claiming it', async () => {
+    const chain = await buildChain();
+
+    // 1.5 kW × 4 × 0.8. The floor total is the panel's, reached through the circuit.
+    expect((await floorLoad()).totalKw).toMatchObject({ valueKw: 4.8, complete: true });
+
+    const response = await patchObject(chain.equipment, { equipment: { ratedPowerKw: null } });
+    expect(response.status).toBe(200);
+
+    expect((await detailOf(chain.equipment)).equipment.ratedPowerKw).toBeNull();
+
+    // Not zero — «Бүрэн бус» carrying the reason, per rule 17.18. What matters is that
+    // 4.8 kW is gone from the floor the moment the technician says it was never there.
+    const total = (await floorLoad()).totalKw;
+    expect(total.valueKw).toBeNull();
+    expect(total.complete).toBe(false);
+    expect(total.reasons).toContain('MISSING_RATED_POWER');
+  });
+
+  it('clears a panel capacity, and the reserve stops reading as headroom', async () => {
+    const chain = await buildChain();
+    expect((await detailOf(chain.panel)).reserveKw.valueKw).toBe(20.2);
+
+    expect((await patchObject(chain.panel, { panel: { capacityKw: null } })).status).toBe(200);
+
+    const panel = await detailOf(chain.panel);
+    expect(panel.panel.capacityKw).toBeNull();
+    expect(panel.reserveKw.valueKw).toBeNull();
+  });
+
+  it('clears the free-text circuit fields', async () => {
+    const chain = await buildChain();
+
+    expect(
+      (
+        await patchObject(chain.circuit, {
+          circuit: { breakerRating: null, cableType: null, cableLengthM: null },
+        })
+      ).status,
+    ).toBe(200);
+
+    const circuit = (await detailOf(chain.circuit)).circuit;
+    expect(circuit.breakerRating).toBeNull();
+    expect(circuit.cableType).toBeNull();
+    expect(circuit.cableLengthM).toBeNull();
+    // Untouched by the same request: an absent key still means "leave it alone".
+    expect(circuit.cableSectionMm2).toBe(2.5);
+  });
+
+  /**
+   * The reference half, and the worse half.
+   *
+   * `equipment.circuit` is the ONE edge the section 11.5 walk traverses, so a device that
+   * cannot be detached goes on being counted in a panel the user believes they have
+   * disconnected it from.
+   */
+  it('detaches a device from its circuit, and the panel load drops', async () => {
+    const chain = await buildChain();
+    expect((await detailOf(chain.panel)).calculatedLoad.valueKw).toBe(4.8);
+
+    const response = await patchObject(chain.equipment, { equipment: { circuitId: null } });
+    expect(response.status).toBe(200);
+
+    expect((await detailOf(chain.equipment)).equipment.circuit).toBeNull();
+
+    // The circuit now feeds nothing, so the panel above it can no longer name a figure.
+    const panel = await detailOf(chain.panel);
+    expect(panel.calculatedLoad.valueKw).toBeNull();
+    expect(panel.calculatedLoad.reasons).toContain('NO_EQUIPMENT');
+  });
+
+  it('detaches a device from the panel it was mounted in', async () => {
+    const chain = await buildChain();
+
+    expect(
+      (await patchObject(chain.equipment, { equipment: { panelId: chain.panel } })).status,
+    ).toBe(200);
+    expect((await detailOf(chain.equipment)).equipment.panel?.id).toBe(chain.panel);
+
+    expect((await patchObject(chain.equipment, { equipment: { panelId: null } })).status).toBe(200);
+    expect((await detailOf(chain.equipment)).equipment.panel).toBeNull();
+    // The mount edge carries no load, so detaching it must not disturb the supply edge.
+    expect((await detailOf(chain.equipment)).equipment.circuit?.id).toBe(chain.circuit);
+  });
+
+  it('unlinks a circuit from its panel', async () => {
+    const chain = await buildChain();
+
+    expect((await patchObject(chain.circuit, { circuit: { panelId: null } })).status).toBe(200);
+    expect((await detailOf(chain.circuit)).circuit.panel).toBeNull();
+  });
+
+  /**
+   * The other half of the rule, and the reason the fix is a presence test rather than a
+   * blanket "null clears": a form that sends only the field it touched must not wipe the
+   * fifteen it did not mention.
+   */
+  it('leaves every field the request never mentions exactly as it was', async () => {
+    const chain = await buildChain();
+
+    expect((await patchObject(chain.equipment, { equipment: { quantity: 2 } })).status).toBe(200);
+
+    const equipment = (await detailOf(chain.equipment)).equipment;
+    expect(equipment.quantity).toBe(2);
+    expect(equipment.ratedPowerKw).toBe(1.5);
+    expect(equipment.usageCoefficient).toBe(0.8);
+    expect(equipment.circuit?.id).toBe(chain.circuit);
+  });
+
+  it('leaves the technical block alone when the update never names it', async () => {
+    const chain = await buildChain();
+
+    expect((await patchObject(chain.equipment, { name: 'Шинэ нэр' })).status).toBe(200);
+
+    const detail = await detailOf(chain.equipment);
+    expect(detail.name).toBe('Шинэ нэр');
+    expect(detail.equipment.ratedPowerKw).toBe(1.5);
+    expect(detail.equipment.circuit?.id).toBe(chain.circuit);
+  });
+
+  it('clears the installation and warranty dates', async () => {
+    const chain = await buildChain();
+
+    expect(
+      (
+        await patchObject(chain.equipment, {
+          equipment: { installedAt: '2026-01-15', warrantyUntil: '2028-01-15' },
+        })
+      ).status,
+    ).toBe(200);
+    expect((await detailOf(chain.equipment)).equipment.installedAt).not.toBeNull();
+
+    expect(
+      (
+        await patchObject(chain.equipment, {
+          equipment: { installedAt: null, warrantyUntil: null },
+        })
+      ).status,
+    ).toBe(200);
+
+    const equipment = (await detailOf(chain.equipment)).equipment;
+    expect(equipment.installedAt).toBeNull();
+    expect(equipment.warrantyUntil).toBeNull();
+  });
+});

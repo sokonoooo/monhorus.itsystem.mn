@@ -41,6 +41,7 @@ import { DashboardLayout, type IDashboardWidgetPreference } from './dashboard-la
 import { Employee } from '../employee/employee.model';
 import { Invoice } from '../invoice/invoice.model';
 import { ObjectRecord } from '../object-master/object-master.models';
+import { riskScopeFilter } from '../object-master/risk-scope';
 import { Customer, ObjectNode } from '../objects/object.models';
 import { PlannedWork, type IPlannedWork } from '../planned-work/planned-work.models';
 import { resolveAssignedWorkFilter } from '../planned-work/planned-work.scope';
@@ -420,6 +421,9 @@ async function plannedWorkBlock(
  */
 async function riskBlock(): Promise<DashboardRiskSummary> {
   const grouped = await ObjectRecord.aggregate<{ _id: RiskLevel | null; count: number }>([
+    // Equipment that has been taken out of service is not a live risk. Same predicate the
+    // rollup, the inspection counters and the project summary use; see `risk-scope.ts`.
+    { $match: { ...riskScopeFilter } },
     { $group: { _id: '$latestAssessment.riskLevel', count: { $sum: 1 } } },
   ]);
 
