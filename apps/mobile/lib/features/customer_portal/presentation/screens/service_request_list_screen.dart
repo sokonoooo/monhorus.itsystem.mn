@@ -18,7 +18,15 @@ import 'service_request_detail_screen.dart';
 /// outgoing transition in the shared map, so everything else is still in flight.
 ///
 /// The split happens client-side because the list endpoint takes a single `status`
-/// value and "active" spans twelve of the fourteen.
+/// value and "active" spans twelve of the fourteen — which is why the whole set has to
+/// be in hand, and why [customerServiceRequestsProvider] page-walks it.
+///
+/// Each caption carries the count of what the tab is showing, and it is printed ONLY
+/// when the walk reached the end of the list. A customer with 150 requests used to see
+/// the first 100 under a caption that named no figure at all, so a list that stopped
+/// read exactly like a list that ended; a partial count printed as a count would be the
+/// same mistake with a number on it. When the read fell short the screen says so
+/// instead, the way the home hero blanks the risk figure it cannot stand behind.
 class ServiceRequestListScreen extends ConsumerStatefulWidget {
   const ServiceRequestListScreen({super.key});
 
@@ -58,15 +66,15 @@ class _ServiceRequestListScreenState
                   child: RefreshIndicator(
                     onRefresh: () async =>
                         ref.invalidate(customerServiceRequestsProvider),
-                    child: CustomerAsyncView<List<ServiceRequestListItemModel>>(
+                    child: CustomerAsyncView<CustomerServiceRequests>(
                       value: ref.watch(customerServiceRequestsProvider),
                       onRetry: () =>
                           ref.invalidate(customerServiceRequestsProvider),
                       builder: (
                         BuildContext ctx,
-                        List<ServiceRequestListItemModel> requests,
+                        CustomerServiceRequests data,
                       ) =>
-                          _buildList(ctx, requests),
+                          _buildList(ctx, data),
                     ),
                   ),
                 ),
@@ -75,10 +83,9 @@ class _ServiceRequestListScreenState
     );
   }
 
-  Widget _buildList(
-    BuildContext context,
-    List<ServiceRequestListItemModel> requests,
-  ) {
+  Widget _buildList(BuildContext context, CustomerServiceRequests data) {
+    final List<ServiceRequestListItemModel> requests = data.requests;
+
     final List<ServiceRequestListItemModel> visible = switch (_filter) {
       _RequestFilter.active => requests
           .where((ServiceRequestListItemModel r) => r.status?.isActive ?? true)
@@ -89,11 +96,19 @@ class _ServiceRequestListScreenState
       _RequestFilter.all => requests,
     };
 
-    final String caption = switch (_filter) {
+    final String label = switch (_filter) {
       _RequestFilter.active => 'Идэвхтэй хүсэлтүүд',
       _RequestFilter.finished => 'Дууссан хүсэлтүүд',
       _RequestFilter.all => 'Бүх хүсэлт',
     };
+
+    // The count only when it is the whole count. `total` is the server's own figure
+    // for the unfiltered set, so it is the one printed on «Бүгд»; the two client-side
+    // tabs count what they are actually showing, which is exact once the walk is
+    // complete because the split ran over every record.
+    final String caption = !data.complete
+        ? label
+        : '$label · ${_filter == _RequestFilter.all ? data.total : visible.length}';
 
     return ListView(
       padding: const EdgeInsets.only(
@@ -101,12 +116,21 @@ class _ServiceRequestListScreenState
       ),
       children: <Widget>[
         SectionCaption(caption, topPadding: 6),
+        if (!data.complete)
+          NoticeBanner.info(
+            text: 'Хүсэлтийн жагсаалт бүрэн ачаалагдсангүй. Нийт ${data.total} '
+                'хүсэлтээс ${requests.length}-г нь харуулж байна.',
+          ),
         if (visible.isEmpty)
           CustomerEmptyState(
             icon: Icons.inbox_outlined,
-            message: requests.isEmpty
-                ? 'Танай байгууллагаас илгээсэн хүсэлт алга байна.'
-                : 'Энэ шүүлтүүрт тохирох хүсэлт алга байна.',
+            message: !data.complete
+                // Never «алга байна» over a read that stopped early: an assertion of
+                // zero is the one thing a partial list has not earned.
+                ? 'Уншсан хэсэгт энэ шүүлтүүрт тохирох хүсэлт олдсонгүй.'
+                : requests.isEmpty
+                    ? 'Танай байгууллагаас илгээсэн хүсэлт алга байна.'
+                    : 'Энэ шүүлтүүрт тохирох хүсэлт алга байна.',
           )
         else
           for (final ServiceRequestListItemModel request in visible)

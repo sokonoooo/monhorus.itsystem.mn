@@ -112,12 +112,15 @@ class _DeviceBody extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
-        // The alert banner appears only for a band the backend itself flags as
-        // critical, and it prints the үнэлгээ's own conclusion rather than a
-        // sentence this app invented about the device.
-        if (band != null && band.isCritical)
+        // The alert banner appears only for a band at the severe end of the
+        // CONFIGURED ladder, and it prints the үнэлгээ's own conclusion rather than
+        // a sentence this app invented about the device. The test used to be
+        // `band == critical || band == outOfService` by name, so a device graded into
+        // a band an administrator had configured below those two — a worse condition
+        // than critical by the only measure the server publishes — raised no banner.
+        if (isCriticalBand(band))
           NoticeBanner.alert(
-            title: band.label,
+            title: band!.label,
             text: latest?.conclusion?.isNotEmpty == true
                 ? latest!.conclusion!
                 : 'Сүүлийн үнэлгээгээр ноцтой эрсдэлтэй тэмдэглэгдсэн. Яаралтай '

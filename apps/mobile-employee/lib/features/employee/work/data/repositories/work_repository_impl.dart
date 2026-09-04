@@ -58,6 +58,7 @@ class WorkRepositoryImpl implements WorkRepository {
     String? teamId,
     PlannedWorkEffectiveStatus? status,
     String? search,
+    int page = 1,
   }) {
     return _guard(
       () => _remote.listPlannedWork(
@@ -65,6 +66,7 @@ class WorkRepositoryImpl implements WorkRepository {
         teamId: teamId,
         status: status,
         search: search,
+        page: page,
       ),
     );
   }
@@ -73,14 +75,14 @@ class WorkRepositoryImpl implements WorkRepository {
   /// once instead of the segment rendering half a pool beside an error.
   @override
   Future<ApiResult<PaginatedData<ServiceRequestListItemModel>>>
-      listOpenServiceRequests() {
-    return _guard(() => _remote.listOpenServiceRequests());
+      listOpenServiceRequests({int page = 1}) {
+    return _guard(() => _remote.listOpenServiceRequests(page: page));
   }
 
   @override
   Future<ApiResult<PaginatedData<ServiceRequestListItemModel>>>
-      listAssignedServiceRequests() {
-    return _guard(() => _remote.listAssignedServiceRequests());
+      listAssignedServiceRequests({int page = 1}) {
+    return _guard(() => _remote.listAssignedServiceRequests(page: page));
   }
 
   @override

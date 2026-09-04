@@ -302,31 +302,83 @@ final FutureProviderFamily<ObjectHistoryModel, String> objectHistoryProvider =
 
 // -- Service requests --------------------------------------------------------
 
-/// The customer's own requests, newest first.
+/// What a walk over a set of service requests came back with.
 ///
-/// Fetched in one page of 100 - the schema's maximum - and split into active and
-/// finished in the UI. The list endpoint accepts a single `status` value and the
-/// active set spans twelve of the fourteen statuses, so a server-side filter cannot
-/// express it. A customer with more than 100 requests would need paging, which V1
-/// does not attempt.
-final FutureProvider<List<ServiceRequestListItemModel>> customerServiceRequestsProvider =
-    FutureProvider<List<ServiceRequestListItemModel>>((Ref ref) async {
+/// [complete] is the point of the type. A caller has to be able to say either "there
+/// are no more" or "no more turned up in what we read", and those are different
+/// statements: only a walk that reached the end of the list has earned the first one.
+/// A bare list cannot tell the caller which it is holding, and every screen that got
+/// one guessed — always the confident one.
+///
+/// [total] is the server's own count, which is a different figure from
+/// `requests.length` whenever the walk fell short, and the only honest thing to print
+/// as "how many requests you have".
+typedef CustomerServiceRequests = ({
+  List<ServiceRequestListItemModel> requests,
+  int total,
+  bool complete,
+});
+
+/// Every service request in scope, not the first hundred.
+///
+/// `serviceRequestListQuerySchema` caps `limit` at 100 and the list endpoint takes a
+/// single `status` value, while "active" spans twelve of the fourteen statuses — so the
+/// split has to happen on the device, over the whole set. Read as one page it was not
+/// the whole set: a customer with 150 requests saw 100 of them under tabs that carried
+/// no total, no pager and no hint that a third of their history was missing.
+///
+/// Pages are walked in order, because the first response is what says how many there
+/// are, and under [_maxPagesWalked], because `totalPages` is the server's own
+/// arithmetic. Falling out at that ceiling is what makes [CustomerServiceRequests
+/// .complete] false, so the screen qualifies what it prints instead of passing a
+/// partial read off as the lot.
+Future<CustomerServiceRequests> _allServiceRequests(
+  CustomerPortalRepository repository,
+  ResolvedCustomerScope scope, {
+  String? buildingId,
+}) async {
+  final List<ServiceRequestListItemModel> all = <ServiceRequestListItemModel>[];
+  int total = 0;
+  bool complete = false;
+
+  for (int page = 1; page <= _maxPagesWalked; page++) {
+    final PaginatedData<ServiceRequestListItemModel> slice = _unwrap(
+      await repository.listServiceRequests(
+        scope,
+        buildingId: buildingId,
+        page: page,
+        limit: 100,
+      ),
+    );
+    if (page == 1) total = slice.total;
+    all.addAll(slice.items);
+    // Reaching the last page — or one the server answered empty — is what makes the
+    // read exhaustive. Falling out of the loop at the ceiling does not.
+    if (slice.items.isEmpty || page >= slice.totalPages) {
+      complete = true;
+      break;
+    }
+  }
+
+  return (
+    requests: List<ServiceRequestListItemModel>.unmodifiable(all),
+    // A walk that read more than the first page said it would is still describing the
+    // set it read; never report fewer than are in hand.
+    total: total < all.length ? all.length : total,
+    complete: complete,
+  );
+}
+
+/// The customer's own requests, newest first, split into active and finished in the UI.
+final FutureProvider<CustomerServiceRequests> customerServiceRequestsProvider =
+    FutureProvider<CustomerServiceRequests>((Ref ref) async {
   final CustomerPortalRepository repository =
       ref.watch(customerPortalRepositoryProvider);
-  final PaginatedData<ServiceRequestListItemModel> page = _unwrap(
-    await repository.listServiceRequests(_requireScope(ref), limit: 100),
-  );
-  return page.items;
+  return _allServiceRequests(repository, _requireScope(ref));
 });
 
 /// What a walk over a building's requests came back with, and whether that is all of
-/// them.
-///
-/// [complete] is the whole point of the type. The floor history tab has to say either
-/// "this floor has no service history" or "none turned up in what we read", and those
-/// are different statements: only a walk that reached the end of the list has earned
-/// the first one. A bare list cannot tell the caller which it is holding, and the
-/// screen guessed — always the confident one.
+/// them. The floor history tab's own view of [CustomerServiceRequests].
 typedef BuildingServiceHistory = ({
   List<ServiceRequestListItemModel> requests,
   bool complete,
@@ -350,32 +402,12 @@ final FutureProviderFamily<BuildingServiceHistory, String>
         (Ref ref, String buildingId) async {
   final CustomerPortalRepository repository =
       ref.watch(customerPortalRepositoryProvider);
-  final ResolvedCustomerScope scope = _requireScope(ref);
-
-  final List<ServiceRequestListItemModel> all = <ServiceRequestListItemModel>[];
-  bool complete = false;
-  for (int page = 1; page <= _maxPagesWalked; page++) {
-    final PaginatedData<ServiceRequestListItemModel> slice = _unwrap(
-      await repository.listServiceRequests(
-        scope,
-        buildingId: buildingId,
-        page: page,
-        limit: 100,
-      ),
-    );
-    all.addAll(slice.items);
-    // Reaching the last page — or one the server answered empty — is what makes the
-    // read exhaustive. Falling out of the loop at the ceiling does not.
-    if (slice.items.isEmpty || page >= slice.totalPages) {
-      complete = true;
-      break;
-    }
-  }
-
-  return (
-    requests: List<ServiceRequestListItemModel>.unmodifiable(all),
-    complete: complete,
+  final CustomerServiceRequests walked = await _allServiceRequests(
+    repository,
+    _requireScope(ref),
+    buildingId: buildingId,
   );
+  return (requests: walked.requests, complete: walked.complete);
 });
 
 final FutureProviderFamily<ServiceRequestDetailModel, String>
@@ -539,20 +571,26 @@ class CustomerHomeSummary {
 
   int get deviceTotal => assessedTotal + unassessedCount;
 
-  /// Devices in the green band, as a percent of those that were assessed.
+  /// Devices in the healthiest configured band, as a percent of those assessed.
   ///
   /// Null when nothing has been assessed, so the card shows a dash rather than a
-  /// misleading 0 percent or 100 percent.
+  /// misleading 0 percent or 100 percent — and null too on an installation whose
+  /// ladder this build could make no sense of, because there is then no band that
+  /// means "nothing to do here".
   int? get healthyPercent {
     if (assessedTotal == 0) return null;
-    return ((countOf(RiskLevel.normal) / assessedTotal) * 100).round();
+    final RiskLevel? healthy = healthiestRiskBand();
+    if (healthy == null) return null;
+    return ((countOf(healthy) / assessedTotal) * 100).round();
   }
 
-  int get attentionCount =>
-      countOf(RiskLevel.attention) + countOf(RiskLevel.scheduleRepair);
+  /// Both figures are the same rule the per-building `riskSummary` uses, called rather
+  /// than restated: they were spelled out as `ATTENTION + SCHEDULE_REPAIR` and
+  /// `CRITICAL + OUT_OF_SERVICE` in two files at once, and the hero headline reads off
+  /// these.
+  int get attentionCount => attentionTotalOver(countOf);
 
-  int get criticalCount =>
-      countOf(RiskLevel.critical) + countOf(RiskLevel.outOfService);
+  int get criticalCount => severeTotalOver(countOf);
 
   List<ServiceRequestListItemModel> get activeRequests => requests
       .where((ServiceRequestListItemModel request) =>
@@ -578,8 +616,8 @@ final FutureProvider<CustomerHomeSummary> customerHomeSummaryProvider =
 
   final PaginatedData<BuildingModel> buildingPage =
       await _allBuildings(repository, scope);
-  final PaginatedData<ServiceRequestListItemModel> requestPage =
-      _unwrap(await repository.listServiceRequests(scope, limit: 100));
+  final CustomerServiceRequests requestWalk =
+      await _allServiceRequests(repository, scope);
 
   final Map<RiskLevel, int> counts = <RiskLevel, int>{};
   int unassessed = 0;
@@ -595,7 +633,7 @@ final FutureProvider<CustomerHomeSummary> customerHomeSummaryProvider =
   return CustomerHomeSummary(
     buildings: buildingPage.items,
     buildingTotal: buildingPage.total,
-    requests: requestPage.items,
+    requests: requestWalk.requests,
     riskCounts: counts,
     unassessedCount: unassessed,
   );

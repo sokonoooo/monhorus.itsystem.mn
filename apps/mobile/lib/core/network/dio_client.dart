@@ -191,6 +191,22 @@ class DioClient {
       final Object? inner = error.error;
       if (inner is NetworkException) throw inner;
       if (inner is ServerException) throw inner;
+
+      // A 5xx is an answer from the server, not a failure to reach it. `validateStatus`
+      // deliberately lets Dio throw on those so the success path above never sees one,
+      // but falling straight through to NetworkException loses that distinction and
+      // costs twice: the customer is told their connection is down while the backend is
+      // demonstrably replying, and session restore reads that as an offline start, so a
+      // backend outage is indistinguishable from a tunnel and the shell opens on a
+      // cached user whose every subsequent request then fails.
+      //
+      // Mirrors apps/mobile-employee/lib/core/network/dio_client.dart, which already
+      // had this branch.
+      final Response<dynamic>? response = error.response;
+      if (response != null) {
+        throw _toServerException(response.statusCode ?? 0, response.data);
+      }
+
       throw const NetworkException();
     }
   }

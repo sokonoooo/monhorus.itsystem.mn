@@ -67,15 +67,28 @@ class RiskSummaryModel {
 
   int get total => assessedTotal + unassessedCount;
 
+  /// The three roll-ups, over the CONFIGURED ladder.
+  ///
+  /// They used to name five bands between them — attention was ATTENTION plus
+  /// SCHEDULE_REPAIR, critical was CRITICAL plus OUT_OF_SERVICE, normal was NORMAL — and
+  /// a device graded into a configured spare therefore appeared in [total] and in none of
+  /// the three. The strip above a floor plan prints all four figures side by side, so on
+  /// any installation using a sixth band they visibly did not add up.
+  ///
+  /// [riskBandGroups] partitions the ladder, so every assessed device is in exactly one
+  /// group and `normal + attention + critical + unassessed == total` holds by
+  /// construction. On the shipped five-band ladder the three groups are the same five
+  /// bands they always were.
+  int _sum(List<RiskLevel> group) =>
+      group.fold(0, (int total, RiskLevel level) => total + countOf(level));
+
   /// Bands below NORMAL that are not yet critical.
-  int get attentionCount =>
-      countOf(RiskLevel.attention) + countOf(RiskLevel.scheduleRepair);
+  int get attentionCount => _sum(riskBandGroups().attention);
 
-  /// The two bands section 10.2 requires a warning marker on.
-  int get criticalCount =>
-      countOf(RiskLevel.critical) + countOf(RiskLevel.outOfService);
+  /// The bands section 10.2 requires a warning marker on.
+  int get criticalCount => _sum(riskBandGroups().critical);
 
-  int get normalCount => countOf(RiskLevel.normal);
+  int get normalCount => _sum(riskBandGroups().normal);
 
   /// The worst band present, or null when nothing is assessed. Colours a row tile.
   RiskLevel? get worstLevel {

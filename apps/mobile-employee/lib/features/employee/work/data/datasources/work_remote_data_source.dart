@@ -284,12 +284,13 @@ class WorkRemoteDataSource {
   /// than here, because this transport must not decide what a list means.
   Future<PaginatedData<ServiceRequestListItemModel>> listAssignedServiceRequests({
     int limit = 100,
+    int page = 1,
   }) {
     return _client.request<PaginatedData<ServiceRequestListItemModel>>(
       path: '/service-requests',
       method: 'GET',
       queryParameters: <String, dynamic>{
-        'page': 1,
+        'page': page,
         'limit': limit,
         // Newest first, so a request assigned a minute ago is on the first page even
         // when the reader carries more than `limit` of them.
@@ -306,6 +307,7 @@ class WorkRemoteDataSource {
 
   Future<PaginatedData<ServiceRequestListItemModel>> listOpenServiceRequests({
     int limit = 100,
+    int page = 1,
   }) async {
     final List<PaginatedData<ServiceRequestListItemModel>> pages =
         await Future.wait<PaginatedData<ServiceRequestListItemModel>>(
@@ -313,6 +315,7 @@ class WorkRemoteDataSource {
         (ServiceRequestStatus status) => _listServiceRequestsByStatus(
           status: status,
           limit: limit,
+          page: page,
         ),
       ),
     );
@@ -332,7 +335,7 @@ class WorkRemoteDataSource {
 
     return PaginatedData<ServiceRequestListItemModel>(
       items: merged,
-      page: 1,
+      page: page,
       limit: limit,
       // The sum of both counters, because the pool IS the two statuses together. A
       // record that moved between the round trips is counted twice here while being
@@ -359,13 +362,14 @@ class WorkRemoteDataSource {
   Future<PaginatedData<ServiceRequestListItemModel>> _listServiceRequestsByStatus({
     required ServiceRequestStatus status,
     required int limit,
+    int page = 1,
   }) {
     return _client.request<PaginatedData<ServiceRequestListItemModel>>(
       path: '/service-requests',
       method: 'GET',
       queryParameters: <String, dynamic>{
         'status': status.wireValue,
-        'page': 1,
+        'page': page,
         'limit': limit,
         'sortBy': 'slaDueAt',
         'sortDir': 'asc',

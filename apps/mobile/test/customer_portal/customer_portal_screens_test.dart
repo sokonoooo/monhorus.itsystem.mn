@@ -678,13 +678,13 @@ void main() {
         ),
       );
 
-      expect(find.text('ИДЭВХТЭЙ ХҮСЭЛТҮҮД'), findsOneWidget);
+      expect(find.text('ИДЭВХТЭЙ ХҮСЭЛТҮҮД · 1'), findsOneWidget);
       expect(find.textContaining('SR-202607-0012'), findsOneWidget);
       expect(find.textContaining('SR-202607-0004'), findsNothing);
 
       await tester.tap(find.text('ДУУССАН'));
       await tester.pumpAndSettle();
-      expect(find.text('ДУУССАН ХҮСЭЛТҮҮД'), findsOneWidget);
+      expect(find.text('ДУУССАН ХҮСЭЛТҮҮД · 1'), findsOneWidget);
       expect(find.textContaining('SR-202607-0004'), findsOneWidget);
       expect(find.textContaining('SR-202607-0012'), findsNothing);
 
@@ -993,7 +993,7 @@ void main() {
       await tester.tap(find.text('Хүсэлт'));
       await tester.pumpAndSettle();
 
-      expect(find.text('ИДЭВХТЭЙ ХҮСЭЛТҮҮД'), findsOneWidget);
+      expect(find.text('ИДЭВХТЭЙ ХҮСЭЛТҮҮД · 1'), findsOneWidget);
     });
   });
 }

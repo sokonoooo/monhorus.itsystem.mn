@@ -30,17 +30,24 @@ import '../entities/planned_work_enums.dart';
 /// way to ask for the unassigned ones, so the pool this contract can answer for is
 /// service requests alone.
 abstract class WorkRepository {
+  /// One page of `GET /planned-work`.
+  ///
+  /// [page] is here because a counter over a truncated list is a wrong number rather than
+  /// a partial one: the board's "Идэвхтэй", "Өнөөдөр" and "Хэтэрсэн" figures are counted
+  /// from the rows, and a technician with more than a page of work was told how much of
+  /// it fitted in one response. The caller walks the pages; the transport serves one.
   Future<ApiResult<PaginatedData<PlannedWorkListItemModel>>> listPlannedWork({
     String? employeeId,
     String? teamId,
     PlannedWorkEffectiveStatus? status,
     String? search,
+    int page,
   });
 
   /// The service requests nobody is assigned to — NEW and UNASSIGNED together,
   /// ordered by SLA urgency. Read-only: nothing in this contract can claim one.
   Future<ApiResult<PaginatedData<ServiceRequestListItemModel>>>
-      listOpenServiceRequests();
+      listOpenServiceRequests({int page});
 
   /// `GET /service-requests` with no filter at all, which is the server's answer to
   /// "the work this caller may see": their own, their team's, and the unclaimed pool.
@@ -49,7 +56,7 @@ abstract class WorkRepository {
   /// read includes the open queue by design, so the caller subtracts it with
   /// [ServiceRequestListItemModel.isUnclaimed].
   Future<ApiResult<PaginatedData<ServiceRequestListItemModel>>>
-      listAssignedServiceRequests();
+      listAssignedServiceRequests({int page});
 
   /// Claims one open request for the signed-in employee.
   Future<ApiResult<void>> claimServiceRequest(String requestId);

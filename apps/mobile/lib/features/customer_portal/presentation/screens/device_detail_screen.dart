@@ -84,8 +84,7 @@ class _Body extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final LatestAssessmentModel? assessment = object.latestAssessment;
     final RiskLevel? level = assessment?.riskLevel;
-    final bool severe =
-        level == RiskLevel.critical || level == RiskLevel.outOfService;
+    final bool severe = level != null && riskIsSevere(level);
 
     return ListView(
       padding: const EdgeInsets.only(top: 8, bottom: 24),
@@ -171,7 +170,8 @@ class _Body extends ConsumerWidget {
           ],
         ),
 
-        ..._attributeSection(object),
+        ..._categoryAttributeSection(object),
+        ..._typeAttributeSection(object),
 
         if (assessment != null) ...<Widget>[
           const SectionCaption('Дүгнэлт ба зөвлөмж'),
@@ -242,7 +242,47 @@ class _Body extends ConsumerWidget {
     );
   }
 
-  List<Widget> _attributeSection(ObjectDetailModel object) {
+  /// The fields the object's TYPE declares, and what this object answered for them.
+  ///
+  /// Rendered from the definitions the server sends — key, label, kind and, for a
+  /// SELECT, its options — so an attribute an administrator adds in Тоноглолын төрөл
+  /// appears here with no release. Before this the customer app had no dynamic renderer
+  /// at all: every per-type answer a technician recorded was on the wire and invisible.
+  ///
+  /// All four declared kinds render; a kind this build has never heard of falls back to
+  /// its raw value rather than being dropped, because silently omitting an attribute is
+  /// the bug being fixed. A declared attribute nobody has answered shows «Бөглөөгүй» —
+  /// the type asks for it and it is missing, which is information, and hiding it would
+  /// make an unanswered field indistinguishable from one that does not exist.
+  ///
+  /// Separate from [_categoryAttributeSection] on purpose: those are the fixed section
+  /// 4.2 blocks, typed in the shared package and the same on every installation.
+  List<Widget> _typeAttributeSection(ObjectDetailModel object) {
+    final List<({ObjectTypeAttributeModel attribute, String? display})> rows =
+        object.typeAttributes;
+    if (rows.isEmpty) return const <Widget>[];
+
+    return <Widget>[
+      SectionCaption(
+        object.objectType?.name == null
+            ? 'Төрлийн үзүүлэлт'
+            : '${object.objectType!.name} үзүүлэлт',
+      ),
+      PanelCard(
+        padding: EdgeInsets.zero,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            for (final ({ObjectTypeAttributeModel attribute, String? display}) row
+                in rows)
+              _AttrRow(row.attribute.label, row.display ?? 'Бөглөөгүй'),
+          ],
+        ),
+      ),
+    ];
+  }
+
+  List<Widget> _categoryAttributeSection(ObjectDetailModel object) {
     final PanelAttributesModel? panel = object.panel;
     final CircuitAttributesModel? circuit = object.circuit;
     final EquipmentAttributesModel? equipment = object.equipment;
@@ -305,11 +345,14 @@ class _Body extends ConsumerWidget {
     return CustomerTokens.ink;
   }
 
+  /// See [loadOverCapacityPercent] and [loadNearCapacityPercent], which is where these
+  /// two figures live and where the note about the employee app disagreeing about the
+  /// amber band is.
   static Color _percentTone(LoadValueModel value) {
     if (!value.hasValue) return CustomerTokens.ink;
     final double percent = value.valueKw!;
-    if (percent > 100) return CustomerTokens.red;
-    if (percent >= 90) return CustomerTokens.yellow;
+    if (percent > loadOverCapacityPercent) return CustomerTokens.red;
+    if (percent >= loadNearCapacityPercent) return CustomerTokens.yellow;
     return CustomerTokens.green;
   }
 }
@@ -442,16 +485,13 @@ class _RequestAction extends ConsumerWidget {
     }
 
     final bool decommissioned = object.status == ObjectStatus.decommissioned;
-    final RiskLevel? level = object.latestAssessment?.riskLevel;
-    final bool severe =
-        level == RiskLevel.critical || level == RiskLevel.outOfService;
 
     return StickyAction(
       label: decommissioned
           ? 'Ашиглалтаас гарсан'
           : 'Засварын хүсэлт илгээх',
       icon: decommissioned ? Icons.block : Icons.build_outlined,
-      danger: severe,
+      danger: _isSevere(object),
       onPressed: decommissioned ? null : () => _open(context, ref, scope),
     );
   }
@@ -501,8 +541,11 @@ class _RequestAction extends ConsumerWidget {
       // its code and name so the dispatcher who receives the request knows what it is
       // about even after the customer edits the rest.
       deviceName: object.name,
-      initialUrgent: object.latestAssessment?.riskLevel == RiskLevel.critical ||
-          object.latestAssessment?.riskLevel == RiskLevel.outOfService,
+      // Sent to the server, where it sets the SLA window and how the request is
+      // dispatched — so the two band keys this used to name were a dispatch rule
+      // written in Dart. `riskIsSevere` reads it off the ladder the administrator
+      // configured instead; see its note on what the server does not publish.
+      initialUrgent: _isSevere(object),
       initialDescription: _describe(object),
       pickPhoto: pickPhoto,
     );
@@ -513,6 +556,14 @@ class _RequestAction extends ConsumerWidget {
         builder: (_) => ServiceRequestDetailScreen(requestId: createdId),
       ),
     );
+  }
+
+  /// Whether the register has this object in a band severe enough to raise the call as
+  /// urgent. Null - never assessed - is not severe: an object nobody has looked at is
+  /// an unknown, not a fault.
+  static bool _isSevere(ObjectDetailModel object) {
+    final RiskLevel? band = object.latestAssessment?.riskLevel;
+    return band != null && riskIsSevere(band);
   }
 
   /// The description the sheet opens with.

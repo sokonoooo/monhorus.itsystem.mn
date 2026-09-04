@@ -130,3 +130,51 @@ enum ObjectHistoryKind {
     return null;
   }
 }
+
+/// Mirrors `ObjectAttributeType` / `OBJECT_ATTRIBUTE_TYPES` in
+/// packages/shared/src/constants/object-type-attribute.ts.
+///
+/// What a runtime-declared attribute holds. An object TYPE — Автомат таслуур,
+/// Гэрэлтүүлэг, UPS — declares the extra facts every object of that type carries, and an
+/// administrator defines them in Тоноглолын төрөл. Nothing about their keys, labels or
+/// options is known to this binary, which is why they are rendered from the definition
+/// the server sends rather than from a list written here.
+enum ObjectAttributeType {
+  select('SELECT'),
+  text('TEXT'),
+  number('NUMBER'),
+  boolean('BOOLEAN');
+
+  const ObjectAttributeType(this.wireValue);
+
+  final String wireValue;
+
+  /// Tolerant, like every other `fromWire` in this folder, and for the reason the
+  /// employee app's copy states: a kind this build has never heard of falls back to
+  /// plain text rather than dropping the row. The customer then still sees the
+  /// attribute and its recorded answer, which is the whole point — silently omitting an
+  /// attribute type is the failure this renderer exists to end.
+  static ObjectAttributeType fromWire(String? value) {
+    for (final ObjectAttributeType type in ObjectAttributeType.values) {
+      if (type.wireValue == value) return type;
+    }
+    return ObjectAttributeType.text;
+  }
+}
+
+/// The load figure at which a reading is drawn as over capacity.
+///
+/// Mirrors nothing on the wire, and cannot: the API sends `loadPercent` and no opinion
+/// about it. Over 100 percent is drawn red in the employee app too, so the technician
+/// and the customer read the same reading the same way.
+const int loadOverCapacityPercent = 100;
+
+/// The load figure at which a reading is drawn as approaching capacity.
+///
+/// **This app's own band, and the two apps disagree about it.** The employee app has
+/// only the over-capacity rule above, so a panel at 94 percent is amber to the customer
+/// and plain to the technician standing in front of it. It is not a setting — nothing in
+/// `SETTING_KEYS` describes a load warning — so it cannot be read from the server, and
+/// it is named here rather than typed into a widget so there is exactly one of it to
+/// change when the two apps are reconciled.
+const int loadNearCapacityPercent = 90;

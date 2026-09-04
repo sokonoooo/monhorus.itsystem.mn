@@ -2618,6 +2618,7 @@ class _ListRepository implements WorkRepository {
     String? teamId,
     PlannedWorkEffectiveStatus? status,
     String? search,
+    int page = 1,
   }) async {
     calls.add(<String?>[employeeId, teamId]);
     return Success<PaginatedData<PlannedWorkListItemModel>>(
@@ -2633,7 +2634,7 @@ class _ListRepository implements WorkRepository {
 
   @override
   Future<ApiResult<PaginatedData<ServiceRequestListItemModel>>>
-      listAssignedServiceRequests() async {
+      listAssignedServiceRequests({int page = 1}) async {
     requestCalls += 1;
     return Success<PaginatedData<ServiceRequestListItemModel>>(
       PaginatedData<ServiceRequestListItemModel>(

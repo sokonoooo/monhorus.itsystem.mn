@@ -125,12 +125,18 @@ class RiskSummaryModel {
 
   int get total => assessedTotal + unassessedCount;
 
-  /// Bands that call for action: everything below NORMAL.
-  int get attentionCount =>
-      countOf(RiskLevel.attention) + countOf(RiskLevel.scheduleRepair);
+  /// Devices in the bands that call for action without being severe.
+  ///
+  /// Summed over the ladder in force rather than over `ATTENTION + SCHEDULE_REPAIR`,
+  /// which named two bands instead of describing them: on an installation using a
+  /// configured spare, a device graded into it fell out of both figures, so the counts
+  /// beside a building silently added up to fewer devices than it holds. The rule
+  /// itself lives in `attentionTotalOver`, so it is not also written out in the home
+  /// summary.
+  int get attentionCount => attentionTotalOver(countOf);
 
-  int get criticalCount =>
-      countOf(RiskLevel.critical) + countOf(RiskLevel.outOfService);
+  /// Devices in the severe bands. See `riskIsSevere`.
+  int get criticalCount => severeTotalOver(countOf);
 
   /// The worst band present, or null when nothing is assessed. Used to colour a row.
   RiskLevel? get worstLevel {

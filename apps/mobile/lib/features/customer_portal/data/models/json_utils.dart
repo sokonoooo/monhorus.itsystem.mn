@@ -33,3 +33,17 @@ String? emptyToNull(Object? value) {
   if (value is! String || value.isEmpty) return null;
   return value;
 }
+
+/// An untyped attribute bag — `Record<string, ObjectAttributeValue>` on the wire.
+///
+/// Values are kept as they arrived rather than coerced: what a value MEANS is decided by
+/// the type's own definition of that key, and a bag parsed without one would have to
+/// guess. A body that is not an object at all reads as no answers, which is what every
+/// object written before per-type attributes existed sends.
+Map<String, Object?> parseAttributeValues(Object? raw) {
+  if (raw is! Map) return const <String, Object?>{};
+  return <String, Object?>{
+    for (final MapEntry<Object?, Object?> entry in raw.entries)
+      if (entry.key is String) entry.key! as String: entry.value,
+  };
+}

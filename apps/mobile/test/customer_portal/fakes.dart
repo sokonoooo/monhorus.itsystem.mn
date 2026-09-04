@@ -250,12 +250,20 @@ final Uint8List planPngBytes = base64Decode(
 /// [planPosition] defaults to null because that is the ordinary case in the running
 /// database — only two of thirty-five objects have ever been placed on a drawing — so
 /// a test that wants a placed device must say so.
+/// [scoreMissing] keeps the assessment and drops only its `score`, which is the state
+/// `?? 0` used to render as the worst band on an inverted scale.
+///
+/// [withTypeAttributes] gives the object TYPE the fields an administrator declared on it
+/// at runtime, and the object the answers a technician recorded — one of each of the four
+/// kinds, plus a declared attribute nobody has answered.
 ObjectDetailModel objectFixture({
   String id = '6e0000000000000000000003',
   String name = 'LDB-2F-02',
   int? score = 38,
   String? riskLevel = 'CRITICAL',
   PlanPositionModel? planPosition,
+  bool scoreMissing = false,
+  bool withTypeAttributes = false,
 }) {
   return ObjectDetailModel.fromJson(<String, dynamic>{
     'id': id,
@@ -267,7 +275,16 @@ ObjectDetailModel objectFixture({
       'code': 'SUBPANEL',
       'name': 'Дэд самбар',
       'icon': 'PANEL',
+      if (withTypeAttributes) 'attributes': typeAttributesJson(),
     },
+    if (withTypeAttributes)
+      'attributeValues': <String, dynamic>{
+        'fuse': 'FUSED',
+        'mandatoryInspection': false,
+        'manufacturedYear': 2019,
+        'serialNumber': 'SN-44120',
+        // `ingressRating` is declared and deliberately unanswered.
+      },
     'customerId': testScope.customerId,
     'customerName': 'Central Tower ХХК',
     'floorId': '6d0000000000000000000002',
@@ -279,7 +296,7 @@ ObjectDetailModel objectFixture({
         ? null
         : <String, dynamic>{
             'id': '700000000000000000000005',
-            'score': score,
+            if (!scoreMissing) 'score': score,
             'riskLevel': riskLevel,
             'assessedAt': '2026-07-20T04:12:00.000Z',
             'assessedByName': 'Б. Энхтөр',
@@ -325,6 +342,85 @@ ObjectDetailModel objectFixture({
       'reasons': <String>['MISSING_CAPACITY'],
     },
     'canAssess': true,
+    'deleteBlockers': <String>[],
+  });
+}
+
+/// `ObjectTypeAttributeDto[]`, one row of each declared kind.
+///
+/// Administrator-defined at runtime, so nothing about these keys, labels or options is
+/// known to either app at build time — which is the whole point of rendering them from
+/// the definition rather than from a hardcoded list.
+List<Map<String, dynamic>> typeAttributesJson() => <Map<String, dynamic>>[
+      <String, dynamic>{
+        'key': 'fuse',
+        'label': 'Хайлмал',
+        'type': 'SELECT',
+        'required': true,
+        'options': <Map<String, dynamic>>[
+          <String, dynamic>{'value': 'FUSED', 'label': 'Хайлмалтай'},
+          <String, dynamic>{'value': 'UNFUSED', 'label': 'Хайлмалгүй'},
+        ],
+      },
+      <String, dynamic>{
+        'key': 'mandatoryInspection',
+        'label': 'Заавал үзлэгтэй',
+        'type': 'BOOLEAN',
+        'required': false,
+        'options': <Map<String, dynamic>>[],
+      },
+      <String, dynamic>{
+        'key': 'manufacturedYear',
+        'label': 'Үйлдвэрлэсэн он',
+        'type': 'NUMBER',
+        'required': false,
+        'options': <Map<String, dynamic>>[],
+      },
+      <String, dynamic>{
+        'key': 'serialNumber',
+        'label': 'Сериал дугаар',
+        'type': 'TEXT',
+        'required': false,
+        'options': <Map<String, dynamic>>[],
+      },
+      <String, dynamic>{
+        'key': 'ingressRating',
+        'label': 'Хамгаалалтын зэрэглэл',
+        'type': 'TEXT',
+        'required': false,
+        'options': <Map<String, dynamic>>[],
+      },
+    ];
+
+/// A building whose `riskSummary` carries exactly the per-band counts given, keyed by
+/// the wire value — so a test can put a CONFIGURED SPARE band in the summary, which the
+/// keyword-argument fixture cannot express.
+BuildingModel buildingWithBands(Map<String, int> counts) {
+  return BuildingModel.fromJson(<String, dynamic>{
+    'id': '6b0000000000000000000009',
+    'code': 'BANDS',
+    'name': 'Түвшин туршилтын байр',
+    'projectId': '6c0000000000000000000001',
+    'projectName': null,
+    'customerId': testScope.customerId,
+    'address': null,
+    'gpsLatitude': null,
+    'gpsLongitude': null,
+    'description': null,
+    'isActive': true,
+    'floorCount': 1,
+    'objectCount': counts.values.fold(0, (int sum, int n) => sum + n),
+    'riskSummary': <String, dynamic>{
+      'counts': <Map<String, dynamic>>[
+        for (final MapEntry<String, int> entry in counts.entries)
+          <String, dynamic>{'level': entry.key, 'count': entry.value},
+      ],
+      'unassessedCount': 0,
+      'hasCritical': false,
+      'lastAssessedAt': '2026-07-20T04:12:00.000Z',
+    },
+    'createdAt': '2026-01-04T00:00:00.000Z',
+    'updatedAt': '2026-07-20T04:12:00.000Z',
     'deleteBlockers': <String>[],
   });
 }

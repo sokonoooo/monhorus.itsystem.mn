@@ -263,17 +263,15 @@ void main() {
   });
 
   group('risk bands', () {
-    test('mirror the shared RISK_BANDS boundaries', () {
-      expect(RiskLevel.fromScore(100), RiskLevel.normal);
-      expect(RiskLevel.fromScore(81), RiskLevel.normal);
-      expect(RiskLevel.fromScore(80), RiskLevel.attention);
-      expect(RiskLevel.fromScore(61), RiskLevel.attention);
-      expect(RiskLevel.fromScore(60), RiskLevel.scheduleRepair);
-      expect(RiskLevel.fromScore(41), RiskLevel.scheduleRepair);
-      expect(RiskLevel.fromScore(40), RiskLevel.critical);
-      expect(RiskLevel.fromScore(21), RiskLevel.critical);
-      expect(RiskLevel.fromScore(20), RiskLevel.outOfService);
-      expect(RiskLevel.fromScore(0), RiskLevel.outOfService);
+    test('the fallback ranges mirror the shared RISK_BANDS boundaries', () {
+      // Read, never printed, and never used to derive a band: the server always sends
+      // one. They are the fallback for `configuredMax` on a device that has not yet
+      // reached `/vocabulary`, which is what decides whether a band is severe.
+      expect(RiskLevel.normal.configuredMin, 81);
+      expect(RiskLevel.attention.configuredMax, 80);
+      expect(RiskLevel.scheduleRepair.configuredMax, 60);
+      expect(RiskLevel.critical.configuredMax, 40);
+      expect(RiskLevel.outOfService.configuredMax, 20);
     });
 
     test('an absent level stays absent rather than defaulting to a band', () {

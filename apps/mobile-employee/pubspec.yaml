@@ -41,6 +41,20 @@ dependencies:
   # ios/Runner/Info.plist — iOS terminates the app on first use without them.
   image_picker: ^1.1.2
   flutter_svg: ^2.3.0
+
+  # The IANA time-zone database, so «Өнөөдөр» can mean the server's day.
+  #
+  # Every "due today" figure in the app is a claim about `env.APP_TIMEZONE`, which the
+  # backend publishes on the dashboard and on every calendar result — and Dart core can
+  # do nothing with an IANA name, so the counters fell back to the handset's own zone and
+  # a travelling technician saw a different day from the dispatch board.
+  #
+  # Already in `pubspec.lock` as a transitive dependency of flutter_local_notifications,
+  # so this adds no download and no version churn; it is declared because
+  # `depend_on_referenced_packages` is right that importing a package nobody depends on
+  # is a dependency waiting to vanish. See `features/employee/shared/server_day.dart`,
+  # which loads the ten-year database (66 KB) rather than the full one.
+  timezone: ^0.11.1
   firebase_core: ^4.13.0
   firebase_messaging: ^16.5.0
   flutter_local_notifications: ^22.3.0

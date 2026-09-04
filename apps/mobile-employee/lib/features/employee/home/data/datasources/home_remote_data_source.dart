@@ -3,6 +3,7 @@ import '../../../../../core/network/dio_client.dart';
 import '../models/dashboard_summary_model.dart';
 import '../models/notification_model.dart';
 import '../models/work_models.dart';
+import '../../../shared/server_day.dart';
 
 /// Transport for the Нүүр tab. Throws `ServerException` or `NetworkException`; the
 /// repository converts those into failures.
@@ -46,12 +47,13 @@ class HomeRemoteDataSource {
   /// hundred live planned works is outside what this screen tries to summarise.
   Future<PaginatedData<PlannedWorkListItemModel>> listPlannedWork({
     int limit = 100,
+    int page = 1,
   }) {
     return _client.request<PaginatedData<PlannedWorkListItemModel>>(
       path: '/planned-work',
       method: 'GET',
       queryParameters: <String, dynamic>{
-        'page': 1,
+        'page': page,
         'limit': limit,
         'sortBy': 'plannedEndDate',
         'sortDir': 'asc',
@@ -73,12 +75,13 @@ class HomeRemoteDataSource {
   /// `slaState` each row already carries.
   Future<PaginatedData<ServiceRequestListItemModel>> listServiceRequests({
     int limit = 100,
+    int page = 1,
   }) {
     return _client.request<PaginatedData<ServiceRequestListItemModel>>(
       path: '/service-requests',
       method: 'GET',
       queryParameters: <String, dynamic>{
-        'page': 1,
+        'page': page,
         'limit': limit,
         'sortBy': 'createdAt',
         'sortDir': 'desc',
@@ -171,8 +174,15 @@ class HomeRemoteDataSource {
 
   /// `YYYY-MM-DD` in the device's local calendar, which is what `isoDateSchema`
   /// accepts and what a technician means by "today".
+  /// `YYYY-MM-DD` for the calendar window, IN THE SERVER'S ZONE.
+  ///
+  /// It was `day.toLocal()` — the handset's — so "Өнөөдрийн хуваарь" asked the backend
+  /// for whatever date the phone happened to be on. The backend answers a date against
+  /// `env.APP_TIMEZONE` and publishes that zone on the very result this call returns, so
+  /// a technician a few hours either side of it was shown yesterday's or tomorrow's
+  /// agenda under today's heading. Falls back to the handset until a zone has arrived.
   static String _dateKey(DateTime day) {
-    final DateTime local = day.toLocal();
+    final DateTime local = startOfServerDay(at: day);
     final String month = local.month.toString().padLeft(2, '0');
     final String date = local.day.toString().padLeft(2, '0');
     return '${local.year}-$month-$date';

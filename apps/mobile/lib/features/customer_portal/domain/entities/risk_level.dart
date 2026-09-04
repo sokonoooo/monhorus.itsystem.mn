@@ -49,8 +49,9 @@ enum RiskLevel {
    * [riskBandsInUse] keeps an unconfigured spare out of every legend and stair, so
    * these words normally never appear at all.
    *
-   * Their score range is EMPTY (min 0, max -1) rather than merely unused, so
-   * [fromScore] can never land a legacy payload on a band nobody has defined.
+   * Their score range is EMPTY (min 0, max -1) rather than merely unused, so nothing
+   * that reads a range can land on a band nobody has defined. A spare an administrator
+   * HAS configured gets its real range from `/vocabulary`; see [configuredMax].
    */
   band6('BAND_6', 'Түвшин 6', 'Түвшин 6', 0, -1, AccentTone.neutral),
   band7('BAND_7', 'Түвшин 7', 'Түвшин 7', 0, -1, AccentTone.neutral),
@@ -101,9 +102,9 @@ enum RiskLevel {
   AccentTone get tone =>
       AccentTone.named(serverRiskColour(wireValue)) ?? _bundledTone;
 
-  /// **NOT AUTHORITATIVE.** The frozen defaults from the shared package, kept solely
-  /// so [fromScore] has boundaries to fall back on for a legacy payload that carried a
-  /// score with no band.
+  /// **NOT AUTHORITATIVE.** The frozen defaults from the shared package, and only the
+  /// fallback for [configuredMin] / [configuredMax] on a device that has never reached
+  /// `GET /vocabulary`.
   ///
   /// The live thresholds are runtime-configurable server-side (`riskBandsOf`,
   /// `settings.ts:286`) and neither mobile role can read `GET /settings` - it answers
@@ -115,6 +116,12 @@ enum RiskLevel {
   final int min;
   final int max;
 
+  /// The lowest score this installation puts in this band, or the compiled default.
+  int get configuredMin => serverRiskMin(wireValue) ?? min;
+
+  /// The highest score this installation puts in this band, or the compiled default.
+  int get configuredMax => serverRiskMax(wireValue) ?? max;
+
   /// Null-tolerant: the API sends `riskLevel: null` for a never-assessed object, and
   /// that is a distinct state from any band, so it must not be coerced to one.
   static RiskLevel? fromWire(String? value) {
@@ -123,16 +130,6 @@ enum RiskLevel {
       if (level.wireValue == value) return level;
     }
     return null;
-  }
-
-  /// Legacy fallback only. Mirrors `riskLevelFromScore` against the frozen defaults
-  /// in [min]/[max]; see the caveat there. Never drives the legend, and never runs
-  /// when the server sent a band.
-  static RiskLevel fromScore(int score) {
-    for (final RiskLevel level in RiskLevel.values) {
-      if (score >= level.min && score <= level.max) return level;
-    }
-    return RiskLevel.outOfService;
   }
 
   /// The band colour as a solid fill.
@@ -159,18 +156,26 @@ const List<RiskLevel> documentedRiskBands = <RiskLevel>[
   RiskLevel.outOfService,
 ];
 
-/// The bands a legend, the home stair or a per-band breakdown should be drawn from.
+/// The bands a legend, the home stair or a per-band breakdown should be drawn from,
+/// best-first — and the ONE definition of severity order in this app.
 ///
 /// **Never `RiskLevel.values`.** Three of the eight are spare storage keys reserved so
 /// the band count can change without a data migration, and iterating the enum would
 /// print «Түвшин 6», «Түвшин 7» and «Түвшин 8» beside «Хэвийн» on every screen that
 /// lists bands - naming three that nobody configured and no device can be in.
 ///
-/// So: the ladder the server reports, when it has reported one, and the five
-/// documented bands otherwise. Ordered by the enum's own declaration order rather than
-/// by the server's, which is worst-first: the legend, the count chips and the hero
-/// stair all read best-first, and reversing them would silently invert the escalation
-/// the colours spell out.
+/// So: the ladder the server reports, in the ORDER THE SERVER REPORTS IT, and the five
+/// documented bands otherwise. `riskBandsOf` (`settings.ts:328`) reverses the resolved
+/// ladder before it reaches `GET /vocabulary`, so what arrives is already best-first —
+/// highest minimum score first — which is how the legend, the count chips and the hero
+/// stair all read.
+///
+/// This used to re-sort by the compiled enum index, which quietly undid the
+/// administrator's configuration: the three reserved keys are declared after
+/// OUT_OF_SERVICE, so a configured spare was pushed past the worst band however its own
+/// cut points were set. A ladder of NORMAL, ATTENTION, BAND_6, OUT_OF_SERVICE was drawn
+/// with the worst band third and a mid-severity band last, and every rule that read
+/// "worse than" off that order inherited the mistake.
 List<RiskLevel> riskBandsInUse() {
   final List<String> configured = serverRiskLevels();
   if (configured.isEmpty) return documentedRiskBands;
@@ -178,8 +183,87 @@ List<RiskLevel> riskBandsInUse() {
   final List<RiskLevel> bands = <RiskLevel>[
     for (final String wire in configured)
       if (RiskLevel.fromWire(wire) case final RiskLevel level) level,
-  ]..sort((RiskLevel a, RiskLevel b) => a.index.compareTo(b.index));
+  ];
 
   // A ladder of keys this binary has never heard of is no more useful than none.
   return bands.isEmpty ? documentedRiskBands : bands;
+}
+
+/// Where a band sits on the ladder in force: 0 is the healthiest, and a higher number
+/// is worse. -1 for a band this installation does not configure.
+///
+/// The one place "worse than" is decided. A stored assessment naming a band that has
+/// since been dropped is not on the ladder at all, and answering -1 rather than
+/// guessing a position is what keeps it out of every rule below.
+int riskBandRank(RiskLevel level) => riskBandsInUse().indexOf(level);
+
+/// The band that asks nothing of the customer: the top of the configured ladder.
+RiskLevel? healthiestRiskBand() {
+  final List<RiskLevel> bands = riskBandsInUse();
+  return bands.isEmpty ? null : bands.first;
+}
+
+/// The worst band this installation defines.
+RiskLevel? worstRiskBand() {
+  final List<RiskLevel> bands = riskBandsInUse();
+  return bands.isEmpty ? null : bands.last;
+}
+
+/// Whether a band is one the customer should act on: any configured band but the
+/// healthiest.
+///
+/// This replaces «is it the NORMAL key», which named one band rather than describing
+/// one — rename NORMAL, or ship an installation whose healthy band is called something
+/// else, and every at-risk list quietly swept the healthy equipment in with the rest.
+bool riskNeedsAttention(RiskLevel level) => riskBandRank(level) > 0;
+
+/// Whether a band is severe enough to warrant an alert banner, a danger-styled action
+/// and an urgent flag on a request the SERVER then dispatches.
+///
+/// **This is the app's own reading of the configured ladder, and it has to be.** The
+/// backend attaches the real answer to each band — `requiresConclusion`, `notifies` and
+/// `decommissions` in `risk-band.ts` — but `GET /vocabulary` publishes only the key,
+/// name, colour and range, so a client cannot ask. What it can read is where the
+/// administrator put the band on the 0-100 scale, and that is what this uses: a band
+/// whose whole range sits in the bottom half of the scale is severe.
+///
+/// On the shipped ladder that is exactly CRITICAL (21-40) and OUT_OF_SERVICE (0-20),
+/// which is the pair the hardcoded checks named — so nothing changes until somebody
+/// reconfigures the ladder, and then this follows them instead of ignoring them.
+///
+/// A band this installation does not configure is never severe: it is not a band a
+/// device here can be graded into.
+bool riskIsSevere(RiskLevel level) {
+  if (riskBandRank(level) < 0) return false;
+  return level.configuredMax < riskScaleMidpoint;
+}
+
+/// The midpoint of the 0-100 assessment scale every band is defined against.
+///
+/// The scale's own middle, not a business threshold: the bands tile 0..100 by
+/// construction (`risk-band.ts`), so "the bottom half" is a statement about the scale
+/// rather than a number chosen here.
+const int riskScaleMidpoint = 50;
+
+/// Devices in the bands that call for the customer's attention without being severe.
+///
+/// Takes the count function rather than a collection because the two callers hold the
+/// figures differently - a building's `riskSummary` holds a list, the home summary a map
+/// - and the RULE is the thing that must not exist twice. Both used to spell it out as
+/// `ATTENTION + SCHEDULE_REPAIR`, in two files, naming bands instead of describing them.
+int attentionTotalOver(int Function(RiskLevel level) countOf) {
+  int total = 0;
+  for (final RiskLevel level in riskBandsInUse()) {
+    if (riskNeedsAttention(level) && !riskIsSevere(level)) total += countOf(level);
+  }
+  return total;
+}
+
+/// Devices in the severe bands. See [riskIsSevere] for what makes a band one.
+int severeTotalOver(int Function(RiskLevel level) countOf) {
+  int total = 0;
+  for (final RiskLevel level in riskBandsInUse()) {
+    if (riskIsSevere(level)) total += countOf(level);
+  }
+  return total;
 }

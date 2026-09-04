@@ -141,15 +141,6 @@ enum RiskLevel {
   /// Bands that call for a technician's attention: everything below NORMAL.
   bool get needsAttention => this != RiskLevel.normal;
 
-  /// The two bands section 10.2 requires a warning marker on.
-  ///
-  /// Still those two by name, and deliberately not "the worst two in the ladder". A
-  /// configured spare sits wherever the administrator put it and this app cannot know
-  /// what it demands — `requiresConclusion` and `decommissions` travel with the band
-  /// server-side and are not on `/vocabulary` — so a marker is drawn only where the
-  /// requirement actually names one.
-  bool get isCritical =>
-      this == RiskLevel.critical || this == RiskLevel.outOfService;
 }
 
 /// Shown wherever an object has never been assessed. An unassessed device is an
@@ -168,18 +159,30 @@ const List<RiskLevel> documentedRiskBands = <RiskLevel>[
   RiskLevel.outOfService,
 ];
 
-/// The bands a legend, a stair or a per-band breakdown should be drawn from.
+/// The bands a legend, a stair or a per-band breakdown should be drawn from,
+/// **best-first — in the server's own order**.
 ///
 /// **Never `RiskLevel.values`.** Three of the eight are spare storage keys reserved so
 /// the band count can change without a data migration, and iterating the enum would
 /// print «Түвшин 6», «Түвшин 7» and «Түвшин 8» beside «Хэвийн» on every screen that
 /// lists bands — naming three that nobody configured and no device can be in.
 ///
-/// So: the ladder the server reports, when it has reported one, and the five
-/// documented bands otherwise. Ordered by the enum's own declaration order rather than
-/// by the server's, which is worst-first: every layout here — the legend, the count
-/// strip, the stair — reads best-first, and reversing them would silently invert the
-/// escalation the shapes and colours spell out.
+/// So: the ladder the server reports, when it has reported one, and the five documented
+/// bands otherwise.
+///
+/// THE ORDER IS THE SERVER'S AND USED TO BE RE-SORTED AWAY. This function ended
+/// `..sort((a, b) => a.index.compareTo(b.index))`, on the stated ground that the server
+/// publishes the ladder worst-first while every layout here reads best-first. That ground
+/// is false: `riskBandsOf` in packages/shared reverses the stored ladder before serving
+/// it, precisely so `GET /vocabulary` emits highest-score-first, which IS best-first. The
+/// sort therefore corrected nothing and destroyed something — a spare band is declared
+/// last in the enum, so an administrator who configures BAND_6 at 41-60, between
+/// SCHEDULE_REPAIR and CRITICAL, had it shoved past OUT_OF_SERVICE to the end of every
+/// legend and stair in the app. The escalation the colours spell out ran backwards for
+/// exactly the installation that had bothered to configure one.
+///
+/// A key this binary has never heard of is dropped rather than guessed at; the gaps that
+/// leaves preserve the order of what remains.
 List<RiskLevel> riskBandsInUse() {
   final List<String> configured = serverRiskLevels();
   if (configured.isEmpty) return documentedRiskBands;
@@ -187,11 +190,100 @@ List<RiskLevel> riskBandsInUse() {
   final List<RiskLevel> bands = <RiskLevel>[
     for (final String wire in configured)
       if (RiskLevel.fromWire(wire) case final RiskLevel level) level,
-  ]..sort((RiskLevel a, RiskLevel b) => a.index.compareTo(b.index));
+  ];
 
   // A ladder of keys this binary has never heard of is no more useful than none.
   return bands.isEmpty ? documentedRiskBands : bands;
 }
+
+/// The three roll-ups the count strips report, cut out of the configured ladder.
+///
+/// The four figures above a floor plan — critical, attention, normal, unassessed — are
+/// drawn beside the server's own `total`, so they have to ADD UP to it. They used to be
+/// built from five hard-coded keys: normal was NORMAL, attention was ATTENTION plus
+/// SCHEDULE_REPAIR, critical was CRITICAL plus OUT_OF_SERVICE, and any device graded into
+/// a configured spare was counted by none of the three while still being counted by the
+/// total. On an installation using a sixth band the four cards visibly did not sum, and
+/// the missing devices were invisible rather than merely uncounted.
+///
+/// So the ladder itself is partitioned, and every configured band lands in exactly one
+/// group. The cut points are the two anchors the requirements name, located BY POSITION in
+/// the ladder rather than by identity:
+///
+///   * everything from CRITICAL down (or from OUT_OF_SERVICE down, if the administrator
+///     has removed CRITICAL) is the critical group;
+///   * everything above NORMAL's position, plus NORMAL, is the normal group;
+///   * everything left in between is the attention group.
+///
+/// On the shipped five-band ladder this reproduces the old groupings exactly. On a
+/// configured ladder it puts a spare where the administrator put it, and the arithmetic
+/// holds by construction rather than by coincidence.
+class RiskBandGroups {
+  const RiskBandGroups({
+    required this.normal,
+    required this.attention,
+    required this.critical,
+  });
+
+  /// The best bands: the ones that mean "nothing to do here".
+  final List<RiskLevel> normal;
+
+  /// Between the two anchors — worth a look, not yet an alarm.
+  final List<RiskLevel> attention;
+
+  /// The bands a red banner and a warning marker are drawn for.
+  final List<RiskLevel> critical;
+
+  /// The whole ladder again, best-first. The three groups are a partition of it, which
+  /// is what makes the count strips add up.
+  List<RiskLevel> get all =>
+      <RiskLevel>[...normal, ...attention, ...critical];
+}
+
+RiskBandGroups riskBandGroups() {
+  final List<RiskLevel> ladder = riskBandsInUse();
+
+  /// The first anchor present, or [fallback] when the administrator has kept none.
+  int indexOfFirst(List<RiskLevel> anchors, int fallback) {
+    for (final RiskLevel anchor in anchors) {
+      final int at = ladder.indexOf(anchor);
+      if (at >= 0) return at;
+    }
+    return fallback;
+  }
+
+  // Nothing is critical when neither anchor survives, rather than the bottom band being
+  // promoted into an alarm nobody configured.
+  final int criticalFrom =
+      indexOfFirst(<RiskLevel>[RiskLevel.critical, RiskLevel.outOfService], ladder.length);
+
+  // NORMAL's own position, so a band configured ABOVE it — a spare at 91-100, say — is
+  // counted as normal rather than as something to look at. Nothing is normal when NORMAL
+  // itself has been removed.
+  final int normalTo = ladder.indexOf(RiskLevel.normal);
+
+  return RiskBandGroups(
+    normal: ladder.sublist(0, (normalTo + 1).clamp(0, criticalFrom)),
+    attention: ladder.sublist((normalTo + 1).clamp(0, criticalFrom), criticalFrom),
+    critical: ladder.sublist(criticalFrom),
+  );
+}
+
+/// The bands section 10.2 requires a warning marker on, as the CONFIGURED ladder has them.
+///
+/// It was `this == critical || this == outOfService`, a getter on the enum, and it gated
+/// the red «Яаралтай үзлэг шаардлагатай» banner on a device. The two names are still the
+/// anchors — see [riskBandGroups] — but a band an administrator configured BELOW them is a
+/// worse condition than critical by the only measure the ladder states, the score, and a
+/// device sitting in one raised no banner at all.
+///
+/// The old comment's objection stands and is answered rather than ignored: this app cannot
+/// know what a band DEMANDS, because `requiresConclusion` and `decommissions` travel with
+/// the band server-side and are not on `/vocabulary`. But the banner does not claim to
+/// know what the band demands. It claims the device is in a severe condition, and position
+/// in the ladder is exactly the claim the server publishes.
+bool isCriticalBand(RiskLevel? level) =>
+    level != null && riskBandGroups().critical.contains(level);
 
 /// The full band name for a screen reader, including the null case.
 String riskSemanticLabel(RiskLevel? level) => level?.label ?? unassessedLabel;

@@ -291,16 +291,21 @@ class _HomeBody extends StatelessWidget {
   static int _criticalRank(BuildingModel building) =>
       building.riskSummary.hasCritical ? 1 : 0;
 
-  /// The enum is declared best-first, so a higher index is a worse band. An
-  /// unassessed building has no band at all and sorts below every one of them.
+  /// Rank on the LADDER IN FORCE, which is best-first, so a higher number is a worse
+  /// band. An unassessed building has no band at all and sorts below every one of them.
   ///
-  /// The three reserved keys sit past OUT_OF_SERVICE in that order, so a configured
-  /// spare sorts as the worst thing present. That is the safe direction to be wrong in
-  /// — it surfaces the building rather than burying it — and this app has no way to
-  /// know where an administrator meant their band to sit: `/vocabulary` reports the
-  /// ladder's names and colours, not what each band demands.
-  static int _severity(BuildingModel building) =>
-      building.riskSummary.worstLevel?.index ?? -1;
+  /// This read the compiled enum index, where the three reserved keys sit past
+  /// OUT_OF_SERVICE: a building whose worst band was a configured spare sorted above
+  /// one holding out-of-service equipment, however mild the administrator had made that
+  /// spare. `/vocabulary` reports the ladder in severity order, which is the answer.
+  ///
+  /// A band the ladder no longer contains ranks -1 by [riskBandRank] — the same as
+  /// unassessed — so a stale stored band neither outranks a real one nor is treated as
+  /// healthy; the building simply sorts on its critical flag alone.
+  static int _severity(BuildingModel building) {
+    final RiskLevel? worst = building.riskSummary.worstLevel;
+    return worst == null ? -1 : riskBandRank(worst);
+  }
 
   @override
   Widget build(BuildContext context) {
