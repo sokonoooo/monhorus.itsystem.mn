@@ -124,6 +124,7 @@ google-services*.json
 GoogleService-Info*.plist
 *.p8
 *.p12
+*.pdf
 serviceAccount*.json
 # The name the Firebase console actually gives the file it downloads:
 # <project>-firebase-adminsdk-<id>-<id>.json. serviceAccount*.json above only
