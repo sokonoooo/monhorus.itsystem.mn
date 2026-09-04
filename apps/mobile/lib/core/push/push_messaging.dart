@@ -10,6 +10,16 @@
 /// That is not an error worth crashing an app over: notifications still arrive in the list,
 /// which is how the app behaved before push existed. `start` reports whether it managed to
 /// register and is otherwise silent.
+///
+/// -- Why the plugin calls sit behind swappable functions ----------------------
+///
+/// The rule this file exists to keep — every authenticated session hands the server a
+/// token, so the `DeviceToken` row names the account signed in NOW — was wrong for the life
+/// of an install and no test could see it: `Platform.isAndroid` is false under
+/// `flutter test` and `Firebase.initializeApp` throws there, so `start` returned at its
+/// first line and everything behind it was unreachable. The four functions marked
+/// [visibleForTesting] below are the plugin calls and nothing else; the rules stay here, in
+/// the app, where a test can hold them to account.
 library;
 
 import 'dart:async';
@@ -70,32 +80,178 @@ class PushMessaging {
     }
   }
 
-
   static bool _started = false;
   static StreamSubscription<String>? _tokenRefresh;
   static StreamSubscription<RemoteMessage>? _foreground;
   static StreamSubscription<RemoteMessage>? _opened;
 
-  /// Only Android is dispatched to, and the plugins are unavailable in a test binding.
-  static bool get _supported => !kIsWeb && Platform.isAndroid;
+  /*
+   * The sinks belong to the SESSION, not to the wiring.
+   *
+   * Held in fields rather than captured by the listeners, so signing in again replaces
+   * them: a token that rotates months later is then handed to the account signed in at that
+   * moment rather than to a closure built by whoever signed in first.
+   */
+  static PushTokenSink? _tokenSink;
+  static PushOpenSink? _openSink;
 
-  /// True once a token has been handed to [onToken] at least once this session.
+  // -- The plugin calls, and nothing else -------------------------------------
+
+  /// Only Android is dispatched to, and the plugins are unavailable in a test binding.
+  @visibleForTesting
+  static bool Function() supported = _androidOnly;
+
+  /// The one-time wiring: Firebase, the notification permission, the local-notification
+  /// channel and the three message listeners. False when push cannot run here.
+  @visibleForTesting
+  static Future<bool> Function() attachPlatform = _attachFirebase;
+
+  /// This install's current FCM registration token.
+  @visibleForTesting
+  static Future<String?> Function() readToken = _firebaseToken;
+
+  /// Rotations of that token, which FCM issues on the order of months.
+  @visibleForTesting
+  static Stream<String> Function() tokenRefreshes = _firebaseTokenRefreshes;
+
+  /// Restores the real plugin calls and forgets this process's state.
+  @visibleForTesting
+  static Future<void> debugReset() async {
+    await stop();
+    supported = _androidOnly;
+    attachPlatform = _attachFirebase;
+    readToken = _firebaseToken;
+    tokenRefreshes = _firebaseTokenRefreshes;
+    _arrivals.clear();
+  }
+
+  static bool _androidOnly() => !kIsWeb && Platform.isAndroid;
+
+  static Future<String?> _firebaseToken() => FirebaseMessaging.instance.getToken();
+
+  static Stream<String> _firebaseTokenRefreshes() =>
+      FirebaseMessaging.instance.onTokenRefresh;
+
+  /// True once messaging has been wired up on this install and not torn down again.
   static bool get isRegistered => _started;
 
-  /// Wires up messaging and registers this install.
+  /// Wires up messaging and registers this install for whoever is signed in now.
   ///
-  /// Safe to call repeatedly — a second call while already started is ignored — because the
-  /// natural call sites are sign-in AND session restore, and a returning user passes through
-  /// only one of them.
+  /// Safe to call repeatedly, and NOT a no-op when it is: the two call sites are sign-in
+  /// and session restore, and both of them mean a session has just begun. A second call
+  /// re-issues the token, so `POST /notifications/devices` re-attributes the row to the
+  /// account now holding the handset. The backend upserts on the token, so a repeat
+  /// registration of the same value is cheap and also refreshes its last-seen stamp.
   ///
-  /// Returns false when push could not be started, which on a developer machine normally
-  /// means `google-services.json` is missing. The caller should carry on regardless.
+  /// THIS IS THE FIX for a bug that cost the product every customer registration it had.
+  /// The guard used to skip everything once started, and only [stop] cleared that flag,
+  /// and only sign-out reached [stop]. A session that ended any other way — a refresh
+  /// token that expired, an administrator's passcode reset, a password changed on another
+  /// device — put the user back on the login screen with the flag still set, so the next
+  /// sign-in registered nothing at all and the `DeviceToken` row went on naming the
+  /// previous session's user. FCM rotates a token on the order of months, so that lasted
+  /// the life of the install, and nothing was logged where anyone could see it.
+  ///
+  /// Re-issuing here rather than clearing the flag at each session-ending call site is
+  /// deliberate: the flag was left set by a path nobody had enumerated, and enumerating
+  /// paths is exactly what produced the bug. This holds however the previous session
+  /// ended, including for a path added later by somebody who never read this comment.
+  ///
+  /// Returns false when this install could not be registered, which on a developer machine
+  /// normally means `google-services.json` is missing. The caller should carry on
+  /// regardless — and should say so somewhere, because a registration that never happened
+  /// is otherwise indistinguishable from one that failed.
   static Future<bool> start({
     required PushTokenSink onToken,
     required PushOpenSink onOpen,
   }) async {
-    if (!_supported || _started) return false;
+    if (!supported()) return false;
 
+    // Whoever is signing in now owns the sinks from here, including the rotation listener
+    // attached by an earlier session.
+    _tokenSink = onToken;
+    _openSink = onOpen;
+
+    // Already wired up, by a session that has since ended. The plugins are wired once per
+    // process; the registration is per session.
+    if (_started) return _issueToken();
+
+    if (!await attachPlatform()) return false;
+
+    /*
+     * Registered before the refresh listener is attached, so the first token is never
+     * missed, and again on every rotation. The backend upserts on the token, so repeat
+     * registrations of the same value are cheap and also refresh its last-seen stamp.
+     */
+    final bool issued = await _issueToken();
+
+    _tokenRefresh = tokenRefreshes().listen((String next) async {
+      await _tokenSink?.call(next);
+    });
+
+    _started = true;
+    return issued;
+  }
+
+  /// Reads the registration token and hands it to the current session's sink.
+  static Future<bool> _issueToken() async {
+    try {
+      final String? token = await readToken();
+      if (token == null) {
+        debugPrint('Push not registered: FCM issued no token for this install');
+        return false;
+      }
+      await _tokenSink?.call(token);
+      return true;
+    } catch (error) {
+      debugPrint('Push not registered: the token could not be issued ($error)');
+      return false;
+    }
+  }
+
+  static void _announceOpen(String? linkPath) => _openSink?.call(linkPath);
+
+  /// The token this install currently holds, if any. Used at sign-out, to tell the backend
+  /// to stop sending to a device the user is walking away from.
+  static Future<String?> currentToken() async {
+    if (!supported() || !_started) return null;
+    try {
+      return await readToken();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Tears down listeners on sign-out, so a subsequent sign-in re-registers cleanly against
+  /// the new account rather than leaving the previous user's callbacks attached.
+  static Future<void> stop() async {
+    await _tokenRefresh?.cancel();
+    await _foreground?.cancel();
+    await _opened?.cancel();
+    _tokenRefresh = null;
+    _foreground = null;
+    _opened = null;
+    _tokenSink = null;
+    _openSink = null;
+    _started = false;
+  }
+
+  /// Deletes the registration from FCM entirely. Reserved for sign-out on a shared handset,
+  /// where the next person must not inherit delivery.
+  static Future<void> forget() async {
+    if (!supported()) return;
+    try {
+      await FirebaseMessaging.instance.deleteToken();
+    } catch (_) {
+      // Nothing to undo: the backend row is deactivated separately and independently.
+    }
+  }
+
+  /// Firebase, the permission dialog, the notification channel and the message listeners.
+  ///
+  /// Everything here is a plugin call, which is why it is one function: it is the part a
+  /// test binding cannot run, and it is swapped out whole rather than in pieces.
+  static Future<bool> _attachFirebase() async {
     try {
       await Firebase.initializeApp();
     } catch (error) {
@@ -119,7 +275,7 @@ class PushMessaging {
           android: AndroidInitializationSettings('@mipmap/ic_launcher'),
         ),
         onDidReceiveNotificationResponse: (NotificationResponse response) {
-          onOpen(response.payload);
+          _announceOpen(response.payload);
         },
       );
 
@@ -167,64 +323,17 @@ class PushMessaging {
       // Tapped while the app was backgrounded but alive.
       _opened = FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
         _announceArrival();
-        onOpen(message.data['linkPath'] as String?);
+        _announceOpen(message.data['linkPath'] as String?);
       });
 
       // Tapped while the app was not running at all; delivered once, at startup.
       final RemoteMessage? initial = await messaging.getInitialMessage();
-      if (initial != null) onOpen(initial.data['linkPath'] as String?);
+      if (initial != null) _announceOpen(initial.data['linkPath'] as String?);
 
-      /*
-       * Registered before the refresh listener is attached, so the first token is never
-       * missed, and again on every rotation. The backend upserts on the token, so repeat
-       * registrations of the same value are cheap and also refresh its last-seen stamp.
-       */
-      final String? token = await messaging.getToken();
-      if (token != null) await onToken(token);
-
-      _tokenRefresh = messaging.onTokenRefresh.listen((String next) async {
-        await onToken(next);
-      });
-
-      _started = true;
       return true;
     } catch (error) {
       debugPrint('Push disabled: messaging could not start ($error)');
       return false;
-    }
-  }
-
-  /// The token this install currently holds, if any. Used at sign-out, to tell the backend
-  /// to stop sending to a device the user is walking away from.
-  static Future<String?> currentToken() async {
-    if (!_supported || !_started) return null;
-    try {
-      return await FirebaseMessaging.instance.getToken();
-    } catch (_) {
-      return null;
-    }
-  }
-
-  /// Tears down listeners on sign-out, so a subsequent sign-in re-registers cleanly against
-  /// the new account rather than leaving the previous user's callbacks attached.
-  static Future<void> stop() async {
-    await _tokenRefresh?.cancel();
-    await _foreground?.cancel();
-    await _opened?.cancel();
-    _tokenRefresh = null;
-    _foreground = null;
-    _opened = null;
-    _started = false;
-  }
-
-  /// Deletes the registration from FCM entirely. Reserved for sign-out on a shared handset,
-  /// where the next person must not inherit delivery.
-  static Future<void> forget() async {
-    if (!_supported) return;
-    try {
-      await FirebaseMessaging.instance.deleteToken();
-    } catch (_) {
-      // Nothing to undo: the backend row is deactivated separately and independently.
     }
   }
 }

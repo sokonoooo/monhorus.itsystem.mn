@@ -137,6 +137,31 @@ T _unwrap<T>(ApiResult<T> result) => result.when(
       failure: (Failure failure) => throw failure,
     );
 
+/// The account a token-scoped read belongs to, or null when nobody is signed in.
+///
+/// `/notifications`, `/notifications/unread-count` and `/surveys/pending` carry no
+/// customer id: the server resolves the caller from the bearer token. Nothing in the
+/// call therefore ties the answer to an account, and a provider that depended only on
+/// the Dio client — a plain [Provider] that never rebuilds — kept the previous
+/// account's answer through a sign-out and a sign-in as somebody else. [ProviderScope]
+/// sits above `MaterialApp`, so there is one container for the life of the process and
+/// Riverpod holds a completed value after the last listener has gone; the next reader
+/// was handed that cache synchronously, with no request made. On a shared or handed-on
+/// handset that is one customer reading another's unread badge, a survey prompt naming
+/// another organisation's request number, and a notification list carrying another
+/// organisation's building names.
+///
+/// Watching the session id is what makes an answer belong to a session. It is the id
+/// rather than the [AppUser] for the same reason [serverVocabularyProvider] takes the
+/// id: `/auth/me` is re-read on every mount and each answer is a new object, so
+/// watching the object would refetch on every screen mount for a session that has not
+/// changed.
+///
+/// The scope-taking reads below need no such key — [_requireScope] watches
+/// [customerScopeProvider], which watches the user, so they already re-resolve.
+String? _sessionUserId(Ref ref) =>
+    ref.watch(currentUserProvider.select((AppUser? user) => user?.id));
+
 /// Reads the scope, refusing to proceed when it is not resolved.
 ///
 /// A screen checks the scope itself and renders an explanation, so this throw is a
@@ -450,6 +475,11 @@ final FutureProviderFamily<CustomerWorkReportModel?, String>
 /// prompt would render an error where there is no problem.
 final FutureProvider<List<SurveyPendingItemModel>> pendingSurveysProvider =
     FutureProvider<List<SurveyPendingItemModel>>((Ref ref) async {
+  // Keyed on the session, so the prompt belongs to whoever is signed in now — see
+  // [_sessionUserId]. Nobody signed in is nobody to rate anything, and the screens
+  // already say nothing at all for an empty list.
+  if (_sessionUserId(ref) == null) return const <SurveyPendingItemModel>[];
+
   final CustomerPortalRepository repository =
       ref.watch(customerPortalRepositoryProvider);
   return _unwrap(await repository.listPendingSurveys());
@@ -488,8 +518,11 @@ final Provider<bool> canSubmitSurveyProvider = Provider<bool>((Ref ref) {
 
 // -- Notifications -----------------------------------------------------------
 
+/// This account's notifications. Keyed on the session — see [_sessionUserId].
 final FutureProvider<List<NotificationModel>> customerNotificationsProvider =
     FutureProvider<List<NotificationModel>>((Ref ref) async {
+  if (_sessionUserId(ref) == null) return const <NotificationModel>[];
+
   final CustomerPortalRepository repository =
       ref.watch(customerPortalRepositoryProvider);
   final PaginatedData<NotificationModel> page =
@@ -497,8 +530,14 @@ final FutureProvider<List<NotificationModel>> customerNotificationsProvider =
   return page.items;
 });
 
+/// The badge on the bell. Keyed on the session — see [_sessionUserId].
+///
+/// Zero with nobody signed in, which is the truth about a signed-out app and is the
+/// state the bell is not drawn in anyway.
 final FutureProvider<int> unreadNotificationCountProvider =
     FutureProvider<int>((Ref ref) async {
+  if (_sessionUserId(ref) == null) return 0;
+
   final CustomerPortalRepository repository =
       ref.watch(customerPortalRepositoryProvider);
   final NotificationUnreadCountModel count =

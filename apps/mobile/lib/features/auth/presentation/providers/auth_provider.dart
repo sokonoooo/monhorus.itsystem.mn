@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/error/failure.dart';
@@ -119,7 +120,19 @@ class AuthController extends Notifier<AuthState> {
           // Routing to the linked entity needs a router this app does not have; the
           // notification list is the reliable destination until it does.
         },
-      ),
+      ).then((bool registered) {
+        // Said out loud, because it was not. A registration that never happens looks
+        // exactly like one that failed — no request, no row, no log — and that is how a
+        // fleet of handsets came to hold no registration at all without anybody noticing.
+        // The notification list still works either way, so there is nothing to show the
+        // reader and nothing for them to do.
+        if (!registered) {
+          debugPrint(
+            'Push: this install is NOT registered for notifications. '
+            'They will only appear in the in-app list.',
+          );
+        }
+      }),
     );
   }
 
