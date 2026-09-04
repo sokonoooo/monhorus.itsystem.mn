@@ -20,6 +20,14 @@
 > and must be rotated on the live server. Nothing in this repository can un-expose it. Until
 > that is done the release assessment in §17 stands unchanged.
 >
+> **CORRECTION 2026-09-04 (full audit).** The claim above that every P1 is fixed is WRONG in
+> three places, each verified open today: the `seed:dev` production guard (§9 item 4) still
+> keys off `NODE_ENV`, which defaults to `development`; `CORS_ORIGINS` still has no production
+> refusal (§9 item 5); and `slaState` is still filtered after pagination
+> (`service-request.service.ts:722-723`). None was in any remediation lane's brief. §13's
+> statement that "not one backend metric is computed from a truncated list" is also false —
+> see `MONHORUS_FULL_AUDIT.md` P1-14 and P1-15. Treat the remaining claims here as unverified.
+>
 > **Six claims in this document were refuted during remediation** — four of them found by
 > agents checking rather than accepting the audit's framing. They are marked inline and
 > listed in §17. A finding that turned out to be wrong is recorded here rather than deleted,
