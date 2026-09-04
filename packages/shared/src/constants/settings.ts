@@ -3,6 +3,7 @@ import {
   SLA_AT_RISK_RATIO,
   SLA_HOURS_STANDARD,
   SLA_HOURS_URGENT,
+  SLA_NEAR_BREACH_RATIO,
   type RiskBand,
   type RiskLevel,
 } from './service-request';
@@ -230,7 +231,7 @@ export const SETTING_DEFINITIONS: Record<SettingKey, SettingDefinition> = {
     label: 'Анхаарах босго',
     hint: 'Хугацааны энэ хувь өнгөрөхөд ажил "Ойртсон" төлөвт шилжинэ.',
     type: 'ratio',
-    default: 0.75,
+    default: SLA_NEAR_BREACH_RATIO,
     min: 0.1,
     max: 0.99,
   },
@@ -283,10 +284,6 @@ export function defaultSettings(): SettingsMap {
     map[key] = SETTING_DEFINITIONS[key].default;
   }
   return map;
-}
-
-export function settingGroupOf(key: SettingKey): SettingGroup {
-  return SETTING_DEFINITIONS[key].group;
 }
 
 // -- Derived views over the settings map -------------------------------------
@@ -378,9 +375,9 @@ export function riskBandsOf(settings: SettingsMap): RiskBand[] {
       ? (stored as readonly RiskBandConfig[])
       : DEFAULT_RISK_BANDS;
 
-  // Highest score first, which is the order `RISK_BANDS` shipped in and every existing
-  // consumer already iterates — the configured ladder is stored worst-first because that
-  // reads better in the editor, so it is reversed here rather than at each call site.
+  // Highest score first, which is the order every existing consumer already iterates —
+  // the configured ladder is stored worst-first because that reads better in the editor,
+  // so it is reversed here rather than at each call site.
   return [...resolveRiskBands(configured)]
     .reverse()
     .map((band) => ({

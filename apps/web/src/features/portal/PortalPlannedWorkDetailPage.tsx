@@ -12,6 +12,7 @@ import { PageHeader } from '../../components/ui/PageHeader';
 import { ErrorState, Skeleton } from '../../components/ui/States';
 import { useToast } from '../../components/ui/ToastProvider';
 import { ApiError } from '../../lib/api-client';
+import { BUSINESS_TIME_ZONE } from '../../lib/business-day';
 import { portalService } from '../../services/portal.service';
 import {
   LateBadge,
@@ -25,7 +26,7 @@ import { TaskFormDrawer } from '../planned-work/TaskFormDrawer';
 
 function formatDate(iso: string | null): string {
   if (!iso) return '-';
-  return new Date(iso).toLocaleDateString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
+  return new Date(iso).toLocaleDateString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
 }
 
 function Row({ label, value }: { label: string; value: string }): ReactElement {

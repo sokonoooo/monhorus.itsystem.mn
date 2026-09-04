@@ -19,8 +19,15 @@ import { ErrorState, Skeleton } from '../../components/ui/States';
 import { useToast } from '../../components/ui/ToastProvider';
 import { useAuth } from '../../contexts/auth-context';
 import { ApiError } from '../../lib/api-client';
+import { BUSINESS_TIME_ZONE } from '../../lib/business-day';
 import { serviceRequestService } from '../../services/service-request.service';
+import { AssignDrawer, isAssignable } from '../dispatch/AssignDrawer';
 import { FloorPlanPin } from '../projects/FloorPlanPin';
+
+/** A timestamp as the business timezone sees it, the way every other screen prints one. */
+function formatDateTime(iso: string): string {
+  return new Date(iso).toLocaleString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
+}
 
 function Row({ label, value }: { label: string; value: ReactNode }): ReactElement {
   return (
@@ -50,6 +57,7 @@ export function ServiceRequestDetailPage(): ReactElement {
   const [error, setError] = useState<string | null>(null);
   const [pendingStatus, setPendingStatus] = useState<ServiceRequestStatus | null>(null);
   const [slaDialogOpen, setSlaDialogOpen] = useState(false);
+  const [assignOpen, setAssignOpen] = useState(false);
   const [claiming, setClaiming] = useState(false);
 
   useEffect(() => {
@@ -212,6 +220,21 @@ export function ServiceRequestDetailPage(): ReactElement {
    */
   const canClaim = can(PERMISSIONS.SERVICE_REQUEST_CLAIM) && isUnclaimed && !isAdmin;
 
+  /*
+   * Handing the request to somebody else, without going back to the board.
+   *
+   * The same permission and the same status rule the dispatch board applies — literally
+   * the same `isAssignable`, imported rather than restated, so the two screens cannot
+   * drift apart — and the same drawer, so a reassignment made from here behaves exactly
+   * as one made from a card. Until this existed a dispatcher who had opened a request had
+   * to navigate back to the board to hand it over, which is precisely the moment a
+   * technician calls in sick and the request in front of them is the one to move.
+   *
+   * Reassignment, not just first assignment: the drawer posts to the same validated
+   * transition service, which is the authority on whether the change is allowed.
+   */
+  const canAssign = can(PERMISSIONS.DISPATCH_ASSIGN) && isAssignable(request.status);
+
   return (
     <>
       <PageHeader
@@ -228,6 +251,13 @@ export function ServiceRequestDetailPage(): ReactElement {
             {canClaim && (
               <Button loading={claiming} onClick={() => void claim()}>
                 Өөртөө авах
+              </Button>
+            )}
+            {canAssign && (
+              <Button variant="secondary" onClick={() => setAssignOpen(true)}>
+                {request.assignedEmployees.length > 0 || request.assignedTeam
+                  ? 'Дахин хуваарилах'
+                  : 'Хуваарилах'}
               </Button>
             )}
             {can(PERMISSIONS.DISPATCH_EXTEND_SLA) && request.status !== 'COMPLETED' && (
@@ -249,11 +279,7 @@ export function ServiceRequestDetailPage(): ReactElement {
             <Row
               label="SLA дуусах"
               value={
-                request.slaDueAt
-                  ? new Date(request.slaDueAt).toLocaleString('mn-MN', {
-                      timeZone: 'Asia/Ulaanbaatar',
-                    })
-                  : null
+                request.slaDueAt ? formatDateTime(request.slaDueAt) : null
               }
             />
             <Row
@@ -331,7 +357,7 @@ export function ServiceRequestDetailPage(): ReactElement {
             <Row label="Холбоо барих" value={`${request.contactName} · ${request.contactPhone}`} />
             <Row
               label="Үүсгэсэн"
-              value={`${request.createdByName ?? '-'} · ${new Date(request.createdAt).toLocaleString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' })}`}
+              value={`${request.createdByName ?? '-'} · ${formatDateTime(request.createdAt)}`}
             />
             <div className="pt-2">
               <p className="mb-1 text-xs text-slate-500">Тайлбар</p>
@@ -361,9 +387,7 @@ export function ServiceRequestDetailPage(): ReactElement {
                         {SERVICE_REQUEST_STATUS_LABELS[entry.toStatus]}
                       </p>
                       <p className="text-xs text-slate-500">
-                        {new Date(entry.changedAt).toLocaleString('mn-MN', {
-                          timeZone: 'Asia/Ulaanbaatar',
-                        })}
+                        {formatDateTime(entry.changedAt)}
                         {entry.changedByName ? ` · ${entry.changedByName}` : ''}
                         {entry.reason ? ` · ${entry.reason}` : ''}
                       </p>
@@ -399,6 +423,15 @@ export function ServiceRequestDetailPage(): ReactElement {
         requireReason
         onCancel={() => setSlaDialogOpen(false)}
         onConfirm={extendSla}
+      />
+
+      {/* The board's drawer, not a second one: same candidates, same POST, same refusals.
+          `request` is a ServiceRequestDetailDto, which extends the list item the drawer
+          takes, so it is handed over as it stands. */}
+      <AssignDrawer
+        request={assignOpen ? request : null}
+        onClose={() => setAssignOpen(false)}
+        onAssigned={reloadRequest}
       />
     </>
   );

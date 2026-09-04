@@ -1,4 +1,4 @@
-import { type ServiceRequestDetailDto } from '@monhorus/shared';
+import { PERMISSIONS, type ServiceRequestDetailDto } from '@monhorus/shared';
 import { Types } from 'mongoose';
 
 import { AppError } from '../../common/errors/app-error';
@@ -180,7 +180,7 @@ export async function claimServiceRequest(
     entityType: 'Work',
     entityId: claimed._id,
     linkPath: `/service-requests/${String(claimed._id)}`,
-    permission: 'dispatch.view',
+    permission: PERMISSIONS.DISPATCH_VIEW,
     excludeUserId: actor.userId,
   });
 

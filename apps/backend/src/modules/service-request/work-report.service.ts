@@ -1,5 +1,6 @@
 import {
   ARRIVED_STATUSES,
+  PERMISSIONS,
   riskLevelFor,
   workReportCompleteness,
   type CustomerWorkReportDto,
@@ -681,7 +682,7 @@ export async function submitWorkReport(
     entityType: 'Work',
     entityId: report.serviceRequest,
     linkPath: `/service-requests/${String(report.serviceRequest)}`,
-    permission: 'service_request.change_status',
+    permission: PERMISSIONS.SERVICE_REQUEST_CHANGE_STATUS,
     excludeUserId: actor.userId,
   });
 
@@ -891,7 +892,7 @@ export async function approveWorkReport(
     linkPath: `/service-requests/${String(report.serviceRequest)}`,
     // The crew whose work this is, plus the desk that owns the request. NOT
     // `service_request.view`: see `crewUserIds`.
-    permission: 'dispatch.view',
+    permission: PERMISSIONS.DISPATCH_VIEW,
     userIds: await crewUserIds(report.serviceRequest),
     excludeUserId: actor.userId,
   });
@@ -959,7 +960,7 @@ export async function returnWorkReport(
     entityType: 'Work',
     entityId: report.serviceRequest,
     linkPath: `/service-requests/${String(report.serviceRequest)}`,
-    permission: 'dispatch.view',
+    permission: PERMISSIONS.DISPATCH_VIEW,
     userIds: [...returnedTo],
     excludeUserId: actor.userId,
   });

@@ -24,6 +24,7 @@ import { useAuth } from '../../contexts/auth-context';
 import { useRequestStages } from '../../hooks/use-request-stages';
 import { useTableColumns } from '../../hooks/use-table-columns';
 import { ApiError } from '../../lib/api-client';
+import { BUSINESS_TIME_ZONE } from '../../lib/business-day';
 import {
   serviceRequestService,
 } from '../../services/service-request.service';
@@ -199,7 +200,7 @@ export function ServiceRequestListPage(): ReactElement {
       header: 'Үүссэн',
       render: (row) => (
         <span className="whitespace-nowrap text-slate-700">
-          {new Date(row.createdAt).toLocaleString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' })}
+          {new Date(row.createdAt).toLocaleString('mn-MN', { timeZone: BUSINESS_TIME_ZONE })}
         </span>
       ),
     },

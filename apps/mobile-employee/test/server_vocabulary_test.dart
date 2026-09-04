@@ -270,10 +270,11 @@ void main() {
         () {
       expect(RiskLevel.fromWire('BAND_7'), RiskLevel.band7);
 
-      // And no legacy score can be read into one: their range is empty on purpose.
-      for (int score = 0; score <= 100; score++) {
-        expect(RiskLevel.fromScore(score).index, lessThan(RiskLevel.band6.index));
-      }
+      // And no score can be read into one, because no score is ever read into a band
+      // here: `RiskLevel.fromScore` is gone and the enum carries no cut points at all.
+      // A band arrives only as an explicit `riskLevel` the server derived.
+      expect(RiskLevel.fromWire(null), isNull);
+      expect(RiskLevel.fromWire('BAND_9'), isNull);
     });
   });
 

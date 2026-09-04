@@ -40,6 +40,7 @@ import {
 import { useAuth } from '../../contexts/auth-context';
 import { fetchAllFloorObjects } from '../projects/FloorDetailPage';
 import { ApiError } from '../../lib/api-client';
+import { BUSINESS_TIME_ZONE } from '../../lib/business-day';
 import { useAuthorisedFileUrls } from '../../lib/use-authorised-file-urls';
 import { objectService } from '../../services/object.service';
 import { workReportService } from '../../services/service-request.service';
@@ -60,7 +61,7 @@ const STATUS_STYLES: Record<WorkReportStatus, string> = {
 
 function formatDateTime(iso: string | null): string {
   if (!iso) return '-';
-  return new Date(iso).toLocaleString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
+  return new Date(iso).toLocaleString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
 }
 
 /**

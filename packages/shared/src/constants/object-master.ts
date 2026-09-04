@@ -23,12 +23,6 @@ export const OBJECT_CATEGORY_LABELS: Record<ObjectCategory, string> = {
   EQUIPMENT: 'Тоноглол/төхөөрөмж',
 };
 
-export const OBJECT_CATEGORY_DESCRIPTIONS: Record<ObjectCategory, string> = {
-  PANEL: 'Цахилгааныг хуваарилах, хамгаалах, салгах төв цэг. Хүчин чадалтай.',
-  CIRCUIT: 'Самбараас гарах шугам. Эхлэх, дуусах цэг, кабель, автоматтай.',
-  EQUIPMENT: 'Цахилгаан хэрэглэгч төхөөрөмж. Нэрлэсэн чадал, тоо, коэффициенттэй.',
-};
-
 /**
  * Operational status.
  *

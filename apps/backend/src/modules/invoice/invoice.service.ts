@@ -1,4 +1,5 @@
 import {
+  PERMISSIONS,
   SETTING_KEYS,
   canTransitionInvoice,
   type CancelInvoiceInput,
@@ -725,7 +726,7 @@ export async function sendInvoice(
     entityType: ENTITY,
     entityId: invoice._id,
     linkPath: `/invoices/${String(invoice._id)}`,
-    permission: 'invoice.view',
+    permission: PERMISSIONS.INVOICE_VIEW,
   });
 
   return getInvoice(invoiceId);

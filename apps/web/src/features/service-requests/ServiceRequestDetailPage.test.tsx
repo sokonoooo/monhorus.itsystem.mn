@@ -13,7 +13,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../../lib/api-client';
 import * as fileUrl from '../../lib/file-url';
 import { projectService } from '../../services/project.service';
-import { serviceRequestService, workReportService } from '../../services/service-request.service';
+import {
+  dispatchService,
+  serviceRequestService,
+  workReportService,
+} from '../../services/service-request.service';
 import { makeFloorPlan } from '../../test/fixtures';
 import { renderWithAuth } from '../../test/render';
 import { ServiceRequestDetailPage } from './ServiceRequestDetailPage';
@@ -465,5 +469,112 @@ describe('ServiceRequestDetailPage claim action', () => {
 
     await screen.findByText('Төлөвийн түүх');
     expect(screen.queryByRole('button', { name: 'Өөртөө авах' })).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * Handing the request to somebody else, from the request itself.
+ *
+ * The dispatch board's Assign control was widened to match the server — anything that is
+ * not COMPLETED or CANCELLED — but the detail page had no such control at all, so a
+ * dispatcher who had opened a request had to go back to the board to reassign it. These
+ * pin the two halves that matter: the control is offered while the job is in flight, and
+ * withheld once the record is closed, on the same rule the board applies.
+ */
+describe('ServiceRequestDetailPage assignment', () => {
+  const DISPATCHER: readonly PermissionKey[] = [
+    PERMISSIONS.SERVICE_REQUEST_VIEW,
+    PERMISSIONS.DISPATCH_ASSIGN,
+  ];
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(workReportService, 'get').mockRejectedValue(new Error('no report'));
+  });
+
+  function renderAsDispatcher(permissions: readonly PermissionKey[] = DISPATCHER) {
+    return renderWithAuth(<ServiceRequestDetailPage />, {
+      permissions,
+      route: `/service-requests/${REQUEST_ID}`,
+      path: '/service-requests/:requestId',
+    });
+  }
+
+  it('offers assignment on an unassigned request', async () => {
+    vi.spyOn(serviceRequestService, 'getById').mockResolvedValue(makeRequest());
+
+    renderAsDispatcher();
+
+    expect(await screen.findByRole('button', { name: 'Хуваарилах' })).toBeInTheDocument();
+  });
+
+  /**
+   * The case the board's own whitelist used to withhold. A technician who is on site and
+   * calls in sick has to be replaceable, and IN_PROGRESS is exactly when that happens.
+   */
+  it('offers reassignment on an in-flight request that already names an employee', async () => {
+    vi.spyOn(serviceRequestService, 'getById').mockResolvedValue(
+      makeRequest({
+        status: 'IN_PROGRESS',
+        assignedEmployees: [
+          { id: 'e1', employeeCode: 'EMP-001', firstName: 'Энхтөр', lastName: 'Б', photoUrl: null },
+        ],
+      }),
+    );
+
+    renderAsDispatcher();
+
+    expect(await screen.findByRole('button', { name: 'Дахин хуваарилах' })).toBeInTheDocument();
+  });
+
+  it('withholds it on a completed request, as the server refuses that status', async () => {
+    vi.spyOn(serviceRequestService, 'getById').mockResolvedValue(
+      makeRequest({ status: 'COMPLETED' }),
+    );
+
+    renderAsDispatcher();
+
+    // The page rendered, so this is the control being withheld rather than a failed load.
+    expect(await screen.findByRole('heading', { name: 'SR-202608-0001' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /хуваарилах/i })).not.toBeInTheDocument();
+  });
+
+  it('withholds it on a cancelled request', async () => {
+    vi.spyOn(serviceRequestService, 'getById').mockResolvedValue(
+      makeRequest({ status: 'CANCELLED' }),
+    );
+
+    renderAsDispatcher();
+
+    expect(await screen.findByRole('heading', { name: 'SR-202608-0001' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /хуваарилах/i })).not.toBeInTheDocument();
+  });
+
+  it('withholds it from a caller without dispatch.assign', async () => {
+    vi.spyOn(serviceRequestService, 'getById').mockResolvedValue(makeRequest());
+
+    renderAsDispatcher([PERMISSIONS.SERVICE_REQUEST_VIEW]);
+
+    expect(await screen.findByRole('heading', { name: 'SR-202608-0001' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /хуваарилах/i })).not.toBeInTheDocument();
+  });
+
+  it('opens the board’s own drawer rather than a second one', async () => {
+    vi.spyOn(serviceRequestService, 'getById').mockResolvedValue(makeRequest());
+    const candidates = vi
+      .spyOn(dispatchService, 'employeeCandidates')
+      .mockResolvedValue([]);
+    vi.spyOn(dispatchService, 'teamCandidates').mockResolvedValue([]);
+
+    renderAsDispatcher();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Хуваарилах' }));
+
+    // The drawer titles itself from the request, and asks the dispatch projection for its
+    // candidates — the same two things it does on the board.
+    expect(
+      await screen.findByRole('dialog', { name: 'SR-202608-0001 хуваарилах' }),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(candidates).toHaveBeenCalled());
   });
 });

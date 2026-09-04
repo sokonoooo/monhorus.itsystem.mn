@@ -17,6 +17,7 @@ import {
 } from '../../components/ui/control-styles';
 import { useTableColumns } from '../../hooks/use-table-columns';
 import { ApiError } from '../../lib/api-client';
+import { BUSINESS_TIME_ZONE } from '../../lib/business-day';
 import {
   auditService,
   type AuditEntryDto,
@@ -24,6 +25,11 @@ import {
   type AuditQuery,
 } from '../../services/audit.service';
 import { actionLabel, entityLabel } from './audit-vocabulary';
+
+/** A timestamp as the business timezone sees it, the way every other screen prints one. */
+function formatDateTime(iso: string): string {
+  return new Date(iso).toLocaleString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
+}
 
 function JsonBlock({ label, value }: { label: string; value: unknown }): ReactElement | null {
   if (value === null || value === undefined) return null;
@@ -116,7 +122,7 @@ export function AuditLogPage(): ReactElement {
       header: 'Хугацаа',
       render: (row) => (
         <span className="whitespace-nowrap text-slate-700">
-          {new Date(row.occurredAt).toLocaleString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' })}
+          {formatDateTime(row.occurredAt)}
         </span>
       ),
     },
@@ -326,7 +332,7 @@ export function AuditLogPage(): ReactElement {
           <div className="space-y-4 text-sm">
             <dl className="space-y-1.5">
               {[
-                ['Хугацаа', new Date(detail.occurredAt).toLocaleString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' })],
+                ['Хугацаа', formatDateTime(detail.occurredAt)],
                 ['Хэрэглэгч', detail.actorName ?? 'Систем'],
                 ['Эрх', detail.actorRole ?? '-'],
                 ['Обьектын төрөл', entityLabel(detail.entityType)],

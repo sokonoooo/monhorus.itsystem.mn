@@ -1,5 +1,6 @@
 import {
   type CallableObjectTypeDto,
+  PERMISSIONS,
   canTransition,
   isReasonRequired,
   type AssignServiceRequestInput,
@@ -44,6 +45,7 @@ import { Employee, type IEmployee } from '../employee/employee.model';
 import { toEmployeeRefDto } from '../employee/employee.mapper';
 import { Customer, ObjectNode } from '../objects/object.models';
 import { StoredFile } from '../storage/stored-file.model';
+import { isTerminalServiceRequestStatus } from './service-request.terminality';
 import { computeSlaDueAt, evaluateSla } from './sla.service';
 import { getRequestStages, getSlaConfig } from '../settings/settings.service';
 import {
@@ -612,7 +614,7 @@ export async function createServiceRequest(
     entityType: 'Work',
     entityId: request._id,
     linkPath: `/service-requests/${String(request._id)}`,
-    permission: 'dispatch.view',
+    permission: PERMISSIONS.DISPATCH_VIEW,
     excludeUserId: actor.userId,
   });
 
@@ -793,7 +795,7 @@ export async function assignServiceRequest(
 ): Promise<ServiceRequestDetailDto> {
   const request = await loadRequestInScope(requestId, scope);
 
-  if (request.status === 'COMPLETED' || request.status === 'CANCELLED') {
+  if (isTerminalServiceRequestStatus(request.status)) {
     throw AppError.badRequest(
       ERROR_CODES.VALIDATION_ERROR,
       'Дууссан эсвэл цуцалсан хүсэлтэд ажилтан хуваарилах боломжгүй.',

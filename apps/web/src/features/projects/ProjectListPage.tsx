@@ -17,13 +17,14 @@ import { FILTER_BAR, FILTER_LABEL, FILTER_SELECT } from '../../components/ui/con
 import { useAuth } from '../../contexts/auth-context';
 import { useTableColumns } from '../../hooks/use-table-columns';
 import { ApiError } from '../../lib/api-client';
+import { BUSINESS_TIME_ZONE } from '../../lib/business-day';
 import { objectService } from '../../services/object.service';
 import { projectService } from '../../services/project.service';
 import { RiskSummaryCell } from './objects/ObjectBadges';
 
 function formatDate(iso: string | null): string {
   if (!iso) return '-';
-  return new Date(iso).toLocaleDateString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
+  return new Date(iso).toLocaleDateString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
 }
 
 /** Archive state is shown rather than hidden, so an archived project stays findable. */

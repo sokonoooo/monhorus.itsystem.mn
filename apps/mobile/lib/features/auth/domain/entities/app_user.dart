@@ -21,8 +21,6 @@ enum UserRole {
   }
 
   bool get isAdmin => this == UserRole.admin || this == UserRole.headAdmin;
-
-  bool get isHeadAdmin => this == UserRole.headAdmin;
 }
 
 enum AccountStatus {

@@ -2,7 +2,6 @@ import {
   PERMISSIONS,
   type DispatchBoardDto,
   type ServiceRequestListItemDto,
-  type ServiceRequestStatus,
 } from '@monhorus/shared';
 import { useCallback, useEffect, useState, type ReactElement } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -17,7 +16,7 @@ import { SERVICE_REQUEST_TABS } from '../../config/navigation';
 import { useAuth } from '../../contexts/auth-context';
 import { ApiError } from '../../lib/api-client';
 import { dispatchService } from '../../services/service-request.service';
-import { AssignDrawer } from './AssignDrawer';
+import { AssignDrawer, isAssignable } from './AssignDrawer';
 
 /**
  * Dispatch board.
@@ -78,35 +77,6 @@ function RequestCard({
       )}
     </div>
   );
-}
-
-/**
- * The two statuses a request can no longer be assigned from.
- *
- * Keyed off the card's own status, not its column: the open column holds both NEW and
- * UNASSIGNED, so a column-level test could not say "assignable" for one and not the
- * other.
- *
- * STATED AS A REFUSAL, BECAUSE THAT IS HOW THE SERVER STATES IT. This was a six-status
- * whitelist — NEW through ACCEPTED, plus RETURNED and REVISIT_REQUIRED — while
- * `assignServiceRequest` rejects exactly COMPLETED and CANCELLED and accepts everything
- * else. The six statuses in between were the ones a handover is actually NEEDED in: a
- * technician who is ON_THE_WAY, ON_SITE, IN_PROGRESS, WAITING, whose report is with the
- * office, or whose job is in VERIFICATION. None of those cards had the control, and the
- * detail page has none either, so a technician calling in sick mid-job could not be
- * replaced from anywhere in the product — an in-flight job could only be cancelled and
- * raised again, losing its history and its SLA clock.
- *
- * A whitelist and a blacklist are not interchangeable here. The whitelist had to be
- * widened by hand every time the workflow grew and silently withheld an action when
- * nobody did; this one says the same thing the API says, so the board can only be wrong
- * about a status if the API changes which ones it refuses.
- */
-const UNASSIGNABLE_STATUSES = new Set<ServiceRequestStatus>(['COMPLETED', 'CANCELLED']);
-
-/** Whether a dispatcher may still hand this request to somebody else. */
-function isAssignable(status: ServiceRequestStatus): boolean {
-  return !UNASSIGNABLE_STATUSES.has(status);
 }
 
 export function DispatchBoardPage(): ReactElement {

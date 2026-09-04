@@ -23,6 +23,7 @@ import { FILTER_BAR, FILTER_LABEL, FILTER_SELECT } from '../../components/ui/con
 import { useAuth } from '../../contexts/auth-context';
 import { useTableColumns } from '../../hooks/use-table-columns';
 import { useEmployeeList } from './useEmployeeList';
+import { BUSINESS_TIME_ZONE } from '../../lib/business-day';
 
 /** Initials fallback when an employee has no uploaded photo. */
 function initialsOf(employee: EmployeeListItemDto): string {
@@ -172,7 +173,7 @@ export function EmployeeListPage(): ReactElement {
         <span className="whitespace-nowrap text-slate-700">
           {row.employmentStartDate
             ? new Date(row.employmentStartDate).toLocaleDateString('mn-MN', {
-                timeZone: 'Asia/Ulaanbaatar',
+                timeZone: BUSINESS_TIME_ZONE,
               })
             : '-'}
         </span>

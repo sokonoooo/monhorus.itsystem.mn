@@ -15,7 +15,12 @@
  * only renaming it.
  */
 
-import { RISK_LEVELS, type RiskLevel } from './service-request';
+import {
+  MAX_RISK_BANDS,
+  MIN_RISK_BANDS,
+  RISK_LEVELS,
+  type RiskLevel,
+} from './service-request';
 
 export const RISK_COLOURS = [
   'green',
@@ -152,13 +157,6 @@ export function riskBandForScore(
   );
 }
 
-export function riskBandByKey(
-  key: RiskLevel,
-  bands: readonly RiskBandConfig[],
-): RiskBandConfig | null {
-  return bands.find((band) => band.key === key) ?? null;
-}
-
 /**
  * Faults in a proposed ladder, as messages an administrator can act on.
  *
@@ -171,12 +169,12 @@ export function riskBandByKey(
 export function validateRiskBands(bands: readonly RiskBandConfig[]): string[] {
   const issues: string[] = [];
 
-  if (bands.length < 2) {
-    issues.push('Дор хаяж хоёр түвшин тодорхойлно.');
+  if (bands.length < MIN_RISK_BANDS) {
+    issues.push(`Дор хаяж ${MIN_RISK_BANDS} түвшин тодорхойлно.`);
     return issues;
   }
-  if (bands.length > RISK_LEVELS.length) {
-    issues.push(`Хамгийн ихдээ ${RISK_LEVELS.length} түвшин тохируулна.`);
+  if (bands.length > MAX_RISK_BANDS) {
+    issues.push(`Хамгийн ихдээ ${MAX_RISK_BANDS} түвшин тохируулна.`);
     return issues;
   }
 

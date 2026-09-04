@@ -8,6 +8,7 @@ import { useEffect, useState, type ReactElement } from 'react';
 import { Alert } from '../../components/ui/Alert';
 import { Drawer } from '../../components/ui/Drawer';
 import { Modal } from '../../components/ui/Modal';
+import { BUSINESS_TIME_ZONE } from '../../lib/business-day';
 import { formatMinutes } from '../../lib/duration';
 import { authorisedFileUrl } from '../../lib/file-url';
 import { ScoreBar } from '../projects/objects/ObjectBadges';
@@ -20,7 +21,7 @@ interface TaskDetailDrawerProps {
 
 function formatDateTime(iso: string | null): string {
   if (!iso) return '-';
-  return new Date(iso).toLocaleString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
+  return new Date(iso).toLocaleString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
 }
 
 function formatSize(bytes: number): string {

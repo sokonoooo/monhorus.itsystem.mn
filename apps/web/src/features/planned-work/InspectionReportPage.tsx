@@ -29,6 +29,7 @@ import { useAuth } from '../../contexts/auth-context';
 import { useTableColumns } from '../../hooks/use-table-columns';
 import { ApiError } from '../../lib/api-client';
 import { plannedWorkService } from '../../services/planned-work.service';
+import { BUSINESS_TIME_ZONE } from '../../lib/business-day';
 import { authorisedFileUrl } from '../../lib/file-url';
 import { inspectionReportService } from '../../services/inspection-report.service';
 import {
@@ -44,12 +45,12 @@ const STAGE_LABELS: Record<InspectionReportAttachmentDto['stage'], string> = {
 
 function formatDate(iso: string | null): string {
   if (!iso) return '-';
-  return new Date(iso).toLocaleDateString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
+  return new Date(iso).toLocaleDateString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
 }
 
 function formatDateTime(iso: string | null): string {
   if (!iso) return '-';
-  return new Date(iso).toLocaleString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
+  return new Date(iso).toLocaleString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
 }
 
 function formatSize(bytes: number): string {

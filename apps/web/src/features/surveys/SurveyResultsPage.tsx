@@ -33,6 +33,7 @@ import {
   FILTER_SELECT_ERROR,
 } from '../../components/ui/control-styles';
 import { ApiError } from '../../lib/api-client';
+import { BUSINESS_TIME_ZONE } from '../../lib/business-day';
 import { employeeService } from '../../services/employee.service';
 import { surveyService } from '../../services/survey.service';
 
@@ -61,7 +62,7 @@ function formatAverage(value: number | null): string {
 
 function formatDateTime(iso: string | null): string {
   if (!iso) return '-';
-  return new Date(iso).toLocaleDateString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
+  return new Date(iso).toLocaleDateString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
 }
 
 /**

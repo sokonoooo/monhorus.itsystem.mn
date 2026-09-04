@@ -24,6 +24,7 @@ import { useToast } from '../../../components/ui/ToastProvider';
 import { useAuth } from '../../../contexts/auth-context';
 import { useTableColumns } from '../../../hooks/use-table-columns';
 import { ApiError } from '../../../lib/api-client';
+import { BUSINESS_TIME_ZONE } from '../../../lib/business-day';
 import { authorisedFileUrl } from '../../../lib/file-url';
 import { objectMasterService } from '../../../services/object-master.service';
 import { projectService } from '../../../services/project.service';
@@ -41,7 +42,7 @@ import {
 
 function formatDateTime(iso: string | null): string {
   if (!iso) return '-';
-  return new Date(iso).toLocaleString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
+  return new Date(iso).toLocaleString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
 }
 
 function Row({ label, children }: { label: string; children: ReactNode }): ReactElement {

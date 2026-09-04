@@ -21,6 +21,7 @@ import { useAuth } from '../../contexts/auth-context';
 import { useRequestStages } from '../../hooks/use-request-stages';
 import { useRiskBands } from '../../hooks/use-risk-bands';
 import { ApiError } from '../../lib/api-client';
+import { BUSINESS_TIME_ZONE } from '../../lib/business-day';
 import { portalService } from '../../services/portal.service';
 import { PortalStatusBadge } from './PortalBadges';
 import { BuildingSilhouette } from './BuildingSilhouette';
@@ -62,7 +63,7 @@ const OPEN_STATUSES: ReadonlySet<ServiceRequestStatus> = new Set(
 const SILHOUETTE_LIMIT = 6;
 
 function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
+  return new Date(iso).toLocaleDateString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
 }
 
 /** A card, in the chrome every panel in the product uses. */

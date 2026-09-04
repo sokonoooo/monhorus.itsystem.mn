@@ -24,19 +24,19 @@ import { useToast } from '../../components/ui/ToastProvider';
 import { FIELD_TEXTAREA, FILTER_LABEL } from '../../components/ui/control-styles';
 import { useAuth } from '../../contexts/auth-context';
 import { ApiError } from '../../lib/api-client';
-import { todayDateInput } from '../../lib/calendar-date';
+import { BUSINESS_TIME_ZONE, todayDateKey } from '../../lib/business-day';
 import { invoiceService } from '../../services/invoice.service';
 import { Field, SelectInput, TextInput } from '../employees/FormControls';
 import { BillingTypeBadge, InvoiceStatusBadge, Money } from './InvoiceBadges';
 
 function formatDate(iso: string | null): string {
   if (!iso) return '-';
-  return new Date(iso).toLocaleDateString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
+  return new Date(iso).toLocaleDateString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
 }
 
 function formatDateTime(iso: string | null): string {
   if (!iso) return '-';
-  return new Date(iso).toLocaleString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
+  return new Date(iso).toLocaleString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
 }
 
 function Row({ label, children }: { label: string; children: ReactNode }): ReactElement {
@@ -66,7 +66,7 @@ function PaymentDrawer({
   onSaved: () => void;
 }): ReactElement {
   const { notify } = useToast();
-  const [paidAt, setPaidAt] = useState(() => todayDateInput());
+  const [paidAt, setPaidAt] = useState(() => todayDateKey());
   const [method, setMethod] = useState<PaymentMethod>('BANK_TRANSFER');
   const [reference, setReference] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -75,7 +75,7 @@ function PaymentDrawer({
 
   useEffect(() => {
     if (!open) return;
-    setPaidAt(todayDateInput());
+    setPaidAt(todayDateKey());
     setMethod('BANK_TRANSFER');
     setReference('');
     setFormError(null);

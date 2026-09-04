@@ -6,10 +6,12 @@ import {
   businessDateKey,
   businessDayEnd,
   businessDayStart,
+  currentMonthKey,
   currentMonthStartDateKey,
   dayOfMonth,
   daysBetween,
   monthEndDateKey,
+  monthKey,
   monthStartDateKey,
   sameMonth,
   todayDateKey,
@@ -107,6 +109,46 @@ describe('business-day', () => {
       expect(todayDateKey()).toBe(businessDateKey(new Date()));
       expect(currentMonthStartDateKey()).toBe(monthStartDateKey(todayDateKey()));
       expect(currentMonthStartDateKey()).toMatch(/^\d{4}-\d{2}-01$/);
+    });
+  });
+
+  /**
+   * These carry over from `lib/calendar-date.ts`, the viewer-local convention the invoice
+   * screens used to follow. They now assert the stronger property: the defaults an invoice
+   * form offers are the same wherever the person filling it in happens to be sitting.
+   */
+  describe('invoice date defaults', () => {
+    it('offers today in Ulaanbaatar as the issue date, not the viewer\'s today', () => {
+      // 16:30 in New York on 2 Aug is already 04:30 on 3 Aug in Ulaanbaatar. The old
+      // viewer-local helper answered 2 Aug here, dating the invoice a day early.
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-08-02T20:30:00.000Z'));
+
+      expect(todayDateKey()).toBe('2026-08-03');
+
+      vi.useRealTimers();
+    });
+
+    it('bills the month Ulaanbaatar is in, so a run on the 1st does not bill the month just gone', () => {
+      // The costlier half of the same bug: a monthly run started just after midnight in
+      // Ulaanbaatar on the 1st defaulted its billing period to the previous month.
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-07-31T17:00:00.000Z'));
+
+      expect(currentMonthKey()).toBe('2026-08');
+      expect(monthKey(todayDateKey())).toBe('2026-08');
+
+      vi.useRealTimers();
+    });
+
+    it('dates the due day forward from the business day and rolls over the month end', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-08-02T20:30:00.000Z'));
+
+      expect(addDays(todayDateKey(), 0)).toBe('2026-08-03');
+      expect(addDays(todayDateKey(), 30)).toBe('2026-09-02');
+
+      vi.useRealTimers();
     });
   });
 });

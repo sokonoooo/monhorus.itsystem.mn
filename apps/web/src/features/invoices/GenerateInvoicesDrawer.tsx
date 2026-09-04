@@ -15,14 +15,9 @@ import {
   useInvoiceFinance,
 } from '../../hooks/use-invoice-finance';
 import { ApiError } from '../../lib/api-client';
-import { addDaysToToday, currentMonthInput, todayDateInput } from '../../lib/calendar-date';
+import { addDays, currentMonthKey, todayDateKey } from '../../lib/business-day';
 import { invoiceService } from '../../services/invoice.service';
 import { Field, TextInput } from '../employees/FormControls';
-
-/** Today plus the configured due-day count, as a `yyyy-mm-dd` value for a date input. */
-function addDays(days: number): string {
-  return addDaysToToday(days);
-}
 
 /**
  * Monthly invoice run (requirements 12.1).
@@ -52,8 +47,8 @@ export function GenerateInvoicesDrawer({
 }): ReactElement {
   const { notify } = useToast();
 
-  const [billingPeriod, setBillingPeriod] = useState(() => currentMonthInput());
-  const [issueDate, setIssueDate] = useState(() => todayDateInput());
+  const [billingPeriod, setBillingPeriod] = useState(() => currentMonthKey());
+  const [issueDate, setIssueDate] = useState(() => todayDateKey());
   // Empty until `finance.invoice_due_days` is known — never a term nobody configured.
   const [dueDate, setDueDate] = useState('');
 
@@ -76,7 +71,7 @@ export function GenerateInvoicesDrawer({
 
   useEffect(() => {
     if (finance.status !== 'ready') return;
-    setDueDate(addDays(finance.dueDays));
+    setDueDate(addDays(todayDateKey(), finance.dueDays));
   }, [finance]);
 
   useEffect(() => {

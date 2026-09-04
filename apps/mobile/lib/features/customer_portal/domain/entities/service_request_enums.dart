@@ -109,9 +109,11 @@ enum SlaState {
   }
 }
 
-/// Mirrors `SLA_HOURS_URGENT` and `SLA_HOURS_STANDARD`.
-const int slaHoursUrgent = 6;
-const int slaHoursStandard = 24;
+// No `slaHoursUrgent` / `slaHoursStandard` here.
+//
+// They mirrored two shared defaults and nothing read them. The window in force is per
+// equipment type and configurable, and the portal shows the deadline and the `slaState`
+// the API computed rather than counting hours itself.
 
 /// Mirrors `ObjectNodeKind` / `OBJECT_NODE_KIND_LABELS` in
 /// packages/shared/src/types/object.types.ts.

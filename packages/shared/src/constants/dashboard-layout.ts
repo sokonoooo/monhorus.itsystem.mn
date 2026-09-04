@@ -52,28 +52,6 @@ export const DASHBOARD_WIDGET_DESCRIPTIONS: Record<DashboardWidgetKey, string> =
   RESOURCES: 'Ажилтан, харилцагч, төсөл, материалын тоо.',
 };
 
-/**
- * Which permission a widget needs.
- *
- * A layout is a display preference, never an access decision: the payload already omits
- * blocks the caller may not see, so a widget whose data is absent simply does not render.
- * This mapping only keeps the customise dialog from offering something that would always
- * be empty.
- */
-export const DASHBOARD_WIDGET_PERMISSIONS: Record<DashboardWidgetKey, string> = {
-  TODAY: 'service_request.view',
-  REQUEST_METRICS: 'service_request.view',
-  TREND: 'service_request.view',
-  MONTHLY_TREND: 'service_request.view',
-  RISK: 'object_master.view',
-  REQUESTS_BY_STATUS: 'service_request.view',
-  WORKLOAD: 'employee.view',
-  PLANNED_WORK: 'planned_work.view',
-  FINANCE_CHART: 'invoice.view',
-  FINANCE_METRICS: 'invoice.view',
-  RESOURCES: 'customer.view',
-};
-
 // -- User-defined widgets ------------------------------------------------------
 
 /**

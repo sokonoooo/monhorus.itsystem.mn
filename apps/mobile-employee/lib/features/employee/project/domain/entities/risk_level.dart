@@ -22,18 +22,16 @@ import '../../../shared/server_vocabulary.dart';
 /// Each falls back to the compiled value, so an app that never reached the server, or
 /// reached one that has been configured with nothing, reads exactly as it always did.
 enum RiskLevel {
-  normal('NORMAL', 'Хэвийн', 'Хэвийн', 81, 100, Tone.green),
-  attention('ATTENTION', 'Анхаарах шаардлагатай', 'Анхаарах', 61, 80, Tone.yellow),
+  normal('NORMAL', 'Хэвийн', 'Хэвийн', Tone.green),
+  attention('ATTENTION', 'Анхаарах шаардлагатай', 'Анхаарах', Tone.yellow),
   scheduleRepair(
     'SCHEDULE_REPAIR',
     'Ойрын хугацаанд засварлах',
     'Засварлах',
-    41,
-    60,
     Tone.orange,
   ),
-  critical('CRITICAL', 'Ноцтой эрсдэлтэй', 'Ноцтой', 21, 40, Tone.red),
-  outOfService('OUT_OF_SERVICE', 'Ашиглах боломжгүй', 'Боломжгүй', 0, 20, Tone.black),
+  critical('CRITICAL', 'Ноцтой эрсдэлтэй', 'Ноцтой', Tone.red),
+  outOfService('OUT_OF_SERVICE', 'Ашиглах боломжгүй', 'Боломжгүй', Tone.black),
 
   /*
    * The three reserved keys.
@@ -54,19 +52,19 @@ enum RiskLevel {
    * own, and `riskBandsInUse` keeps an unconfigured spare out of every legend and
    * stair so these words normally never appear at all.
    *
-   * Their score range is EMPTY (min 0, max -1) rather than merely unused, so
-   * [fromScore] can never land a legacy payload on a band nobody has defined.
+   * No band here carries a score range at all — not the spares, and not the five
+   * documented ones. The cut points are Тохиргооны өгөгдөл this app cannot read, and
+   * the API sends the band it derived, so a spare is reachable only by an explicit
+   * `riskLevel` naming it.
    */
-  band6('BAND_6', 'Түвшин 6', 'Түвшин 6', 0, -1, Tone.neutral),
-  band7('BAND_7', 'Түвшин 7', 'Түвшин 7', 0, -1, Tone.neutral),
-  band8('BAND_8', 'Түвшин 8', 'Түвшин 8', 0, -1, Tone.neutral);
+  band6('BAND_6', 'Түвшин 6', 'Түвшин 6', Tone.neutral),
+  band7('BAND_7', 'Түвшин 7', 'Түвшин 7', Tone.neutral),
+  band8('BAND_8', 'Түвшин 8', 'Түвшин 8', Tone.neutral);
 
   const RiskLevel(
     this.wireValue,
     this._bundledLabel,
     this._bundledShortLabel,
-    this._legacyMin,
-    this._legacyMax,
     this._bundledTone,
   );
 
@@ -109,12 +107,6 @@ enum RiskLevel {
   /// one. All five documented bands are distinct, everywhere.
   Tone get tone => Tone.named(serverRiskColour(wireValue)) ?? _bundledTone;
 
-  /// Not authoritative. See [fromScore].
-  final int _legacyMin;
-
-  /// Not authoritative. See [fromScore].
-  final int _legacyMax;
-
   /// Null-tolerant: the API sends `riskLevel: null` for a never-assessed object, and
   /// that is a distinct display state, not a band, so it must not be coerced into one.
   static RiskLevel? fromWire(String? value) {
@@ -124,23 +116,6 @@ enum RiskLevel {
     }
     return null;
   }
-
-  /// Legacy fallback for a payload that carried a score but no `riskLevel`.
-  ///
-  /// The thresholds baked into [_legacyMin] / [_legacyMax] are the frozen defaults in
-  /// shared; an administrator may move the boundaries in Тохиргоо and this app cannot
-  /// read `/settings` (403), so **they are not authoritative**. Nothing user-facing
-  /// may print them, and nothing may call this when the server sent a band.
-  static RiskLevel fromScore(int score) {
-    for (final RiskLevel level in RiskLevel.values) {
-      if (score >= level._legacyMin && score <= level._legacyMax) return level;
-    }
-    return RiskLevel.outOfService;
-  }
-
-  /// Bands that call for a technician's attention: everything below NORMAL.
-  bool get needsAttention => this != RiskLevel.normal;
-
 }
 
 /// Shown wherever an object has never been assessed. An unassessed device is an

@@ -5,8 +5,6 @@ export const objectIdSchema = z
   .string()
   .regex(/^[a-f\d]{24}$/i, 'ID буруу форматтай байна.');
 
-export const optionalObjectId = objectIdSchema.nullish();
-
 /**
  * Mongolian mobile number, country code optional. Matches the pattern already used
  * by the User model so employee and user records validate identically.

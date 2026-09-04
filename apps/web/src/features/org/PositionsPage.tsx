@@ -19,11 +19,10 @@ import { useToast } from '../../components/ui/ToastProvider';
 import { FILTER_BAR, FILTER_LABEL, FILTER_SELECT } from '../../components/ui/control-styles';
 import { useAuth } from '../../contexts/auth-context';
 import { ApiError } from '../../lib/api-client';
+import { PAGE_SIZE } from '../../lib/pagination';
 import { orgService } from '../../services/org.service';
 import { Field, SelectInput, TextInput } from '../employees/FormControls';
 import { useCompanyOptions, useDepartmentOptions } from './useOrgOptions';
-
-const PAGE_SIZE = 20;
 
 /** What an empty department means on a position, wherever one is shown or offered. */
 const ANY_DEPARTMENT = 'Бүх хэлтэс';

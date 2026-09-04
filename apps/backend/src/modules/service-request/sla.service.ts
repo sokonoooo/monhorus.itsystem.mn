@@ -6,6 +6,8 @@ import {
   type SlaState,
 } from '@monhorus/shared';
 
+import { isTerminalServiceRequestStatus } from './service-request.terminality';
+
 /**
  * SLA engine. The backend is the sole authority for deadlines and states; the web
  * client only renders a countdown from the deadline this module produces.
@@ -54,8 +56,6 @@ export function computeSlaDueAt(
   return new Date(startedAt.getTime() + windowMs + extensionMinutes * 60 * 1000);
 }
 
-const TERMINAL_STATUSES: readonly ServiceRequestStatus[] = ['COMPLETED', 'CANCELLED'];
-
 export interface SlaEvaluation {
   state: SlaState;
   remainingMinutes: number | null;
@@ -85,7 +85,7 @@ export function evaluateSla(params: {
     return { state: 'STARTED', remainingMinutes: null };
   }
 
-  if (TERMINAL_STATUSES.includes(status)) {
+  if (isTerminalServiceRequestStatus(status)) {
     if (status === 'CANCELLED') {
       return { state: 'STARTED', remainingMinutes: null };
     }

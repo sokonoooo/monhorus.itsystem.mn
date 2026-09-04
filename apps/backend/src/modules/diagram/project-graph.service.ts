@@ -1,6 +1,5 @@
 import {
   DIAGRAM_NODE_STATUS_COLOURS,
-  RISK_LEVEL_LABELS,
   type DiagramAssetKind,
   type DiagramEdgeDto,
   type DiagramNodeDto,
@@ -14,6 +13,8 @@ import { AppError } from '../../common/errors/app-error';
 import { ERROR_CODES } from '../../common/errors/error-codes';
 import { ObjectRecord } from '../object-master/object-master.models';
 import { ObjectNode } from '../objects/object.models';
+import { riskBandLabelOf } from '../settings/risk-band.label';
+import { getRiskBands } from '../settings/settings.service';
 
 /**
  * The project's objects, drawn from the records rather than authored.
@@ -124,6 +125,10 @@ export async function buildProjectGraph(projectId: string): Promise<ProjectGraph
 
   const projectObjectId = new Types.ObjectId(projectId);
 
+  // The diagram labels each object with its band. That name is configuration, so it is
+  // read rather than compiled in.
+  const bands = await getRiskBands();
+
   const [buildings, floors] = await Promise.all([
     ObjectNode.find({ kind: 'BUILDING', ancestors: projectObjectId })
       .select('name code')
@@ -205,7 +210,7 @@ export async function buildProjectGraph(projectId: string): Promise<ProjectGraph
               ? [
                   {
                     id: `${objectId}-score`,
-                    label: RISK_LEVEL_LABELS[assessment.riskLevel],
+                    label: riskBandLabelOf(assessment.riskLevel, bands),
                     value: `${assessment.score}`,
                     unit: '%',
                   },

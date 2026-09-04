@@ -1,4 +1,4 @@
-import { OVERDUE_ELIGIBLE_LIFECYCLE_STATUSES } from '@monhorus/shared';
+import { OVERDUE_ELIGIBLE_LIFECYCLE_STATUSES, PERMISSIONS } from '@monhorus/shared';
 import { Types } from 'mongoose';
 
 import { logger } from '../../config/logger';
@@ -6,6 +6,7 @@ import { Invoice } from '../invoice/invoice.model';
 import { effectiveInvoiceStatus } from '../invoice/invoice.service';
 import { PlannedWork } from '../planned-work/planned-work.models';
 import { ServiceRequest } from '../service-request/service-request.model';
+import { TERMINAL_SERVICE_REQUEST_STATUS_LIST } from '../service-request/service-request.terminality';
 import { evaluateSla } from '../service-request/sla.service';
 import { getSlaConfig } from '../settings/settings.service';
 import { SurveyInvitation } from '../survey/survey.models';
@@ -198,7 +199,7 @@ async function sweepSla(now: Date): Promise<{ near: number; breached: number }> 
   const config = await getSlaConfig();
 
   const candidates = await ServiceRequest.find({
-    status: { $nin: ['COMPLETED', 'CANCELLED'] },
+    status: { $nin: TERMINAL_SERVICE_REQUEST_STATUS_LIST },
     slaDueAt: { $ne: null },
   })
     .select(
@@ -241,7 +242,7 @@ async function sweepSla(now: Date): Promise<{ near: number; breached: number }> 
         entityType: 'Work',
         entityId: request._id,
         linkPath: `/service-requests/${String(request._id)}`,
-        permission: 'dispatch.view',
+        permission: PERMISSIONS.DISPATCH_VIEW,
         userIds: await recipientsForWork(request.assignedEmployees),
       });
       breached += 1;
@@ -270,7 +271,7 @@ async function sweepSla(now: Date): Promise<{ near: number; breached: number }> 
         entityType: 'Work',
         entityId: request._id,
         linkPath: `/service-requests/${String(request._id)}`,
-        permission: 'dispatch.view',
+        permission: PERMISSIONS.DISPATCH_VIEW,
         userIds: await recipientsForWork(request.assignedEmployees),
       });
       near += 1;
@@ -325,7 +326,7 @@ async function sweepInvoices(now: Date): Promise<{ dueSoon: number; overdue: num
         entityType: 'Invoice',
         entityId: invoice._id,
         linkPath: `/invoices/${String(invoice._id)}`,
-        permission: 'invoice.view',
+        permission: PERMISSIONS.INVOICE_VIEW,
         customerId: invoice.customer,
       });
       overdue += 1;
@@ -352,7 +353,7 @@ async function sweepInvoices(now: Date): Promise<{ dueSoon: number; overdue: num
         entityType: 'Invoice',
         entityId: invoice._id,
         linkPath: `/invoices/${String(invoice._id)}`,
-        permission: 'invoice.view',
+        permission: PERMISSIONS.INVOICE_VIEW,
         customerId: invoice.customer,
       });
       dueSoon += 1;

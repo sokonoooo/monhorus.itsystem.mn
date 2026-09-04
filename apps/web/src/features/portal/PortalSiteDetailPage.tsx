@@ -9,11 +9,9 @@ import { SearchField } from '../../components/ui/SearchField';
 import { FILTER_BAR, FILTER_LABEL, FILTER_SEARCH_SLOT } from '../../components/ui/control-styles';
 import { ErrorState, Skeleton } from '../../components/ui/States';
 import { ApiError } from '../../lib/api-client';
+import { PAGE_SIZE } from '../../lib/pagination';
 import { portalService } from '../../services/portal.service';
 import { BuildingSilhouette } from './BuildingSilhouette';
-
-/** The same page size as the other portal lists. */
-const PAGE_SIZE = 20;
 
 /**
  * One building: its floors, each a way into the drawing.

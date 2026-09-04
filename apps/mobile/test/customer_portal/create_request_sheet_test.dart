@@ -339,11 +339,12 @@ void main() {
   // -- Байршил ---------------------------------------------------------------
 
   /// Every `DropdownButtonFormField<String>` the sheet renders: building, floor, and the
-  /// equipment-type picker. The request-type chooser is a
-  /// `DropdownButtonFormField<ServiceRequestType>` and so is deliberately not in this list.
+  /// equipment-type picker — which is all of them.
   ///
   /// Was named for the two location selectors; the equipment picker joined them when calls
-  /// started taking their SLA window from the type, and it is the same widget type.
+  /// started taking their SLA window from the type, and it is the same widget type. It used
+  /// to except a `DropdownButtonFormField<ServiceRequestType>` as well; there is no such
+  /// chooser, and no `ServiceRequestType`, since urgency stopped being chosen by hand.
   Finder stringDropdowns() => find.byType(DropdownButtonFormField<String>);
 
   /// Fills the parts of the form that are not what a test is about, attaches the

@@ -51,7 +51,8 @@ enum NotificationSeverity {
   }
 }
 
-/// `NOTIFICATION_EVENTS`, all eighteen.
+/// `NOTIFICATION_EVENTS`, all twenty-five. It read "eighteen" for several releases
+/// after seven events were added.
 ///
 /// The prototype's inbox showed only assignment and re-assignment, on the stated
 /// rule that a technician is not told about invoices. That rule is enforced by the

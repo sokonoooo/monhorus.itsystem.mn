@@ -15,12 +15,13 @@ import { riskLabelOf } from '../../components/ui/risk-palette';
 import { useAuth } from '../../contexts/auth-context';
 import { useRiskBands } from '../../hooks/use-risk-bands';
 import { ApiError } from '../../lib/api-client';
+import { BUSINESS_TIME_ZONE } from '../../lib/business-day';
 import { portalService } from '../../services/portal.service';
 import { PortalStatusBadge } from './PortalBadges';
 
 function formatDateTime(iso: string | null): string {
   if (!iso) return '-';
-  return new Date(iso).toLocaleString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
+  return new Date(iso).toLocaleString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
 }
 
 function Row({ label, value }: { label: string; value: string }): ReactElement {

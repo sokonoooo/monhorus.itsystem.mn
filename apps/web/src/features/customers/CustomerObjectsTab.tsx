@@ -18,6 +18,16 @@ function Stat({ label, value }: { label: string; value: number | string }): Reac
 }
 
 /**
+ * One page of projects, and one of buildings.
+ *
+ * Both reads are capped, and a customer can hold more than a page of either. Neither list
+ * is paged on screen — the select is a picker and the chart is a roll-up — so what a cap
+ * hides here is invisible unless the screen says so. Each cap therefore reports its own
+ * total, and the count that came back is stated next to it.
+ */
+const LIST_LIMIT = 100;
+
+/**
  * The customer's projects and where the risk sits in each.
  *
  * A bar per building, sized by how many objects it holds and segmented by risk band, so
@@ -26,8 +36,10 @@ function Stat({ label, value }: { label: string; value: number | string }): Reac
  */
 export function CustomerObjectsTab({ customerId }: { customerId: string }): ReactElement {
   const [projects, setProjects] = useState<ProjectDto[] | null>(null);
+  const [projectTotal, setProjectTotal] = useState(0);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [buildings, setBuildings] = useState<BuildingDto[] | null>(null);
+  const [buildingTotal, setBuildingTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [buildingsLoading, setBuildingsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -36,11 +48,12 @@ export function CustomerObjectsTab({ customerId }: { customerId: string }): Reac
     let cancelled = false;
 
     projectService
-      .listProjects({ customerId, limit: 100 })
+      .listProjects({ customerId, limit: LIST_LIMIT })
       .then((page) => {
         if (cancelled) return;
         const items = page.items as ProjectDto[];
         setProjects(items);
+        setProjectTotal(page.total);
         setSelectedProjectId(items[0]?.id ?? null);
       })
       .catch((caught: unknown) => {
@@ -61,8 +74,9 @@ export function CustomerObjectsTab({ customerId }: { customerId: string }): Reac
     setBuildingsLoading(true);
     setError(null);
     try {
-      const page = await projectService.listBuildings({ projectId, limit: 100 });
+      const page = await projectService.listBuildings({ projectId, limit: LIST_LIMIT });
       setBuildings(page.items as BuildingDto[]);
+      setBuildingTotal(page.total);
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : 'Барилга ачаалж чадсангүй.');
     } finally {
@@ -87,6 +101,8 @@ export function CustomerObjectsTab({ customerId }: { customerId: string }): Reac
   }
 
   const project = projects.find((entry) => entry.id === selectedProjectId) ?? null;
+  const projectsTruncated = projectTotal > projects.length;
+  const buildingsTruncated = !buildingsLoading && !!buildings && buildingTotal > buildings.length;
 
   return (
     <div className="space-y-4">
@@ -107,6 +123,11 @@ export function CustomerObjectsTab({ customerId }: { customerId: string }): Reac
               </option>
             ))}
           </select>
+          {projectsTruncated && (
+            <p className="mt-1 text-xs text-slate-500">
+              Нийт {projectTotal} төслөөс эхний {projects.length} нь жагсав.
+            </p>
+          )}
         </div>
 
         {selectedProjectId && (
@@ -136,7 +157,14 @@ export function CustomerObjectsTab({ customerId }: { customerId: string }): Reac
           description="Энэ төсөлд барилга бүртгэгдээгүй байна."
         />
       ) : (
-        <BuildingRiskChart buildings={buildings} />
+        <>
+          <BuildingRiskChart buildings={buildings} />
+          {buildingsTruncated && (
+            <p className="text-xs text-slate-500">
+              Нийт {buildingTotal} барилгаас эхний {buildings.length} нь жагсав.
+            </p>
+          )}
+        </>
       )}
     </div>
   );

@@ -24,6 +24,7 @@ import { FIELD_TEXTAREA, FILTER_LABEL } from '../../components/ui/control-styles
 import { useAuth } from '../../contexts/auth-context';
 import { useTableColumns } from '../../hooks/use-table-columns';
 import { ApiError } from '../../lib/api-client';
+import { BUSINESS_TIME_ZONE } from '../../lib/business-day';
 import { projectService } from '../../services/project.service';
 import { RiskSummaryCell } from './objects/ObjectBadges';
 import { Field, TextInput } from '../employees/FormControls';
@@ -31,7 +32,7 @@ import { ActiveBadge } from './ProjectListPage';
 
 function formatDate(iso: string | null): string {
   if (!iso) return '-';
-  return new Date(iso).toLocaleDateString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
+  return new Date(iso).toLocaleDateString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
 }
 
 /** Position held as numbers, matching the gpsLatitude/gpsLongitude pair the API stores. */

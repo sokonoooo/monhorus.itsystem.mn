@@ -13,11 +13,13 @@ import { PageHeader } from '../../components/ui/PageHeader';
 import { EmptyState, ErrorState, Skeleton } from '../../components/ui/States';
 import { useToast } from '../../components/ui/ToastProvider';
 import { ApiError } from '../../lib/api-client';
+import { BUSINESS_TIME_ZONE } from '../../lib/business-day';
+import { PAGE_SIZE } from '../../lib/pagination';
 import { publishUnreadCountChanged } from '../../lib/unread-notifications';
 import { notificationService } from '../../services/report.service';
 
 function formatDateTime(iso: string): string {
-  return new Date(iso).toLocaleString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
+  return new Date(iso).toLocaleString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
 }
 
 const SEVERITY_STYLES: Record<NotificationSeverity, string> = {
@@ -40,14 +42,6 @@ const SEVERITY_DOTS: Record<NotificationSeverity, string> = {
  * open, so nothing is sent by email, SMS or push and the screen says so rather than
  * implying a delivery that never happens.
  */
-/**
- * Notifications per page.
- *
- * Twenty, matching the lists elsewhere. The old fixed fifty was not a page size but a cap:
- * the fifty-first notification simply could not be reached.
- */
-const NOTIFICATION_PAGE_SIZE = 20;
-
 export function NotificationsPage(): ReactElement {
   const navigate = useNavigate();
   const { notify } = useToast();
@@ -79,7 +73,7 @@ export function NotificationsPage(): ReactElement {
       const [listed, counted] = await Promise.all([
         notificationService.list({
           page,
-          limit: NOTIFICATION_PAGE_SIZE,
+          limit: PAGE_SIZE,
           ...(unreadOnly ? { unreadOnly: true } : {}),
         }),
         notificationService.unreadCount(),

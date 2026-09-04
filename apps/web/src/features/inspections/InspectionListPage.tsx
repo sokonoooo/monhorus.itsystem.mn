@@ -34,7 +34,7 @@ import {
 } from '../../components/ui/risk-palette';
 import { useTableColumns } from '../../hooks/use-table-columns';
 import { ApiError } from '../../lib/api-client';
-import { businessDayEnd, businessDayStart } from '../../lib/business-day';
+import { BUSINESS_TIME_ZONE, businessDayEnd, businessDayStart } from '../../lib/business-day';
 import { objectService } from '../../services/object.service';
 import { projectService } from '../../services/project.service';
 import { useRiskBands } from '../../hooks/use-risk-bands';
@@ -46,7 +46,7 @@ const PROJECT_PAGE_LIMIT = 100;
 
 function formatDate(iso: string | null): string {
   if (!iso) return '-';
-  return new Date(iso).toLocaleDateString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
+  return new Date(iso).toLocaleDateString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
 }
 
 function CountCard({

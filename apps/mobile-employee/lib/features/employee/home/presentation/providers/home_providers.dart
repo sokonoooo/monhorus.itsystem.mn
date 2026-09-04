@@ -211,12 +211,6 @@ class HomeOverview {
               request.slaState == SlaState.late)
           .length;
 
-  /// `REVISIT_REQUIRED` — the prototype's "Дахин очих".
-  int get revisitCount => assignedRequests
-      .where((ServiceRequestListItemModel request) =>
-          request.status == ServiceRequestStatus.revisitRequired)
-      .length;
-
   /// Lifetime completions, as counted by the backend on the employee record. Null
   /// when the account is not linked, and rendered as a dash rather than a zero.
   int? get completedTotal => workload?.completedAssignments;

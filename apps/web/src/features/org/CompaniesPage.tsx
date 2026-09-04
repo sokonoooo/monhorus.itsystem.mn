@@ -19,10 +19,9 @@ import { useToast } from '../../components/ui/ToastProvider';
 import { FILTER_BAR, FILTER_LABEL, FILTER_SELECT } from '../../components/ui/control-styles';
 import { useAuth } from '../../contexts/auth-context';
 import { ApiError } from '../../lib/api-client';
+import { PAGE_SIZE } from '../../lib/pagination';
 import { orgService } from '../../services/org.service';
 import { Field, TextInput } from '../employees/FormControls';
-
-const PAGE_SIZE = 20;
 
 /**
  * Create and edit a company.

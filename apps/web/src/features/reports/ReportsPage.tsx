@@ -30,6 +30,7 @@ import {
 import { useAuth } from '../../contexts/auth-context';
 import { ApiError } from '../../lib/api-client';
 import {
+  BUSINESS_TIME_ZONE,
   businessDayEnd,
   businessDayStart,
   currentMonthStartDateKey,
@@ -68,9 +69,9 @@ function formatCell(value: ReportCellValue, column: ReportColumnDto): string {
     case 'PERCENT':
       return typeof value === 'number' ? `${value}%` : String(value);
     case 'DATE':
-      return new Date(String(value)).toLocaleDateString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
+      return new Date(String(value)).toLocaleDateString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
     case 'DATETIME':
-      return new Date(String(value)).toLocaleString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
+      return new Date(String(value)).toLocaleString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
     default:
       return String(value);
   }

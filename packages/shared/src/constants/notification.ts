@@ -75,7 +75,7 @@ export const NOTIFICATION_EVENT_LABELS: Record<NotificationEvent, string> = {
   SERVICE_REQUEST_STATUS_CHANGED: 'Дуудлагын төлөв өөрчлөгдсөн',
   SLA_NEAR_BREACH: 'SLA хугацаа ойртсон',
   SLA_BREACHED: 'SLA хугацаа зөрчсөн',
-  REPORT_SUBMITTED: 'Тайлан илгээсэн',
+  REPORT_SUBMITTED: 'Дүгнэлт илгээсэн',
   REPORT_APPROVED: 'Тайлан батлагдсан',
   REPORT_RETURNED: 'Тайлан буцаагдсан',
   RISK_ASSESSMENT_RAISED: 'Эрсдэлтэй үнэлгээ илэрсэн',
@@ -96,12 +96,6 @@ export const NOTIFICATION_EVENT_LABELS: Record<NotificationEvent, string> = {
 /** Drives the colour of the row, not a business rule. */
 export const NOTIFICATION_SEVERITIES = ['INFO', 'WARNING', 'CRITICAL'] as const;
 export type NotificationSeverity = (typeof NOTIFICATION_SEVERITIES)[number];
-
-export const NOTIFICATION_SEVERITY_LABELS: Record<NotificationSeverity, string> = {
-  INFO: 'Мэдээлэл',
-  WARNING: 'Анхааруулга',
-  CRITICAL: 'Ноцтой',
-};
 
 export const NOTIFICATION_EVENT_SEVERITIES: Record<NotificationEvent, NotificationSeverity> = {
   PLANNED_WORK_DUE_SOON: 'WARNING',
@@ -130,17 +124,6 @@ export const NOTIFICATION_EVENT_SEVERITIES: Record<NotificationEvent, Notificati
   INVOICE_DUE_SOON: 'WARNING',
   INVOICE_OVERDUE: 'CRITICAL',
 };
-
-/**
- * Shown on the notification screen so the delivery limit is stated rather than assumed.
- *
- * Kept under its original name because three clients import it. The wording changed when
- * Android push was approved: promising "in-app only" to someone whose phone is buzzing is
- * worse than saying nothing. It still states the two real limits — iPhone gets no push, and
- * nothing is emailed — because both are surprises a user would otherwise discover alone.
- */
-export const NOTIFICATION_CHANNEL_UNAPPROVED_NOTE =
-  'Android утсанд push мэдэгдэл очно. iPhone дээр болон имэйлээр илгээгдэхгүй — зөвхөн энэ жагсаалтад харагдана.';
 
 /**
  * Platforms a push registration can come from.

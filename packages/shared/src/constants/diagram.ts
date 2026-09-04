@@ -69,13 +69,6 @@ export const DIAGRAM_NODE_STATUS_COLOURS: Record<DiagramNodeStatus, string> = {
 export const DIAGRAM_HANDLES = ['top', 'right', 'bottom', 'left'] as const;
 export type DiagramHandle = (typeof DIAGRAM_HANDLES)[number];
 
-export const DIAGRAM_HANDLE_LABELS: Record<DiagramHandle, string> = {
-  top: 'Дээд',
-  right: 'Баруун',
-  bottom: 'Доод',
-  left: 'Зүүн',
-};
-
 /** Where the arrowheads sit, which is what "direction" means on the wire. */
 export const DIAGRAM_EDGE_DIRECTIONS = ['NONE', 'FORWARD', 'BACKWARD', 'BOTH'] as const;
 export type DiagramEdgeDirection = (typeof DIAGRAM_EDGE_DIRECTIONS)[number];

@@ -1,3 +1,4 @@
+import { PERMISSIONS } from '@monhorus/shared';
 import { Types } from 'mongoose';
 
 import { logger } from '../../config/logger';
@@ -213,7 +214,7 @@ export async function runUnclaimedSweep(now: Date = new Date()): Promise<Unclaim
       entityId: request._id,
       // The request itself, which is where the "Өөртөө авах" action lives.
       linkPath: `/service-requests/${String(request._id)}`,
-      permission: 'service_request.claim',
+      permission: PERMISSIONS.SERVICE_REQUEST_CLAIM,
     });
 
     if (isFinal) {
@@ -228,7 +229,7 @@ export async function runUnclaimedSweep(now: Date = new Date()): Promise<Unclaim
         entityId: request._id,
         // The dispatch board is where the reader can actually act on it.
         linkPath: `/dispatch?requestId=${String(request._id)}`,
-        permission: 'dispatch.assign',
+        permission: PERMISSIONS.DISPATCH_ASSIGN,
       });
     }
 

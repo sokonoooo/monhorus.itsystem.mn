@@ -18,6 +18,15 @@ import { Field, TextInput } from '../employees/FormControls';
 import { ScoreBar } from '../projects/objects/ObjectBadges';
 import { ProgressBar, TaskStatusBadge } from './PlannedWorkBadges';
 
+/**
+ * Matches the mime types the storage service accepts for an image.
+ *
+ * `image/*` offered GIF, SVG and BMP, which the server refuses: the picker accepted the
+ * file and the upload came back a 400 the person could do nothing about. The other upload
+ * sites already list the real types; this one now agrees with them and with the server.
+ */
+const ACCEPTED_PHOTO_TYPES = 'image/png,image/jpeg,image/webp';
+
 interface TaskProgressDrawerProps {
   work: PlannedWorkDto;
   task: PlannedWorkTaskDto | null;
@@ -169,7 +178,7 @@ export function TaskProgressDrawer({
         <input
           ref={inputRef}
           type="file"
-          accept="image/*"
+          accept={ACCEPTED_PHOTO_TYPES}
           className="hidden"
           aria-label={`${label} нэмэх`}
           onChange={(event) => {

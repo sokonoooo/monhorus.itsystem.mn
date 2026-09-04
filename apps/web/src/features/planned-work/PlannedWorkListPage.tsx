@@ -27,6 +27,7 @@ import {
 import { useAuth } from '../../contexts/auth-context';
 import { useTableColumns } from '../../hooks/use-table-columns';
 import { ApiError } from '../../lib/api-client';
+import { BUSINESS_TIME_ZONE } from '../../lib/business-day';
 import { plannedWorkService } from '../../services/planned-work.service';
 import {
   LateBadge,
@@ -37,7 +38,7 @@ import {
 
 /** Asia/Ulaanbaatar display of a UTC timestamp. */
 function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
+  return new Date(iso).toLocaleDateString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
 }
 
 export function PlannedWorkListPage(): ReactElement {
