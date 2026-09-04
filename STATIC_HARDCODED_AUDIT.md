@@ -4,11 +4,37 @@
 **Surface:** 662 non-test source files (304 backend/shared `.ts`, 144 web `.tsx`, 214 `.dart`).
 **Method:** eight parallel read-only sweeps. **No files were changed.**
 
-**On trust:** every P0 below was re-verified by opening the file. Claims not personally verified are marked *(reported)*. Two claims from the sweeps were **refuted** on inspection and are recorded in §17 so nobody acts on them.
+**On trust:** every P0 below was re-verified by opening the file. Claims not personally verified are marked *(reported)*. Claims that did not survive inspection were **refuted** and are recorded in §17 so nobody acts on them.
+
+---
+
+> ## REMEDIATION STATUS — updated 2026-09-04
+>
+> This document was written as an inventory. It has since been worked through. **All 8 P0s,
+> the 47 P1s and the 91 P2s are fixed and merged to `main`**, verified across every surface:
+> backend 1458 tests · web 1036 · shared 78 · employee app 286 · customer app 185 · typecheck
+> and analyzer clean throughout.
+>
+> **ONE BLOCKER REMAINS, AND IT IS NOT A CODE CHANGE.** The head_admin password committed in
+> `live_api_test.dart` was scrubbed from the working tree, but **it is still in git history**
+> and must be rotated on the live server. Nothing in this repository can un-expose it. Until
+> that is done the release assessment in §17 stands unchanged.
+>
+> **Six claims in this document were refuted during remediation** — four of them found by
+> agents checking rather than accepting the audit's framing. They are marked inline and
+> listed in §17. A finding that turned out to be wrong is recorded here rather than deleted,
+> because the reasoning that produced it will otherwise be repeated.
+>
+> **Three items were deliberately NOT done** and are recommended instead; see §17.
 
 ---
 
 # 1. Executive Summary
+
+> **Status 2026-09-04:** every tier below is fixed and merged. The counts are kept as
+> originally measured so the scale of the sweep stays legible; see the remediation note above
+> for what changed and §17 for what was refuted or deferred.
+
 
 | Metric | Count |
 |---|---|
@@ -33,6 +59,17 @@
 
 # 2. P0 Findings
 
+> **All eight fixed.** Credentials moved to required `--dart-define`s with no defaults; the
+> runbook's build commands and their self-certifying verification greps corrected; both
+> Flutter apps page-walk floor objects; the floor-history tab no longer asserts a zero it has
+> not earned; the unset-tax warning is back at the point of invoicing and a failed settings
+> read is now visibly different from a genuine 0%; unknown material units render as
+> themselves instead of «ширхэг».
+>
+> **P0-1 is only half closed.** The repository no longer carries the credential; git history
+> still does. Rotate the production password.
+
+
 | # | File | Line | Function | Hardcoded data/rule | Why dangerous | Replacement |
 |---|---|---|---|---|---|---|
 | 1 | `apps/mobile-employee/integration_test/live_api_test.dart` | 126-127 | `_adminToken()` | `admin@monhorus.mn` / `Monhorus2026admin` | **Tracked in git**, and verified byte-identical to `BOOTSTRAP_ADMIN_PASSWORD` in the local `.env` — the variable `bootstrap-head-admin.ts` provisions the production head_admin from. Anyone with repo access may hold head_admin, the role that resyncs to the full permission catalogue on every boot. Two technician passwords (`:55-56`) leak the same way. | Rotate the production password **first**, then move to env and scrub the file (history included) |
@@ -47,6 +84,16 @@
 ---
 
 # 3. P1 Findings (selected — full inventory in §5/§6)
+
+> **All fixed.** Severity now ranks by the configured band's own lower bound, and `isFinding`
+> stopped being positional altogether — with a mild sixth band, "everything below the top"
+> would have newly filed *healthy* equipment as a зөрчил, which is the same defect relocated.
+> `hasCritical` reads band flags. A rejected ladder is logged instead of silently substituted.
+> The two planned-work sweeps no longer address every technician. Both report reads are
+> scoped — and so is the photographic report added alongside them. `customer.view` has left
+> the TECHNICIAN preset. Client-side counts read the server aggregates that were already on
+> the page. A day is an Ulaanbaatar day everywhere.
+
 
 | # | File | Line | Function | Hardcoded data/rule | Why it matters | Replacement |
 |---|---|---|---|---|---|---|
@@ -101,6 +148,22 @@
 ---
 
 # 4. P2 Findings (grouped — 91 items)
+
+> **Fixed, with four exceptions that were judged rather than executed.** Twelve dead exports
+> deleted from `packages/shared` — including `RISK_BANDS`/`riskLevelFromScore`, a second
+> hardcoded ladder living under the most obvious-looking name in the module. Terminality
+> derived once from the transition matrix. Thirteen page sizes became one; thirty-five files
+> stopped carrying their own timezone; `lib/calendar-date.ts` is gone and one date convention
+> decides. The PDF tables, both CSV exports, the diagram and a notification title stopped
+> printing compiled band names beside a configured header.
+>
+> **Kept against the list, deliberately:** `selfProgressTransitionsFrom`, `permitsBilling` and
+> `isTerminalLifecycleStatus` have no callers, but each is the single definition of a rule two
+> or three other places restate by hand — deleting them would make that duplication permanent
+> and silent. `permitsBilling` in particular is now documented as a trap: the billing gate is
+> enforced *more strictly* elsewhere, because nothing ever writes `EXPIRED` and status-alone
+> billing had raised real invoices against finished contracts.
+
 
 - **Terminality restated 6×**: `sla.service.ts:57`, `calendar.service.ts:70,165`, `reminder.service.ts:183`, `assignServiceRequest:790`, `OpenServiceRequestsPage.tsx:28`. `service-request.notify.ts:115` **derives** it from the matrix — the pattern to copy.
 - **Shipped labels reaching users instead of configured ones**: push (`service-request.notify.ts:144`), dashboard chart (`:271`), Today panel (`:550`), calendar (`:176`), CSV/PDF exports (`report.service.ts:223,336`; `report-pdf/*`), diagram (`project-graph.service.ts:208`), `overallLabel` (`inspection-report.service.ts:453`), detail-page buttons (`ServiceRequestDetailPage.tsx:276`).
@@ -407,9 +470,24 @@ Server schema caps are consistent and sane (100 default 20; 200 for materials/re
 
 # 17. Final Release Assessment
 
-## NOT SAFE FOR RELEASE
+## NOT SAFE FOR RELEASE — one reason left, and it is not code
 
-Three reasons, each sufficient on its own.
+**Updated 2026-09-04.** Of the three blockers below, reasons 2 and 3 are **fixed and merged**.
+Reason 1 is **half fixed**: the credential is out of the working tree, and still in history.
+
+**A repository cannot un-expose a password.** Until the production head_admin password is
+rotated, anyone who has ever cloned this repository holds it, and that account resyncs to the
+entire permission catalogue on every boot. The procedure, from the runbook: change it via
+`POST /api/v1/auth/change-password` (or have another head_admin issue a passcode reset), then
+update the root-only copy at `/root/.monhorus-adminpass`. Nothing needs re-bootstrapping —
+`BOOTSTRAP_ADMIN_PASSWORD` is deliberately absent from `/etc/monhorus/backend.env`, so the old
+value cannot resurrect.
+
+**After that rotation, the assessment is SAFE FOR RELEASE**, with the caveat that push
+notifications remain unverified end to end — see the refuted claim about `google-services.json`
+below, and run the APK check before assuming either way.
+
+The three original blockers, kept for the record:
 
 **1. A production credential is in the repository.** `live_api_test.dart:126-127` carries `admin@monhorus.mn` / `Monhorus2026admin`, verified byte-identical to the `BOOTSTRAP_ADMIN_PASSWORD` in the local `.env` — the variable `bootstrap-head-admin.ts` provisions the production head_admin from. If that pair was used on the live server, anyone with repository access holds the role that resyncs to the entire permission catalogue on every boot. **Rotate first, then scrub.** This is not a code-quality finding; it is an active exposure.
 
@@ -417,20 +495,71 @@ Three reasons, each sufficient on its own.
 
 **3. Two apps tell users things that are not true.** The customer app asserts a floor has **no service history** when it has one (`_HistoryTab`, P0-6). Both apps draw 100 of 120 floor markers and print an affirmative "N devices unplaced" caption computed from the truncated list — a technician standing at the panel has no reason to doubt it. Invoices issue at **₮0 VAT** by default with the warning constant that exists for this case now unrendered.
 
-**With the eight P0s fixed, the assessment becomes SAFE WITH P1 FIXES** — and the P1 list is dominated by two mechanical themes (client-side counts that should read a server aggregate already on the page; band keys that should read configured flags) rather than by architectural problems.
+**All eight P0s and all 47 P1s are now fixed** — and the P1 list was indeed dominated by the
+two mechanical themes predicted here: client-side counts that should have read a server
+aggregate already on the page, and band keys that should have read configured flags.
 
 ## What this codebase does well, stated plainly
 
 Tenant isolation is sound and structurally so. Every backend metric is a genuine aggregate. Materials are the cleanest area in the product — every Registered/Used/Remaining figure is read, never derived, with an atomic over-consumption guard and retry-safe absolute writes. Object-type attributes are real. The stage vocabulary reaches both phones through `/vocabulary`. `env.ts` refuses to boot on a localhost web URL. `report.service.ts` discloses its own truncation. Where this codebase reasons about a problem, it reasons well, and it writes the reasoning down.
 
-## Two claims from the sweeps that I REFUTED — do not act on them
+## Six claims REFUTED — do not act on them
+
+Two were caught when the audit was written; four more during remediation, by agents that
+checked the audit's framing instead of accepting it.
+
+### Refuted when the audit was written
 
 1. **"Head-admin password in git since the initial commit; history is squashed."** False as stated. `bootstrap-head-admin.ts` reads `BOOTSTRAP_ADMIN_PASSWORD` with **no default**, errors if unset and warns to clear it afterwards; `.env.example` ships it blank; `apps/backend/.env` and the Firebase service-account key are untracked and never were tracked. The real exposure is P0-1 above, via a Flutter integration test — a different file, a different fix.
 2. **"`google-services.json` has the wrong package name."** False. All four ids match in both apps (`mn.itsystem.monhorus`, `mn.itsystem.monhorusEmployee`), regenerated after the rename. **Do not regenerate those files.** The real cause of zero push registrations is that `.gitignore` excludes them and `build.gradle.kts:30` applies the Firebase plugin only `if (file(...).exists())` — so an APK built on a machine without the file ships push-less and silent while every check passes. **Verify by unzipping the shipped APK and looking for `google_app_id` in `res/values/values.xml` before changing any code.**
 
-## One finding I caused
+### Refuted during remediation (2026-09-04)
 
-`TAX_UNSET_NOTE` has zero callers **because I removed its two call sites this morning**. The blue `Alert variant="info"` boxes in `InvoiceFormDrawer` and `GenerateInvoicesDrawer` were rendering that warning at the moment of invoicing; the info-alert removal moved the wording into the `/invoices` help panel. That was the correct call for 50 decorative notices and the wrong one for this specific warning — a zero tax rate on a financial document deserves to be visible where the document is created, not in a help panel. **Recommend restoring it as a non-info element (a plain warning line beside the tax field).**
+3. **«Цуцалсан» vs «Цуцлагдсан» is not label drift.** The audit compared a *service-request*
+   label against a *planned-work* one. `ServiceRequestStatus.cancelled` is «Цуцалсан» in
+   shared and in both apps; `PlannedWorkStatus.cancelled` is «Цуцлагдсан» in shared and in
+   Dart. Two enums for two modules, worded differently on purpose. Reconciling them inside the
+   employee app would have **introduced** Dart↔shared divergence where none existed. Found
+   independently by two lanes.
+
+4. **`REVISIT_REQUIRED` likewise.** The *status* label («Дахин очих») matches both apps; the
+   *notification-event* label («Дахин үзлэг шаардлагатай») matches the customer app. Different
+   maps, both correct. The one real divergence is inside mobile-employee — `work_enums.dart`
+   disagrees with `service_request_vocabulary.dart` in the same app — and that is what needs
+   fixing, not the shared package.
+
+5. **A typo in a `notify({ permission })` literal was already a compile error.** The audit
+   called the 15 string literals a silent hazard on the grounds that a mistyped key addresses
+   nobody. `notify`'s parameter is typed `PermissionKey`, a literal union — a typo produced
+   `TS2820: Did you mean '"dispatch.view"'?` before any change was made. The literals were
+   replaced with catalogue constants for consistency; it was never a safety fix.
+
+6. **"Two `isFinished` copies disagree on CANCELLED" was already fixed** before the
+   remediation started. One enum now, with the fix recorded in `work_enums.dart`.
+
+## Three items deliberately NOT done, and recommended instead
+
+1. **`/objects/nodes` returning `PaginatedData`.** It returns a bare array with no `total`, so
+   no client can detect truncation — but changing the shape is a breaking contract change for
+   three clients (web plus both Flutter apps, roughly twelve web dropdowns). The cap now
+   announces itself server-side; the shape change needs coordinating across all four surfaces.
+
+2. **Truncation disclosure reaching clients.** `CalendarResultDto`, `ObjectHistoryDto` and
+   `EmployeeDetailDto` need a `truncatedAt` field following the `ReportResultDto` house
+   pattern. The limits are named and logged server-side; the DTOs were out of that lane's
+   ownership.
+
+3. **`planned-work-report.pdf.ts:208` band names.** Its only caller was off-limits during that
+   round. Adding a parameter nothing supplies would be exactly the "designed, written, never
+   wired up" pattern this audit criticises elsewhere.
+
+## One finding I caused — since fixed
+
+`TAX_UNSET_NOTE` has zero callers **because I removed its two call sites this morning**. The blue `Alert variant="info"` boxes in `InvoiceFormDrawer` and `GenerateInvoicesDrawer` were rendering that warning at the moment of invoicing; the info-alert removal moved the wording into the `/invoices` help panel. That was the correct call for 50 decorative notices and the wrong one for this specific warning — a zero tax rate on a financial document deserves to be visible where the document is created, not in a help panel. **Restored 2026-09-04** as a plain amber line beside the figure it explains — not a boxed
+alert, which is the visual weight the withdrawn notices had. The same change also separated a
+*failed* settings read from a genuine 0%: the first now shows no rate at all and blocks
+submission, where before both looked identical and the user could approve a total the server
+would not store.
 
 ---
 
@@ -451,6 +580,9 @@ ACCEPTABLE_CONSTANTS=32
 ```
 
 ## TOP_10_MUST_FIX
+
+> **All ten are done except the first**, which is an operator action no commit can perform.
+
 
 1. **Rotate the production head_admin password, then scrub `live_api_test.dart:126-127`** — a tracked credential matching `BOOTSTRAP_ADMIN_PASSWORD`.
 2. **Fix `DEPLOYMENT_MONHORUS_PROD.md:205,208,324`** — the runbook builds a web bundle against a retired plain-HTTP host, self-verifies against the stale value, and produces an APK that cannot connect.
