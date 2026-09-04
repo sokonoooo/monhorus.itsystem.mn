@@ -170,4 +170,46 @@ describe('ReportsPage', () => {
 
     expect(await screen.findByText('Мэдээлэл алга')).toBeInTheDocument();
   });
+  /**
+   * THE RANGE IS AN ULAANBAATAR DAY, NOT A UTC ONE.
+   *
+   * The filters used to be sent as `${date}T00:00:00.000Z` / `T23:59:59.999Z`, which frames
+   * the UTC day. Ulaanbaatar runs eight hours ahead, so every report dropped 00:00-08:00 of
+   * its first day and swallowed 00:00-08:00 of the day after its last — a call logged at
+   * 07:00 on the 1st was missing from that month's report and appeared in the previous
+   * month's. Both boundaries are asserted, because getting one right is what made the old
+   * shape look plausible.
+   */
+  it('frames a single day range on the Ulaanbaatar day', async () => {
+    const run = vi.spyOn(reportService, 'run').mockResolvedValue(makeReportResult());
+
+    renderWithAuth(<ReportsPage />, {
+      permissions: [PERMISSIONS.REPORT_VIEW],
+      route: '/reports?dateFrom=2026-08-21&dateTo=2026-08-21',
+    });
+
+    await waitFor(() => expect(run).toHaveBeenCalled());
+    const query = run.mock.calls[0]![1]!;
+    expect(query.dateFrom).toBe('2026-08-20T16:00:00.000Z');
+    expect(query.dateTo).toBe('2026-08-21T15:59:59.999Z');
+
+    // 07:00 on 21 August in Ulaanbaatar — inside the day the reader asked for.
+    expect('2026-08-20T23:00:00.000Z' >= query.dateFrom!).toBe(true);
+    // 07:00 on 22 August — the morning the old range wrongly included.
+    expect('2026-08-21T23:00:00.000Z' <= query.dateTo!).toBe(false);
+  });
+
+  /** The KPI strip must be asked about the same range as the table, not a shifted one. */
+  it('asks for the KPIs over the same Ulaanbaatar range', async () => {
+    vi.spyOn(reportService, 'run').mockResolvedValue(makeReportResult());
+    const kpis = vi.spyOn(reportService, 'kpis').mockResolvedValue(makeKpiSummary());
+
+    renderWithAuth(<ReportsPage />, {
+      permissions: [PERMISSIONS.REPORT_VIEW],
+      route: '/reports?dateFrom=2026-08-21&dateTo=2026-08-21',
+    });
+
+    await waitFor(() => expect(kpis).toHaveBeenCalled());
+    expect(kpis).toHaveBeenCalledWith('2026-08-20T16:00:00.000Z', '2026-08-21T15:59:59.999Z');
+  });
 });

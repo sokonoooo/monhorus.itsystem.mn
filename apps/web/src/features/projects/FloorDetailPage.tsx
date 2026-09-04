@@ -233,8 +233,12 @@ export function filterFloorObjects(
  * every marker past the first page — a floor with 120 devices drew 100 pins and gave no
  * hint that twenty were missing. Pages are walked in order because the first response is
  * what says how many there are.
+ *
+ * Exported because the work-report equipment picker had the same bug for the same reason —
+ * device #101 on a floor could not be put into a report — and a second copy of this loop
+ * would be a second thing to get wrong.
  */
-async function fetchAllFloorObjects(floorId: string): Promise<ObjectListItemDto[]> {
+export async function fetchAllFloorObjects(floorId: string): Promise<ObjectListItemDto[]> {
   const items: ObjectListItemDto[] = [];
   let page = 1;
 

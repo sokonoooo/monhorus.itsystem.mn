@@ -1,5 +1,8 @@
 import {
   PERMISSIONS,
+  SURVEY_RATING_MAX,
+  SURVEY_RATING_MIN,
+  employeeListQuerySchema,
   type EmployeeListItemDto,
   type PaginatedData,
   type SurveyEmployeeScoreDto,
@@ -14,7 +17,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { employeeService } from '../../services/employee.service';
 import { surveyService } from '../../services/survey.service';
 import { renderWithAuth } from '../../test/render';
-import { SurveyResultsPage } from './SurveyResultsPage';
+import { SurveyResultsPage, distributionData, scoreColour } from './SurveyResultsPage';
 
 /** Reads back the address bar, which is where every filter on this screen lives. */
 function LocationProbe(): ReactElement {
@@ -200,5 +203,107 @@ describe('SurveyResultsPage', () => {
     await user.click(screen.getByRole('button', { name: 'Дуудлагын шүүлт цуцлах' }));
     await waitFor(() => expect(results).toHaveBeenLastCalledWith({}));
     expect(screen.getByTestId('search').textContent).not.toContain('serviceRequestId');
+  });
+});
+
+/**
+ * THE «АЖИЛТАН» FILTER.
+ *
+ * It asked the server for two hundred employees. `employeeListQuerySchema` caps `limit` at
+ * a hundred and REJECTS rather than clamping, and the effect swallowed the resulting 400,
+ * so the dropdown held nothing but «Бүх ажилтан» on every installation — and an empty
+ * dropdown does not read as a broken one, it reads as "there are no employees".
+ */
+describe('SurveyResultsPage - the employee filter', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(surveyService, 'results').mockResolvedValue(makeResults());
+  });
+
+  /**
+   * Asserted against the schema itself rather than against the number 100. The number is
+   * the server's to choose; what this screen must never do is ask for a page the server
+   * will refuse, and only the schema can answer whether it would.
+   */
+  it('asks for a page the server will actually serve', async () => {
+    const list = vi.spyOn(employeeService, 'list').mockResolvedValue(makePage([makeEmployee()]));
+
+    renderWithAuth(<SurveyResultsPage />, { permissions: READER });
+
+    await waitFor(() => expect(list).toHaveBeenCalled());
+    const asked = list.mock.calls[0]![0];
+    expect(employeeListQuerySchema.safeParse(asked).success).toBe(true);
+  });
+
+  it('populates the filter with the employees it was sent', async () => {
+    vi.spyOn(employeeService, 'list').mockResolvedValue(
+      makePage([
+        makeEmployee({ id: 'e1', firstName: 'Бат', lastName: 'Дорж' }),
+        makeEmployee({ id: 'e2', firstName: 'Сараа', lastName: 'Ганбат' }),
+      ]),
+    );
+
+    renderWithAuth(<SurveyResultsPage />, { permissions: READER });
+
+    expect(await screen.findByRole('option', { name: 'Дорж Бат' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Ганбат Сараа' })).toBeInTheDocument();
+  });
+
+  /**
+   * A refusal has to be visible. Silence here is indistinguishable from an empty payroll,
+   * and a reader who believes the filter is complete draws conclusions from a list that
+   * simply failed to load.
+   */
+  it('says the list failed rather than showing an empty picker', async () => {
+    vi.spyOn(employeeService, 'list').mockRejectedValue(new Error('boom'));
+
+    renderWithAuth(<SurveyResultsPage />, { permissions: READER });
+
+    expect(
+      await screen.findByText('Ажилтны жагсаалт ачаалагдсангүй. Бүх ажилтнаар харуулж байна.'),
+    ).toBeInTheDocument();
+    // And it must not be left offering a choice it cannot honour.
+    expect(screen.getByLabelText('Ажилтан')).toBeDisabled();
+  });
+
+  /** The figures beside it are the screen's job; a broken picker does not blank them. */
+  it('keeps the figures standing when the picker fails', async () => {
+    vi.spyOn(employeeService, 'list').mockRejectedValue(new Error('boom'));
+
+    renderWithAuth(<SurveyResultsPage />, { permissions: READER });
+
+    const tiles = await screen.findByRole('group', { name: 'Үнэлгээний товчоо' });
+    expect(within(tiles).getByText('Нийт хариулт')).toBeInTheDocument();
+  });
+});
+
+/**
+ * THE STAR RAMP.
+ *
+ * The colours were a `Record<number, string>` written out for 1 to 5 while the loop that
+ * reads it is driven by the SHARED `SURVEY_RATING_MIN`/`MAX`. The two are only accidentally
+ * the same length: widen the scale in `packages/shared` and every new star gets
+ * `undefined` for a fill, which paints as the browser's default rather than as a colour
+ * anybody chose — and the chart it lands on is the one showing how customers rated the
+ * work.
+ */
+describe('SurveyResultsPage - the score ramp', () => {
+  it('gives every score on the shared scale a colour', () => {
+    const data = distributionData({ ...makeResults(), distribution: [] });
+
+    expect(data).toHaveLength(SURVEY_RATING_MAX - SURVEY_RATING_MIN + 1);
+    expect(data.every((entry) => typeof entry.colour === 'string' && entry.colour !== '')).toBe(
+      true,
+    );
+  });
+
+  /** The case the hardcoded record could not answer: a scale somebody widened. */
+  it('still spans a widened scale, worst to best', () => {
+    const wide = Array.from({ length: 7 }, (_, index) => scoreColour(index + 1, 1, 7));
+
+    expect(wide.every((colour) => typeof colour === 'string' && colour !== '')).toBe(true);
+    // The ends of the ramp are fixed whatever the scale: worst is red, best is green.
+    expect(wide.at(0)).toBe(scoreColour(SURVEY_RATING_MIN));
+    expect(wide.at(-1)).toBe(scoreColour(SURVEY_RATING_MAX));
   });
 });

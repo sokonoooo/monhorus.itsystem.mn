@@ -1,13 +1,15 @@
 import {
   INSPECTION_REPORT_DEFAULT_ACT_NAME,
   INSPECTION_REPORT_STATUS_LABELS,
-  OVERALL_SAFETY_LABELS,
   PLANNED_WORK_TASK_STATUS_LABELS,
   SETTING_KEYS,
-  SEVERITY_ORDER,
   canTransitionInspectionReport,
   isInspectionReportLocked,
+  isRiskFinding,
+  overallSafetyLabelOf,
   overallSafetyLevel,
+  riskBandsOf,
+  severityOrderOf,
   type InspectionReportAttachmentDto,
   type InspectionReportBlocker,
   type InspectionReportDto,
@@ -18,6 +20,7 @@ import {
   type InspectionReportTaskDto,
   type ReturnInspectionReportInput,
   type ReviewInspectionReportInput,
+  type RiskBand,
   type RiskLevel,
   type UpdateInspectionReportInput,
 } from '@monhorus/shared';
@@ -54,13 +57,6 @@ type Doc<T> = HydratedDocument<T>;
 
 const UNASSIGNED_FLOOR_LABEL = 'Давхар заагаагүй';
 const UNKNOWN_FLOOR_LABEL = 'Тодорхойгүй давхар';
-
-/** Bands worse than Хэвийн. Read from SEVERITY_ORDER so the two can never diverge. */
-const NORMAL_SEVERITY_INDEX = SEVERITY_ORDER.indexOf('NORMAL');
-
-function isFinding(level: RiskLevel | null): level is RiskLevel {
-  return level !== null && SEVERITY_ORDER.indexOf(level) < NORMAL_SEVERITY_INDEX;
-}
 
 // -- Loading -----------------------------------------------------------------
 
@@ -130,6 +126,15 @@ interface ReportContext {
   groups: InspectionReportGroupDto[];
   issues: InspectionReportIssueDto[];
   overallLevel: RiskLevel | null;
+  /**
+   * The ladder this report was read against.
+   *
+   * Carried rather than re-fetched because severity, what counts as a зөрчил and the
+   * wording of the verdict all have to come from ONE ladder: resolving it again further
+   * down would let a settings change land mid-report and print a document whose sections
+   * disagree with each other.
+   */
+  bands: RiskBand[];
   customerName: string | null;
   projectName: string | null;
   buildingName: string | null;
@@ -204,6 +209,10 @@ async function loadContext(work: Doc<IPlannedWork>): Promise<ReportContext> {
     getSettings(),
   ]);
 
+  // One ladder for the whole report. `getSettings()` is already awaited above, so the
+  // administrator's bands cost nothing extra here.
+  const bands = riskBandsOf(settings);
+
   const floorNames = new Map(floors.map((floor) => [String(floor._id), floor.name]));
   const fileMap = new Map(files.map((file) => [String(file._id), file]));
   const employeeNames = new Map(employees.map((employee) => [String(employee._id), employeeName(employee)]));
@@ -247,7 +256,7 @@ async function loadContext(work: Doc<IPlannedWork>): Promise<ReportContext> {
     // Requirement 8: a зөрчил is DERIVED from the band, never entered. The performer's
     // Тайлбар is the condition and their Зөвлөмж is the advice, so no third text field
     // is added to the sub-task.
-    if (isFinding(task.riskLevel)) {
+    if (isRiskFinding(task.riskLevel, bands)) {
       issues.push({
         taskId: String(task._id),
         title: task.title,
@@ -271,9 +280,12 @@ async function loadContext(work: Doc<IPlannedWork>): Promise<ReportContext> {
     }))
     .sort((left, right) => left.floorName.localeCompare(right.floorName, 'mn'));
 
+  // Worst зөрчил first, ranked by the configured ladder rather than by the position of a
+  // storage key — the reserved spares sort above `OUT_OF_SERVICE` in that list.
+  const severityOrder = severityOrderOf(bands);
   issues.sort((left, right) => {
     const bySeverity =
-      SEVERITY_ORDER.indexOf(left.riskLevel) - SEVERITY_ORDER.indexOf(right.riskLevel);
+      severityOrder.indexOf(left.riskLevel) - severityOrder.indexOf(right.riskLevel);
     return bySeverity !== 0 ? bySeverity : left.title.localeCompare(right.title, 'mn');
   });
 
@@ -284,7 +296,8 @@ async function loadContext(work: Doc<IPlannedWork>): Promise<ReportContext> {
     groups,
     issues,
     // Requirement 9: worst wins, never an average, null when nothing was scored.
-    overallLevel: overallSafetyLevel(tasks.map((task) => task.riskLevel)),
+    overallLevel: overallSafetyLevel(tasks.map((task) => task.riskLevel), bands),
+    bands,
     customerName: customer?.name ?? null,
     projectName: project?.name ?? null,
     buildingName: building?.name ?? null,
@@ -300,30 +313,37 @@ async function loadContext(work: Doc<IPlannedWork>): Promise<ReportContext> {
 
 // -- Auto composition (requirement 9) ----------------------------------------
 
-function findingLine(issue: InspectionReportIssueDto): string {
+function findingLine(issue: InspectionReportIssueDto, bands: readonly RiskBand[]): string {
   const where = issue.locationLabel ? `${issue.locationLabel} - ` : '';
   const score = issue.score === null ? '' : ` (${issue.score} оноо)`;
   const condition = (issue.condition ?? '').trim();
   const tail = condition.length > 0 ? ` ${condition}` : '';
-  return `- ${where}${issue.title}: ${OVERALL_SAFETY_LABELS[issue.riskLevel]}${score}.${tail}`;
+  return `- ${where}${issue.title}: ${overallSafetyLabelOf(issue.riskLevel, bands)}${score}.${tail}`;
 }
 
-function composeIssueSummary(issues: readonly InspectionReportIssueDto[]): string {
+function composeIssueSummary(
+  issues: readonly InspectionReportIssueDto[],
+  bands: readonly RiskBand[],
+): string {
   if (issues.length === 0) return 'Үзлэгээр зөрчил илрээгүй.';
-  return [`Нийт ${issues.length} зөрчил илэрлээ.`, ...issues.map(findingLine)].join('\n');
+  return [
+    `Нийт ${issues.length} зөрчил илэрлээ.`,
+    ...issues.map((issue) => findingLine(issue, bands)),
+  ].join('\n');
 }
 
 function composeConclusion(
   taskCount: number,
   overallLevel: RiskLevel | null,
   issues: readonly InspectionReportIssueDto[],
+  bands: readonly RiskBand[],
 ): string {
   if (overallLevel === null) {
     return `Үзлэгт ${taskCount} дэд ажил хамрагдсан. Үнэлгээ бүртгэгдээгүй тул ерөнхий түвшин тодорхойлогдоогүй.`;
   }
   const found =
     issues.length === 0 ? 'Зөрчил илрээгүй.' : `Илэрсэн зөрчил: ${issues.length}.`;
-  return `Үзлэгт ${taskCount} дэд ажил хамрагдсан. Ерөнхий түвшин: ${OVERALL_SAFETY_LABELS[overallLevel]}. ${found}`;
+  return `Үзлэгт ${taskCount} дэд ажил хамрагдсан. Ерөнхий түвшин: ${overallSafetyLabelOf(overallLevel, bands)}. ${found}`;
 }
 
 function composeRecommendation(issues: readonly InspectionReportIssueDto[]): string {
@@ -355,8 +375,9 @@ function composeRecommendation(issues: readonly InspectionReportIssueDto[]): str
 function seedReplacementLines(
   issues: readonly InspectionReportIssueDto[],
   overallLevel: RiskLevel | null,
+  bands: readonly RiskBand[],
 ): string[] {
-  if (overallLevel === null || !isFinding(overallLevel)) return [];
+  if (!isRiskFinding(overallLevel, bands)) return [];
   return issues
     .filter((issue) => issue.riskLevel === overallLevel)
     .map((issue) => (issue.locationLabel ? `${issue.locationLabel} - ${issue.title}` : issue.title));
@@ -372,10 +393,15 @@ interface ComposedNarrative {
 
 function composeNarrative(context: ReportContext): ComposedNarrative {
   return {
-    issueSummary: composeIssueSummary(context.issues),
-    conclusion: composeConclusion(context.tasks.length, context.overallLevel, context.issues),
+    issueSummary: composeIssueSummary(context.issues, context.bands),
+    conclusion: composeConclusion(
+      context.tasks.length,
+      context.overallLevel,
+      context.issues,
+      context.bands,
+    ),
     recommendation: composeRecommendation(context.issues),
-    replacementPanels: seedReplacementLines(context.issues, context.overallLevel),
+    replacementPanels: seedReplacementLines(context.issues, context.overallLevel, context.bands),
     /**
      * Left empty deliberately. Nothing in the sub-task data distinguishes a самбар from a
      * холболт, so the panel findings relabelled as connection findings would put a claim
@@ -451,7 +477,9 @@ export async function toInspectionReportDto(
     issues: context.issues,
 
     overallLevel: context.overallLevel,
-    overallLabel: context.overallLevel ? OVERALL_SAFETY_LABELS[context.overallLevel] : null,
+    overallLabel: context.overallLevel
+      ? overallSafetyLabelOf(context.overallLevel, context.bands)
+      : null,
     issueSummary: report.issueSummary,
     conclusion: report.conclusion,
     recommendation: report.recommendation,

@@ -30,10 +30,21 @@ import {
   FILTER_INPUT,
   FILTER_LABEL,
   FILTER_SELECT,
+  FILTER_SELECT_ERROR,
 } from '../../components/ui/control-styles';
 import { ApiError } from '../../lib/api-client';
 import { employeeService } from '../../services/employee.service';
 import { surveyService } from '../../services/survey.service';
+
+/**
+ * How many employees the «Ажилтан» dropdown asks for.
+ *
+ * The ceiling `employeeListQuerySchema` allows, not a number chosen here — it rejects
+ * anything larger instead of clamping to it, so asking for more is a 400 rather than a
+ * shorter list. Kept as a named constant beside that reason so the next person to want a
+ * longer picker changes the schema rather than this number.
+ */
+const EMPLOYEE_PICKER_LIMIT = 100;
 
 /**
  * An average, or nothing at all.
@@ -53,17 +64,53 @@ function formatDateTime(iso: string | null): string {
   return new Date(iso).toLocaleDateString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
 }
 
-/** The star colours, worst to best, so a distribution reads without consulting a legend. */
-const SCORE_COLOURS: Record<number, string> = {
-  1: CHART_COLOURS.red,
-  2: CHART_COLOURS.orange,
-  3: CHART_COLOURS.amber,
-  4: CHART_COLOURS.blue,
-  5: CHART_COLOURS.green,
-};
+/**
+ * The star ramp, worst to best, so a distribution reads without consulting a legend.
+ *
+ * A RAMP, NOT A LOOKUP. This was `Record<number, string>` with the keys 1 to 5 written out,
+ * sitting immediately above a loop driven by the SHARED `SURVEY_RATING_MIN`/`MAX` — two
+ * statements of the scale's length that were only accidentally equal. Widening the scale in
+ * `packages/shared` is a one-line change that would have handed every new star `undefined`
+ * for a fill: not a wrong colour, no colour, painted as whatever the browser does with an
+ * empty `background-color` on the chart that reports how customers rated the work.
+ *
+ * Written as positions along a ramp instead, the scale is stated once — in shared, where it
+ * belongs — and this file only says which hues the two ends and the middle take. The five
+ * values below are byte for byte the ones the record held, and on the shipped 1-5 scale
+ * every star still resolves to exactly the colour it did before.
+ */
+const SCORE_RAMP: readonly string[] = [
+  CHART_COLOURS.red,
+  CHART_COLOURS.orange,
+  CHART_COLOURS.amber,
+  CHART_COLOURS.blue,
+  CHART_COLOURS.green,
+];
 
-/** Every star from 1 to 5, whether or not anybody gave it. */
-function distributionData(results: SurveyResultsDto): ChartDatum[] {
+/**
+ * The colour for one score on a scale running `min`..`max`.
+ *
+ * The bounds are parameters with the shared constants as their defaults rather than being
+ * read inside: it makes the dependency visible at the call site and it is what lets a test
+ * exercise a widened scale without editing the shared package.
+ */
+export function scoreColour(
+  score: number,
+  min: number = SURVEY_RATING_MIN,
+  max: number = SURVEY_RATING_MAX,
+): string {
+  const last = SCORE_RAMP.length - 1;
+  const span = max - min;
+  // A one-point scale has no worst and best to run between; the healthy end is the only
+  // honest answer, and it is the one a single bar should be drawn in.
+  if (span <= 0) return SCORE_RAMP[last]!;
+  const position = (score - min) / span;
+  const index = Math.min(last, Math.max(0, Math.round(position * last)));
+  return SCORE_RAMP[index]!;
+}
+
+/** Every star on the configured scale, whether or not anybody gave it. */
+export function distributionData(results: SurveyResultsDto): ChartDatum[] {
   const data: ChartDatum[] = [];
   for (let score = SURVEY_RATING_MIN; score <= SURVEY_RATING_MAX; score += 1) {
     const bucket = results.distribution.find((entry) => entry.score === score);
@@ -73,10 +120,46 @@ function distributionData(results: SurveyResultsDto): ChartDatum[] {
       // in the results table.
       label: `${score} — ${SURVEY_RATING_LABELS[score] ?? ''}`.trim(),
       value: bucket?.count ?? 0,
-      colour: SCORE_COLOURS[score] ?? CHART_COLOURS.slate,
+      colour: scoreColour(score),
     });
   }
   return data;
+}
+
+/**
+ * Where an average score stops reading as good and starts reading as a problem.
+ *
+ * THE ONLY GOOD/WARNING/BAD THRESHOLD IN THE PRODUCT, and it was two magic numbers inline
+ * in a `tone={}` prop three hundred lines below — the one place nobody would look for a
+ * business rule. An operator asking "what counts as a bad score here" had no file to be
+ * pointed at, and anybody changing it had to find it by reading JSX.
+ *
+ * THESE ARE ABSOLUTE POINTS ON THE SHARED 1-5 SCALE, not fractions of it. That coupling is
+ * deliberate and it is the limit of what this constant can honestly claim: widen
+ * `SURVEY_RATING_MIN`/`MAX` and these two numbers have to be re-chosen by somebody who
+ * knows what the new scale means, because "four out of five is good" and "four out of ten
+ * is good" are different judgements and no arithmetic gets from one to the other.
+ *
+ * NOT A SETTING — YET. `EVAL_RISK_BANDS` proves this product can put a ladder like this in
+ * Тохиргоо, and this threshold belongs there for the same reason the risk bands do: it is
+ * a judgement about the operator's own business, and today it is the same judgement for
+ * every installation whether they agree with it or not. There is no survey settings key on
+ * the wire, and inventing one here would mean a client reading a document the server does
+ * not publish. Recorded as the follow-up; until then this is the single place it changes.
+ */
+const SCORE_TONE_THRESHOLDS = {
+  /** At or above this, the average reads as healthy. */
+  positive: 4,
+  /** At or above this but below `positive`, it reads as worth watching. */
+  warning: 3,
+} as const;
+
+/** How an average score should be coloured, or `default` when there is no average at all. */
+function scoreTone(average: number | null): 'default' | 'positive' | 'warning' | 'danger' {
+  if (average === null) return 'default';
+  if (average >= SCORE_TONE_THRESHOLDS.positive) return 'positive';
+  if (average >= SCORE_TONE_THRESHOLDS.warning) return 'warning';
+  return 'danger';
 }
 
 /** One question's answers, drawn according to what the question asked for. */
@@ -163,6 +246,8 @@ export function SurveyResultsPage(): ReactElement {
 
   const [results, setResults] = useState<SurveyResultsDto | null>(null);
   const [employees, setEmployees] = useState<EmployeeListItemDto[]>([]);
+  const [employeesTotal, setEmployeesTotal] = useState(0);
+  const [employeesFailed, setEmployeesFailed] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -191,17 +276,42 @@ export function SurveyResultsPage(): ReactElement {
     void load();
   }, [load]);
 
+  /**
+   * The people the «Ажилтан» dropdown offers.
+   *
+   * THE LIMIT IS THE SERVER'S, NOT A ROUND NUMBER. This asked for 200.
+   * `employeeListQuerySchema` caps `limit` at 100 and REJECTS rather than clamping, so the
+   * call 400'd on every installation — and the `.catch` below swallowed it, leaving a
+   * dropdown holding nothing but «Бүх ажилтан». An empty picker does not read as a broken
+   * one; it reads as "there are no employees", and a reader who believes it draws
+   * conclusions from a filter that never worked.
+   *
+   * AND THE FAILURE IS NOW SAID OUT LOUD. Not blanking the figures beside it was the right
+   * call and it is kept — this screen's job is the ratings, and a picker that cannot load
+   * is not a reason to refuse to show them. What was wrong was saying nothing at all: the
+   * control now states it is unavailable rather than presenting itself as a complete and
+   * empty list.
+   *
+   * ONE PAGE IS ENOUGH, AND WHERE IT IS NOT, IT SAYS SO. A hundred active employees covers
+   * the installations this ships to; past that the picker is short of some names and the
+   * note under it says which way it is incomplete, rather than a page-walk firing a
+   * request per hundred on every mount of a read-only screen.
+   */
   useEffect(() => {
     let cancelled = false;
     void employeeService
-      .list({ limit: 200, isActive: true })
+      .list({ limit: EMPLOYEE_PICKER_LIMIT, isActive: true })
       .then((page) => {
         if (cancelled) return;
         setEmployees(page.items as EmployeeListItemDto[]);
+        setEmployeesTotal(page.total);
+        setEmployeesFailed(false);
       })
-      // The picker failing is not a reason to blank the figures beside it; the filter simply
-      // stays empty and everything is shown.
-      .catch(() => undefined);
+      .catch(() => {
+        if (cancelled) return;
+        setEmployees([]);
+        setEmployeesFailed(true);
+      });
     return () => {
       cancelled = true;
     };
@@ -307,8 +417,9 @@ export function SurveyResultsPage(): ReactElement {
           <select
             id="survey-employee"
             value={employeeId}
+            disabled={employeesFailed}
             onChange={(event) => updateParam('employeeId', event.target.value)}
-            className={FILTER_SELECT}
+            className={employeesFailed ? FILTER_SELECT_ERROR : FILTER_SELECT}
           >
             <option value="">Бүх ажилтан</option>
             {employees.map((employee) => (
@@ -317,6 +428,20 @@ export function SurveyResultsPage(): ReactElement {
               </option>
             ))}
           </select>
+          {/*
+            Said out loud, in the two ways this picker can be short of the truth. Silence
+            here is what made an unusable filter read as an empty payroll.
+          */}
+          {employeesFailed && (
+            <p role="alert" className="mt-1 text-xs text-red-600">
+              Ажилтны жагсаалт ачаалагдсангүй. Бүх ажилтнаар харуулж байна.
+            </p>
+          )}
+          {!employeesFailed && employeesTotal > employees.length && (
+            <p className="mt-1 text-xs text-slate-500">
+              Эхний {employees.length} ажилтан. Нийт {employeesTotal}.
+            </p>
+          )}
         </div>
 
         <div>
@@ -396,15 +521,7 @@ export function SurveyResultsPage(): ReactElement {
                 <StatTile
                   label="Дундаж оноо"
                   value={formatAverage(results.averageScore)}
-                  tone={
-                    results.averageScore === null
-                      ? 'default'
-                      : results.averageScore >= 4
-                        ? 'positive'
-                        : results.averageScore >= 3
-                          ? 'warning'
-                          : 'danger'
-                  }
+                  tone={scoreTone(results.averageScore)}
                 />
                 <StatTile label="Үнэлүүлсэн дуудлага" value={results.ratedRequestCount} />
                 <StatTile label="Үнэлүүлсэн ажилтан" value={results.ratedEmployeeCount} />

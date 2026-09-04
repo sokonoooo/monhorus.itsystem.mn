@@ -63,6 +63,58 @@ describe('GET /vocabulary', () => {
   });
 
   /**
+   * `entryStatus` IS WHAT MAKES A STAGE A CONTROL.
+   *
+   * service-request-stage.ts states the rule this pins: "moving a request to a stage means
+   * moving it to that stage's `entryStatus`". It was configured, validated and stored, and
+   * then withheld here — so a client was handed a coloured label and had to re-derive the
+   * status mapping itself in order to offer a move. `onBoard` travels with it: it answers
+   * whether the stage gets a column on the dispatch board, which every board renderer asks.
+   */
+  it('publishes entryStatus and onBoard, not only the label and the colours', async () => {
+    const response = await request(app)
+      .get(`${API}/vocabulary`)
+      .set('Authorization', `Bearer ${adminToken}`);
+
+    expect(response.status).toBe(200);
+    const stages = response.body.data.requestStages as {
+      key: string;
+      statuses: string[];
+      entryStatus: string;
+      onBoard: boolean;
+    }[];
+
+    for (const stage of stages) {
+      const configured = DEFAULT_SERVICE_REQUEST_STAGES.find((entry) => entry.key === stage.key);
+      expect(configured).toBeDefined();
+      expect(stage.entryStatus).toBe(configured!.entryStatus);
+      expect(stage.onBoard).toBe(configured!.onBoard);
+      // The invariant the setting's own validator enforces, now visible to a client that
+      // wants to check it: an entry status always belongs to the stage that names it.
+      expect(stage.statuses).toContain(stage.entryStatus);
+    }
+
+    // CANCELLED is the stage that proves `onBoard` carries information rather than being
+    // constant: it stays out of the board while remaining findable in a filter.
+    expect(stages.find((stage) => stage.key === 'CANCELLED')?.onBoard).toBe(false);
+  });
+
+  /**
+   * The read stays open to a caller with no permissions at all, and the two new fields are
+   * part of that answer — a technician's phone is precisely the client that needs to know
+   * which status a stage moves work to.
+   */
+  it('gives the control fields to a caller holding nothing', async () => {
+    const response = await request(app)
+      .get(`${API}/vocabulary`)
+      .set('Authorization', `Bearer ${plainToken}`);
+
+    expect(response.status).toBe(200);
+    const stages = response.body.data.requestStages as { entryStatus: string }[];
+    expect(stages.every((stage) => typeof stage.entryStatus === 'string')).toBe(true);
+  });
+
+  /**
    * The whole reason this endpoint exists. A technician holds no `settings.view` — reading
    * the finance keys is none of their business — but their phone still has to print the
    * name the administrator chose.

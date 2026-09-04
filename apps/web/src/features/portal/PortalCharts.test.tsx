@@ -3,6 +3,7 @@ import { render, screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
 import { BuildingSilhouette, barHeight, worstRiskLevel } from './BuildingSilhouette';
+import { type RiskBandView } from '../../components/ui/risk-palette';
 import { BarChart, riskHeadline, riskSlices, unassessedTotal, workSlices } from './PortalCharts';
 
 /**
@@ -70,22 +71,80 @@ describe('risk aggregation across buildings', () => {
   });
 });
 
+/**
+ * A ladder an administrator actually re-cut: five bands renamed, plus a sixth taken out of
+ * the reserved spares. `BAND_6` is the case the old headline could not see at all — it
+ * tested four compiled keys, so a customer whose worst equipment sat in a band the operator
+ * had added was told everything was normal.
+ */
+const RECUT_BANDS: readonly RiskBandView[] = [
+  { level: 'NORMAL', label: 'Асуудалгүй', colour: 'green', min: 86, max: 100 },
+  { level: 'ATTENTION', label: 'Ажиглах', colour: 'yellow', min: 71, max: 85 },
+  { level: 'BAND_6', label: 'Хяналтад авах', colour: 'blue', min: 56, max: 70 },
+  { level: 'SCHEDULE_REPAIR', label: 'Засварын хуваарьт', colour: 'orange', min: 41, max: 55 },
+  { level: 'CRITICAL', label: 'Аюултай', colour: 'red', min: 21, max: 40 },
+  { level: 'OUT_OF_SERVICE', label: 'Зогсоосон', colour: 'black', min: 0, max: 20 },
+];
+
 describe('the headline sentence', () => {
   /** Worst first: a customer needs the alarming number, not the biggest one. */
   it('leads with the worst band present, not the largest', () => {
     const slices = riskSlices([building({ NORMAL: 900, CRITICAL: 1 })]);
-    expect(riskHeadline(slices)).toMatch(/1 тоноглол ноцтой эрсдэлтэй/);
+    expect(riskHeadline(slices)).toMatch(/1 тоноглол «Ноцтой эрсдэлтэй»/);
   });
 
   it('reports out-of-service ahead of critical', () => {
     const slices = riskSlices([building({ CRITICAL: 3, OUT_OF_SERVICE: 1 })]);
-    expect(riskHeadline(slices)).toMatch(/1 тоноглол ашиглах боломжгүй/);
+    expect(riskHeadline(slices)).toMatch(/1 тоноглол «Ашиглах боломжгүй»/);
   });
 
   it('says everything is normal only when something was actually assessed', () => {
-    expect(riskHeadline(riskSlices([building({ NORMAL: 5 })]), 0)).toMatch(/бүх тоноглол хэвийн/);
+    expect(riskHeadline(riskSlices([building({ NORMAL: 5 })]), 0)).toMatch(/бүх тоноглол/);
     expect(riskHeadline(riskSlices([building({}, 5)]), 5)).toMatch(/үнэлгээ хийгдээгүй/);
     expect(riskHeadline(riskSlices([]), 0)).toMatch(/мэдээлэл алга/);
+  });
+
+  /**
+   * THE SENTENCE FOLLOWS THE ADMINISTRATOR'S OWN WORDS.
+   *
+   * This is the first line a customer reads on the portal. It used to carry four sentences
+   * with four band names written into them, so an installation that renamed «Ноцтой
+   * эрсдэлтэй» kept being shown the shipped wording — the console said one thing and the
+   * customer's own screen said another about the same equipment.
+   */
+  it('names the band the administrator named, not the one that shipped', () => {
+    const slices = riskSlices([building({ NORMAL: 40, CRITICAL: 2 })], RECUT_BANDS);
+
+    const headline = riskHeadline(slices, 0, RECUT_BANDS);
+    expect(headline).toMatch(/2 тоноглол «Аюултай»/);
+    expect(headline).not.toMatch(/ноцтой/i);
+  });
+
+  /**
+   * A CONFIGURED SPARE BAND IS NOT INVISIBLE.
+   *
+   * `BAND_6` is one of the reserved keys the ladder can grow into. The old headline tested
+   * only OUT_OF_SERVICE, CRITICAL, SCHEDULE_REPAIR and ATTENTION, so equipment sitting in a
+   * band an operator had added fell through every branch and the customer was told
+   * «бүх тоноглол хэвийн байна» — an affirmative all-clear over equipment that needed
+   * attention.
+   */
+  it('leads with a band taken out of the reserved spares', () => {
+    const slices = riskSlices([building({ NORMAL: 30, BAND_6: 4 })], RECUT_BANDS);
+
+    const headline = riskHeadline(slices, 0, RECUT_BANDS);
+    expect(headline).toMatch(/4 тоноглол «Хяналтад авах»/);
+    expect(headline).not.toMatch(/хэвийн/);
+  });
+
+  /** Severity is the band's own lower bound, not its position in `RISK_LEVELS`. */
+  it('ranks a re-cut ladder by its own cut points', () => {
+    const slices = riskSlices(
+      [building({ NORMAL: 5, BAND_6: 9, OUT_OF_SERVICE: 1 })],
+      RECUT_BANDS,
+    );
+
+    expect(riskHeadline(slices, 0, RECUT_BANDS)).toMatch(/1 тоноглол «Зогсоосон»/);
   });
 });
 

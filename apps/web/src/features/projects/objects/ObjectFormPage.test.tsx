@@ -280,6 +280,48 @@ describe('ObjectFormPage', () => {
     });
   });
 
+  /**
+   * A TENANT'S FLOOR MUST BE OFFERED, WHEREVER IT SORTS SYSTEM-WIDE.
+   *
+   * `floorListQuerySchema` has no `customerId` parameter, so this page fetches active
+   * floors and filters by tenant here. One capped page of a hundred therefore did not
+   * merely shorten the picker: past a hundred active floors across every customer, this
+   * tenant's floor fell outside the window entirely and the select read "Идэвхтэй давхар
+   * алга" — a customer with floors, told it had none. The page walk is what makes the
+   * client-side filter honest; the real fix is the missing server parameter.
+   */
+  it('offers a floor that sorts past the first page of active floors', async () => {
+    const user = userEvent.setup();
+    // A hundred floors belonging to somebody else, then this tenant's on the second page.
+    const otherTenant = Array.from({ length: 100 }, (_, index) =>
+      makeFloor({
+        id: `507f1f77bcf86cd7994392${String(index).padStart(2, '0')}`,
+        customerId: '507f1f77bcf86cd799439099',
+        name: `Өөр харилцагчийн ${index + 1}`,
+      }),
+    );
+    vi.spyOn(projectService, 'listFloors').mockImplementation(async (query) =>
+      (query as { page?: number }).page === 2
+        ? { items: [makeFloor()], page: 2, limit: 100, total: 101, totalPages: 2 }
+        : { items: otherTenant, page: 1, limit: 100, total: 101, totalPages: 2 },
+    );
+
+    renderFloorlessCreate();
+
+    await user.selectOptions(
+      await screen.findByLabelText(/^Харилцагч/),
+      '507f1f77bcf86cd799439011',
+    );
+
+    const floorField = await screen.findByLabelText(/^Давхар/);
+    await waitFor(() => expect(floorField).toBeEnabled());
+    expect(
+      within(floorField).getByRole('option', {
+        name: 'Урьдчилан сэргийлэх үйлчилгээ · Төв барилга · 2 давхар',
+      }),
+    ).toBeInTheDocument();
+  });
+
   /** The floor is a choice here, not a read-only echo of the route. */
   it('offers the floor as an optional selection when there is none in the route', async () => {
     const create = vi.spyOn(objectMasterService, 'create').mockResolvedValue(makeObjectDetail());

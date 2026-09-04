@@ -658,8 +658,39 @@ export const SYSTEM_ROLE_DEFAULT_PERMISSIONS: Record<SystemRoleKey, readonly Per
      * for non-superuser system roles, so an existing TECHNICIAN document keeps the key
      * until `npm run migrate:technician-permissions` withdraws it.
      */
-    // The job card names the organisation and the place, so the hierarchy is readable.
-    P.CUSTOMER_VIEW, P.OBJECT_VIEW,
+    /*
+     * `customer.view` IS NOT GRANTED, AND MUST NOT BE ADDED BACK.
+     *
+     * This is the second instance of the pattern above, and it is worth reading the two
+     * together: a key granted so the mobile app could print one name, which in fact opens a
+     * whole directory.
+     *
+     * It was granted on the reasoning stated by the line it replaces — "the job card names
+     * the organisation and the place, so the hierarchy is readable". What it actually buys
+     * a holder is `GET /objects/customers`: every organisation on the system with its name,
+     * code, регистрийн дугаар, tax number, phone, email and address. It is also the gate on
+     * `GET /service-agreements` (`service-agreement.routes.ts:100`), so it hands every
+     * technician in the field the commercial terms of every contract, `monthlyFee` included.
+     * A field technician has no duty that requires either, and the module's own principle —
+     * that a permission is a duty and not a convenience — says so.
+     *
+     * The premise is gone, exactly as it was for `employee.view`. The customer a job belongs
+     * to reaches the job card as an embedded `NamedRef` on the planned-work and
+     * service-request payloads, gated by `planned_work.view` and `service_request.view` —
+     * never by a directory read. And it was never load-bearing in the first place: both
+     * Flutter apps declare `customerView` as a Dart constant and reference it zero times,
+     * and neither calls `/objects/customers` or `/service-agreements`.
+     *
+     * Anyone who genuinely needs the directory — a team lead quoting a contract, a
+     * dispatcher — is given a second role from the access screen rather than having it
+     * widened for every technician in the company.
+     *
+     * Removing it here only fixes databases seeded FROM NOW ON. `seedRbac` is prune-only
+     * for non-superuser system roles, so an existing TECHNICIAN document keeps the key
+     * until `npm run migrate:system-role-permissions -- --apply --revoke-extra` withdraws it.
+     */
+    // The place a job sits in the hierarchy stays readable.
+    P.OBJECT_VIEW,
     // Reads the equipment being worked on, and records the on-site assessment that
     // section 4.2 makes part of carrying out the work.
     P.OBJECT_MASTER_VIEW, P.OBJECT_MASTER_ASSESS,

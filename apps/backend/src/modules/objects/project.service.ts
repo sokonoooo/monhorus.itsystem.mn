@@ -1,5 +1,6 @@
 import type {
   BuildingDto,
+  RiskBand,
   RiskLevel,
   RiskSummaryDto,
   BuildingListQueryInput,
@@ -34,6 +35,7 @@ import { ObjectRecord } from '../object-master/object-master.models';
 import { rollupOf } from '../report-record/rollup.service';
 import { PlannedWork } from '../planned-work/planned-work.models';
 import { ServiceRequest } from '../service-request/service-request.model';
+import { getRiskBands } from '../settings/settings.service';
 import { Customer, FloorPlan, ObjectNode, type IObjectNode } from './object.models';
 
 /**
@@ -258,7 +260,32 @@ interface FloorRiskRow {
   lastAssessedAt: Date | null;
 }
 
-function foldRiskRows(rows: readonly FloorRiskRow[]): RiskSummaryDto {
+/**
+ * The bands whose presence raises the danger marker.
+ *
+ * Derived from what a band DOES, never from what it is called. `hasCritical` used to read
+ * `counts.get('CRITICAL') || counts.get('OUT_OF_SERVICE')` — the exact name-matching
+ * `risk-band.ts` forbids in prose and `object-master.service.ts` had already stopped
+ * doing. Rename either band in Тохиргоо and the marker went silent across web, both apps,
+ * and the sorting and filtering built on it, with nothing to show that it had.
+ *
+ * A band that demands a written conclusion is one the operator treats as serious, and the
+ * band that takes equipment out of service obviously is; `report.service.ts` reads
+ * "critical" the same way. On the shipped ladder that is exactly `{CRITICAL,
+ * OUT_OF_SERVICE}`, so nothing changes for an installation that has configured nothing.
+ */
+function criticalLevelsOf(bands: readonly RiskBand[]): ReadonlySet<RiskLevel> {
+  return new Set(
+    bands
+      .filter((band) => band.requiresConclusion || band.decommissions)
+      .map((band) => band.level),
+  );
+}
+
+function foldRiskRows(
+  rows: readonly FloorRiskRow[],
+  criticalLevels: ReadonlySet<RiskLevel>,
+): RiskSummaryDto {
   const counts = new Map<RiskLevel, number>();
   let unassessedCount = 0;
   let lastAssessedAt: Date | null = null;
@@ -278,7 +305,9 @@ function foldRiskRows(rows: readonly FloorRiskRow[]): RiskSummaryDto {
   return {
     counts: [...counts.entries()].map(([level, count]) => ({ level, count })),
     unassessedCount,
-    hasCritical: (counts.get('CRITICAL') ?? 0) > 0 || (counts.get('OUT_OF_SERVICE') ?? 0) > 0,
+    hasCritical: [...counts.entries()].some(
+      ([level, count]) => count > 0 && criticalLevels.has(level),
+    ),
     lastAssessedAt: lastAssessedAt ? lastAssessedAt.toISOString() : null,
   };
 }
@@ -349,8 +378,11 @@ export async function riskSummariesFor(
     }
   }
 
+  // Resolved once for the whole page rather than per node: the settings map is cached, but
+  // the ladder still has to be folded out of it, and this runs for every row on the list.
+  const criticalLevels = criticalLevelsOf(await getRiskBands());
   for (const [nodeId, nodeRows] of byNode) {
-    summaries.set(nodeId, foldRiskRows(nodeRows));
+    summaries.set(nodeId, foldRiskRows(nodeRows, criticalLevels));
   }
 
   return summaries;

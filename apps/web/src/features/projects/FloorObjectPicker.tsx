@@ -34,6 +34,9 @@ interface FloorObjectPickerProps {
  * yet must be registered in the object master module first, which is what the empty state
  * points at.
  */
+/** The largest page `objectListQuerySchema` will accept. Asking for more is a 400. */
+const OBJECT_PAGE_LIMIT = 100;
+
 export function FloorObjectPicker({
   floorId,
   customerId,
@@ -44,6 +47,8 @@ export function FloorObjectPicker({
   const { notify } = useToast();
 
   const [candidates, setCandidates] = useState<ObjectListItemDto[]>([]);
+  /** What the server says matches, so a capped page can be stated as capped. */
+  const [total, setTotal] = useState(0);
   const [selected, setSelected] = useState<string[]>([]);
   const [category, setCategory] = useState<ObjectCategory | ''>('');
   const [search, setSearch] = useState('');
@@ -59,11 +64,15 @@ export function FloorObjectPicker({
       const page = await objectMasterService.list({
         customerId,
         unlinkedOnly: true,
-        limit: 100,
+        // 100 is the cap `objectListQuerySchema` enforces; more is a 400, not a bigger page.
+        limit: OBJECT_PAGE_LIMIT,
         ...(category ? { category } : {}),
         ...(search.trim() ? { search: search.trim() } : {}),
       });
       setCandidates(page.items);
+      // A customer with more unlinked objects than one page holds must not be shown a list
+      // that looks complete: the rows below are the first hundred, and the notice says so.
+      setTotal(page.total);
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : 'Объект ачаалж чадсангүй.');
     } finally {
@@ -163,6 +172,12 @@ export function FloorObjectPicker({
           />
         ) : (
           <ul className="space-y-1">
+            {total > candidates.length && (
+              <li className="text-xs text-slate-500">
+                Нийт {total} объектоос эхний {candidates.length} нь жагсав. Хайлт, ангиллаар
+                нарийсгана уу.
+              </li>
+            )}
             {candidates.map((candidate) => (
               <li key={candidate.id}>
                 <label className="flex cursor-pointer items-center gap-3 rounded-lg p-2 ring-1 ring-inset ring-slate-200 hover:bg-slate-50">

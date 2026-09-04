@@ -163,6 +163,36 @@ interface SearchResult {
  */
 const SEARCH_RESULT_LIMIT = 8;
 
+/** The largest page `objectTypeListQuerySchema` will accept. Asking for more is a 400. */
+const TYPE_PAGE_LIMIT = 100;
+
+/** A ceiling on the walk, so a miscounting server cannot spin it forever. */
+const MAX_TYPE_PAGES = 20;
+
+/**
+ * The whole active catalogue, because `showOnPlan` is filtered here rather than by the API.
+ *
+ * `objectTypeListQuerySchema` has no `showOnPlan` parameter, so the placeable types are
+ * picked out of the response. One capped page therefore did not merely shorten the picker:
+ * a placeable type sorted past the hundredth active one disappeared from it entirely, with
+ * nothing on screen to say a type was missing rather than absent from the catalogue.
+ *
+ * A `showOnPlan` parameter on the endpoint would make this a single narrow request.
+ */
+async function fetchActiveObjectTypes(): Promise<ObjectTypeDto[]> {
+  const items: ObjectTypeDto[] = [];
+  let page = 1;
+
+  for (;;) {
+    const result = await objectTypeService.list({ isActive: true, limit: TYPE_PAGE_LIMIT, page });
+    items.push(...result.items);
+    if (result.items.length === 0 || page >= result.totalPages || page >= MAX_TYPE_PAGES) {
+      return items;
+    }
+    page += 1;
+  }
+}
+
 /**
  * Floor plan image with object placement (requirements 11.1 and 11.2, rule 17.3).
  *
@@ -295,11 +325,10 @@ export function FloorPlanPanel({
   useEffect(() => {
     if (!placementAvailable || !canPlace) return undefined;
     let cancelled = false;
-    objectTypeService
-      .list({ isActive: true, limit: 100 })
-      .then((page) => {
+    fetchActiveObjectTypes()
+      .then((types) => {
         if (cancelled) return;
-        setPlaceableTypes(page.items.filter((type) => type.showOnPlan));
+        setPlaceableTypes(types.filter((type) => type.showOnPlan));
         setTypesError(null);
       })
       .catch(() => {

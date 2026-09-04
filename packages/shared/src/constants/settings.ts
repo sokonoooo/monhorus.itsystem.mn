@@ -314,11 +314,62 @@ export function slaConfigOf(settings: SettingsMap): SlaConfig {
 }
 
 /**
+ * Faults that made a STORED override unusable, so its rejection can be reported.
+ *
+ * `riskBandsOf` and `requestStagesOf` substitute the shipped defaults when the stored
+ * value does not validate. That substitution is right — a ladder with a hole in it would
+ * mis-band scores, and `decommissions` travels with the band — but it used to happen with
+ * no log, no warning and no flag: Тохиргоо went on displaying the administrator's numbers
+ * while every score was read against the shipped cut points, and equipment that should
+ * have been taken out of service was not.
+ *
+ * This package cannot log — the same module is bundled into the browser and loaded by the
+ * server, and neither logger belongs here — so it reports the rejection as data and leaves
+ * the channel to its host. The server logs it; see `settings.service.ts`.
+ *
+ * An installation that has never edited either key holds the compiled defaults, which
+ * validate, so this is empty and nothing is logged.
+ */
+export interface RejectedSettingOverride {
+  key: SettingKey;
+  issues: readonly string[];
+}
+
+export function rejectedSettingOverrides(settings: SettingsMap): RejectedSettingOverride[] {
+  const rejected: RejectedSettingOverride[] = [];
+
+  const bands = settings[SETTING_KEYS.EVAL_RISK_BANDS];
+  if (!Array.isArray(bands)) {
+    rejected.push({
+      key: SETTING_KEYS.EVAL_RISK_BANDS,
+      issues: ['Эрсдэлийн түвшний утга жагсаалт биш байна.'],
+    });
+  } else {
+    const issues = validateRiskBands(bands as RiskBandConfig[]);
+    if (issues.length > 0) rejected.push({ key: SETTING_KEYS.EVAL_RISK_BANDS, issues });
+  }
+
+  const stages = settings[SETTING_KEYS.REQUEST_STAGES];
+  if (!Array.isArray(stages)) {
+    rejected.push({
+      key: SETTING_KEYS.REQUEST_STAGES,
+      issues: ['Үе шатны утга жагсаалт биш байна.'],
+    });
+  } else {
+    const issues = validateStages(stages as readonly ServiceRequestStage[]);
+    if (issues.length > 0) rejected.push({ key: SETTING_KEYS.REQUEST_STAGES, issues });
+  }
+
+  return rejected;
+}
+
+/**
  * The configured risk ladder, resolved to the shape every consumer already reads.
  *
  * A stored ladder that does not tile 0..100 is discarded rather than served: a score that
  * matched no band would be stored as whatever the fallback happened to be, and a silently
- * mis-banded assessment is worse than an ignored override.
+ * mis-banded assessment is worse than an ignored override. The discard is no longer
+ * silent — see `rejectedSettingOverrides`.
  */
 export function riskBandsOf(settings: SettingsMap): RiskBand[] {
   const stored = settings[SETTING_KEYS.EVAL_RISK_BANDS];
@@ -359,9 +410,26 @@ export function requestStagesOf(settings: SettingsMap): readonly ServiceRequestS
   return validateStages(stages).length === 0 ? stages : DEFAULT_SERVICE_REQUEST_STAGES;
 }
 
+/**
+ * The band a score falls in.
+ *
+ * The fallback is the WORST CONFIGURED band, not the literal `'OUT_OF_SERVICE'`. Seven
+ * backend services persist this answer, and an installation that renamed or dropped that
+ * band would have had assessments written under a key its own ladder no longer contains —
+ * displayed as «Түвшин N», with `decommissions` answering false. That is precisely the
+ * "behaviour travels with the name" mistake `risk-band.ts` exists to end, and it is how
+ * `risk-palette.ts` already resolves the same question on the web.
+ *
+ * Erring towards the worst band is deliberate: a score outside every band demands more,
+ * never less. The shipped ladder tiles 0..100, so on an unconfigured installation this
+ * fires only for a score outside that range and answers `'OUT_OF_SERVICE'` as before.
+ */
 export function riskLevelFor(score: number, bands: readonly RiskBand[]): RiskLevel {
   const band = bands.find((entry) => score >= entry.min && score <= entry.max);
-  return band?.level ?? 'OUT_OF_SERVICE';
+  if (band) return band.level;
+
+  const worst = [...bands].sort((left, right) => left.min - right.min)[0];
+  return worst?.level ?? 'OUT_OF_SERVICE';
 }
 
 // -- Validation --------------------------------------------------------------

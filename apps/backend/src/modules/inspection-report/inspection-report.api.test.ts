@@ -1,4 +1,4 @@
-import { PERMISSIONS, SETTING_KEYS } from '@monhorus/shared';
+import { DEFAULT_RISK_BANDS, PERMISSIONS, SETTING_KEYS, type RiskBandConfig } from '@monhorus/shared';
 import type { Express } from 'express';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -18,6 +18,8 @@ import { AuditLog } from '../audit/audit-log.model';
 import { Employee } from '../employee/employee.model';
 import { ObjectNode } from '../objects/object.models';
 import { PlannedWorkTask } from '../planned-work/planned-work.models';
+import { Setting } from '../settings/setting.model';
+import { invalidateSettingsCache } from '../settings/settings.service';
 import { InspectionReport } from './inspection-report.model';
 
 /**
@@ -233,6 +235,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await resetDomainCollections();
+  // The resolved settings map is cached in process for 15 s. `resetDomainCollections`
+  // empties the collection behind it, so without this a case that configures a ladder
+  // leaks it into whichever case runs next.
+  invalidateSettingsCache();
   org = await createOrgFixture();
   objects = await createObjectFixture();
 
@@ -910,5 +916,148 @@ describe('audit trail', () => {
     const reopened = await AuditLog.findOne({ action: 'INSPECTION_REPORT_REOPENED' });
     expect((reopened?.oldValue as { version: number }).version).toBe(1);
     expect((reopened?.newValue as { version: number }).version).toBe(2);
+  });
+});
+
+/**
+ * A ladder with a sixth band, which the product advertises as a settings change.
+ *
+ * `RISK_LEVELS` reserves `BAND_6/7/8` so the band count can change without a migration,
+ * and the verdict used to be ranked by position in that list — reversed, which put the
+ * unnamed spares ABOVE `OUT_OF_SERVICE`. The first administrator to name a MILD sixth band
+ * therefore had every inspection containing one reported to the customer at that band, and
+ * every healthy sub-task in it filed as a зөрчил, on a printed safety document.
+ */
+describe('a configured sixth band', () => {
+  /** Written straight into the collection: the settings API is exercised in its own suite. */
+  async function storeBands(bands: readonly RiskBandConfig[]): Promise<void> {
+    await Setting.updateOne(
+      { key: SETTING_KEYS.EVAL_RISK_BANDS },
+      { $set: { value: bands, updatedBy: null, updatedByName: 'test' } },
+      { upsert: true },
+    );
+    invalidateSettingsCache();
+  }
+
+  /** Хэвийн keeps 81..90; 91..100 becomes a milder band above it. */
+  const MILD_SIXTH: readonly RiskBandConfig[] = [
+    ...DEFAULT_RISK_BANDS,
+    {
+      key: 'BAND_6',
+      label: 'Шинэ, гэмтэлгүй',
+      colour: 'blue',
+      minScore: 91,
+      requiresConclusion: false,
+      requiresRecommendation: false,
+      decommissions: false,
+      notifies: false,
+    },
+  ];
+
+  it('is not reported as the verdict, and its sub-tasks are not filed as зөрчил', async () => {
+    await storeBands(MILD_SIXTH);
+
+    const workId = await createWork();
+    const excellent = await addTask(workId, { title: 'Шинэ самбар' });
+    const watchful = await addTask(workId, { title: 'Анхаарах самбар', floorId: secondFloorId });
+    await planAndApprove(workId);
+    expect((await transition(workId, 'START')).status).toBe(200);
+    await completeTask(workId, excellent, { score: 97 });
+    await completeTask(workId, watchful, { score: 70 });
+    expect((await generate(workId)).status).toBe(201);
+
+    const report = (await fetchReport(workId)).body.data;
+
+    // The sub-task really was banded into the sixth band.
+    const rows = (report.groups as { tasks: { title: string; riskLevel: string }[] }[]).flatMap(
+      (group) => group.tasks,
+    );
+    expect(rows.find((task) => task.title === 'Шинэ самбар')?.riskLevel).toBe('BAND_6');
+
+    // The verdict is the worst band actually present, which is the ATTENTION sub-task.
+    expect(report.overallLevel).toBe('ATTENTION');
+    expect(report.overallLabel).toBe('Анхаарах шаардлагатай');
+
+    // And only that one is a зөрчил. The healthy panel is not a finding.
+    expect((report.issues as { title: string }[]).map((issue) => issue.title)).toEqual([
+      'Анхаарах самбар',
+    ]);
+    expect(report.conclusion).toContain('Илэрсэн зөрчил: 1.');
+  });
+
+  it('prints the administrator name for a band they named, not «Түвшин 6»', async () => {
+    await storeBands(MILD_SIXTH);
+
+    const workId = await createWork();
+    const taskId = await addTask(workId, { title: 'Шинэ самбар' });
+    await planAndApprove(workId);
+    expect((await transition(workId, 'START')).status).toBe(200);
+    await completeTask(workId, taskId, { score: 97 });
+    expect((await generate(workId)).status).toBe(201);
+
+    const report = (await fetchReport(workId)).body.data;
+
+    expect(report.overallLevel).toBe('BAND_6');
+    expect(report.overallLabel).toBe('Шинэ, гэмтэлгүй');
+    expect(report.issues).toEqual([]);
+    // Nothing was found, so nothing is seeded onto the replacement list.
+    expect(report.replacementPanels).toEqual([]);
+  });
+
+  /**
+   * The verdict WORDING and the ladder's band name are two vocabularies. The
+   * administrator's wins where they actually changed it; a band still carrying its shipped
+   * label keeps the report's own phrasing, which is what leaves an unconfigured install
+   * unchanged.
+   */
+  it('uses the administrator wording for a band they renamed', async () => {
+    await storeBands(
+      DEFAULT_RISK_BANDS.map((band) =>
+        band.key === 'CRITICAL' ? { ...band, label: 'Аюултай' } : band,
+      ),
+    );
+
+    const workId = await createWork();
+    const taskId = await addTask(workId, { title: 'Гэмтэлтэй самбар' });
+    await planAndApprove(workId);
+    expect((await transition(workId, 'START')).status).toBe(200);
+    await completeTask(workId, taskId, { score: 30 });
+    expect((await generate(workId)).status).toBe(201);
+
+    const report = (await fetchReport(workId)).body.data;
+
+    expect(report.overallLevel).toBe('CRITICAL');
+    expect(report.overallLabel).toBe('Аюултай');
+    expect(report.conclusion).toContain('Ерөнхий түвшин: Аюултай.');
+  });
+
+  /** The acceptance test for the whole change: configure nothing, change nothing. */
+  it('leaves the shipped wording alone when the ladder is untouched', async () => {
+    const workId = await createWork();
+    const taskId = await addTask(workId, { title: 'Гэмтэлтэй самбар' });
+    await planAndApprove(workId);
+    expect((await transition(workId, 'START')).status).toBe(200);
+    await completeTask(workId, taskId, { score: 30 });
+    expect((await generate(workId)).status).toBe(201);
+
+    const report = (await fetchReport(workId)).body.data;
+
+    expect(report.overallLevel).toBe('CRITICAL');
+    // «Ноцтой эрсдэлтэй», the REPORT's verdict wording — not the band name «Ноцтой
+    // эрсдэлтэй» happening to match, and not «Ойрын хугацаанд засварлах» for a repair
+    // verdict, which is where the two vocabularies visibly differ.
+    expect(report.overallLabel).toBe('Ноцтой эрсдэлтэй');
+    expect(report.conclusion).toContain('Ерөнхий түвшин: Ноцтой эрсдэлтэй.');
+
+    const repair = await createWork();
+    const repairTask = await addTask(repair, { title: 'Засвартай самбар' });
+    await planAndApprove(repair);
+    expect((await transition(repair, 'START')).status).toBe(200);
+    await completeTask(repair, repairTask, { score: 50 });
+    expect((await generate(repair)).status).toBe(201);
+
+    const repairReport = (await fetchReport(repair)).body.data;
+    expect(repairReport.overallLevel).toBe('SCHEDULE_REPAIR');
+    expect(repairReport.overallLabel).toBe('Засвар шаардлагатай');
   });
 });

@@ -105,4 +105,62 @@ describe('help coverage', () => {
 
     expect(offenders).toEqual([]);
   });
+  /**
+   * THE ESCALATION RULE, AS THE SERVER ACTUALLY RUNS IT.
+   *
+   * The help said the unclaimed chase fired once, after «хоёр цаг», to `dispatch.assign`.
+   * All three were wrong: `unclaimed.service.ts` alerts after `UNCLAIMED_ALERT_AFTER_MS`
+   * (30 minutes), repeats on that interval up to `UNCLAIMED_ALERT_MAX_SENDS` (3), and sends
+   * reminders 1-3 to `service_request.claim` — the people who can simply take the call —
+   * with only the final one also reaching `dispatch.assign`. A reader following the old
+   * text would have waited an hour and a half for an alert that had already been and gone,
+   * and would have been watching the wrong inbox for it.
+   *
+   * Asserted here rather than in a page test because it is stated on four screens and the
+   * failure mode is four copies drifting apart. The numbers are literals on both sides: the
+   * constants are not exported to the client, which is the thing that let this drift.
+   */
+  it('states the unclaimed escalation as 30 minutes, three times', () => {
+    const stale = Object.entries(HELP_CONTENT)
+      .filter(([, help]) => /хоёр цаг/i.test(JSON.stringify(help)))
+      .map(([route]) => route);
+    expect(stale).toEqual([]);
+
+    // Every screen that describes the chase at all must give the interval and the cap.
+    for (const route of [
+      '/service-requests/open',
+      '/service-requests/dispatch',
+      '/service-requests/:requestId',
+      '/notifications',
+    ]) {
+      const help = JSON.stringify(HELP_CONTENT[route]);
+      expect(help, `${route} must state the 30 minute interval`).toMatch(/30 минут/);
+    }
+
+    for (const route of [
+      '/service-requests/open',
+      '/service-requests/dispatch',
+      '/service-requests/:requestId',
+    ]) {
+      const help = JSON.stringify(HELP_CONTENT[route]);
+      expect(help, `${route} must state the three reminder cap`).toMatch(/3 (удаа|сануулга)/);
+    }
+  });
+
+  /**
+   * The audience, which the old text had backwards.
+   *
+   * Reminders go to the holders of the claim permission; the dispatchers are escalated to
+   * once, at the cap. Help that names only `dispatch.assign` tells a technician the alert
+   * is somebody else's to answer.
+   */
+  it('names the claim permission as the audience of an unclaimed reminder', () => {
+    const board = JSON.stringify(HELP_CONTENT['/service-requests/dispatch']);
+    expect(board).toMatch(/service_request\.claim/);
+    // The dispatchers are still named, but as the final escalation rather than the first.
+    expect(board).toMatch(/сүүлчийн сануулга[^"]*dispatch\.assign/);
+
+    const notifications = JSON.stringify(HELP_CONTENT['/notifications']);
+    expect(notifications).toMatch(/service_request\.claim/);
+  });
 });

@@ -29,16 +29,27 @@ import {
 } from '../../components/ui/control-styles';
 import { useAuth } from '../../contexts/auth-context';
 import { ApiError } from '../../lib/api-client';
-import { monthStartDateInput, todayDateInput } from '../../lib/calendar-date';
+import {
+  businessDayEnd,
+  businessDayStart,
+  currentMonthStartDateKey,
+  todayDateKey,
+} from '../../lib/business-day';
 import { reportService } from '../../services/report.service';
 
-/** First day of the current month, as a `yyyy-mm-dd` value for a date input. */
+/**
+ * First day of the current month, as a `yyyy-mm-dd` value for a date input.
+ *
+ * In Ulaanbaatar, not in the reader's browser. A report is a statement about the business
+ * day, and between 00:00 and 08:00 local a viewer west of UTC+8 would otherwise open the
+ * page defaulted to the previous month.
+ */
 function monthStart(): string {
-  return monthStartDateInput();
+  return currentMonthStartDateKey();
 }
 
 function today(): string {
-  return todayDateInput();
+  return todayDateKey();
 }
 
 /**
@@ -127,8 +138,18 @@ export function ReportsPage(): ReactElement {
 
   const query = useMemo<ReportQuery>(
     () => ({
-      dateFrom: `${dateFrom}T00:00:00.000Z`,
-      dateTo: `${dateTo}T23:59:59.999Z`,
+      /*
+       * The instants bounding the chosen Ulaanbaatar days.
+       *
+       * These used to be `${dateFrom}T00:00:00.000Z` and `${dateTo}T23:59:59.999Z`, which
+       * frames the UTC day. Ulaanbaatar runs eight hours ahead of it, so every report
+       * omitted 00:00-08:00 of its first day and included 00:00-08:00 of the day after its
+       * last: a call logged at 07:00 on the 1st was missing from that month and counted in
+       * the previous one. The backend bounds its own days the same way — see
+       * `dayBounds` in `common/utils/day-bounds.util.ts` — so both ends now agree.
+       */
+      dateFrom: businessDayStart(dateFrom),
+      dateTo: businessDayEnd(dateTo),
       page,
       // A page-sized window. The endpoint's own default is far higher because that is
       // what the CSV export wants — an export has no pager and must carry the whole

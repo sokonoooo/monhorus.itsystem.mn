@@ -420,7 +420,8 @@ describe('WorkReportPanel equipment assessment', () => {
    *
    * The picker asked for `limit: 200`, which `objectListQuerySchema` rejects before the
    * handler runs, so the request 400ed and the catch left an empty select behind. A mock
-   * answers any query, so only asserting on the query can see it.
+   * answers any query, so only asserting on the query can see it. It now names the page as
+   * well, because the picker walks them.
    */
   it('asks for the floor’s equipment within the page limit the API allows', async () => {
     const floorId = '507f1f77bcf86cd799439121';
@@ -444,7 +445,56 @@ describe('WorkReportPanel equipment assessment', () => {
     await userEvent.click(within(drawer).getByRole('button', { name: 'Засах' }));
     await userEvent.selectOptions(await screen.findByLabelText('Давхар'), floorId);
 
-    await waitFor(() => expect(list).toHaveBeenCalledWith({ floorId, limit: 100 }));
+    await waitFor(() => expect(list).toHaveBeenCalledWith({ floorId, limit: 100, page: 1 }));
     expect(await screen.findByRole('option', { name: 'DB-03 · Самбар 3' })).toBeInTheDocument();
+  });
+  /**
+   * DEVICE #101 EXISTS AND MUST BE SELECTABLE.
+   *
+   * The picker asked for one page of 100 and swallowed the rest, so on a floor with more
+   * than a hundred devices the ones past the first page could not be put into a work report
+   * at all — and nothing on screen said so. `fetchAllFloorObjects` is the walk
+   * FloorDetailPage already uses for exactly this reason.
+   */
+  it('offers equipment past the first page of a large floor', async () => {
+    const floorId = '507f1f77bcf86cd799439121';
+    vi.spyOn(workReportService, 'get').mockResolvedValue(makeReport());
+    vi.spyOn(objectService, 'children').mockResolvedValue([
+      makeObjectNode({ id: floorId, name: '1 давхар', kind: 'FLOOR' }),
+    ]);
+
+    const firstPage = Array.from({ length: 100 }, (_, index) =>
+      makeObjectListItem({
+        id: `507f1f77bcf86cd7994397${String(index).padStart(2, '0')}`,
+        code: `DB-${String(index + 1).padStart(3, '0')}`,
+        name: `Тоноглол ${index + 1}`,
+      }),
+    );
+    const hundredAndFirst = makeObjectListItem({
+      id: '507f1f77bcf86cd799439800',
+      code: 'DB-101',
+      name: 'Тоноглол 101',
+    });
+
+    vi.spyOn(objectMasterService, 'list').mockImplementation(async (query) =>
+      (query as { page?: number }).page === 2
+        ? { items: [hundredAndFirst], page: 2, limit: 100, total: 101, totalPages: 2 }
+        : { items: firstPage, page: 1, limit: 100, total: 101, totalPages: 2 },
+    );
+
+    renderWithAuth(<WorkReportPanel requestId={REQUEST_ID} buildingId="b1" />, {
+      permissions: [
+        PERMISSIONS.SERVICE_REQUEST_VIEW,
+        PERMISSIONS.SERVICE_REQUEST_UPDATE,
+      ] as never,
+    });
+
+    const drawer = await openReport();
+    await userEvent.click(within(drawer).getByRole('button', { name: 'Засах' }));
+    await userEvent.selectOptions(await screen.findByLabelText('Давхар'), floorId);
+
+    expect(
+      await screen.findByRole('option', { name: 'DB-101 · Тоноглол 101' }),
+    ).toBeInTheDocument();
   });
 });

@@ -222,4 +222,30 @@ describe('InspectionListPage', () => {
     expect(screen.getByLabelText('Эрсдэл')).toBeInTheDocument();
     expect(screen.getByLabelText('Эхлэх огноо')).toBeInTheDocument();
   });
+  /**
+   * THE RANGE IS AN ULAANBAATAR DAY, NOT A UTC ONE.
+   *
+   * The filters were sent as `${date}T00:00:00.000Z` / `T23:59:59.999Z`, framing the UTC
+   * day while every date on this page is written and read in Ulaanbaatar. Eight hours of
+   * each end went to the wrong day: a report signed at 07:00 on the 21st was absent from a
+   * range ending on the 21st and present in one ending on the 20th.
+   */
+  it('frames the date filters on Ulaanbaatar days', async () => {
+    const list = vi.spyOn(inspectionService, 'list').mockResolvedValue(makePage([]));
+
+    renderWithAuth(<InspectionListPage />, {
+      permissions: [PERMISSIONS.OBJECT_MASTER_VIEW],
+      route: '/inspections?dateFrom=2026-08-21&dateTo=2026-08-21',
+    });
+
+    await waitFor(() => expect(list).toHaveBeenCalled());
+    const query = list.mock.calls[0]![0]!;
+    expect(query.dateFrom).toBe('2026-08-20T16:00:00.000Z');
+    expect(query.dateTo).toBe('2026-08-21T15:59:59.999Z');
+
+    // 07:00 on 21 August in Ulaanbaatar sits inside the day the reader asked for; 07:00 on
+    // the 22nd does not. The old range had both the wrong way round.
+    expect('2026-08-20T23:00:00.000Z' >= query.dateFrom!).toBe(true);
+    expect('2026-08-21T23:00:00.000Z' <= query.dateTo!).toBe(false);
+  });
 });

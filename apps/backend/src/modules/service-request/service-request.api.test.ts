@@ -1,13 +1,14 @@
 import {
   DEFAULT_SERVICE_REQUEST_STAGES,
   PERMISSIONS,
+  SETTING_KEYS,
   stageOfStatus,
   type PermissionKey,
 } from '@monhorus/shared';
 import type { Express } from 'express';
 import { Types } from 'mongoose';
 import request from 'supertest';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   createOrgFixture,
@@ -24,6 +25,7 @@ import { AuditLog } from '../audit/audit-log.model';
 import { Employee } from '../employee/employee.model';
 import { Notification } from '../notification/notification.model';
 import { Customer, ObjectNode } from '../objects/object.models';
+import { invalidateSettingsCache } from '../settings/settings.service';
 import { User } from '../user/user.model';
 import { ServiceRequest } from './service-request.model';
 
@@ -215,6 +217,83 @@ describe('service request creation', () => {
     const started = new Date(response.body.data.slaStartedAt).getTime();
     const due = new Date(response.body.data.slaDueAt).getTime();
     expect(Math.round((due - started) / (60 * 60 * 1000))).toBe(24);
+  });
+
+  /**
+   * URGENCY IS READ FROM `sla.urgent_hours`, NOT FROM A COMPILED COPY OF ITS DEFAULT.
+   *
+   * `deriveIsUrgent` used to compare against `const URGENT_WINDOW_HOURS = 6`, justified as
+   * "what the setting shipped as". The setting is editable, so the two parted company the
+   * first time an administrator touched it: with the key at 4, a five-hour call still got a
+   * five-hour deadline and was still flagged urgent — or, once the flag stopped matching,
+   * would sort into the ordinary dispatch queue, drop out of the urgent counter and breach
+   * unwatched. The deadline half was always read from the setting; only the flag was not.
+   */
+  describe('urgency follows the configured window', () => {
+    async function setUrgentHours(hours: number): Promise<void> {
+      const saved = await request(app)
+        .patch(`${API}/settings`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ settings: { [SETTING_KEYS.SLA_URGENT_HOURS]: hours } });
+      expect(saved.status).toBe(200);
+      invalidateSettingsCache();
+    }
+
+    async function callOnATypeWorth(hours: number): Promise<request.Response> {
+      const typeId = await createCallableObjectType({ callSlaHours: hours });
+      return request(app)
+        .post(`${API}/service-requests`)
+        .set('Authorization', `Bearer ${token}`)
+        .send(validRequest({ objectTypeId: typeId }));
+    }
+
+    afterEach(() => {
+      // The document is wiped by `resetDomainCollections`, but the settings cache is
+      // in-memory and would otherwise carry an edited window into the next file.
+      invalidateSettingsCache();
+    });
+
+    /** The shipped window, which is the side of the line the old constant agreed with. */
+    it('flags a five-hour call urgent while the window is six hours', async () => {
+      const response = await callOnATypeWorth(5);
+
+      expect(response.status).toBe(201);
+      expect(response.body.data.isUrgent).toBe(true);
+    });
+
+    it('does not flag a five-hour call once the window is narrowed to four', async () => {
+      await setUrgentHours(4);
+
+      const response = await callOnATypeWorth(5);
+
+      expect(response.status).toBe(201);
+      expect(response.body.data.isUrgent).toBe(false);
+
+      // The deadline is unchanged and still comes from the equipment type: the point is
+      // that the flag and the window now answer to the same configured number.
+      const started = new Date(response.body.data.slaStartedAt).getTime();
+      const due = new Date(response.body.data.slaDueAt).getTime();
+      expect(Math.round((due - started) / (60 * 60 * 1000))).toBe(5);
+    });
+
+    it('flags an eight-hour call once the window is widened to twelve', async () => {
+      await setUrgentHours(12);
+
+      const response = await callOnATypeWorth(8);
+
+      expect(response.status).toBe(201);
+      expect(response.body.data.isUrgent).toBe(true);
+    });
+
+    /** The boundary itself: `<=`, so a call exactly on the window counts as urgent. */
+    it('treats a call exactly on the window as urgent', async () => {
+      await setUrgentHours(4);
+
+      const response = await callOnATypeWorth(4);
+
+      expect(response.status).toBe(201);
+      expect(response.body.data.isUrgent).toBe(true);
+    });
   });
 
   it('rejects a building belonging to another customer', async () => {

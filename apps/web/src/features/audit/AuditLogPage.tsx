@@ -23,46 +23,7 @@ import {
   type AuditFacets,
   type AuditQuery,
 } from '../../services/audit.service';
-
-/** Mongolian labels for the audit vocabulary in requirements 14.4. */
-const ACTION_LABELS: Record<string, string> = {
-  Created: 'Үүсгэсэн',
-  Updated: 'Шинэчилсэн',
-  StatusChanged: 'Төлөв өөрчилсөн',
-  Assigned: 'Хуваарилсан',
-  Submitted: 'Илгээсэн',
-  Approved: 'Баталсан',
-  Returned: 'Буцаасан',
-  Closed: 'Хаасан',
-  Cancelled: 'Цуцалсан',
-  PasscodeReset: 'Нууц үг шинэчилсэн',
-  PasswordChanged: 'Нууц үг сольсон',
-  LoginSucceeded: 'Нэвтэрсэн',
-  LoginFailed: 'Нэвтрэх оролдлого',
-  LoggedOut: 'Гарсан',
-  AccountLocked: 'Бүртгэл хаагдсан',
-  TokenReuseDetected: 'Token дахин ашиглалт',
-  PLANNED_WORK_BECAME_OVERDUE: 'Хугацаа хэтэрсэн (систем)',
-  PLANNED_WORK_RESCHEDULED: 'Хугацаа сунгасан',
-  PLANNED_WORK_ARCHIVED: 'Архивласан',
-  REPORT_CREATED: 'Тайлан үүссэн',
-  REPORT_UPDATED: 'Тайлан шинэчилсэн',
-  REPORT_SUBMITTED: 'Тайлан илгээсэн',
-  REPORT_RETURNED: 'Тайлан буцаасан',
-  REPORT_APPROVED: 'Тайлан баталсан',
-};
-
-const ENTITY_LABELS: Record<string, string> = {
-  User: 'Хэрэглэгч',
-  Employee: 'Ажилтан',
-  Customer: 'Харилцагч',
-  Work: 'Ажил/Хүсэлт',
-  Equipment: 'Объект/Төхөөрөмж',
-  Permission: 'Role/Permission',
-  PlannedWork: 'Төлөвлөгөөт ажил',
-  PlannedWorkTask: 'Дэд ажил',
-  PlannedWorkReport: 'Ажлын тайлан',
-};
+import { actionLabel, entityLabel } from './audit-vocabulary';
 
 function JsonBlock({ label, value }: { label: string; value: unknown }): ReactElement | null {
   if (value === null || value === undefined) return null;
@@ -174,7 +135,7 @@ export function AuditLogPage(): ReactElement {
       header: 'Үйлдэл',
       render: (row) => (
         <span className="whitespace-nowrap text-slate-800">
-          {ACTION_LABELS[row.action] ?? row.action}
+          {actionLabel(row.action)}
         </span>
       ),
     },
@@ -183,7 +144,7 @@ export function AuditLogPage(): ReactElement {
       header: 'Обьект',
       render: (row) => (
         <span className="truncate text-slate-800">
-          {ENTITY_LABELS[row.entityType] ?? row.entityType}
+          {entityLabel(row.entityType)}
         </span>
       ),
     },
@@ -261,7 +222,7 @@ export function AuditLogPage(): ReactElement {
             <option value="">Бүгд</option>
             {facets.entityTypes.map((entity) => (
               <option key={entity} value={entity}>
-                {ENTITY_LABELS[entity] ?? entity}
+                {entityLabel(entity)}
               </option>
             ))}
           </select>
@@ -280,7 +241,7 @@ export function AuditLogPage(): ReactElement {
             <option value="">Бүгд</option>
             {facets.actions.map((action) => (
               <option key={action} value={action}>
-                {ACTION_LABELS[action] ?? action}
+                {actionLabel(action)}
               </option>
             ))}
           </select>
@@ -352,7 +313,7 @@ export function AuditLogPage(): ReactElement {
 
       <Drawer
         open={detail !== null}
-        title={detail ? `${ACTION_LABELS[detail.action] ?? detail.action}` : ''}
+        title={detail ? actionLabel(detail.action) : ''}
         onClose={() => setDetail(null)}
         width="lg"
         footer={
@@ -368,7 +329,7 @@ export function AuditLogPage(): ReactElement {
                 ['Хугацаа', new Date(detail.occurredAt).toLocaleString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' })],
                 ['Хэрэглэгч', detail.actorName ?? 'Систем'],
                 ['Эрх', detail.actorRole ?? '-'],
-                ['Обьектын төрөл', ENTITY_LABELS[detail.entityType] ?? detail.entityType],
+                ['Обьектын төрөл', entityLabel(detail.entityType)],
                 ['Обьектын ID', detail.entityId ?? '-'],
                 ['Шалтгаан', detail.reason ?? '-'],
                 ['IP', detail.ip ?? '-'],

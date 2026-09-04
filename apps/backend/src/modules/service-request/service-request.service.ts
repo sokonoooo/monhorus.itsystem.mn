@@ -457,13 +457,21 @@ export async function listCallableObjectTypes(): Promise<CallableObjectTypeDto[]
  * change. The two facts are now one fact - a short window IS the urgent case - which means
  * the dispatch board's ordering and the Today panel finally agree with the deadline.
  *
- * Six hours is the threshold because it is what `sla.urgent_hours` shipped as, so a call
- * that would previously have been raised urgent lands on the same side of the line.
+ * THE THRESHOLD IS READ, NOT COMPILED. It used to be `const URGENT_WINDOW_HOURS = 6`,
+ * justified as "what `sla.urgent_hours` shipped as". That is a snapshot of a setting an
+ * administrator may edit, and the two drift the moment they do: set the key to 4 and a
+ * five-hour call still gets a five-hour deadline while this function keeps calling it
+ * urgent - or, the other way round, an installation that widens the key gets calls the
+ * dispatch board never flags. `slaWindowHours` in sla.service.ts already reads
+ * `config.urgentHours` for the deadline itself, so a compiled copy here made one number
+ * answer to two authorities.
+ *
+ * `SlaConfig` is passed in rather than fetched, following the convention `computeSlaDueAt`
+ * and `evaluateSla` set: the function stays pure and a test can exercise a non-default
+ * window without touching a database. The sole caller already awaits `getSlaConfig()`.
  */
-const URGENT_WINDOW_HOURS = 6;
-
-export function deriveIsUrgent(callSlaHours: number): boolean {
-  return callSlaHours <= URGENT_WINDOW_HOURS;
+export function deriveIsUrgent(callSlaHours: number, config: SlaConfig): boolean {
+  return callSlaHours <= config.urgentHours;
 }
 
 async function equipmentSlaHoursFor(objectTypeId: Types.ObjectId | null): Promise<number | null> {
@@ -517,15 +525,13 @@ export async function createServiceRequest(
    * The window comes from the equipment type, not from the urgency flag. `callSlaHours` is
    * non-null for any type that reached this line, because a type may only be called about
    * when it carries one.
+   *
+   * One `getSlaConfig()` for both derivations, so the flag and the deadline can never be
+   * computed from two different reads of the same configuration.
    */
-  const isUrgent = deriveIsUrgent(callableType.callSlaHours);
-  const slaDueAt = computeSlaDueAt(
-    now,
-    isUrgent,
-    0,
-    await getSlaConfig(),
-    callableType.callSlaHours,
-  );
+  const slaConfig = await getSlaConfig();
+  const isUrgent = deriveIsUrgent(callableType.callSlaHours, slaConfig);
+  const slaDueAt = computeSlaDueAt(now, isUrgent, 0, slaConfig, callableType.callSlaHours);
 
   const request = await ServiceRequest.create({
     requestNumber: await nextRequestNumber(now),

@@ -516,6 +516,99 @@ describe('progress, evidence and report writes', () => {
       .set('Authorization', `Bearer ${strangerToken}`);
     expect(submit.status).toBe(403);
   });
+
+  /**
+   * THE CONSOLIDATED REPORT READ, AND ITS PDF.
+   *
+   * These two were the exception to "reads are scoped in the loaders": both loaded through
+   * the raw `findPlannedWorkOrThrow`, so `planned_work.view` alone — which every technician
+   * holds — read any job's report and printed its PDF. That is the customer, the site, the
+   * crew and the evidence photographs of work the caller has no claim to, and the PDF is
+   * the worse half because it is a file that leaves the building.
+   *
+   * NOT-FOUND rather than forbidden, matching `getPlannedWorkById` and the detail read
+   * below: answering 403 would confirm the id names a real job.
+   */
+  describe('reading the consolidated report', () => {
+    it('answers a stranger not-found on both the report and its PDF', async () => {
+      const workId = await completedWork();
+
+      const json = await request(app)
+        .get(`${API}/planned-work/${workId}/report`)
+        .set('Authorization', `Bearer ${strangerToken}`);
+      expect(json.status).toBe(404);
+
+      const pdf = await request(app)
+        .get(`${API}/planned-work/${workId}/report/pdf`)
+        .set('Authorization', `Bearer ${strangerToken}`);
+      expect(pdf.status).toBe(404);
+
+      // Indistinguishable from an id that was never real, which is the whole point.
+      const invented = await request(app)
+        .get(`${API}/planned-work/${'0'.repeat(24)}/report`)
+        .set('Authorization', `Bearer ${strangerToken}`);
+      expect(invented.status).toBe(404);
+      expect(json.body.message).toBe(invented.body.message);
+    });
+
+    it('still serves the assignee the report and the PDF', async () => {
+      const workId = await completedWork();
+
+      const json = await request(app)
+        .get(`${API}/planned-work/${workId}/report`)
+        .set('Authorization', `Bearer ${assignedToken}`);
+      expect(json.status).toBe(200);
+      expect(json.body.data.preview).not.toBeNull();
+
+      const pdf = await request(app)
+        .get(`${API}/planned-work/${workId}/report/pdf`)
+        .set('Authorization', `Bearer ${assignedToken}`)
+        .buffer(true)
+        .parse((res, callback) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (chunk: Buffer) => chunks.push(chunk));
+          res.on('end', () => callback(null, Buffer.concat(chunks)));
+        });
+      expect(pdf.status).toBe(200);
+      expect((pdf.body as Buffer).subarray(0, 5).toString('latin1')).toBe('%PDF-');
+    });
+
+    /**
+     * A team mate is admitted by the same predicate through the team branch, so the report
+     * follows the crew rather than only the individually named technician.
+     */
+    it('serves a team mate on the same team as the work', async () => {
+      const workId = await createWork({ assignedEmployeeIds: [assignedEmployeeId] });
+      const taskId = await addTask(workId);
+      await planAndApprove(workId);
+      await PlannedWork.updateOne({ _id: workId }, { $set: { assignedTeam: org.teamId } });
+      expect(taskId).toBeDefined();
+
+      const json = await request(app)
+        .get(`${API}/planned-work/${workId}/report`)
+        .set('Authorization', `Bearer ${teamMateToken}`);
+      expect(json.status).toBe(200);
+    });
+
+    /**
+     * The office half. The dispatcher holds `dispatch.assign` and is unscoped, so this is
+     * scope and not a blanket refusal — which is what would happen if the fix had been to
+     * key the route on a stronger permission instead.
+     */
+    it('leaves an oversight holder unbounded', async () => {
+      const workId = await completedWork();
+
+      const json = await request(app)
+        .get(`${API}/planned-work/${workId}/report`)
+        .set('Authorization', `Bearer ${dispatcherToken}`);
+      expect(json.status).toBe(200);
+
+      const pdf = await request(app)
+        .get(`${API}/planned-work/${workId}/report/pdf`)
+        .set('Authorization', `Bearer ${dispatcherToken}`);
+      expect(pdf.status).toBe(200);
+    });
+  });
 });
 
 describe('a task must belong to the work it is reported against', () => {

@@ -35,6 +35,51 @@ import {
   toAttributePayload,
 } from './ObjectAttributeFields';
 
+/** The largest page `floorListQuerySchema` will accept. Asking for more is a 400. */
+const FLOOR_PAGE_LIMIT = 100;
+
+/** The largest page the object and object-type list schemas will accept. */
+const TYPE_PAGE_LIMIT = 100;
+const OBJECT_PAGE_LIMIT = 100;
+
+/**
+ * A ceiling on the walk, so a miscounting server cannot spin it forever.
+ *
+ * Twenty pages is two thousand active floors across every tenant in the system, which is
+ * well past anything a floor picker is asked to cope with.
+ */
+const MAX_FLOOR_PAGES = 20;
+
+/**
+ * Every active floor, because the tenant filter is applied here rather than by the server.
+ *
+ * `floorListQuerySchema` has no `customerId` parameter — it filters by project and building
+ * only — so this page fetches active floors and keeps the ones belonging to the chosen
+ * tenant. A single capped request therefore did not merely truncate the picker: past a
+ * hundred active floors SYSTEM-WIDE, a tenant's floors could fall entirely outside the
+ * window and the select showed nothing at all, reading as "this customer has no floors".
+ *
+ * The walk is the honest fix available on the client. The right one is a `customerId`
+ * parameter on the endpoint, which would make this a single narrow request.
+ */
+async function fetchActiveFloors(): Promise<FloorDto[]> {
+  const items: FloorDto[] = [];
+  let page = 1;
+
+  for (;;) {
+    const result = await projectService.listFloors({
+      isActive: true,
+      limit: FLOOR_PAGE_LIMIT,
+      page,
+    });
+    items.push(...result.items);
+    if (result.items.length === 0 || page >= result.totalPages || page >= MAX_FLOOR_PAGES) {
+      return items;
+    }
+    page += 1;
+  }
+}
+
 /** The name each category's own attribute block goes by, shown beside the section header. */
 const ELECTRICAL_BLOCK_LABELS: Record<ObjectCategory, string> = {
   PANEL: 'Самбарын мэдээлэл',
@@ -90,11 +135,17 @@ export function ObjectFormPage(): ReactElement {
 
   const [floor, setFloor] = useState<FloorDto | null>(null);
   const [types, setTypes] = useState<ObjectTypeDto[]>([]);
+  /** What the server says the catalogue holds, so a capped page can be stated as capped. */
+  const [typesTotal, setTypesTotal] = useState(0);
   const [panels, setPanels] = useState<ObjectListItemDto[]>([]);
   const [circuits, setCircuits] = useState<ObjectListItemDto[]>([]);
+  const [panelsTotal, setPanelsTotal] = useState(0);
+  const [circuitsTotal, setCircuitsTotal] = useState(0);
   // Floorless mode only: the tenant and the floors it owns, both chosen on the form.
   const [customers, setCustomers] = useState<CustomerDto[]>([]);
   const [floors, setFloors] = useState<FloorDto[]>([]);
+  /** Set when the floor list could not be fetched, so an empty select is explained. */
+  const [floorsFailed, setFloorsFailed] = useState(false);
   const [chosenFloorId, setChosenFloorId] = useState('');
 
   const [customerId, setCustomerId] = useState('');
@@ -272,13 +323,21 @@ export function ObjectFormPage(): ReactElement {
     };
   }, [objectId, floorId]);
 
-  // Only active types of the chosen category are offered.
+  /**
+   * Only active types of the chosen category are offered.
+   *
+   * One capped page. The catalogue is narrowed by the server on both axes, so what comes
+   * back is the right list, merely a possibly short one — and `typesTruncated` says so
+   * rather than letting a missing type read as a type that does not exist.
+   */
   useEffect(() => {
     let cancelled = false;
     objectTypeService
-      .list({ category, isActive: true, limit: 100 })
+      .list({ category, isActive: true, limit: TYPE_PAGE_LIMIT })
       .then((page) => {
-        if (!cancelled) setTypes(page.items);
+        if (cancelled) return;
+        setTypes(page.items);
+        setTypesTotal(page.total);
       })
       .catch(() => undefined);
     return () => {
@@ -316,7 +375,7 @@ export function ObjectFormPage(): ReactElement {
     let cancelled = false;
     const query = {
       customerId,
-      limit: 100,
+      limit: OBJECT_PAGE_LIMIT,
       ...(effectiveBuildingId ? { buildingId: effectiveBuildingId } : {}),
     };
     void Promise.all([
@@ -326,6 +385,10 @@ export function ObjectFormPage(): ReactElement {
       if (cancelled) return;
       setPanels(panelPage.items);
       setCircuits(circuitPage.items);
+      // Both selects are one capped page, so what the server says exists is kept beside
+      // what arrived; the hint below each select states the difference.
+      setPanelsTotal(panelPage.total);
+      setCircuitsTotal(circuitPage.total);
       // Moving the object to another building leaves any earlier pick unofferable. Dropping
       // it here is what keeps the visible value and the list in step; the backend treats an
       // omitted reference as "leave it alone", so nothing stored is destroyed by the clear.
@@ -350,20 +413,26 @@ export function ObjectFormPage(): ReactElement {
    * The floor list endpoint filters by project and building but not by customer, so the
    * tenant filter is applied here against each floor's own `customerId`. Only active floors
    * are offered, because the backend refuses to place an object on an archived one.
+   *
+   * Every page is walked — see `fetchActiveFloors` — because a client-side filter over one
+   * capped page is not a truncated list but a wrong one.
    */
   useEffect(() => {
     if (!isFloorless || isEdit || !customerId) {
       setFloors([]);
+      setFloorsFailed(false);
       return undefined;
     }
     let cancelled = false;
-    projectService
-      .listFloors({ isActive: true, limit: 100 })
-      .then((page) => {
+    setFloorsFailed(false);
+    fetchActiveFloors()
+      .then((items) => {
         if (cancelled) return;
-        setFloors(page.items.filter((entry) => entry.customerId === customerId));
+        setFloors(items.filter((entry) => entry.customerId === customerId));
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (!cancelled) setFloorsFailed(true);
+      });
     return () => {
       cancelled = true;
     };
@@ -414,6 +483,20 @@ export function ObjectFormPage(): ReactElement {
   const effectiveFloorId = floorId ?? (chosenFloorId || null);
   const floorPath = floorId ? `/floors/${floorId}` : '/projects';
   const selectedType = types.find((type) => type.id === objectTypeId) ?? null;
+
+  /**
+   * What a capped select is not showing.
+   *
+   * Each of these lists is one page the server has already narrowed, so the rows that
+   * arrived are the right ones — there may simply be more. Saying so is the whole point: a
+   * select silently missing its 101st entry reads as a record that does not exist, which is
+   * the mistake that sends somebody off to create a duplicate.
+   */
+  function truncationHint(shown: number, total: number): string | undefined {
+    return total > shown
+      ? `Нийт ${total}-аас эхний ${shown} нь жагсав. Хайж олдохгүй бол шүүлтүүрээ нарийсгана уу.`
+      : undefined;
+  }
   /**
    * What the chosen type demands beyond its category's own fields (requirements 4.1).
    *
@@ -845,7 +928,11 @@ export function ObjectFormPage(): ReactElement {
               <Field
                 label="Давхар"
                 error={fieldErrors.floorId}
-                hint="Заавал биш. Дараа нь давхарт холбож болно."
+                hint={
+                  floorsFailed
+                    ? 'Давхрын жагсаалтыг ачаалж чадсангүй. Хуудсыг дахин ачаална уу.'
+                    : 'Заавал биш. Дараа нь давхарт холбож болно.'
+                }
               >
                 <SelectInput
                   value={chosenFloorId}
@@ -853,9 +940,11 @@ export function ObjectFormPage(): ReactElement {
                   placeholder={
                     customerId === ''
                       ? 'Эхлээд харилцагч сонгоно уу'
-                      : floors.length === 0
-                        ? 'Идэвхтэй давхар алга'
-                        : 'Давхарт холбохгүй'
+                      : floorsFailed
+                        ? 'Жагсаалт ачаалагдсангүй'
+                        : floors.length === 0
+                          ? 'Идэвхтэй давхар алга'
+                          : 'Давхарт холбохгүй'
                   }
                   options={floors.map((entry) => ({
                     value: entry.id,
@@ -894,7 +983,12 @@ export function ObjectFormPage(): ReactElement {
             />
           </Field>
 
-          <Field label="Тоноглолын төрөл" required error={fieldErrors.objectTypeId}>
+          <Field
+            label="Тоноглолын төрөл"
+            required
+            error={fieldErrors.objectTypeId}
+            hint={truncationHint(types.length, typesTotal)}
+          >
             <SelectInput
               value={objectTypeId}
               onChange={setObjectTypeId}
@@ -1004,7 +1098,8 @@ export function ObjectFormPage(): ReactElement {
                     label="Харьяалагдах самбар"
                     error={fieldErrors['circuit.panelId']}
                     hint={
-                      effectiveBuildingId ? 'Зөвхөн энэ барилгын самбарууд.' : undefined
+                      truncationHint(panels.length, panelsTotal) ??
+                      (effectiveBuildingId ? 'Зөвхөн энэ барилгын самбарууд.' : undefined)
                     }
                   >
                     <SelectInput
@@ -1058,7 +1153,8 @@ export function ObjectFormPage(): ReactElement {
                     label="Тэжээх хэлхээ"
                     error={fieldErrors['equipment.circuitId']}
                     hint={
-                      effectiveBuildingId ? 'Зөвхөн энэ барилгын хэлхээнүүд.' : undefined
+                      truncationHint(circuits.length, circuitsTotal) ??
+                      (effectiveBuildingId ? 'Зөвхөн энэ барилгын хэлхээнүүд.' : undefined)
                     }
                   >
                     <SelectInput
@@ -1092,9 +1188,10 @@ export function ObjectFormPage(): ReactElement {
                     label="Байрлах самбар"
                     error={fieldErrors['equipment.panelId']}
                     hint={
-                      effectiveBuildingId
+                      truncationHint(panels.length, panelsTotal) ??
+                      (effectiveBuildingId
                         ? 'Самбарын дотор суурилуулсан бол сонгоно. Ачаалалд нөлөөлөхгүй.'
-                        : 'Самбарын дотор суурилуулсан бол сонгоно.'
+                        : 'Самбарын дотор суурилуулсан бол сонгоно.')
                     }
                   >
                     <SelectInput

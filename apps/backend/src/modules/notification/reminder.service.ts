@@ -77,6 +77,24 @@ async function recipientsForWork(
 }
 
 /**
+ * WHO IS TOLD ABOUT A PLANNED-WORK DEADLINE, and why it is not `planned_work.view`.
+ *
+ * That key is held by TECHNICIAN, so addressing either sweep below to it told every
+ * technician in the company about every overdue and every due-soon job in the company —
+ * the same broadcast `service-request.notify.ts` was rewritten to end and that `sweepSla`
+ * below already avoids. These two paths were simply missed at the time.
+ *
+ * A deadline concerns the crew carrying the job, who are named through `userIds` via
+ * [recipientsForWork], and the dispatch desk, who are the only people who can reschedule
+ * it or move somebody onto it. Identical in shape to the SLA sweeps, and deliberately so:
+ * one rule for "whose deadline is this", applied the same way in both places.
+ *
+ * There is no `excludeUserId` here because a sweep has no actor — nobody pressed anything,
+ * so there is nobody to leave out.
+ */
+const WORK_DEADLINE_AUDIENCE = 'dispatch.view' as const;
+
+/**
  * Planned work that has crossed its deadline.
  *
  * Queries on `overdueNotificationSentAt` rather than piggybacking on the reconciliation
@@ -109,7 +127,7 @@ async function sweepPlannedWorkOverdue(now: Date): Promise<number> {
       entityType: 'PlannedWork',
       entityId: work._id,
       linkPath: `/planned-work/${String(work._id)}`,
-      permission: 'planned_work.view',
+      permission: WORK_DEADLINE_AUDIENCE,
       userIds: await recipientsForWork(work.assignedEmployees),
     });
     sent += 1;
@@ -152,7 +170,7 @@ async function sweepPlannedWorkDueSoon(now: Date): Promise<number> {
       entityType: 'PlannedWork',
       entityId: work._id,
       linkPath: `/planned-work/${String(work._id)}`,
-      permission: 'planned_work.view',
+      permission: WORK_DEADLINE_AUDIENCE,
       userIds: await recipientsForWork(work.assignedEmployees),
     });
     sent += 1;

@@ -202,3 +202,67 @@ describe('PortalHomePage - the request ring', () => {
     expect(await screen.findByText('Сүүлийн хүсэлтүүд')).toBeInTheDocument();
   });
 });
+
+/**
+ * THE OPEN-REQUEST TILE.
+ *
+ * «Хүлээгдэж буй хүсэлт» is the first number on the screen and the only one a customer
+ * reads as a promise about their own workload. Two ways it used to lie, both pinned here.
+ */
+describe('PortalHomePage - the open request tile', () => {
+  /** The tile, addressed by its label rather than by position. */
+  async function openTileValue(): Promise<string> {
+    const tile = (await screen.findByText('Хүлээгдэж буй хүсэлт')).closest('div')!.parentElement!;
+    const value = await within(tile).findByText(/^\d+$/);
+    return value.textContent!;
+  }
+
+  /**
+   * The count came from a page of twenty records, so it was structurally incapable of
+   * exceeding twenty however many were open. The summary is an aggregate over every
+   * request the organisation has, which is the only figure that can answer this.
+   */
+  it('counts every open request, not just the first page of them', async () => {
+    vi.spyOn(portalService, 'listRequests').mockResolvedValue(
+      makePage(
+        Array.from({ length: 20 }, (_, index) =>
+          makeServiceRequest({ id: `r${index}`, status: 'NEW' }),
+        ),
+      ),
+    );
+    vi.spyOn(portalService, 'summary').mockResolvedValue(
+      makeSummary({
+        requestsByStatus: [
+          { status: 'NEW', count: 45 },
+          { status: 'COMPLETED', count: 300 },
+        ],
+      }),
+    );
+
+    render();
+
+    expect(await openTileValue()).toBe('45');
+  });
+
+  /**
+   * RETURNED is a request sent back for rework — the office rejected the write-up and the
+   * technician is still on it. The backend, the employee app and the rest of web all treat
+   * it as live; leaving it out told the customer their job was finished while work
+   * continued on it.
+   */
+  it('counts a request returned for rework as still open', async () => {
+    vi.spyOn(portalService, 'summary').mockResolvedValue(
+      makeSummary({
+        requestsByStatus: [
+          { status: 'RETURNED', count: 7 },
+          { status: 'CANCELLED', count: 2 },
+          { status: 'COMPLETED', count: 11 },
+        ],
+      }),
+    );
+
+    render();
+
+    expect(await openTileValue()).toBe('7');
+  });
+});

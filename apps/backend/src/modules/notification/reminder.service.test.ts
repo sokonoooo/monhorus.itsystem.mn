@@ -1,4 +1,4 @@
-import { PERMISSIONS } from '@monhorus/shared';
+import { PERMISSIONS, type PermissionKey } from '@monhorus/shared';
 import type { Express } from 'express';
 import { Types } from 'mongoose';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -104,11 +104,12 @@ async function makeServiceRequest(overrides: Record<string, unknown>): Promise<s
 let technicianSequence = 0;
 async function makeAssignableTechnician(
   email: string,
-): Promise<{ userId: string; employeeId: Types.ObjectId }> {
-  const user = await createUserWithPermissions(email, [
+  permissions: readonly PermissionKey[] = [
     PERMISSIONS.SERVICE_REQUEST_VIEW,
     PERMISSIONS.NOTIFICATION_VIEW,
-  ]);
+  ],
+): Promise<{ userId: string; employeeId: Types.ObjectId }> {
+  const user = await createUserWithPermissions(email, permissions);
   technicianSequence += 1;
   const employee = await Employee.create({
     employeeCode: `RM-${technicianSequence}`,
@@ -222,6 +223,128 @@ describe('Reminder sweep', () => {
       await runReminderSweep();
 
       expect(await countOf('PLANNED_WORK_DUE_SOON')).toBeGreaterThan(first);
+    });
+  });
+
+  /**
+   * WHOSE deadline a planned work's is.
+   *
+   * The same question the SLA block below answers, and for a long time these two sweeps
+   * answered it differently. They addressed `planned_work.view`, a TECHNICIAN key, so every
+   * overdue and every due-soon job in the company was announced to every technician in the
+   * company — the blanket fan-out `service-request.notify.ts` was rewritten to end, still
+   * running on this path. The three cases below read one sweep from three inboxes.
+   */
+  describe('who a planned-work deadline is addressed to', () => {
+    /** Holds `planned_work.view` and nothing else: the key the fan-out used. */
+    async function makeBystander(
+      email: string,
+    ): Promise<{ userId: string; employeeId: Types.ObjectId }> {
+      return makeAssignableTechnician(email, [
+        PERMISSIONS.PLANNED_WORK_VIEW,
+        PERMISSIONS.NOTIFICATION_VIEW,
+      ]);
+    }
+
+    function overdue(assignedEmployees: Types.ObjectId[] = []): Record<string, unknown> {
+      return {
+        plannedEndDate: new Date(Date.now() - 2 * DAY),
+        originalPlannedEndDate: new Date(Date.now() - 2 * DAY),
+        overdueAt: new Date(Date.now() - 2 * DAY),
+        overdueNotificationSentAt: null,
+        assignedEmployees,
+      };
+    }
+
+    it('names the crew carrying an overdue job', async () => {
+      const crew = await makeAssignableTechnician('pw-overdue-crew@test.mn');
+      await makePlannedWork(overdue([crew.employeeId]));
+
+      await runReminderSweep();
+
+      expect(
+        await Notification.countDocuments({
+          recipient: new Types.ObjectId(crew.userId),
+          event: 'PLANNED_WORK_OVERDUE',
+        }),
+      ).toBe(1);
+    });
+
+    it('says nothing to a technician who is not on the overdue job', async () => {
+      const bystander = await makeBystander('pw-overdue-bystander@test.mn');
+      await makePlannedWork(overdue());
+
+      const result = await runReminderSweep();
+
+      // The sweep did fire; it simply was not addressed to them.
+      expect(result.plannedWorkOverdue).toBe(1);
+      expect(
+        await Notification.countDocuments({ recipient: new Types.ObjectId(bystander.userId) }),
+      ).toBe(0);
+    });
+
+    it('names the crew carrying a job whose deadline is approaching', async () => {
+      const crew = await makeAssignableTechnician('pw-soon-crew@test.mn');
+      await makePlannedWork({
+        plannedEndDate: new Date(Date.now() + PLANNED_WORK_DUE_SOON_MS / 2),
+        assignedEmployees: [crew.employeeId],
+      });
+
+      await runReminderSweep();
+
+      expect(
+        await Notification.countDocuments({
+          recipient: new Types.ObjectId(crew.userId),
+          event: 'PLANNED_WORK_DUE_SOON',
+        }),
+      ).toBe(1);
+    });
+
+    it('says nothing to a technician who is not on the job falling due', async () => {
+      const bystander = await makeBystander('pw-soon-bystander@test.mn');
+      await makePlannedWork({
+        plannedEndDate: new Date(Date.now() + PLANNED_WORK_DUE_SOON_MS / 2),
+      });
+
+      const result = await runReminderSweep();
+
+      expect(result.plannedWorkDueSoon).toBe(1);
+      expect(
+        await Notification.countDocuments({ recipient: new Types.ObjectId(bystander.userId) }),
+      ).toBe(0);
+    });
+
+    /**
+     * The other half: a deadline nobody is on still has to reach somebody, and the desk
+     * that can reschedule it or put a person on it is the dispatch desk. This account holds
+     * `dispatch.view` alone, so it is not the shared watcher passing by accident.
+     */
+    it('reaches the dispatch desk even when the job has no crew', async () => {
+      const desk = await createUserWithPermissions('pw-dispatch@test.mn', [
+        PERMISSIONS.DISPATCH_VIEW,
+        PERMISSIONS.NOTIFICATION_VIEW,
+      ]);
+      const fixture = await createObjectFixture();
+      await makePlannedWork(overdue(), fixture);
+      await makePlannedWork(
+        { plannedEndDate: new Date(Date.now() + PLANNED_WORK_DUE_SOON_MS / 2) },
+        fixture,
+      );
+
+      await runReminderSweep();
+
+      expect(
+        await Notification.countDocuments({
+          recipient: new Types.ObjectId(desk.userId),
+          event: 'PLANNED_WORK_OVERDUE',
+        }),
+      ).toBe(1);
+      expect(
+        await Notification.countDocuments({
+          recipient: new Types.ObjectId(desk.userId),
+          event: 'PLANNED_WORK_DUE_SOON',
+        }),
+      ).toBe(1);
     });
   });
 

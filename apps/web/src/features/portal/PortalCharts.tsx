@@ -170,20 +170,58 @@ export function BarChart({
  * Worst state first, the way the mobile app words it: a customer opening this wants to know
  * whether anything is on fire before they want a distribution. Deliberately a sentence and
  * not a gauge — there is no approved way to reduce these bands to a single number.
+ *
+ * WHY IT NO LONGER NAMES ANY BAND. It used to be four `if`s testing four compiled keys, each
+ * carrying its own sentence with the shipped wording written into it, and both halves of
+ * that were wrong the moment an administrator touched Тохиргоо:
+ *
+ *   - A RENAME WAS INVISIBLE. The key survives a rename — that is what the keys are for —
+ *     so `countOf('CRITICAL')` still matched and still printed «ноцтой эрсдэлтэй» while the
+ *     console, the badges and the legend beside it all said the operator's new name. The
+ *     first line a customer reads disagreeing with the chart under it.
+ *
+ *   - A CONFIGURED SPARE BAND WAS WORSE THAN INVISIBLE. `RISK_LEVELS` carries three reserved
+ *     keys an operator can grow into. Equipment sitting in one matched none of the four
+ *     tests, fell through to the last branch and produced «Үнэлгээ хийгдсэн бүх тоноглол
+ *     хэвийн байна» — an affirmative all-clear over equipment that needed attention, which
+ *     is the one failure this sentence exists to prevent.
+ *
+ * So the ladder decides both the ORDER and the WORDS. Severity is `riskLevelsInOrder`'s
+ * answer — the band's own lower bound, not its position in `RISK_LEVELS` — and the name is
+ * the one already resolved onto the slice by `riskLabelOf`, which prefers the administrator's
+ * label. The head of the ladder is the healthy band by construction, whatever it is called,
+ * so it is the one band a count against is not worth leading with.
+ *
+ * `bands` is optional for the same reason it is everywhere else in `risk-palette.ts`: with
+ * no configuration loaded the shipped ladder is the honest answer for ORDER, and the label
+ * falls back to the shipped wording for that key rather than to a raw `BAND_7`.
  */
-export function riskHeadline(slices: readonly Slice[], unassessed = 0): string {
-  const countOf = (key: string): number => slices.find((s) => s.key === key)?.count ?? 0;
-  const outOfService = countOf('OUT_OF_SERVICE');
-  const critical = countOf('CRITICAL');
-  const repair = countOf('SCHEDULE_REPAIR');
-  const attention = countOf('ATTENTION');
+export function riskHeadline(
+  slices: readonly Slice[],
+  unassessed = 0,
+  bands?: readonly RiskBandView[] | null,
+): string {
+  const ladder = riskLevelsInOrder(bands);
+  const healthyKey = ladder[0];
+  const severity = new Map(ladder.map((level, index) => [level as string, index]));
   const assessed = slices.reduce((sum, slice) => sum + slice.count, 0);
 
-  if (outOfService > 0) return `${outOfService} тоноглол ашиглах боломжгүй байна.`;
-  if (critical > 0) return `${critical} тоноглол ноцтой эрсдэлтэй байна.`;
-  if (repair > 0) return `${repair} тоноглол ойрын хугацаанд засвар шаардлагатай.`;
-  if (attention > 0) return `${attention} тоноглол анхаарал шаардаж байна.`;
-  if (assessed > 0) return 'Үнэлгээ хийгдсэн бүх тоноглол хэвийн байна.';
+  // Worst first. A band the ladder does not name cannot be ranked against one it does, so it
+  // sorts last rather than being dropped: an unrankable band with equipment in it is still
+  // something the customer must be told about.
+  const worst = slices
+    .filter((slice) => slice.count > 0 && slice.key !== healthyKey)
+    .sort((a, b) => (severity.get(b.key) ?? ladder.length) - (severity.get(a.key) ?? ladder.length))
+    .at(0);
+
+  if (worst) return `${worst.count} тоноглол «${worst.label}» түвшинд байна.`;
+
+  if (assessed > 0) {
+    const healthy = slices.find((slice) => slice.key === healthyKey);
+    return healthy
+      ? `Үнэлгээ хийгдсэн бүх тоноглол «${healthy.label}» түвшинд байна.`
+      : 'Үнэлгээ хийгдсэн бүх тоноглол хэвийн байна.';
+  }
   if (unassessed > 0) return `${unassessed} тоноглолд үнэлгээ хийгдээгүй байна.`;
   return 'Тоноглолын мэдээлэл алга байна.';
 }

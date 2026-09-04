@@ -34,11 +34,15 @@ import {
 } from '../../components/ui/risk-palette';
 import { useTableColumns } from '../../hooks/use-table-columns';
 import { ApiError } from '../../lib/api-client';
+import { businessDayEnd, businessDayStart } from '../../lib/business-day';
 import { objectService } from '../../services/object.service';
 import { projectService } from '../../services/project.service';
 import { useRiskBands } from '../../hooks/use-risk-bands';
 import { inspectionService } from '../../services/report.service';
 import { RiskLegend, ScoreBar } from '../projects/objects/ObjectBadges';
+
+/** The largest page the project list schema will accept. Asking for more is a 400. */
+const PROJECT_PAGE_LIMIT = 100;
 
 function formatDate(iso: string | null): string {
   if (!iso) return '-';
@@ -93,8 +97,21 @@ export function InspectionListPage(): ReactElement {
       ...(searchParams.get('riskLevel')
         ? { riskLevel: searchParams.get('riskLevel') as RiskLevel }
         : {}),
-      ...(searchParams.get('dateFrom') ? { dateFrom: `${searchParams.get('dateFrom')}T00:00:00.000Z` } : {}),
-      ...(searchParams.get('dateTo') ? { dateTo: `${searchParams.get('dateTo')}T23:59:59.999Z` } : {}),
+      /*
+       * The instants bounding the chosen Ulaanbaatar days.
+       *
+       * `${date}T00:00:00.000Z` framed the UTC day, which begins eight hours after the one
+       * every date on this page is written in. Each end therefore fell on the wrong day: a
+       * report signed at 07:00 on the 21st was missing from a range ending on the 21st and
+       * counted in one ending on the 20th. `businessDayStart`/`businessDayEnd` mirror the
+       * backend's own `dayBounds`, so both ends of the request now mean the same day.
+       */
+      ...(searchParams.get('dateFrom')
+        ? { dateFrom: businessDayStart(searchParams.get('dateFrom')!) }
+        : {}),
+      ...(searchParams.get('dateTo')
+        ? { dateTo: businessDayEnd(searchParams.get('dateTo')!) }
+        : {}),
     };
   }, [searchParams]);
 
@@ -102,6 +119,8 @@ export function InspectionListPage(): ReactElement {
   const [summary, setSummary] = useState<InspectionSummaryDto | null>(null);
   const [customers, setCustomers] = useState<CustomerDto[]>([]);
   const [projects, setProjects] = useState<ProjectDto[]>([]);
+  /** What the server says exists, so a capped page of projects can be stated as capped. */
+  const [projectsTotal, setProjectsTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchDraft, setSearchDraft] = useState(() => searchParams.get('search') ?? '');
@@ -138,12 +157,16 @@ export function InspectionListPage(): ReactElement {
     let cancelled = false;
     void Promise.all([
       objectService.customers(),
-      projectService.listProjects({ limit: 100, isActive: true }),
+      // 100 is the cap the list schema enforces; more is a 400, not a bigger page.
+      projectService.listProjects({ limit: PROJECT_PAGE_LIMIT, isActive: true }),
     ])
       .then(([customerList, projectPage]) => {
         if (cancelled) return;
         setCustomers(customerList);
         setProjects(projectPage.items as ProjectDto[]);
+        // A filter that quietly omits projects reads as "this project has no inspections",
+        // which is a different and much more misleading statement.
+        setProjectsTotal(projectPage.total);
       })
       .catch(() => undefined);
     return () => {
@@ -418,6 +441,11 @@ export function InspectionListPage(): ReactElement {
               </option>
             ))}
           </select>
+          {projectsTotal > projects.length && (
+            <p className="mt-1 text-xs text-slate-500">
+              Нийт {projectsTotal} төслөөс эхний {projects.length} нь жагсав.
+            </p>
+          )}
         </div>
 
         <div>

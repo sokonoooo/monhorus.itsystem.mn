@@ -38,9 +38,9 @@ import {
   FILTER_LABEL,
 } from '../../components/ui/control-styles';
 import { useAuth } from '../../contexts/auth-context';
+import { fetchAllFloorObjects } from '../projects/FloorDetailPage';
 import { ApiError } from '../../lib/api-client';
 import { useAuthorisedFileUrls } from '../../lib/use-authorised-file-urls';
-import { objectMasterService } from '../../services/object-master.service';
 import { objectService } from '../../services/object.service';
 import { workReportService } from '../../services/service-request.service';
 import { Field, SelectInput, TextInput } from '../employees/FormControls';
@@ -320,6 +320,8 @@ function EquipmentAssessments({
   const [floorId, setFloorId] = useState('');
   const [objects, setObjects] = useState<ObjectListItemDto[]>([]);
   const [loading, setLoading] = useState(false);
+  /** Set when the floor's equipment could not be fetched, so an empty select is explained. */
+  const [objectsFailed, setObjectsFailed] = useState(false);
 
   useEffect(() => {
     if (!buildingId) {
@@ -332,18 +334,42 @@ function EquipmentAssessments({
       .catch(() => setFloors([]));
   }, [buildingId]);
 
+  /**
+   * EVERY DEVICE ON THE FLOOR, NOT THE FIRST HUNDRED.
+   *
+   * This asked for one page of 100 — the cap `objectListQuerySchema` enforces — and
+   * swallowed the rest, so on a floor with more than a hundred devices the ones past the
+   * first page could not be named in a work report at all, and nothing said so. The page
+   * walk is FloorDetailPage's, which exists for exactly this reason on exactly this list.
+   *
+   * A failure is now stated rather than left as a silently empty select: the technician
+   * needs to know the difference between "this floor has no equipment" and "the list did
+   * not load".
+   */
   useEffect(() => {
     if (!floorId) {
       setObjects([]);
-      return;
+      setObjectsFailed(false);
+      return undefined;
     }
+    let cancelled = false;
     setLoading(true);
-    objectMasterService
-      // 100 is the cap `objectListQuerySchema` enforces; more is a 400, not a bigger page.
-      .list({ floorId, limit: 100 })
-      .then((page) => setObjects(page.items))
-      .catch(() => setObjects([]))
-      .finally(() => setLoading(false));
+    setObjectsFailed(false);
+    fetchAllFloorObjects(floorId)
+      .then((items) => {
+        if (!cancelled) setObjects(items);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setObjects([]);
+        setObjectsFailed(true);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [floorId]);
 
   const selected = new Set(rows.map((row) => row.objectId));
@@ -424,14 +450,29 @@ function EquipmentAssessments({
               disabled={disabled}
             />
           </Field>
-          <Field label="Тоноглол нэмэх" hint={loading ? 'Ачааллаж байна…' : undefined}>
+          <Field
+            label="Тоноглол нэмэх"
+            hint={
+              loading
+                ? 'Ачааллаж байна…'
+                : objectsFailed
+                  ? 'Тоноглолын жагсаалтыг ачаалж чадсангүй. Давхраа дахин сонгож үзнэ үү.'
+                  : undefined
+            }
+          >
             <SelectInput
               value=""
               onChange={(value) => {
                 const object = objects.find((entry) => entry.id === value);
                 if (object) add(object);
               }}
-              placeholder={floorId ? 'Тоноглол сонгоно уу' : 'Эхлээд давхар сонгоно'}
+              placeholder={
+                !floorId
+                  ? 'Эхлээд давхар сонгоно'
+                  : objectsFailed
+                    ? 'Жагсаалт ачаалагдсангүй'
+                    : 'Тоноглол сонгоно уу'
+              }
               options={objects
                 .filter((object) => !selected.has(object.id))
                 .map((object) => ({

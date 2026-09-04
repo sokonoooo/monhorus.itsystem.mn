@@ -1,9 +1,12 @@
 import {
   PERMISSIONS,
+  SERVICE_REQUEST_STATUSES,
+  SERVICE_REQUEST_TRANSITIONS,
   type BuildingDto,
   type FloorDto,
   type PortalSummaryDto,
   type ServiceRequestListItemDto,
+  type ServiceRequestStatus,
   type SurveyPendingItemDto,
 } from '@monhorus/shared';
 import { useCallback, useEffect, useMemo, useState, type ReactElement } from 'react';
@@ -30,20 +33,23 @@ import {
   type StackedMonth,
 } from './PortalCharts';
 
-/** Statuses a customer reads as "still open". Anything else is finished or abandoned. */
-const OPEN_STATUSES = new Set([
-  'NEW',
-  'UNASSIGNED',
-  'ASSIGNED',
-  'ACCEPTED',
-  'ON_THE_WAY',
-  'ON_SITE',
-  'IN_PROGRESS',
-  'WAITING',
-  'REPORT_SUBMITTED',
-  'VERIFICATION',
-  'REVISIT_REQUIRED',
-]);
+/**
+ * Statuses a customer reads as "still open".
+ *
+ * DERIVED, NOT LISTED. This used to be eleven names typed out by hand, and it had already
+ * drifted: `RETURNED` was missing. A returned request is a write-up the office sent back —
+ * the job is unfinished and somebody is still on it — so the customer's own open list
+ * dropped it while work continued, which reads as "finished" rather than as an omission.
+ *
+ * The transition map answers the question the hand-written set was trying to: a status with
+ * nowhere left to go is where a request comes to rest, and everything else is somewhere it
+ * is passing through. Today that terminal pair is COMPLETED and CANCELLED. A status added
+ * to the workflow tomorrow lands on the correct side of this line without anyone
+ * remembering that this file exists, which is the whole reason it is computed.
+ */
+const OPEN_STATUSES: ReadonlySet<ServiceRequestStatus> = new Set(
+  SERVICE_REQUEST_STATUSES.filter((status) => SERVICE_REQUEST_TRANSITIONS[status].length > 0),
+);
 
 /**
  * How many buildings get drawn as a silhouette.
@@ -150,7 +156,6 @@ export function PortalHomePage(): ReactElement {
   const stages = useRequestStages();
 
   const [recent, setRecent] = useState<ServiceRequestListItemDto[] | null>(null);
-  const [openCount, setOpenCount] = useState(0);
   const [buildings, setBuildings] = useState<BuildingDto[] | null>(null);
   const [floorsOf, setFloorsOf] = useState<Record<string, readonly FloorDto[]>>({});
   const [summary, setSummary] = useState<PortalSummaryDto | null>(null);
@@ -162,9 +167,11 @@ export function PortalHomePage(): ReactElement {
     setLoading(true);
     setError(null);
     try {
+      // Twenty, because five are drawn and the rest is headroom for the list link. This
+      // page NEVER counts anything off this call: a page of records cannot be counted into
+      // a total without understating it, and the tile above reads `/portal/summary`.
       const result = await portalService.listRequests({ page: 1, limit: 20 });
       setRecent([...result.items].slice(0, 5));
-      setOpenCount(result.items.filter((item) => OPEN_STATUSES.has(item.status)).length);
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : 'Мэдээлэл ачаалж чадсангүй.');
     } finally {
@@ -267,6 +274,23 @@ export function PortalHomePage(): ReactElement {
     return { slices, healthy, attention: total - healthy, total };
   }, [buildings, bands]);
 
+  /**
+   * How many requests are still open, across every one the organisation has.
+   *
+   * READ FROM THE SUMMARY, NOT FROM THE LIST. This tile used to count the open statuses
+   * inside the twenty-record page fetched above, so a customer with sixty open requests was
+   * shown twenty — and shown it as a fact, with no pager and nothing to suggest the figure
+   * was the size of a page rather than the size of their workload. `requestsByStatus` is an
+   * aggregate over every request the organisation has, which is the same source the stage
+   * ring below already reads; the two now cannot disagree.
+   */
+  const openCount = useMemo((): number => {
+    if (!summary) return 0;
+    return summary.requestsByStatus
+      .filter((row) => OPEN_STATUSES.has(row.status))
+      .reduce((sum, row) => sum + row.count, 0);
+  }, [summary]);
+
   /** Requests folded into the operator's stages, so the ring names what the badges name. */
   const stageSlices = useMemo((): Slice[] => {
     if (!summary) return [];
@@ -356,7 +380,7 @@ export function PortalHomePage(): ReactElement {
             value={openCount}
             note="Хаагдаагүй байгаа"
             fill="#2563eb"
-            loading={loading}
+            loading={summary === null}
           />
           {canSeeSites && (
             <>
