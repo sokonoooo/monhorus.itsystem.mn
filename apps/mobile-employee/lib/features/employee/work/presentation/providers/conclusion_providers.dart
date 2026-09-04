@@ -345,6 +345,16 @@ class ConclusionEditorState {
 /// Which request's conclusion, and where its equipment lives.
 typedef ConclusionRef = ({String requestId, String? buildingId});
 
+/// The working copy of one request's conclusion.
+///
+/// Deliberately NOT `autoDispose`: the draft has to survive leaving the screen, which is
+/// what a technician does when the equipment picker sends them to a floor, or when a call
+/// comes in mid-write-up. The state therefore outlives the route — and, before this
+/// watched the session, it outlived the SESSION too. `ProviderScope` is above
+/// `MaterialApp`, so a sign-out unmounts the shell without clearing the container, and the
+/// next person to open the same request was handed the previous technician's unsaved
+/// finding: their words, ready to be submitted under a different name. A shared van
+/// handset is the ordinary case, not an exotic one.
 final AsyncNotifierProviderFamily<ConclusionEditor, ConclusionEditorState, ConclusionRef>
     conclusionEditorProvider = AsyncNotifierProvider.family<ConclusionEditor,
         ConclusionEditorState, ConclusionRef>(ConclusionEditor.new);
@@ -352,6 +362,14 @@ final AsyncNotifierProviderFamily<ConclusionEditor, ConclusionEditorState, Concl
 class ConclusionEditor extends FamilyAsyncNotifier<ConclusionEditorState, ConclusionRef> {
   @override
   Future<ConclusionEditorState> build(ConclusionRef arg) async {
+    // Keyed on WHO is signed in, so a different account rebuilds from the server rather
+    // than inheriting a draft. The id rather than the [AppUser], because `/auth/me` is
+    // re-read on mount and answers with a new object every time: watching the object
+    // would throw away the draft of the technician who is still typing it, which is the
+    // same data loss from the other side. `employeeSelfProvider` watches the user for
+    // this same reason.
+    ref.watch(currentUserProvider.select((AppUser? user) => user?.id));
+
     final WorkReportModel report = _unwrapResult(
       await ref.read(workRepositoryProvider).getWorkReport(arg.requestId),
     );

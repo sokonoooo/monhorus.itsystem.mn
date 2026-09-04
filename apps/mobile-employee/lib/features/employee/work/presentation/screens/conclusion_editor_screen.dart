@@ -71,6 +71,8 @@ class _ConclusionEditorScreenState extends ConsumerState<ConclusionEditorScreen>
 
   ConclusionRef get _ref => (requestId: widget.requestId, buildingId: widget.buildingId);
 
+  ConclusionEditor get _notifier => ref.read(conclusionEditorProvider(_ref).notifier);
+
   @override
   void dispose() {
     _score.dispose();
@@ -159,6 +161,9 @@ class _ConclusionEditorScreenState extends ConsumerState<ConclusionEditorScreen>
 
   Future<void> _save({required bool andSubmit}) async {
     final ConclusionEditor notifier = ref.read(conclusionEditorProvider(_ref).notifier);
+    // Belt and braces. Each of the three reports itself on every keystroke — which is
+    // what makes the draft survive leaving the screen — so these three lines are only
+    // still here for a value put into a controller by something other than typing.
     notifier.setScore(_score.text);
     notifier.setConclusion(_conclusion.text);
     notifier.setRecommendation(_recommendation.text);
@@ -242,6 +247,7 @@ class _ConclusionEditorScreenState extends ConsumerState<ConclusionEditorScreen>
                     LengthLimitingTextInputFormatter(3),
                   ],
                   enabled: writable,
+                  onChanged: _notifier.setScore,
                 ),
                 const SizedBox(height: 4),
                 // The scale in words, as every other score field in this app states it. The
@@ -261,6 +267,7 @@ class _ConclusionEditorScreenState extends ConsumerState<ConclusionEditorScreen>
                   hint: 'Ажлын явц, илэрсэн зүйл',
                   maxLines: 4,
                   enabled: writable,
+                  onChanged: _notifier.setConclusion,
                 ),
                 const SizedBox(height: 10),
                 _RequiredLabel(
@@ -272,6 +279,7 @@ class _ConclusionEditorScreenState extends ConsumerState<ConclusionEditorScreen>
                   hint: 'Дараагийн алхам',
                   maxLines: 3,
                   enabled: writable,
+                  onChanged: _notifier.setRecommendation,
                 ),
 
                 const SizedBox(height: 14),

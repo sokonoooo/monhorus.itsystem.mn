@@ -279,6 +279,71 @@ Future<void> _pumpEditor(
   await tester.pumpAndSettle();
 }
 
+/// The editor behind a route, so it can be left and returned to.
+///
+/// The single [ProviderScope] is above the navigator, exactly as it is in `main.dart`:
+/// popping the editor disposes the SCREEN and its controllers while the container, and
+/// with it the family-keyed editor state, stays. That is the arrangement the draft has
+/// to survive.
+Future<void> _pumpEditorInNavigator(
+  WidgetTester tester, {
+  required WorkRepository repository,
+  AppUser user = _author,
+}) async {
+  await tester.binding.setSurfaceSize(const Size(390, 2400));
+  addTearDown(() => tester.binding.setSurfaceSize(null));
+
+  await tester.pumpWidget(
+    ProviderScope(
+      overrides: <Override>[
+        currentUserProvider.overrideWithValue(user),
+        workRepositoryProvider.overrideWithValue(repository),
+        conclusionFloorsProvider(kBuildingId)
+            .overrideWith((Ref ref) async => const <FloorModel>[]),
+      ],
+      child: MaterialApp(
+        home: Builder(
+          builder: (BuildContext context) => Scaffold(
+            body: Center(
+              child: TextButton(
+                onPressed: () => Navigator.of(context).push(
+                  ConclusionEditorScreen.route(
+                    requestId: kRequestId,
+                    requestNumber: 'SR-202608-0001',
+                    buildingId: kBuildingId,
+                    buildingName: 'Төв байр',
+                  ),
+                ),
+                child: const Text('Дүгнэлт бичих'),
+              ),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+  await tester.pumpAndSettle();
+
+  await tester.tap(find.text('Дүгнэлт бичих'));
+  await tester.pumpAndSettle();
+}
+
+/// The visit's own score, never an equipment card's: both use the 0-100 hint, so the
+/// finder is scoped away from the cards the way [_cardScores] is scoped to them.
+Finder _visitScore() => find.descendant(
+      of: find.byType(ListView),
+      matching: find.widgetWithText(TextField, '0-100'),
+    );
+
+Finder _visitConclusion() =>
+    find.widgetWithText(TextField, 'Ажлын явц, илэрсэн зүйл');
+
+Finder _visitRecommendation() => find.widgetWithText(TextField, 'Дараагийн алхам');
+
+/// What a field is actually showing, which is the controller's text and not the hint.
+String _textOf(WidgetTester tester, Finder field) =>
+    tester.widget<TextField>(field).controller!.text;
+
 /// [FieldLabel] and [EmployeePill] both render their text upper-cased, so an assertion on the label a widget was
 /// given has to do the same. Written as a helper rather than as hard-coded upper-case
 /// strings so the test still reads as the words the UI was asked for.
@@ -1261,6 +1326,46 @@ void main() {
     // «"Дүгнэлт илгээсэн" болгох» button on a request that had already got there.
     await container.read(serviceRequestDetailProvider(kRequestId).future);
     expect(detailReads, 2);
+  });
+
+  testWidgets(
+      'the three visit fields survive leaving the screen and coming back',
+      (WidgetTester tester) async {
+    // The provider is family-keyed and deliberately not autoDispose, so its state
+    // outlives the route: leaving the editor and returning must find what was typed,
+    // exactly as it finds what was typed into an equipment card. The three visit fields
+    // reached the notifier only inside `_save()`, so `_hydrateOnce` re-seeded them from
+    // the last SAVED report and the technician came back to three empty boxes beside
+    // equipment cards that had kept every word — which reads as a rendering glitch
+    // rather than as the data loss it is. They are the three fields
+    // `workReportCompleteness` blocks submission on.
+    final _ReportRepository repository = _ReportRepository(
+      initial: _report(missing: <String>['SCORE', 'CONCLUSION', 'RECOMMENDATION']),
+    );
+    await _pumpEditorInNavigator(tester, repository: repository);
+
+    await tester.enterText(_visitScore(), '82');
+    await tester.enterText(_visitConclusion(), 'Гэрэлтүүлгийн шугам сэргээв.');
+    await tester.enterText(_visitRecommendation(), 'Сарын дараа дахин үзэх.');
+    await tester.pumpAndSettle();
+
+    // Away, without saving — a colleague rings, or the picker is opened from the list.
+    await tester.pageBack();
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Дүгнэлт бичих'));
+    await tester.pumpAndSettle();
+
+    expect(_textOf(tester, _visitScore()), '82');
+    expect(_textOf(tester, _visitConclusion()), 'Гэрэлтүүлгийн шугам сэргээв.');
+    expect(_textOf(tester, _visitRecommendation()), 'Сарын дараа дахин үзэх.');
+
+    // And they are what a save would send, from the state rather than from a controller
+    // the notifier happens to be asked for at the last moment.
+    await _tapAction(tester, 'Ноорогт хадгалах');
+    expect(repository.saved.single.score, 82);
+    expect(repository.saved.single.conclusion, 'Гэрэлтүүлгийн шугам сэргээв.');
+    expect(repository.saved.single.recommendation, 'Сарын дараа дахин үзэх.');
   });
 }
 
