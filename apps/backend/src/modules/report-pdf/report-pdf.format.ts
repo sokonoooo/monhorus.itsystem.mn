@@ -12,18 +12,30 @@
  * unambiguous to a Mongolian reader, which `DD/MM` versus `MM/DD` would not be.
  */
 
+import { env } from '../../config/env';
+
+/**
+ * The zone comes from `APP_TIMEZONE`, as it does on every other server-side date path
+ * (`dashboard.service.ts`, `calendar.service.ts`, `portal-summary.service.ts`). It was
+ * written out here as `'Asia/Ulaanbaatar'`, which is the same value the setting defaults
+ * to — so nothing changes for a default deployment — but it meant a deployment that moved
+ * the zone got every screen in the new zone and every PDF still in the old one, with the
+ * printed report disagreeing with the console it was generated from.
+ */
+const REPORT_TIME_ZONE = env.APP_TIMEZONE;
+
 const MONTH_DAY = new Intl.DateTimeFormat('en-CA', {
   year: 'numeric',
   month: '2-digit',
   day: '2-digit',
-  timeZone: 'Asia/Ulaanbaatar',
+  timeZone: REPORT_TIME_ZONE,
 });
 
 const PARTS = new Intl.DateTimeFormat('en-CA', {
   year: 'numeric',
   month: 'numeric',
   day: 'numeric',
-  timeZone: 'Asia/Ulaanbaatar',
+  timeZone: REPORT_TIME_ZONE,
 });
 
 /**

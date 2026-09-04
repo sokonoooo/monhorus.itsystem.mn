@@ -106,9 +106,9 @@ enum RiskLevel {
   /// fallback for [configuredMin] / [configuredMax] on a device that has never reached
   /// `GET /vocabulary`.
   ///
-  /// The live thresholds are runtime-configurable server-side (`riskBandsOf`,
-  /// `settings.ts:286`) and neither mobile role can read `GET /settings` - it answers
-  /// 403, because `SETTINGS_VIEW` is admin/management/finance only. `GET /vocabulary`
+  /// The live thresholds are runtime-configurable server-side (`riskBandsOf` in
+  /// `settings.ts`) and neither mobile role can read `GET /settings` - it answers 403,
+  /// because `SETTINGS_VIEW` is admin/management/finance only. `GET /vocabulary`
   /// does report the configured ranges, and they are still not printed: a range on a
   /// chip is a promise about how the next assessment will be graded, and only the
   /// server can keep it. Show the band name and the object's own score; never the
@@ -165,7 +165,7 @@ const List<RiskLevel> documentedRiskBands = <RiskLevel>[
 /// lists bands - naming three that nobody configured and no device can be in.
 ///
 /// So: the ladder the server reports, in the ORDER THE SERVER REPORTS IT, and the five
-/// documented bands otherwise. `riskBandsOf` (`settings.ts:328`) reverses the resolved
+/// documented bands otherwise. `riskBandsOf` (`settings.ts`) reverses the resolved
 /// ladder before it reaches `GET /vocabulary`, so what arrives is already best-first —
 /// highest minimum score first — which is how the legend, the count chips and the hero
 /// stair all read.

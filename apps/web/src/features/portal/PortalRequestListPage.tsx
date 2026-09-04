@@ -14,13 +14,13 @@ import { FILTER_BAR, FILTER_LABEL, FILTER_SELECT } from '../../components/ui/con
 import { useAuth } from '../../contexts/auth-context';
 import { useRequestStages } from '../../hooks/use-request-stages';
 import { ApiError } from '../../lib/api-client';
+import { BUSINESS_TIME_ZONE } from '../../lib/business-day';
+import { PAGE_SIZE } from '../../lib/pagination';
 import { portalService } from '../../services/portal.service';
 import { PortalStatusBadge } from './PortalBadges';
 
-const PAGE_SIZE = 20;
-
 function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
+  return new Date(iso).toLocaleDateString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
 }
 
 /**

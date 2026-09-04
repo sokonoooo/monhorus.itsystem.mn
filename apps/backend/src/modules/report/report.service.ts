@@ -10,7 +10,6 @@ import {
   REPORT_LABELS,
   REPORT_STATUS_LABELS,
   REPORT_TYPE_LABELS,
-  RISK_LEVEL_LABELS,
   SERVICE_REQUEST_STATUS_LABELS,
   SETTING_KEYS,
   effectivePlannedWorkStatus,
@@ -33,6 +32,7 @@ import { Customer } from '../objects/object.models';
 import { PlannedWork } from '../planned-work/planned-work.models';
 import { Report, ReportItem } from '../report-record/report-record.model';
 import { ServiceRequest } from '../service-request/service-request.model';
+import { riskBandLabelOf } from '../settings/risk-band.label';
 import { getSettings, getRiskBands } from '../settings/settings.service';
 
 /**
@@ -270,12 +270,15 @@ async function riskAssessmentReport(query: ReportQueryInput): Promise<ReportResu
       )
     : assessments;
 
+  // The band names an operator configured, not the ones this build shipped with.
+  const bands = await getRiskBands();
+
   const rows: Row[] = filtered.map((assessment) => ({
     objectCode: labelOf(assessment.object, 'code'),
     objectName: nameOf(assessment.object),
     score: assessment.newScore,
     previousScore: assessment.previousScore,
-    riskLevel: RISK_LEVEL_LABELS[assessment.riskLevel],
+    riskLevel: riskBandLabelOf(assessment.riskLevel, bands),
     conclusion: assessment.conclusion,
     recommendation: assessment.recommendation,
     repairRequired: assessment.repairRequired ? 'Тийм' : 'Үгүй',
@@ -818,6 +821,9 @@ async function technicalReport(query: ReportQueryInput): Promise<ReportResultDto
   ]);
   const countBy = new Map(counts.map((row) => [String(row._id), row.count]));
 
+  // As in `riskAssessmentReport`: the configured ladder, not the compiled one.
+  const bands = await getRiskBands();
+
   const rows: Row[] = reports.map((report) => ({
     reportNumber: report.reportNumber,
     type: REPORT_TYPE_LABELS[report.type],
@@ -828,7 +834,7 @@ async function technicalReport(query: ReportQueryInput): Promise<ReportResultDto
     building: nameOf(report.building),
     itemCount: countBy.get(String(report._id)) ?? 0,
     overallScore: report.overallScore,
-    riskLevel: report.riskLevel ? RISK_LEVEL_LABELS[report.riskLevel] : null,
+    riskLevel: report.riskLevel ? riskBandLabelOf(report.riskLevel, bands) : null,
     conclusion: report.conclusion,
     author: report.approvedByName ?? report.createdByName,
     occurredAt: isoOrNull(report.occurredAt),

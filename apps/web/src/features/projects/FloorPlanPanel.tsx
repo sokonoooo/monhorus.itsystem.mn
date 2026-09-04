@@ -29,6 +29,7 @@ import {
   FILTER_LABEL,
 } from '../../components/ui/control-styles';
 import { ApiError } from '../../lib/api-client';
+import { BUSINESS_TIME_ZONE } from '../../lib/business-day';
 import { authorisedFileUrl } from '../../lib/file-url';
 import { useAuthorisedFileUrls } from '../../lib/use-authorised-file-urls';
 import { objectMasterService, objectTypeService } from '../../services/object-master.service';
@@ -52,7 +53,7 @@ interface FloorPlanPanelProps {
 }
 
 function formatDateTime(iso: string): string {
-  return new Date(iso).toLocaleString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
+  return new Date(iso).toLocaleString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
 }
 
 /**

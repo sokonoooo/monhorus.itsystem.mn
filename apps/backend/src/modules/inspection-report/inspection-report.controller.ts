@@ -13,6 +13,7 @@ import { inspectionReportDocument } from '../report-pdf/inspection-report.pdf';
 import { renderPdf } from '../report-pdf/pdf.renderer';
 import { sendPdf } from '../report-pdf/pdf.response';
 import { loadReportBranding } from '../report-pdf/report-branding';
+import { getRiskBands } from '../settings/settings.service';
 import { loadTaskPhotos, MAX_PHOTOS_PER_TASK } from '../report-pdf/report-images';
 import * as service from './inspection-report.service';
 
@@ -70,7 +71,10 @@ export async function getReportPdfHandler(
     // The customer's own letterhead, when they have set one. Null otherwise, and the
     // header then prints the operator's logo alone as it always has.
     const branding = await loadReportBranding(plannedWork.customer);
-    const pdf = await renderPdf(inspectionReportDocument(report, branding, photos));
+    // The tables print the administrator's band names, the same ladder `overallLabel` was
+    // resolved against, so one page cannot carry two vocabularies.
+    const bands = await getRiskBands();
+    const pdf = await renderPdf(inspectionReportDocument(report, branding, photos, bands))
     sendPdf(res, pdf, `uzleg-${report.workNumber}`);
   } catch (error) {
     next(error);

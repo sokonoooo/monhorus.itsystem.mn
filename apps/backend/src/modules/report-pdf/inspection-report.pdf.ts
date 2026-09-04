@@ -1,4 +1,4 @@
-import { RISK_LEVEL_LABELS, type InspectionReportDto } from '@monhorus/shared';
+import { type InspectionReportDto, type RiskBand } from '@monhorus/shared';
 import type { Content, TDocumentDefinitions } from 'pdfmake/interfaces';
 
 import {
@@ -28,6 +28,7 @@ import {
   formatYear,
   joinParts,
 } from './report-pdf.format';
+import { riskBandLabelOf } from '../settings/risk-band.label';
 import type { ReportBranding } from './report-branding';
 
 /**
@@ -45,6 +46,13 @@ export function inspectionReportDocument(
   report: InspectionReportDto,
   branding: ReportBranding,
   photos: ReadonlyMap<string, readonly BrandingImage[]> = new Map(),
+  /**
+   * The configured risk ladder, for the band names in the tables below.
+   *
+   * Optional, and omitting it prints the shipped names — which is what every caller did
+   * before, and keeps this renderer usable from a test with no database behind it.
+   */
+  bands: readonly RiskBand[] | null = null,
 ): TDocumentDefinitions {
   // The report's own contractor still wins where it has one — it was resolved when the
   // report was written and is a fact about that inspection — and the configured company
@@ -61,7 +69,7 @@ export function inspectionReportDocument(
       title: `${TITLE} ${report.workNumber}`,
       author: contractor,
     },
-    content: [...cover(report, branding), ...body(report, contractor, photos)],
+    content: [...cover(report, branding), ...body(report, contractor, photos, bands)],
   };
 }
 
@@ -100,6 +108,7 @@ function body(
   report: InspectionReportDto,
   contractor: string,
   photos: ReadonlyMap<string, readonly BrandingImage[]>,
+  bands: readonly RiskBand[] | null,
 ): Content[] {
   const content: Content[] = [
     sectionHeading(BODY_HEADING, true),
@@ -143,7 +152,7 @@ function body(
           task.skipped ? `${task.statusLabel} (алгассан)` : task.statusLabel,
           [
             formatScore(task.score),
-            task.riskLevel === null ? '' : RISK_LEVEL_LABELS[task.riskLevel],
+            task.riskLevel === null ? '' : riskBandLabelOf(task.riskLevel, bands),
           ]
             .filter((part) => part !== '')
             .join(' · '),
@@ -197,7 +206,7 @@ function body(
           index + 1,
           issue.title,
           issue.locationLabel ?? '',
-          RISK_LEVEL_LABELS[issue.riskLevel],
+          riskBandLabelOf(issue.riskLevel, bands),
           issue.condition ?? '',
           issue.advice ?? '',
         ]),

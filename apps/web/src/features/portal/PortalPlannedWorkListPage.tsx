@@ -17,6 +17,8 @@ import { SearchField } from '../../components/ui/SearchField';
 import { FILTER_BAR, FILTER_LABEL, FILTER_SELECT } from '../../components/ui/control-styles';
 import { useAuth } from '../../contexts/auth-context';
 import { ApiError } from '../../lib/api-client';
+import { BUSINESS_TIME_ZONE } from '../../lib/business-day';
+import { PAGE_SIZE } from '../../lib/pagination';
 import { portalService } from '../../services/portal.service';
 import {
   LateBadge,
@@ -25,7 +27,7 @@ import {
 } from '../planned-work/PlannedWorkBadges';
 
 function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
+  return new Date(iso).toLocaleDateString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
 }
 
 /**
@@ -46,9 +48,6 @@ function formatDate(iso: string): string {
  * submitted looks much like a job that is quietly progressing — so it is counted in a banner
  * at the top rather than left to be spotted among finished work.
  */
-
-/** Matches the other portal list, so the two feel like one screen with two tabs. */
-const PAGE_SIZE = 20;
 
 /** The two states in which the next move is the customer's own. */
 const AWAITING_CUSTOMER: readonly PlannedWorkEffectiveStatus[] = ['DRAFT', 'REJECTED'];

@@ -5,6 +5,7 @@ import { Button } from '../../../components/ui/Button';
 import { Drawer } from '../../../components/ui/Drawer';
 import { LoadMeasurementList } from './LoadMeasurements';
 import { ScoreBar } from './ObjectBadges';
+import { BUSINESS_TIME_ZONE } from '../../../lib/business-day';
 
 interface AssessmentDetailDrawerProps {
   assessment: ObjectAssessmentDto | null;
@@ -22,7 +23,7 @@ interface AssessmentDetailDrawerProps {
 
 function formatDateTime(iso: string | null): string {
   if (!iso) return '-';
-  return new Date(iso).toLocaleString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
+  return new Date(iso).toLocaleString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
 }
 
 function DetailRow({ label, children }: { label: string; children: ReactNode }): ReactElement {

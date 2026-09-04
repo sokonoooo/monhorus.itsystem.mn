@@ -25,6 +25,11 @@ import { created, noContent, ok } from '../../common/utils/api-response.util';
 import { pathParam } from '../../common/utils/path-param.util';
 import { buildRequestMeta as meta } from '../../common/utils/request-meta.util';
 import {
+  OBJECT_NODE_CHILDREN_DEFAULT_LIMIT,
+  OBJECT_NODE_CHILDREN_MAX_LIMIT,
+  noteTruncation,
+} from '../../common/utils/read-limit.util';
+import {
   authenticate,
   enforcePasswordChange,
   requireAuth,
@@ -55,7 +60,12 @@ const childrenQuerySchema = z.object({
     .enum(['CUSTOMER', 'PROJECT', 'BUILDING', 'FLOOR', 'ROOM', 'PANEL', 'CIRCUIT', 'DEVICE'])
     .optional(),
   search: z.string().trim().max(200).optional(),
-  limit: z.coerce.number().int().positive().max(200).default(100),
+  limit: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(OBJECT_NODE_CHILDREN_MAX_LIMIT)
+    .default(OBJECT_NODE_CHILDREN_DEFAULT_LIMIT),
 });
 
 type ChildrenQuery = z.infer<typeof childrenQuerySchema>;
@@ -164,6 +174,16 @@ objectRouter.get(
       }
 
       const nodes = await ObjectNode.find(filter).sort({ name: 1 }).limit(query.limit);
+      /*
+       * This route is the one list endpoint that returns a bare array rather than
+       * `PaginatedData`, so a client that is handed a full page has no field to read and no
+       * way to tell a complete level from a cut-off one. Until the response carries a
+       * `total`, the cap at least announces itself here.
+       */
+      noteTruncation('objects.nodes', nodes.length, query.limit, {
+        parentId: query.parentId ?? null,
+        kind: query.kind ?? null,
+      });
       const childSet = await hasChildrenMap(nodes.map((node) => node._id));
       const bands = await getRiskBands();
 

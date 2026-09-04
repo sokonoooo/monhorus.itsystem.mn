@@ -16,6 +16,7 @@ import { PageHeader } from '../../components/ui/PageHeader';
 import { ErrorState, Skeleton } from '../../components/ui/States';
 import { useAuth } from '../../contexts/auth-context';
 import { ApiError } from '../../lib/api-client';
+import { BUSINESS_TIME_ZONE } from '../../lib/business-day';
 import { employeeService } from '../../services/employee.service';
 import { EmployeeDocumentsPanel } from './EmployeeDocumentsPanel';
 import { EmployeeSystemAccessPanel } from './EmployeeSystemAccessPanel';
@@ -276,7 +277,7 @@ ${payload.registrationNumber ? `<tr><td>Регистрийн дугаар</td><t
                       </p>
                       <p className="text-xs text-slate-500">
                         {new Date(entry.changedAt).toLocaleString('mn-MN', {
-                          timeZone: 'Asia/Ulaanbaatar',
+                          timeZone: BUSINESS_TIME_ZONE,
                         })}
                         {entry.changedByName ? ` · ${entry.changedByName}` : ''}
                         {entry.reason ? ` · ${entry.reason}` : ''}

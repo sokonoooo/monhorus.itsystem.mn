@@ -29,6 +29,8 @@ import { useToast } from '../../components/ui/ToastProvider';
 import { useAuth } from '../../contexts/auth-context';
 import { useTableColumns } from '../../hooks/use-table-columns';
 import { ApiError } from '../../lib/api-client';
+import { BUSINESS_TIME_ZONE } from '../../lib/business-day';
+import { PAGE_SIZE } from '../../lib/pagination';
 import { rbacService, type PermissionCatalogueEntry } from '../../services/rbac.service';
 import { userService } from '../../services/user.service';
 import { RoleEditorDrawer } from './RoleEditorDrawer';
@@ -42,14 +44,6 @@ type TabKey = 'roles' | 'users';
  * remain editable by a holder of rbac.manage. The backend enforces both rules, so this
  * screen only avoids offering the action.
  */
-/**
- * Users per page.
- *
- * Twenty, matching every other list in the app, so a reader meets the same rhythm
- * wherever they are.
- */
-const USER_PAGE_SIZE = 20;
-
 export function AccessPage(): ReactElement {
   const { can, user: actor } = useAuth();
   const { notify } = useToast();
@@ -124,7 +118,7 @@ export function AccessPage(): ReactElement {
       // as enums, so an empty string is a validation error rather than "no filter".
       const page = await rbacService.users({
         page: userPage,
-        limit: USER_PAGE_SIZE,
+        limit: PAGE_SIZE,
         ...(userSearch ? { search: userSearch } : {}),
         ...(userRoleFilter ? { role: userRoleFilter } : {}),
         ...(userStatusFilter ? { status: userStatusFilter } : {}),
@@ -348,7 +342,7 @@ export function AccessPage(): ReactElement {
       render: (row) => (
         <span className="whitespace-nowrap text-slate-700">
           {row.lastLoginAt
-            ? new Date(row.lastLoginAt).toLocaleString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' })
+            ? new Date(row.lastLoginAt).toLocaleString('mn-MN', { timeZone: BUSINESS_TIME_ZONE })
             : 'Нэвтрээгүй'}
         </span>
       ),
@@ -557,7 +551,7 @@ export function AccessPage(): ReactElement {
               columns={userColumnState.visibleColumns}
               rows={users ?? []}
               rowKey={(row) => row.id}
-              numbering={{ page: userPage, limit: USER_PAGE_SIZE }}
+              numbering={{ page: userPage, limit: PAGE_SIZE }}
               loading={users === null}
               emptyTitle={hasUserFilters ? 'Илэрц олдсонгүй' : 'Хэрэглэгч байхгүй'}
               {...(hasUserFilters

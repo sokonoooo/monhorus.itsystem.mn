@@ -14,7 +14,7 @@ import { Drawer } from '../../components/ui/Drawer';
 import { useToast } from '../../components/ui/ToastProvider';
 import { FIELD_TEXTAREA, FILTER_LABEL } from '../../components/ui/control-styles';
 import { ApiError } from '../../lib/api-client';
-import { addDaysToToday, currentMonthInput, todayDateInput } from '../../lib/calendar-date';
+import { addDays, currentMonthKey, todayDateKey } from '../../lib/business-day';
 import {
   INVOICE_FINANCE_UNAVAILABLE_NOTE,
   useInvoiceFinance,
@@ -36,11 +36,6 @@ function emptyLine(): LineDraft {
 function toNumber(value: string): number {
   const parsed = Number(value.trim());
   return Number.isFinite(parsed) ? parsed : Number.NaN;
-}
-
-/** Today plus the configured due-day count, as a `yyyy-mm-dd` value for a date input. */
-function addDays(days: number): string {
-  return addDaysToToday(days);
 }
 
 /**
@@ -65,8 +60,8 @@ export function InvoiceFormDrawer({
 
   const [customerId, setCustomerId] = useState('');
   const [billingType, setBillingType] = useState<InvoiceBillingType>('ADDITIONAL_SERVICE');
-  const [billingPeriod, setBillingPeriod] = useState(() => currentMonthInput());
-  const [issueDate, setIssueDate] = useState(() => todayDateInput());
+  const [billingPeriod, setBillingPeriod] = useState(() => currentMonthKey());
+  const [issueDate, setIssueDate] = useState(() => todayDateKey());
   // Empty until `finance.invoice_due_days` is known. It deliberately does not start at 30:
   // a term nobody configured, printed on a document the customer is expected to pay by
   // that date, is a figure this drawer has no business inventing.
@@ -91,8 +86,8 @@ export function InvoiceFormDrawer({
     if (!open) return;
     setCustomerId('');
     setBillingType('ADDITIONAL_SERVICE');
-    setBillingPeriod(currentMonthInput());
-    setIssueDate(todayDateInput());
+    setBillingPeriod(currentMonthKey());
+    setIssueDate(todayDateKey());
     setDueDate('');
     setNotes('');
     setLines([emptyLine()]);
@@ -104,7 +99,7 @@ export function InvoiceFormDrawer({
   // A due date the user has since typed over is therefore never clobbered.
   useEffect(() => {
     if (finance.status !== 'ready') return;
-    setDueDate(addDays(finance.dueDays));
+    setDueDate(addDays(todayDateKey(), finance.dueDays));
   }, [finance]);
 
   function updateLine(index: number, patch: Partial<LineDraft>): void {

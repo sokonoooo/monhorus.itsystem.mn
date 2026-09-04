@@ -24,6 +24,14 @@
  *
  * A `DateKey` is a calendar date (`YYYY-MM-DD`), not an instant: exactly what an
  * `<input type="date">` holds and what a URL filter carries.
+ *
+ * THIS IS THE ONLY DATE CONVENTION IN THE APP. A second one, `lib/calendar-date.ts`, framed
+ * the invoice screens' date defaults in the VIEWER's zone; it is gone. An invoice's issue
+ * date, due date, billing period and payment date are business facts the backend stores and
+ * bounds in `APP_TIMEZONE` — the due-soon reminder is computed there — so a viewer's browser
+ * zone has no standing over them. Keeping both meant the same invoice, raised at the same
+ * moment from Ulaanbaatar and from anywhere west of it, could carry two different issue
+ * dates. Every default now comes from here.
  */
 
 /** The zone every calendar day in this system is measured in. */
@@ -187,4 +195,14 @@ export function daysBetween(from: DateKey, to: DateKey): number {
 /** First day of the current month, in the business timezone. */
 export function currentMonthStartDateKey(): DateKey {
   return monthStartDateKey(todayDateKey());
+}
+
+/** `YYYY-MM` for a date key: exactly what an `<input type="month">` holds. */
+export function monthKey(date: DateKey): string {
+  return date.slice(0, 7);
+}
+
+/** The current month, in the business timezone, as an `<input type="month">` value. */
+export function currentMonthKey(): string {
+  return monthKey(todayDateKey());
 }

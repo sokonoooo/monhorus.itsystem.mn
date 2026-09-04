@@ -397,6 +397,20 @@ export function resumeTargetStatus(hasActualStartDate: boolean): PlannedWorkLife
   return hasActualStartDate ? 'STARTED' : 'PLANNED';
 }
 
+/**
+ * Nothing closes after this: ARCHIVED and CANCELLED.
+ *
+ * Uncalled, and three places restate it by hand instead —
+ * `planned-work.service.ts:1723`, `planned-work.report.service.ts:368` and
+ * `PlannedWorkDetailPage.tsx:198`, each spelling out
+ * `status === 'ARCHIVED' || status === 'CANCELLED'`. Deleting this would make that
+ * duplication permanent, so it stays as the one answer those three should read.
+ *
+ * NOT the same question as the employee app's `PlannedWorkStatus.isFinished`, which also
+ * counts COMPLETED. That one asks "is anything further owed on this record"; this one asks
+ * "is the record closed", and a COMPLETED work is still open to being archived. Do not
+ * reconcile the two.
+ */
 export function isTerminalLifecycleStatus(status: PlannedWorkLifecycleStatus): boolean {
   return status === 'ARCHIVED' || status === 'CANCELLED';
 }

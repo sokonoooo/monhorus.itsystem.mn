@@ -53,12 +53,3 @@ export const MAX_SURVEY_QUESTIONS = 20;
 export const MAX_SURVEY_CHOICE_OPTIONS = 10;
 export const MAX_SURVEY_QUESTION_TEXT = 300;
 export const MAX_SURVEY_TEXT_ANSWER = 2000;
-
-/**
- * Why a technician on the job carries no response.
- *
- * Recorded rather than left absent, because "the customer never met this person" and "the
- * customer has not answered yet" are different facts and only one of them is a reason to
- * stop asking.
- */
-export const SURVEY_SKIP_REASON = 'NOT_ENCOUNTERED' as const;

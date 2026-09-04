@@ -2,7 +2,7 @@ import {
   LOAD_MEASUREMENT_KIND_LABELS,
   LOAD_MEASUREMENT_KIND_UNIT,
   LOAD_MEASUREMENT_UNIT_LABELS,
-  RISK_LEVEL_LABELS,
+  PERMISSIONS,
   acceptsPhase,
   mergeAttributeValues,
   riskLevelFor,
@@ -40,6 +40,11 @@ import {
 import type { AuthContext } from '../../common/types/express';
 import { CREATOR_POPULATE, creatorName } from '../../common/utils/creator.util';
 import type { RequestMeta } from '../../common/utils/request-meta.util';
+import {
+  OBJECT_TIMELINE_AUDIT_LIMIT,
+  OBJECT_TIMELINE_REPORT_ITEM_LIMIT,
+  noteTruncation,
+} from '../../common/utils/read-limit.util';
 import { logger } from '../../config/logger';
 import { AuditLog } from '../audit/audit-log.model';
 import { recordAudit } from '../audit/audit.service';
@@ -50,6 +55,7 @@ import { Report, ReportItem, type IReport } from '../report-record/report-record
 import { applyReportSafely, writeReport } from '../report-record/report-record.service';
 import { recalculateFrom } from '../report-record/rollup.service';
 import { ServiceRequest } from '../service-request/service-request.model';
+import { riskBandLabelOf } from '../settings/risk-band.label';
 import { getRiskBands } from '../settings/settings.service';
 import { StoredFile, type IStoredFile } from '../storage/stored-file.model';
 import { appendAssessmentHistory } from './assessment-history.service';
@@ -2008,12 +2014,12 @@ export async function recordAssessment(
   if (band?.notifies) {
     await notify({
       event: 'RISK_ASSESSMENT_RAISED',
-      title: `${object.name}: ${RISK_LEVEL_LABELS[riskLevel]} (${input.newScore}%)`,
+      title: `${object.name}: ${riskBandLabelOf(riskLevel, bands)} (${input.newScore}%)`,
       body: input.conclusion ?? null,
       entityType: 'Object',
       entityId: object._id,
       linkPath: object.floor ? `/floors/${String(object.floor)}/objects/${String(object._id)}` : null,
-      permission: 'dispatch.view',
+      permission: PERMISSIONS.DISPATCH_VIEW,
       excludeUserId: actor.userId,
     });
   }
@@ -2028,7 +2034,7 @@ export async function recordAssessment(
       entityType: 'Object',
       entityId: object._id,
       linkPath: object.floor ? `/floors/${String(object.floor)}/objects/${String(object._id)}` : null,
-      permission: 'dispatch.view',
+      permission: PERMISSIONS.DISPATCH_VIEW,
       excludeUserId: actor.userId,
     });
   }
@@ -2067,11 +2073,21 @@ export async function getObjectHistory(
     ObjectAssessment.find({ object: object._id })
       .populate({ path: 'photos', select: PHOTO_SELECT })
       .sort({ assessedAt: -1 }),
-    ReportItem.find({ object: object._id }).sort({ createdAt: -1 }).limit(100).lean(),
+    ReportItem.find({ object: object._id })
+      .sort({ createdAt: -1 })
+      .limit(OBJECT_TIMELINE_REPORT_ITEM_LIMIT)
+      .lean(),
     AuditLog.find({ entityType: 'Object', entityId: object._id })
       .sort({ createdAt: -1 })
-      .limit(100),
+      .limit(OBJECT_TIMELINE_AUDIT_LIMIT),
   ]);
+
+  noteTruncation('objectHistory.reportItems', items.length, OBJECT_TIMELINE_REPORT_ITEM_LIMIT, {
+    objectId: String(object._id),
+  });
+  noteTruncation('objectHistory.audit', auditRows.length, OBJECT_TIMELINE_AUDIT_LIMIT, {
+    objectId: String(object._id),
+  });
 
   const reports = await Report.find({ _id: { $in: items.map((item) => item.report) } }).lean<
     (IReport & { _id: Types.ObjectId })[]

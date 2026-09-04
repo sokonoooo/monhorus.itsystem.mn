@@ -31,6 +31,7 @@ import { riskLabelOf, riskPaletteOf } from '../../components/ui/risk-palette';
 import { ErrorState, Skeleton } from '../../components/ui/States';
 import { useRiskBands } from '../../hooks/use-risk-bands';
 import { ApiError } from '../../lib/api-client';
+import { BUSINESS_TIME_ZONE } from '../../lib/business-day';
 import { dashboardService } from '../../services/org.service';
 import { CustomiseDashboardDrawer } from './CustomiseDashboardDrawer';
 import { TodayPanel } from './TodayPanel';
@@ -523,7 +524,7 @@ export function DashboardPage(): ReactElement {
             ? 'Зөвхөн танд болон таны багт хуваарилагдсан ажил.'
             : 'Байгууллагын нийт үзүүлэлт.'
         } Шинэчлэгдсэн: ${new Date(summary.generatedAt).toLocaleString('mn-MN', {
-          timeZone: 'Asia/Ulaanbaatar',
+          timeZone: BUSINESS_TIME_ZONE,
         })}`}
         /*
          * No customise button on a scoped board.

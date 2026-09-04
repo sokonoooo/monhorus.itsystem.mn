@@ -7,10 +7,8 @@ import { PageHeader } from '../../components/ui/PageHeader';
 import { SearchField } from '../../components/ui/SearchField';
 import { FILTER_BAR, FILTER_LABEL, FILTER_SEARCH_SLOT } from '../../components/ui/control-styles';
 import { ApiError } from '../../lib/api-client';
+import { PAGE_SIZE } from '../../lib/pagination';
 import { portalService } from '../../services/portal.service';
-
-/** The same page size as the other portal lists, so the screens read as one product. */
-const PAGE_SIZE = 20;
 
 /**
  * The customer's own buildings.

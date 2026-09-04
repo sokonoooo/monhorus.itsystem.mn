@@ -24,10 +24,10 @@ import { FILTER_LABEL, FILTER_SEARCH_SLOT, FILTER_SELECT } from '../../component
 import { useToast } from '../../components/ui/ToastProvider';
 import { useAuth } from '../../contexts/auth-context';
 import { ApiError } from '../../lib/api-client';
+import { BUSINESS_TIME_ZONE } from '../../lib/business-day';
+import { PAGE_SIZE } from '../../lib/pagination';
 import { generatePasscode } from '../../lib/passcode';
 import { userService } from '../../services/user.service';
-
-const PAGE_SIZE = 20;
 
 /** The server refuses a caller acting on their own account, so the item is dead here too. */
 const SELF_TARGET_REASON = 'Өөрийн бүртгэл дээр энэ үйлдлийг хийх боломжгүй.';
@@ -89,7 +89,7 @@ function StatusBadge({ status }: { status: AccountStatus }): ReactElement {
 
 function formatDate(iso: string | null): string {
   if (!iso) return '-';
-  return new Date(iso).toLocaleDateString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
+  return new Date(iso).toLocaleDateString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
 }
 
 /**

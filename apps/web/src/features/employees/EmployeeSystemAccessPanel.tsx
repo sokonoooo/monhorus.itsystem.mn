@@ -280,6 +280,9 @@ export function EmployeeSystemAccessPanel({
   );
 }
 
+/** One page of accounts for the "link an existing user" picker. */
+const USER_PICKER_LIMIT = 100;
+
 function CreateAccessDrawer({
   employeeId,
   open,
@@ -307,6 +310,7 @@ function CreateAccessDrawer({
   const [selectedRoles, setSelectedRoles] = useState<string[]>([]);
   const [roles, setRoles] = useState<RoleDto[]>([]);
   const [users, setUsers] = useState<UserDto[]>([]);
+  const [userTotal, setUserTotal] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -334,9 +338,15 @@ function CreateAccessDrawer({
   useEffect(() => {
     if (!open || !canPickUsers) return;
     rbacService
-      .users({ limit: 100 })
-      .then((page) => setUsers(page.items))
-      .catch(() => setUsers([]));
+      .users({ limit: USER_PICKER_LIMIT })
+      .then((page) => {
+        setUsers(page.items);
+        setUserTotal(page.total);
+      })
+      .catch(() => {
+        setUsers([]);
+        setUserTotal(0);
+      });
   }, [open, canPickUsers]);
 
   const toggleRole = useCallback((roleId: string): void => {
@@ -396,6 +406,9 @@ function CreateAccessDrawer({
   // A plain admin may not mint an account at or above their own tier; the same rule is
   // re-checked on the server.
   const assignableRoles = USER_ROLES.filter((entry) => canManageRole(actorRole, entry));
+  // The picker holds one page, so a deployment with more accounts than that has people
+  // this select never offers. Saying so is the difference between "not there" and "not shown".
+  const usersTruncated = userTotal > users.length;
 
   return (
     <Drawer
@@ -461,7 +474,16 @@ function CreateAccessDrawer({
             </Field>
           </div>
         ) : (
-          <Field label="Хэрэглэгч" required error={fieldErrors.userId}>
+          <Field
+            label="Хэрэглэгч"
+            required
+            error={fieldErrors.userId}
+            hint={
+              usersTruncated
+                ? `Нийт ${userTotal} хэрэглэгчээс эхний ${users.length} нь жагсав.`
+                : undefined
+            }
+          >
             <SelectInput
               value={userId}
               onChange={setUserId}

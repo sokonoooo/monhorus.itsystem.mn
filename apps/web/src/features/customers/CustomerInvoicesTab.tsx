@@ -13,14 +13,14 @@ import { SearchField } from '../../components/ui/SearchField';
 import { FILTER_LABEL, FILTER_SEARCH_SLOT, FILTER_SELECT } from '../../components/ui/control-styles';
 import { useTableColumns } from '../../hooks/use-table-columns';
 import { ApiError } from '../../lib/api-client';
+import { BUSINESS_TIME_ZONE } from '../../lib/business-day';
+import { PAGE_SIZE } from '../../lib/pagination';
 import { invoiceService, type InvoicePage } from '../../services/invoice.service';
 import { BillingTypeBadge, InvoiceStatusBadge, Money } from '../invoices/InvoiceBadges';
 
-const PAGE_SIZE = 20;
-
 function formatDate(iso: string | null): string {
   if (!iso) return '-';
-  return new Date(iso).toLocaleDateString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
+  return new Date(iso).toLocaleDateString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
 }
 
 /** Invoices issued to this customer, with their receivable position. */

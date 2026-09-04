@@ -256,31 +256,12 @@ enum ServiceRequestStatus {
   };
 }
 
-/// `SERVICE_REQUEST_TYPES`.
-///
-/// The list DTO carries no free-text description, so this label is the most
-/// meaningful title a list card can print for a request that names no device.
-enum ServiceRequestType {
-  plannedInspection('PLANNED_INSPECTION', 'Төлөвлөгөөт үзлэг'),
-  repair('REPAIR', 'Засвар үйлчилгээ'),
-  standardCall('STANDARD_CALL', 'Энгийн дуудлага'),
-  urgentCall('URGENT_CALL', 'Яаралтай дуудлага'),
-  installation('INSTALLATION', 'Шинэ угсралт/өргөтгөл'),
-  revisit('REVISIT', 'Давтан үзлэг');
-
-  const ServiceRequestType(this.wireValue, this.label);
-
-  final String wireValue;
-  final String label;
-
-  static ServiceRequestType? fromWire(String? value) {
-    if (value == null) return null;
-    for (final ServiceRequestType type in ServiceRequestType.values) {
-      if (type.wireValue == value) return type;
-    }
-    return null;
-  }
-}
+// There is deliberately no `ServiceRequestType` here.
+//
+// This file used to carry a six-value transcription of `SERVICE_REQUEST_TYPES`. That
+// constant is gone from packages/shared and the request DTO has no type field at all —
+// urgency is derived from the equipment's SLA window server-side — so the enum named a
+// classification nothing sends and nothing read it.
 
 /// `SLA_STATES`.
 enum SlaState {

@@ -13,6 +13,7 @@ import { SubNav } from '../../components/ui/SubNav';
 import { useToast } from '../../components/ui/ToastProvider';
 import { SERVICE_REQUEST_TABS } from '../../config/navigation';
 import { ApiError } from '../../lib/api-client';
+import { BUSINESS_TIME_ZONE } from '../../lib/business-day';
 import { serviceRequestService } from '../../services/service-request.service';
 
 /**
@@ -173,7 +174,7 @@ export function OpenServiceRequestsPage(): ReactElement {
       header: 'Үүссэн',
       render: (row) => (
         <span className="whitespace-nowrap text-slate-700">
-          {new Date(row.createdAt).toLocaleString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' })}
+          {new Date(row.createdAt).toLocaleString('mn-MN', { timeZone: BUSINESS_TIME_ZONE })}
         </span>
       ),
     },

@@ -26,7 +26,8 @@ enum NotificationSeverity {
 }
 
 /// Mirrors `NotificationEvent` / `NOTIFICATION_EVENT_LABELS` in
-/// packages/shared/src/constants/notification.ts. All eighteen values, in order.
+/// packages/shared/src/constants/notification.ts. All twenty-five values, in `NOTIFICATION_EVENTS`
+/// order. It read "eighteen" for several releases after seven events were added.
 enum NotificationEvent {
   plannedWorkDueSoon('PLANNED_WORK_DUE_SOON', 'Төлөвлөгөөт ажлын хугацаа дөхсөн'),
   plannedWorkOverdue('PLANNED_WORK_OVERDUE', 'Төлөвлөгөөт ажил хугацаа хэтэрсэн'),
@@ -94,7 +95,8 @@ class NotificationModel {
   final String title;
   final String? body;
 
-  /// Free-form on the wire; a service request notification carries the string 'Work'.
+  /// Free-form on the wire. See [serviceRequestEntityType] for the one value this app
+  /// routes on.
   final String? entityType;
   final String? entityId;
   final String? linkPath;
@@ -121,8 +123,17 @@ class NotificationModel {
   bool get isUnread => readAt == null;
 
   /// The service request this notification points at, when it points at one.
-  String? get serviceRequestId => entityType == 'Work' ? entityId : null;
+  String? get serviceRequestId =>
+      entityType == serviceRequestEntityType ? entityId : null;
 }
+
+/// The `entityType` the backend stamps on a service-request notification.
+///
+/// It is 'Work', not 'ServiceRequest': the Mongoose model behind a service request is
+/// still named `Work` from an earlier vocabulary, and `entityType` carries the model
+/// name. A persisted wire value, so it is read and never rewritten here — it is named
+/// only so the mismatch is explained where somebody would otherwise read it as a typo.
+const String serviceRequestEntityType = 'Work';
 
 /// Mirrors `NotificationUnreadCountDto`.
 class NotificationUnreadCountModel {

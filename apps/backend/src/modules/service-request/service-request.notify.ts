@@ -1,7 +1,6 @@
 import {
-  SERVICE_REQUEST_STATUSES,
+  PERMISSIONS,
   SERVICE_REQUEST_STATUS_LABELS,
-  SERVICE_REQUEST_TRANSITIONS,
   type ServiceRequestStatus,
 } from '@monhorus/shared';
 import { Types } from 'mongoose';
@@ -10,6 +9,7 @@ import { notify } from '../notification/notification.service';
 import { userIdsForEmployees } from '../notification/recipient.util';
 import { ObjectNode } from '../objects/object.models';
 import { ServiceRequest } from './service-request.model';
+import { TERMINAL_SERVICE_REQUEST_STATUS_LIST } from './service-request.terminality';
 
 /**
  * WHO HEARS ABOUT A SERVICE REQUEST, decided in one place.
@@ -105,17 +105,6 @@ export function isCustomerVisibleStatus(status: ServiceRequestStatus): boolean {
 }
 
 /**
- * The statuses a request can never leave, derived rather than listed.
- *
- * COMPLETED and CANCELLED are today's answer, and `SERVICE_REQUEST_TRANSITIONS` already
- * says so by giving them no outbound moves. Reading it from there means a status that
- * becomes terminal later is picked up here without anybody remembering to come back.
- */
-const FINISHED_STATUSES: readonly ServiceRequestStatus[] = SERVICE_REQUEST_STATUSES.filter(
-  (status) => SERVICE_REQUEST_TRANSITIONS[status].length === 0,
-);
-
-/**
  * Announces that a request has moved, to the people the move actually concerns.
  *
  * WHAT WAS WRONG BEFORE. Both call sites addressed `permission: 'service_request.view'` and
@@ -146,7 +135,7 @@ export async function notifyStatusChanged(input: {
     entityType: 'Work',
     entityId: request._id,
     linkPath: staffLink(request._id),
-    permission: 'dispatch.view',
+    permission: PERMISSIONS.DISPATCH_VIEW,
     userIds: await userIdsForEmployees(request.assignedEmployees.map(String)),
     excludeUserId: input.actorUserId,
   });
@@ -258,7 +247,7 @@ export async function notifySiteBusy(
     building: request.building,
     // The request that triggered this is obviously at its own building.
     _id: { $ne: request._id },
-    status: { $nin: FINISHED_STATUSES },
+    status: { $nin: TERMINAL_SERVICE_REQUEST_STATUS_LIST },
     // Cheaper than loading every open request and filtering in memory, and it states the
     // condition that actually matters: somebody is on it.
     'assignedEmployees.0': { $exists: true },
