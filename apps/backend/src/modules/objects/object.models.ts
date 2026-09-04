@@ -19,6 +19,15 @@ export interface ICustomer {
   /** Хариуцсан хүн, requirements 4.2. References an internal Employee. */
   responsibleEmployee: Types.ObjectId | null;
   notes: string | null;
+  /**
+   * The customer's letterhead, printed on the reports for their work.
+   *
+   * A `StoredFile` reference rather than the bytes: the file already lives in the same
+   * store every other upload does, and holding an id here means replacing a logo is one
+   * field write rather than a document rewrite. Null on every customer that has none,
+   * which is most of them.
+   */
+  logo: Types.ObjectId | null;
   isActive: boolean;
   /**
    * Who registered this customer.
@@ -49,6 +58,7 @@ const customerSchema = new Schema<ICustomer>(
       index: true,
     },
     notes: { type: String, default: null, trim: true, maxlength: 2000 },
+    logo: { type: Schema.Types.ObjectId, ref: 'StoredFile', default: null },
     isActive: { type: Boolean, default: true, index: true },
     createdBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
   },

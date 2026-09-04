@@ -70,6 +70,7 @@ export function toCustomerDto(
       : null,
     responsibleEmployeeName: employeeName(responsible),
     notes: customer.notes,
+    logoFileId: customer.logo ? String(customer.logo) : null,
     createdByName: creatorName(customer.createdBy),
     isActive: customer.isActive,
     ...(counts ?? {}),
@@ -127,6 +128,7 @@ export async function createCustomer(
       ? new Types.ObjectId(input.responsibleEmployeeId)
       : null,
     notes: input.notes ?? null,
+    logo: input.logoFileId ? new Types.ObjectId(input.logoFileId) : null,
     isActive: true,
     createdBy: new Types.ObjectId(actor.userId),
   });
@@ -176,6 +178,12 @@ export async function updateCustomer(
     customer.responsibleEmployee = input.responsibleEmployeeId
       ? new Types.ObjectId(input.responsibleEmployeeId)
       : null;
+  }
+  // Null clears the letterhead. The stored file itself is left where it is rather than
+  // deleted: an id that was on a customer yesterday may still be named by a PDF somebody
+  // downloaded, and reclaiming a few kilobytes is not worth a dangling reference.
+  if (input.logoFileId !== undefined) {
+    customer.logo = input.logoFileId ? new Types.ObjectId(input.logoFileId) : null;
   }
   if (input.isActive !== undefined) customer.isActive = input.isActive;
 

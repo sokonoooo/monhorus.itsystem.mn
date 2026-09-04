@@ -499,6 +499,149 @@ describe('GET /files/:fileId for staff', () => {
  * so the "at whose records" question is asked where the answer exists: when a request
  * claims the file.
  */
+/**
+ * The customer letterhead: uploaded on its own route, claimed by the customer that names it.
+ *
+ * The claim is the whole security question. The upload parks the file on whoever sent it —
+ * a create has no customer id yet — so an id alone proves nothing about whose logo it is,
+ * and the scope check has to walk back through the customer that references it. A file no
+ * customer claims must resolve to no organisation and stay unreadable.
+ */
+describe('POST /files/customer-logo', () => {
+  /** A 1x1 PNG, so `readLogoDimensions` genuinely decodes something. */
+  const PNG = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    'base64',
+  );
+
+  const upload = (bearer: string, bytes: Buffer, filename: string, type: string) =>
+    request(app)
+      .post(`${API}/files/customer-logo`)
+      .set('Authorization', `Bearer ${bearer}`)
+      .attach('file', bytes, { filename, contentType: type });
+
+  /**
+   * A caller who may edit customers, which is what this route demands.
+   *
+   * Deliberately NOT the suite's `token`: that one holds the object keys, and the whole
+   * point of keying this route on `customer.manage` is that managing the object hierarchy
+   * does not carry the right to restamp an organisation's letterhead.
+   */
+  async function customerManagerToken(email: string): Promise<string> {
+    const user = await createUserWithPermissions(email, [
+      PERMISSIONS.CUSTOMER_MANAGE,
+      PERMISSIONS.CUSTOMER_VIEW,
+    ]);
+    return login(user.email, user.password);
+  }
+
+  it('accepts a PNG from staff who may manage customers', async () => {
+    const response = await upload(
+      await customerManagerToken('logo-manager@test.mn'),
+      PNG,
+      'logo.png',
+      'image/png',
+    );
+
+    expect(response.status).toBe(201);
+    expect(response.body.data.mimeType).toBe('image/png');
+    expect(response.body.data.id).toBeTruthy();
+  });
+
+  /**
+   * Decoded rather than trusted. A PDF renamed `.png` uploads cleanly and would then fail
+   * to draw on every report, which is a logo that looks configured and prints nothing.
+   */
+  it('refuses bytes that are not a raster image, whatever they are called', async () => {
+    const response = await upload(
+      await customerManagerToken('logo-manager@test.mn'),
+      Buffer.from('%PDF-1.7'),
+      'logo.png',
+      'image/png',
+    );
+
+    expect(response.status).toBe(400);
+  });
+
+  /**
+   * Managing the object hierarchy is not managing customers. Without this the route would
+   * quietly accept anyone who can create a building.
+   */
+  it('refuses staff who may manage objects but not customers', async () => {
+    const response = await upload(token, PNG, 'logo.png', 'image/png');
+
+    expect(response.status).toBe(403);
+  });
+
+  it('refuses a customer, who may read a logo but never set one', async () => {
+    const response = await upload(customerToken, PNG, 'logo.png', 'image/png');
+
+    expect(response.status).toBe(403);
+  });
+
+  /**
+   * The scope check, exercised through an account that holds the staff read key but is
+   * pinned to one organisation — which is the only way to reach it, since `CUSTOMER_VIEW`
+   * is what the route demands and a portal role does not carry it.
+   */
+  it('refuses a logo that belongs to another organisation, and an unclaimed one', async () => {
+    const uploaded = await upload(
+      await customerManagerToken('logo-manager@test.mn'),
+      PNG,
+      'logo.png',
+      'image/png',
+    );
+    const logoId = uploaded.body.data.id as string;
+
+    const scopedToA = await loginAsCustomer('files-logo-a@test.mn', tenantA.customerId, [
+      PERMISSIONS.CUSTOMER_VIEW,
+    ]);
+
+    // Parked on the uploader and claimed by nobody yet: it resolves to no organisation,
+    // exactly as an unclaimed request attachment does.
+    expect((await download(logoId, scopedToA)).status).toBe(404);
+
+    await Customer.updateOne(
+      { _id: new Types.ObjectId(tenantA.customerId) },
+      { $set: { logo: new Types.ObjectId(logoId) } },
+    );
+
+    const own = await download(logoId, scopedToA);
+    expect(own.status).toBe(200);
+    expect(own.headers['content-type']).toContain('image/png');
+
+    // The same file, claimed by tenant A, read by an account pinned to tenant B.
+    const scopedToB = await loginAsCustomer('files-logo-b@test.mn', tenantB.customerId, [
+      PERMISSIONS.CUSTOMER_VIEW,
+    ]);
+    expect((await download(logoId, scopedToB)).status).toBe(404);
+  });
+
+  it('serves any customer logo to a staff caller', async () => {
+    const uploaded = await upload(
+      await customerManagerToken('logo-manager@test.mn'),
+      PNG,
+      'logo.png',
+      'image/png',
+    );
+    const logoId = uploaded.body.data.id as string;
+
+    await Customer.updateOne(
+      { _id: new Types.ObjectId(tenantB.customerId) },
+      { $set: { logo: new Types.ObjectId(logoId) } },
+    );
+
+    const reader = await createUserWithPermissions('logo-reader@test.mn', [
+      PERMISSIONS.CUSTOMER_VIEW,
+    ]);
+    const staffToken = await login(reader.email, reader.password);
+
+    // A staff caller has no tenant, so the scope check returns early and the permission
+    // above is the whole gate — which is the existing behaviour for every owner kind.
+    expect((await download(logoId, staffToken)).status).toBe(200);
+  });
+});
+
 describe('POST /files/service-request-attachments', () => {
   const uploadAttachment = (bearer: string): request.Test =>
     request(app)

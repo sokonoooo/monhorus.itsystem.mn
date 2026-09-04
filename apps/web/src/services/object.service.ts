@@ -13,6 +13,21 @@ import type {
 
 import { apiClient, unwrap } from '../lib/api-client';
 
+/**
+ * What `POST /files/customer-logo` answers with.
+ *
+ * Declared here rather than imported, the same way `SettingsLogoUploadDto` is: the shared
+ * package describes the domain contracts, and this is the storage route's own envelope.
+ * Only `id` is used — it becomes the customer's `logoFileId`.
+ */
+export interface CustomerLogoUploadDto {
+  id: string;
+  name: string;
+  downloadUrl: string;
+  mimeType: string;
+  sizeBytes: number;
+}
+
 export interface CustomerListQuery {
   page?: number;
   limit?: number;
@@ -84,6 +99,25 @@ export const objectService = {
         `/objects/customers/${customerId}`,
         payload,
       ),
+    );
+  },
+
+  /**
+   * Sends a customer's letterhead and answers with the id it was stored under.
+   *
+   * Separate from saving the customer, and it has to be: on a create there is no customer
+   * to attach the file to yet. The id this returns becomes the form's `logoFileId`, which
+   * the ordinary create or update then persists — so a logo picked on a form the user
+   * abandons leaves an unreferenced file behind rather than a half-saved customer.
+   */
+  async uploadCustomerLogo(file: File): Promise<CustomerLogoUploadDto> {
+    const form = new FormData();
+    form.append('file', file);
+
+    return unwrap(
+      await apiClient.post<ApiResponse<CustomerLogoUploadDto>>('/files/customer-logo', form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      }),
     );
   },
 

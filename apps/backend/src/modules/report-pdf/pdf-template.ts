@@ -160,22 +160,59 @@ export interface BrandingImage {
   height: number;
 }
 
-/**
- * The page header: the letterhead and nothing else, exactly as the template has it.
- *
- * Returned as a factory because pdfmake calls it per page. A null logo yields an empty
- * header rather than an error — an operator who has configured no letterhead still gets
- * their report, and a document must never fail over a picture.
- */
-export function headerBlock(logo: BrandingImage | null): Content {
-  if (logo === null) return { text: '' };
+/** One letterhead, drawn at the fixed header height with its own proportions kept. */
+function logoImage(logo: BrandingImage): Content {
   const ratio = logo.height > 0 ? logo.width / logo.height : null;
   return {
     image: logo.dataUrl,
     height: LOGO_HEIGHT,
     width: ratio === null ? LOGO_FALLBACK_WIDTH : LOGO_HEIGHT * ratio,
-    margin: [PAGE_MARGINS[0], HEADER_OFFSET, 0, 0],
   };
+}
+
+/**
+ * The page header: the letterheads and nothing else, exactly as the template has it.
+ *
+ * Returned as a factory because pdfmake calls it per page. A null logo yields an empty
+ * header rather than an error — an operator who has configured no letterhead still gets
+ * their report, and a document must never fail over a picture.
+ *
+ * [customerLogo] is the client organisation's own mark, drawn at the right-hand margin
+ * opposite the operator's. Both are optional and independently so: the layout is a
+ * two-column row only when the second picture exists, and falls back to the single
+ * left-aligned image every report printed before — which is what keeps a report for a
+ * customer with no logo looking exactly as it did.
+ */
+export function headerBlock(
+  logo: BrandingImage | null,
+  customerLogo: BrandingImage | null = null,
+): Content {
+  if (logo === null && customerLogo === null) return { text: '' };
+
+  const margin: [number, number, number, number] = [
+    PAGE_MARGINS[0],
+    HEADER_OFFSET,
+    PAGE_MARGINS[2],
+    0,
+  ];
+
+  if (customerLogo === null) {
+    // The original single-logo header, right margin included so the two shapes measure
+    // the same text column. `logo` cannot be null here — the guard above ruled that out.
+    return { ...(logoImage(logo!) as object), margin } as Content;
+  }
+
+  // `columns` with a `*` spacer between them rather than two aligned cells: the pictures
+  // are different widths and this is what pins one to each margin whatever those are.
+  return {
+    columns: [
+      logo === null ? { text: '' } : logoImage(logo),
+      { text: '', width: '*' },
+      { ...(logoImage(customerLogo) as object), alignment: 'right' },
+    ],
+    columnGap: 0,
+    margin,
+  } as Content;
 }
 
 /**

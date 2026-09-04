@@ -106,6 +106,50 @@ describe('customer write operations', () => {
     expect(response.body.data.isActive).toBe(false);
   });
 
+  /**
+   * The letterhead is an ordinary field of the customer, not a side channel.
+   *
+   * It round-trips as an id because that is what a report needs to find the bytes, and it
+   * clears with an explicit null rather than by omission — a PATCH that left it out would
+   * mean "unchanged", which is exactly what removing a logo must not do.
+   */
+  it('stores, returns and clears a customer logo', async () => {
+    const logoId = new Types.ObjectId().toString();
+
+    const created = await request(app)
+      .post(`${API}/objects/customers`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ code: 'LG', name: 'Логотой харилцагч', logoFileId: logoId });
+
+    expect(created.status).toBe(201);
+    expect(created.body.data.logoFileId).toBe(logoId);
+
+    const untouched = await request(app)
+      .patch(`${API}/objects/customers/${created.body.data.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'Нэр солив' });
+
+    expect(untouched.body.data.logoFileId).toBe(logoId);
+
+    const cleared = await request(app)
+      .patch(`${API}/objects/customers/${created.body.data.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ logoFileId: null });
+
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.data.logoFileId).toBeNull();
+  });
+
+  it('creates a customer with no logo, which is the ordinary case', async () => {
+    const response = await request(app)
+      .post(`${API}/objects/customers`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ code: 'NL', name: 'Логогүй харилцагч' });
+
+    expect(response.status).toBe(201);
+    expect(response.body.data.logoFileId).toBeNull();
+  });
+
   it('refuses customer creation without customer.manage', async () => {
     const user = await createUserWithPermissions('readonly@test.mn', [PERMISSIONS.CUSTOMER_VIEW]);
     const viewerToken = await login(user.email, user.password);

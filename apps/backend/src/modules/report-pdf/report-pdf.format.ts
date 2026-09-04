@@ -61,9 +61,21 @@ export function formatLongDate(value: string | null | undefined): string {
 
 /** The bare year the cover carries. */
 export function formatYear(value: string | null | undefined): string {
+  const year = formatYearNumber(value);
+  return year === '' ? '' : `${year} он`;
+}
+
+/**
+ * The year as a number alone — `2026`, not `2026 он`.
+ *
+ * The photographic report's cover prints it this way. That is its own document's choice
+ * rather than a disagreement to be settled: «Үзлэгийн тайлан.docx» writes "2026 он" under
+ * its city and «ТКС-2, ТКС-4» writes "2025", so each cover gets the form it carries.
+ */
+export function formatYearNumber(value: string | null | undefined): string {
   const date = safeDate(value);
   if (date === null) return '';
-  return `${PARTS.formatToParts(date).find((e) => e.type === 'year')?.value ?? ''} он`;
+  return PARTS.formatToParts(date).find((entry) => entry.type === 'year')?.value ?? '';
 }
 
 /**
@@ -98,6 +110,11 @@ export function formatMinutes(value: number | null | undefined): string {
 }
 
 /** Joins the parts of a location or a name list, skipping the ones that are absent. */
-export function joinParts(parts: ReadonlyArray<string | null | undefined>): string {
-  return parts.filter((part): part is string => part !== null && part !== undefined && part !== '').join(' · ');
+export function joinParts(
+  parts: ReadonlyArray<string | null | undefined>,
+  separator = ' · ',
+): string {
+  return parts
+    .filter((part): part is string => part !== null && part !== undefined && part !== '')
+    .join(separator);
 }

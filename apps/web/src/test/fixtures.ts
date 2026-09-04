@@ -63,6 +63,7 @@ export function makeCustomer(overrides: Partial<CustomerDto> = {}): CustomerDto 
     responsibleEmployeeId: null,
     responsibleEmployeeName: null,
     notes: null,
+    logoFileId: null,
     isActive: true,
     createdByName: 'Б. Энхтөр',
     ...overrides,

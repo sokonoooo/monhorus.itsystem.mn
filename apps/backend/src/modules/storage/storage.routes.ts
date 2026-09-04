@@ -2,6 +2,7 @@ import fs from 'node:fs';
 
 import {
   MAX_COMPANY_LOGO_BYTES,
+  MAX_CUSTOMER_LOGO_BYTES,
   PERMISSIONS,
   employeeDocumentMetaSchema,
   type PermissionKey,
@@ -28,7 +29,7 @@ import { EmployeeDocument } from '../employee/employee-document.model';
 import { toEmployeeDocumentDto } from '../employee/employee.mapper';
 import { Employee } from '../employee/employee.model';
 import { ObjectRecord } from '../object-master/object-master.models';
-import { ObjectNode } from '../objects/object.models';
+import { Customer, ObjectNode } from '../objects/object.models';
 import { ServiceRequest } from '../service-request/service-request.model';
 import { WorkReport } from '../service-request/work-report.model';
 import { StoredFile, type IStoredFile, type StoredFileOwnerType } from './stored-file.model';
@@ -84,6 +85,17 @@ const DOWNLOAD_PERMISSIONS_BY_OWNER: Record<StoredFileOwnerType, readonly Permis
    * never hand this url to a browser.
    */
   SETTING: [PERMISSIONS.SETTINGS_VIEW],
+  /**
+   * A customer's letterhead. Keyed on reading customers, because the customer form that
+   * chooses it is the only place a client fetches these bytes — the reports embed them
+   * server-side and never hand this url to a browser.
+   *
+   * NO PORTAL KEY, unlike the floor plan above, and that is not an oversight: nothing a
+   * customer can open renders this file, so a portal key here would widen the route for
+   * a screen that does not exist. The scope check below is still written, so adding one
+   * later is a one-line decision rather than a hole.
+   */
+  CUSTOMER_LOGO: [PERMISSIONS.CUSTOMER_VIEW],
 };
 
 /**
@@ -226,6 +238,16 @@ async function assertFileInCustomerScope(
       // route is reached only with a file id that some object list handed out.
       //
       // The moment an icon becomes per-customer, this case must become a real check.
+      return;
+    }
+    case 'CUSTOMER_LOGO': {
+      // Resolved through the customer that names it, not through the file's own owner id:
+      // the upload parks the file on whoever sent it, and only a customer's `logo` field
+      // makes one of these rows a live letterhead. A file no customer claims resolves to
+      // no organisation and is refused, which is the same shape as an unclaimed
+      // assessment photo.
+      const owner = await Customer.findOne({ logo: file._id }).select('_id');
+      assertInCustomerScope(scope, owner?._id, notFound);
       return;
     }
     case 'SETTING': {
@@ -672,6 +694,86 @@ fileRouter.post(
         mimeType: decoded.mimeType,
         sizeBytes: uploaded.size,
         ownerType: 'SETTING',
+        ownerId: new Types.ObjectId(auth.userId),
+        uploadedBy: new Types.ObjectId(auth.userId),
+        uploadedByName: auth.fullName,
+      });
+
+      created(
+        res,
+        {
+          id: String(storedFile._id),
+          name: storedFile.originalName,
+          downloadUrl: `/api/v1/files/${String(storedFile._id)}`,
+          mimeType: storedFile.mimeType,
+          sizeBytes: storedFile.sizeBytes,
+          uploadedByName: storedFile.uploadedByName,
+          uploadedAt: storedFile.createdAt.toISOString(),
+        },
+        'Лого хуулагдлаа.',
+      );
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+/**
+ * A customer's own letterhead.
+ *
+ * The same shape as `/settings-logo` above and deliberately a SEPARATE route rather than a
+ * parameter on it: the two are keyed on different permissions. Choosing the operator's
+ * letterhead is an administrator's act on Тохиргоо; choosing a customer's is part of
+ * editing that customer, and an operator who may edit customers must not thereby be able
+ * to rewrite the installation's own masthead.
+ *
+ * Raster only, decoded rather than trusted, for the reason spelled out on the settings
+ * route: pdfmake draws PNG and JPEG and nothing else, so an SVG accepted here would upload
+ * cleanly and then silently fail to appear on every report.
+ *
+ * Parked on the uploader. The customer form uploads the bytes while the customer is still
+ * being typed — on a create there is no customer id yet — so the file is claimed by the
+ * `logoFileId` the form then saves, exactly as an assessment photo is claimed by the
+ * assessment that names it.
+ */
+fileRouter.post(
+  '/customer-logo',
+  requirePermission(PERMISSIONS.CUSTOMER_MANAGE),
+  upload.single('file'),
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const auth = requireAuth(req);
+      const uploaded = req.file;
+      if (!uploaded) {
+        throw AppError.badRequest(ERROR_CODES.VALIDATION_ERROR, 'Файл заавал.', [
+          { field: 'file', message: 'Зураг сонгоно уу.' },
+        ]);
+      }
+
+      if (uploaded.size > MAX_CUSTOMER_LOGO_BYTES) {
+        deleteStoredFile(uploaded.filename);
+        throw AppError.badRequest(ERROR_CODES.VALIDATION_ERROR, 'Зураг хэт том байна.', [
+          {
+            field: 'file',
+            message: `Зураг ${Math.round(MAX_CUSTOMER_LOGO_BYTES / (1024 * 1024))}MB-аас бага байна.`,
+          },
+        ]);
+      }
+
+      const decoded = await readLogoDimensions(resolveStoredFilePath(uploaded.filename));
+      if (decoded === null) {
+        deleteStoredFile(uploaded.filename);
+        throw AppError.badRequest(ERROR_CODES.VALIDATION_ERROR, 'Зураг уншиж чадсангүй.', [
+          { field: 'file', message: 'PNG эсвэл JPEG зураг сонгоно уу.' },
+        ]);
+      }
+
+      const storedFile = await StoredFile.create({
+        storageKey: uploaded.filename,
+        originalName: uploaded.originalname.slice(0, 120),
+        mimeType: decoded.mimeType,
+        sizeBytes: uploaded.size,
+        ownerType: 'CUSTOMER_LOGO',
         ownerId: new Types.ObjectId(auth.userId),
         uploadedBy: new Types.ObjectId(auth.userId),
         uploadedByName: auth.fullName,

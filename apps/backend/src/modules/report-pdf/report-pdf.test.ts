@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { inspectionReportDocument } from './inspection-report.pdf';
 import type { ReportBranding } from './report-branding';
 import type { BrandingImage } from './pdf-template';
+import { plannedWorkPhotoReportDocument } from './planned-work-photo-report.pdf';
 import { plannedWorkReportDocument } from './planned-work-report.pdf';
 import { renderPdf } from './pdf.renderer';
 import { CONTENT_WIDTH, FONT_SIZE, PAGE_MARGINS } from './pdf-template';
@@ -25,6 +26,7 @@ const CONTRACTOR = '"Монхорус Электрик" ХХК';
  */
 const BRANDING: ReportBranding = {
   logo: null,
+  customerLogo: null,
   companyName: CONTRACTOR,
   inspectionCompany: CONTRACTOR,
 };
@@ -215,7 +217,7 @@ describe('report PDF export', () => {
           materials: [],
         }),
         null,
-        { logo: null, companyName: '', inspectionCompany: '' },
+        { logo: null, customerLogo: null, companyName: '', inspectionCompany: '' },
       ),
     );
 
@@ -375,6 +377,7 @@ describe('branding and photographs', () => {
     const pdf = await renderPdf(
       plannedWorkReportDocument(previewFixture(), null, {
         logo: null,
+        customerLogo: null,
         companyName: '',
         inspectionCompany: '',
       }),
@@ -510,5 +513,134 @@ describe('branding and photographs', () => {
     );
 
     expect(withPhotos.byteLength).toBeGreaterThan(bare.byteLength);
+  });
+});
+
+/**
+ * The photographic report, which is a SECOND document about the same work.
+ *
+ * What these pin down is that it stays second: the consolidated report is untouched, the
+ * two are built from the same preview, and this one's shape follows its own source —
+ * a cover, pages of four photographs, and a sheet to sign.
+ */
+describe('planned work photo report', () => {
+  function pixel(width: number, height: number): BrandingImage {
+    const jpeg =
+      '/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0a' +
+      'HBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAA' +
+      'AAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==';
+    return { dataUrl: `data:image/jpeg;base64,${jpeg}`, width, height };
+  }
+
+  const PHOTO_BRANDING = {
+    logo: null,
+    customerLogo: null,
+    companyName: CONTRACTOR,
+  };
+
+  /** [count] photographs spread over one sub-task, which is how the grid gets filled. */
+  function previewWithPhotos(count: number): {
+    preview: Parameters<typeof plannedWorkPhotoReportDocument>[0];
+    photos: Map<string, BrandingImage[]>;
+  } {
+    const preview = previewFixture({
+      tasks: [
+        {
+          id: 't1',
+          title: 'ТСК-2 самбар угсралт',
+          floorName: '2-р давхар',
+          unit: 'PIECE',
+          totalQuantity: 1,
+          completedQuantity: 1,
+          progressPercent: 100,
+          status: 'COMPLETED',
+          note: 'Шинэ самбар угсарсан байдал',
+          score: null,
+          riskLevel: null,
+          recommendation: null,
+          beforePhotoCount: count,
+          afterPhotoCount: 0,
+        },
+      ],
+    }) as Parameters<typeof plannedWorkPhotoReportDocument>[0];
+
+    const photos = new Map<string, BrandingImage[]>([
+      ['t1', Array.from({ length: count }, () => pixel(1600, 1200))],
+    ]);
+    return { preview, photos };
+  }
+
+  it('renders a cover, a body page and a signature sheet', async () => {
+    const { preview, photos } = previewWithPhotos(4);
+    const pdf = await renderPdf(
+      plannedWorkPhotoReportDocument(preview, null, PHOTO_BRANDING, photos),
+    );
+
+    expect(pdf.subarray(0, 5).toString('latin1')).toBe('%PDF-');
+    // Cover, one page of four photographs, and the sign-off — each on its own sheet.
+    expect(pageCount(pdf)).toBe(3);
+  });
+
+  it('opens a new page for every four photographs', async () => {
+    const four = previewWithPhotos(4);
+    const five = previewWithPhotos(5);
+
+    const pdfFour = await renderPdf(
+      plannedWorkPhotoReportDocument(four.preview, null, PHOTO_BRANDING, four.photos),
+    );
+    const pdfFive = await renderPdf(
+      plannedWorkPhotoReportDocument(five.preview, null, PHOTO_BRANDING, five.photos),
+    );
+
+    // The fifth photograph cannot share a 2x2 grid, so it starts a second body page —
+    // which is the whole reason the organisation table is repeated rather than printed once.
+    expect(pageCount(pdfFour)).toBe(3);
+    expect(pageCount(pdfFive)).toBe(4);
+  });
+
+  it('still renders a work that has no photographs at all', async () => {
+    const pdf = await renderPdf(
+      plannedWorkPhotoReportDocument(previewFixture(), null, PHOTO_BRANDING),
+    );
+
+    // Thin, but a document the operator can still hand over: refusing here would leave
+    // them with nothing rather than with a report that happens to have no pictures.
+    expect(pdf.subarray(0, 5).toString('latin1')).toBe('%PDF-');
+    expect(pageCount(pdf)).toBe(3);
+  });
+
+  it('draws the customer logo as well as the company one', async () => {
+    const { preview, photos } = previewWithPhotos(2);
+
+    const companyOnly = await renderPdf(
+      plannedWorkPhotoReportDocument(
+        preview,
+        null,
+        { ...PHOTO_BRANDING, logo: pixel(480, 110) },
+        photos,
+      ),
+    );
+    const both = await renderPdf(
+      plannedWorkPhotoReportDocument(
+        preview,
+        null,
+        { ...PHOTO_BRANDING, logo: pixel(480, 110), customerLogo: pixel(310, 128) },
+        photos,
+      ),
+    );
+
+    // A second letterhead is drawn on every page, so the document carrying one is larger.
+    // Without this the right-hand logo could silently render nothing.
+    expect(both.byteLength).toBeGreaterThan(companyOnly.byteLength);
+  });
+
+  it('leaves the consolidated report unchanged when a project has no logo', async () => {
+    // The two documents are separate, and the older one must not have quietly acquired
+    // the new one's shape: it still prints its own tables across its own page count.
+    const consolidated = await renderPdf(
+      plannedWorkReportDocument(previewFixture(), null, BRANDING),
+    );
+    expect(consolidated.subarray(0, 5).toString('latin1')).toBe('%PDF-');
+    expect(pageCount(consolidated)).toBeGreaterThanOrEqual(2);
   });
 });

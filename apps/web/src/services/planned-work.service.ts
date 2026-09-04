@@ -224,6 +224,20 @@ export const plannedWorkService = {
     await downloadPdf(`/planned-work/${plannedWorkId}/report/pdf`, `tailan-${workNumber}`);
   },
 
+  /**
+   * The same work as the photographic report «ТКС-2, ТКС-4 самбар гэрээт ажил».
+   *
+   * A SECOND document rather than a different rendering of the first: the consolidated
+   * report above carries the tables an office files, this one carries the photographs a
+   * client is handed. Both are built from the same server-side preview.
+   */
+  async downloadPhotoReportPdf(plannedWorkId: string, workNumber: string): Promise<void> {
+    await downloadPdf(
+      `/planned-work/${plannedWorkId}/report/photo-pdf`,
+      `foto-tailan-${workNumber}`,
+    );
+  },
+
   /** The same, for the consolidated inspection report. */
   async downloadInspectionReportPdf(
     plannedWorkId: string,

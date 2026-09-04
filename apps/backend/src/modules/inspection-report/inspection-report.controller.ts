@@ -50,7 +50,10 @@ export async function getReportPdfHandler(
   next: NextFunction,
 ): Promise<void> {
   try {
-    const report = await service.getReport(await work(req));
+    // Held rather than discarded, because the branding below needs the work's customer and
+    // the report DTO carries only its name.
+    const plannedWork = await work(req);
+    const report = await service.getReport(plannedWork);
 
     // The photographs each sub-task already carries. The report DTO names them; this
     // reads and re-encodes the bytes, which is work the JSON endpoint has no reason to do.
@@ -64,7 +67,9 @@ export async function getReportPdfHandler(
       MAX_PHOTOS_PER_TASK,
     );
 
-    const branding = await loadReportBranding();
+    // The customer's own letterhead, when they have set one. Null otherwise, and the
+    // header then prints the operator's logo alone as it always has.
+    const branding = await loadReportBranding(plannedWork.customer);
     const pdf = await renderPdf(inspectionReportDocument(report, branding, photos));
     sendPdf(res, pdf, `uzleg-${report.workNumber}`);
   } catch (error) {

@@ -26,6 +26,7 @@ import {
   updatePlannedWorkTaskSchema,
 } from '@monhorus/shared';
 import { Router, type NextFunction, type Request, type Response } from 'express';
+import { Types, type FilterQuery } from 'mongoose';
 import { z } from 'zod';
 
 import { AppError } from '../../common/errors/app-error';
@@ -54,11 +55,16 @@ import {
   updateReport,
 } from './planned-work.report.service';
 import { plannedWorkReportDocument } from '../report-pdf/planned-work-report.pdf';
+import { plannedWorkPhotoReportDocument } from '../report-pdf/planned-work-photo-report.pdf';
 import { renderPdf } from '../report-pdf/pdf.renderer';
 import { sendPdf } from '../report-pdf/pdf.response';
 import { loadReportBranding } from '../report-pdf/report-branding';
 import { loadTaskPhotos, MAX_PHOTOS_PER_TASK } from '../report-pdf/report-images';
-import { requirePlannedWorkAssignmentScope } from './planned-work.scope';
+import {
+  requirePlannedWorkAssignmentScope,
+  resolveAssignedWorkFilter,
+} from './planned-work.scope';
+import { PlannedWork, type IPlannedWork } from './planned-work.models';
 import { transitionPlannedWork } from './planned-work.transition.service';
 
 const objectId = z.string().regex(/^[a-f\d]{24}$/i, 'ID буруу форматтай байна.');
@@ -78,8 +84,19 @@ plannedWorkRouter.use(authenticate, enforcePasswordChange);
  * Its authoring routes ride on `planned_work.submit_report`, which the field tier holds, so
  * they are technician-reachable writes on a planned work and get the same assignment scope
  * as everything else. The guard is mounted here rather than inside that router because the
- * parent id is a fact about THIS path; it applies to writes only, leaving the report read
- * on `planned_work.view` exactly as it was.
+ * parent id is a fact about THIS path; it applies to writes only.
+ *
+ * READS ARE NOT UNGUARDED, they are guarded elsewhere — and that is the whole premise this
+ * guard passes GETs through on. `planned-work.scope.ts` states it: by the time a read
+ * reaches a handler, the loader beneath it has already applied the same predicate, which is
+ * true of `getPlannedWorkById` and of the nested inspection-report reads.
+ *
+ * IT WAS NOT TRUE OF THE REPORT READS. `GET /:plannedWorkId/report`, `/report/pdf` and
+ * `/report/photo-pdf` loaded through the raw `findPlannedWorkOrThrow`, so every holder of
+ * `planned_work.view` — which is every technician — could read the consolidated report,
+ * print the PDF, or pull the photographic report of any job in the company: customer, site,
+ * crew and photographs. They now go through [findReadableWorkOrThrow] below, which restores
+ * the premise rather than qualifying it.
  */
 plannedWorkRouter.use(
   '/:plannedWorkId/inspection-report',
@@ -425,6 +442,57 @@ plannedWorkRouter.put(
 
 // -- Report workflow ---------------------------------------------------------
 
+/**
+ * The report reads, bounded by the assignment rule every other single-record read obeys.
+ *
+ * WHY THIS EXISTS HERE rather than in the loader. `findPlannedWorkOrThrow` is the raw
+ * `findById` the write paths use, and they are guarded separately by
+ * `assertPlannedWorkAssignmentScope`. The report GETs reached for the same raw loader and
+ * had no second guard, so `planned_work.view` alone opened any job's consolidated report —
+ * the one place the module's "reads are scoped in the loaders" premise did not hold.
+ *
+ * `resolveAssignedWorkFilter` is the same predicate `getPlannedWorkById` and both list
+ * services apply, and it is deliberately the READ form: it returns null for a caller
+ * holding an oversight OR a read-oversight key, so the office — dispatch, management,
+ * finance reporting on the work — keeps full reach, and only a caller bounded by
+ * assignment is bounded here.
+ *
+ * ANSWERED AS NOT-FOUND, matching `getPlannedWorkById` and the detail read: replying
+ * "forbidden" would confirm the id names a real job and turn the endpoint into an oracle
+ * for probing identifiers. The message is the one `findPlannedWorkOrThrow` raises, so an
+ * out-of-scope id is indistinguishable from one that was never real.
+ *
+ * The scope is decided by its own query rather than from the loaded document, following
+ * `assertAssignedToActor` in self-progress.policy.ts: one predicate, evaluated by the
+ * database, is what keeps this from drifting from the list and the detail read.
+ *
+ * No customer branch, unlike `getPlannedWorkById`: a CUSTOMER reaches the portal on
+ * `portal.planned_work.view` and cannot pass the `planned_work.view` gate on these routes
+ * at all, so everybody arriving here is staff.
+ */
+async function findReadableWorkOrThrow(
+  req: Request,
+): Promise<Awaited<ReturnType<typeof plannedWorkService.findPlannedWorkOrThrow>>> {
+  const plannedWorkId = pathParam(req, 'plannedWorkId');
+  const assignmentFilter = await resolveAssignedWorkFilter<IPlannedWork>(requireAuth(req));
+
+  // Null means an oversight holder, who is not bounded by assignment at all. It is never
+  // `{}` — see `resolveAssignedWorkFilter` for why that distinction matters.
+  if (assignmentFilter) {
+    const filter: FilterQuery<IPlannedWork> = {
+      _id: new Types.ObjectId(plannedWorkId),
+      $and: [assignmentFilter],
+    };
+    const readable = await PlannedWork.findOne(filter).select('_id').lean();
+    if (!readable) {
+      throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Төлөвлөгөөт ажил олдсонгүй.');
+    }
+  }
+
+  return plannedWorkService.findPlannedWorkOrThrow(plannedWorkId);
+}
+
+
 /** Assembled report content plus its current gates. */
 plannedWorkRouter.get(
   '/:plannedWorkId/report',
@@ -433,9 +501,7 @@ plannedWorkRouter.get(
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const auth = requireAuth(req);
-      const work = await plannedWorkService.findPlannedWorkOrThrow(
-        pathParam(req, 'plannedWorkId'),
-      );
+      const work = await findReadableWorkOrThrow(req);
       const state = await loadReportState(work);
       const preview = state.preview ?? (await buildReportPreview(work, state.report));
 
@@ -467,9 +533,7 @@ plannedWorkRouter.get(
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
       const auth = requireAuth(req);
-      const work = await plannedWorkService.findPlannedWorkOrThrow(
-        pathParam(req, 'plannedWorkId'),
-      );
+      const work = await findReadableWorkOrThrow(req);
       const state = await loadReportState(work);
       const preview = state.preview ?? (await buildReportPreview(work, state.report));
       const report = state.report ? toReportDto(state.report, auth, state.blockers) : null;
@@ -485,7 +549,10 @@ plannedWorkRouter.get(
       }
 
       const [branding, photos] = await Promise.all([
-        loadReportBranding(),
+        // The customer's own letterhead prints beside the operator's. Every planned work
+        // names a customer, so what varies is whether that customer has set a logo — and
+        // one that has not prints exactly as this report always did.
+        loadReportBranding(work.customer),
         // The photographs the sub-tasks carry. The preview reports counts; the document
         // wants the pictures, so they are fetched and re-encoded here.
         taskPhotoIdsOf(work).then((ids) => loadTaskPhotos(ids, MAX_PHOTOS_PER_TASK)),
@@ -495,6 +562,54 @@ plannedWorkRouter.get(
         plannedWorkReportDocument(preview, report, branding, photos),
       );
       sendPdf(res, pdf, `tailan-${preview.workNumber}`);
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+/**
+ * The same work again, as the photographic report «ТКС-2, ТКС-4 самбар гэрээт ажил».
+ *
+ * A SECOND document rather than a replacement, and deliberately its own route. The two
+ * answer different questions about the same work: `/report/pdf` above is the consolidated
+ * record an office files, this one is the photographic record a client is handed. Both are
+ * built from the same `buildReportPreview` call, so neither can contradict the other or
+ * the screen they are exported from.
+ *
+ * Keyed identically to the report it copies, for the same reason: rendering what a caller
+ * may already read is not a stronger act than reading it — which is precisely why it loads
+ * through [findReadableWorkOrThrow] as well. "What the caller may already read" has to be
+ * the same set on all three report routes, or this document is the way around the other two.
+ */
+plannedWorkRouter.get(
+  '/:plannedWorkId/report/photo-pdf',
+  requirePermission(PERMISSIONS.PLANNED_WORK_VIEW),
+  validate({ params: workParams }),
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const auth = requireAuth(req);
+      const work = await findReadableWorkOrThrow(req);
+      const state = await loadReportState(work);
+      const preview = state.preview ?? (await buildReportPreview(work, state.report));
+      const report = state.report ? toReportDto(state.report, auth, state.blockers) : null;
+
+      if (preview === null) {
+        throw AppError.badRequest(
+          ERROR_CODES.VALIDATION_ERROR,
+          'Тайлан бүрдээгүй тул PDF үүсгэх боломжгүй.',
+        );
+      }
+
+      const [branding, photos] = await Promise.all([
+        loadReportBranding(work.customer),
+        taskPhotoIdsOf(work).then((ids) => loadTaskPhotos(ids, MAX_PHOTOS_PER_TASK)),
+      ]);
+
+      const pdf = await renderPdf(
+        plannedWorkPhotoReportDocument(preview, report, branding, photos),
+      );
+      sendPdf(res, pdf, `foto-tailan-${preview.workNumber}`);
     } catch (error) {
       next(error);
     }

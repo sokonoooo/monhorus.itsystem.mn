@@ -77,6 +77,14 @@ export interface CustomerDto {
   responsibleEmployeeId: string | null;
   responsibleEmployeeName: string | null;
   notes: string | null;
+  /**
+   * The customer's own letterhead, as a stored-file id, or null when it has none.
+   *
+   * Printed on the reports for this customer's work beside the operator's. Null is the
+   * ordinary state for a customer nobody has given a logo to, and those reports print
+   * under the operator's logo alone.
+   */
+  logoFileId: string | null;
   isActive: boolean;
   projectCount?: number;
   buildingCount?: number;

@@ -59,6 +59,7 @@ export function PlannedWorkReportPage(): ReactElement {
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [exportingPhotos, setExportingPhotos] = useState(false);
 
   /**
    * Renders the PDF and hands it to the browser.
@@ -80,6 +81,28 @@ export function PlannedWorkReportPage(): ReactElement {
       );
     } finally {
       setExporting(false);
+    }
+  }
+
+  /**
+   * The photographic report, which is a second document about this same work.
+   *
+   * Its own busy flag rather than sharing `exporting`: the two are different documents and
+   * a user who wants both should not have to wait for the first to finish before asking
+   * for the second.
+   */
+  async function exportPhotoPdf(): Promise<void> {
+    if (preview === null) return;
+    setExportingPhotos(true);
+    setActionError(null);
+    try {
+      await plannedWorkService.downloadPhotoReportPdf(plannedWorkId!, preview.workNumber);
+    } catch (caught) {
+      setActionError(
+        caught instanceof ApiError ? caught.message : 'PDF үүсгэхэд алдаа гарлаа.',
+      );
+    } finally {
+      setExportingPhotos(false);
     }
   }
 
@@ -313,6 +336,17 @@ export function PlannedWorkReportPage(): ReactElement {
               disabled={exporting}
             >
               {exporting ? 'PDF бэлдэж байна…' : 'PDF татах'}
+            </Button>
+            {/*
+              The photographic report, offered on the same terms as the one above and for
+              the same reason: it copies what this screen already shows.
+            */}
+            <Button
+              variant="secondary"
+              onClick={() => void exportPhotoPdf()}
+              disabled={exportingPhotos}
+            >
+              {exportingPhotos ? 'PDF бэлдэж байна…' : 'Фото тайлан PDF'}
             </Button>
             {editable && (
               <Button

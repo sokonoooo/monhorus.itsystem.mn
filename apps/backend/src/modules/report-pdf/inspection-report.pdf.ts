@@ -55,7 +55,7 @@ export function inspectionReportDocument(
     pageSize: PAGE_SIZE,
     pageOrientation: PAGE_ORIENTATION,
     pageMargins: PAGE_MARGINS,
-    header: () => headerBlock(branding.logo),
+    header: () => headerBlock(branding.logo, branding.customerLogo),
     defaultStyle: { font: 'Tinos', fontSize: FONT_SIZE.table },
     info: {
       title: `${TITLE} ${report.workNumber}`,

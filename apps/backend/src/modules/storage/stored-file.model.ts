@@ -36,6 +36,17 @@ export const STORED_FILE_OWNER_TYPES = [
    * The setting holds this file's id as its value; nothing else references it.
    */
   'SETTING',
+  /**
+   * A customer's own letterhead, chosen on the customer form and printed on their reports.
+   *
+   * TENANT-SCOPED, unlike `SETTING` and `OBJECT_TYPE` above: this file belongs to exactly
+   * one organisation — the one it depicts — and `assertFileInCustomerScope` resolves it
+   * back through the customer that names it. Parked on its uploader until a customer
+   * claims it, the same way an assessment photo is: the form uploads the bytes before the
+   * customer it belongs to necessarily exists, and an unclaimed file resolves to no
+   * organisation and is therefore readable by nobody outside staff.
+   */
+  'CUSTOMER_LOGO',
 ] as const;
 export type StoredFileOwnerType = (typeof STORED_FILE_OWNER_TYPES)[number];
 
