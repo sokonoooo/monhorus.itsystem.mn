@@ -69,10 +69,33 @@ let crewEmployeeId: string;
  *
  * Logins are rate limited per process, so a third fixture user in every `beforeEach`
  * would exhaust the window long before the suite finished.
+ *
+ * IT CARRIES AN EMPLOYEE CARD, and that is not decoration. `planned_work.view` is not on
+ * its own a licence to read a job any more: the loader intersects the id with
+ * `resolveAssignedWorkFilter`, and an account with no `Employee.systemUser` link matches no
+ * assignment at all. The card is what lets the cases below hand this caller the work and
+ * then test the PERMISSION gate in isolation from the data scope, which is what they are
+ * about. The scope itself is covered in `inspection-report.scope.api.test.ts`.
  */
-async function viewerLogin(): Promise<string> {
+async function viewerStaff(): Promise<{ token: string; employeeId: string }> {
   const viewer = await createUserWithPermissions('irviewer@test.mn', VIEWER_PERMISSIONS);
-  return login(viewer.email, viewer.password);
+  const employee = await Employee.create({
+    employeeCode: 'EMP-IR-VIEW',
+    firstName: 'Нарантуяа',
+    lastName: 'Болд',
+    company: org.companyId,
+    department: org.departmentId,
+    position: org.positionId,
+    employeeType: 'FULL_TIME',
+    employmentStartDate: new Date('2024-01-01'),
+    status: 'ACTIVE',
+    systemUser: viewer.userId,
+  });
+
+  return {
+    token: await login(viewer.email, viewer.password),
+    employeeId: String(employee._id),
+  };
 }
 
 async function login(email: string, password: string): Promise<string> {
@@ -180,11 +203,16 @@ async function completeTask(
   expect(progress.status).toBe(200);
 }
 
-/** A started work whose single sub-task is finished with the given score. */
-async function scoredWork(score = 88): Promise<string> {
+/**
+ * A started work whose single sub-task is finished with the given score.
+ *
+ * `crew` is overridable so a case can put a specific caller on the job. The author drives
+ * the run either way: it holds the oversight keys and is never bounded by the crew.
+ */
+async function scoredWork(score = 88, crew: string[] = [crewEmployeeId]): Promise<string> {
   const workId = await createWork();
   const taskId = await addTask(workId);
-  await planAndApprove(workId);
+  await planAndApprove(workId, crew);
   expect((await transition(workId, 'START')).status).toBe(200);
   await completeTask(workId, taskId, { score });
   return workId;
@@ -219,8 +247,8 @@ async function act(
 }
 
 /** A generated report sitting in DRAFT. */
-async function generatedWork(score = 88): Promise<string> {
-  const workId = await scoredWork(score);
+async function generatedWork(score = 88, crew: string[] = [crewEmployeeId]): Promise<string> {
+  const workId = await scoredWork(score, crew);
   expect((await generate(workId)).status).toBe(201);
   return workId;
 }
@@ -817,16 +845,21 @@ describe('review workflow', () => {
 
 describe('permissions', () => {
   it('lets planned_work.view read the report and its readiness', async () => {
-    const workId = await generatedWork();
-    const viewerToken = await viewerLogin();
+    // On the crew, so what is under test is the permission and not the assignment scope.
+    const viewer = await viewerStaff();
+    const workId = await generatedWork(88, [viewer.employeeId]);
 
-    expect((await fetchReport(workId, viewerToken)).status).toBe(200);
-    expect((await readiness(workId, viewerToken)).status).toBe(200);
+    expect((await fetchReport(workId, viewer.token)).status).toBe(200);
+    expect((await readiness(workId, viewer.token)).status).toBe(200);
   });
 
   it('refuses authoring without planned_work.submit_report', async () => {
-    const workId = await scoredWork();
-    const viewerToken = await viewerLogin();
+    // Also on the crew: a caller outside the scope is refused by the guard above the
+    // router and would answer 403 without the permission gate ever being consulted, which
+    // would make this case pass for the wrong reason.
+    const viewer = await viewerStaff();
+    const workId = await scoredWork(88, [viewer.employeeId]);
+    const viewerToken = viewer.token;
 
     expect((await generate(workId, viewerToken)).status).toBe(403);
     expect((await generate(workId, reviewerToken)).status).toBe(403);

@@ -37,7 +37,11 @@ async function storeBands(bands: readonly RiskBandConfig[]): Promise<void> {
 
 let objectSequence = 0;
 
-async function assessedObject(level: RiskLevel, score: number): Promise<void> {
+async function assessedObject(
+  level: RiskLevel,
+  score: number,
+  status: 'ACTIVE' | 'INACTIVE' | 'DECOMMISSIONED' = 'ACTIVE',
+): Promise<void> {
   objectSequence += 1;
   await ObjectRecord.create({
     code: `OBJ-${objectSequence}`,
@@ -46,6 +50,7 @@ async function assessedObject(level: RiskLevel, score: number): Promise<void> {
     objectType: new Types.ObjectId(),
     customer: objects.customerId,
     floor: objects.floorId,
+    status,
     latestAssessment: {
       assessment: new Types.ObjectId(),
       score,
@@ -178,5 +183,50 @@ describe('the danger marker on a risk roll-up', () => {
 
     await assessedObject('CRITICAL', 10);
     expect((await summaryOfProject()).hasCritical).toBe(false);
+  });
+});
+
+/**
+ * Retired equipment on the same roll-up.
+ *
+ * `countsTowardLoad` has kept a decommissioned object out of the capacity arithmetic since
+ * rule 17.17; this reader kept it in. Rule 17.9 retires an object BECAUSE it scored worst,
+ * so the marker it raised was raised by the retirement itself — permanently, since the
+ * immutable assessment rows mean the object can never be deleted to clear it.
+ */
+describe('decommissioned equipment on a risk roll-up', () => {
+  it('neither raises the danger marker nor appears in the band counts', async () => {
+    await assessedObject('NORMAL', 95);
+    await assessedObject('OUT_OF_SERVICE', 5, 'DECOMMISSIONED');
+
+    const summaries = await riskSummariesFor([new Types.ObjectId(objects.projectId)], 'SUBTREE');
+    const summary = summaries.get(objects.projectId)!;
+
+    expect(summary.hasCritical).toBe(false);
+    expect(summary.counts).toEqual([{ level: 'NORMAL', count: 1 }]);
+  });
+
+  /**
+   * Excluded outright, not reclassified. Counting it as «үнэлгээ хийгээгүй» would say
+   * "never assessed" about the one object on the floor that was.
+   */
+  it('is not folded into the unassessed count', async () => {
+    await assessedObject('OUT_OF_SERVICE', 5, 'DECOMMISSIONED');
+
+    const summary = await summaryOfProject();
+
+    expect(summary.unassessedCount).toBe(0);
+    expect(summary.hasCritical).toBe(false);
+  });
+
+  /**
+   * INACTIVE stays. «Түр идэвхгүй» is temporary, so the fault is still a live question
+   * even though the device draws no power — which is why this predicate is deliberately
+   * wider than `countsTowardLoad`. See `object-master/risk-scope.ts`.
+   */
+  it('still counts a temporarily inactive object', async () => {
+    await assessedObject('CRITICAL', 30, 'INACTIVE');
+
+    expect((await summaryOfProject()).hasCritical).toBe(true);
   });
 });

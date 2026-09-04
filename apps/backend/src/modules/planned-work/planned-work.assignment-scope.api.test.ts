@@ -494,16 +494,37 @@ describe('progress, evidence and report writes', () => {
     expect(submit.body.data.report.status).toBe('SUBMITTED');
   });
 
-  it('refuses the nested inspection-report writes to a stranger but not the read', async () => {
+  it('refuses the nested inspection-report reads and writes alike to a stranger', async () => {
     const workId = await completedWork();
 
-    // The guard is mounted for writes only, so the read still answers on
-    // `planned_work.view` alone. Readiness is used because the report itself does not
-    // exist yet and would legitimately 404.
+    /**
+     * THIS ASSERTED 200 UNTIL THE READS WERE SCOPED, and the comment that stood here said
+     * that was fine: "the guard is mounted for writes only, so the read still answers on
+     * `planned_work.view` alone". It was not fine, and this test was what pinned it — the
+     * three nested GETs served any technician the customer, the project, the building, the
+     * floors, the crew by name and the attachment ids of any job in the company, which
+     * `GET /files/:fileId` then redeems.
+     *
+     * The guard above is still mounted for writes only; what changed is beneath it.
+     * `inspection-report.service.findPlannedWorkOrThrow` now intersects the id with
+     * `resolveAssignedWorkFilter`, the same read predicate `getPlannedWorkById` and the
+     * sibling `/report` reads apply, so every handler in that router is scoped rather than
+     * only the three this guard catches.
+     *
+     * 404 and not the 403 the writes below answer: the read path refuses to distinguish
+     * "exists but not yours" from "never existed". Readiness is still the route used
+     * because it is the one of the three that does not need a generated report to exist.
+     */
     const read = await request(app)
       .get(`${API}/planned-work/${workId}/inspection-report/readiness`)
       .set('Authorization', `Bearer ${strangerToken}`);
-    expect(read.status).toBe(200);
+    expect(read.status).toBe(404);
+
+    const invented = await request(app)
+      .get(`${API}/planned-work/${'0'.repeat(24)}/inspection-report/readiness`)
+      .set('Authorization', `Bearer ${strangerToken}`);
+    expect(invented.status).toBe(404);
+    expect(read.body.message).toBe(invented.body.message);
 
     const generate = await request(app)
       .post(`${API}/planned-work/${workId}/inspection-report`)

@@ -172,6 +172,31 @@ describe('Dashboard API', () => {
     );
   });
 
+  /**
+   * Rule 17.9 retires an object BECAUSE it scored worst, so leaving it in this count made
+   * the retirement itself the thing keeping «Ноцтой эрсдэлтэй» on the operator's home
+   * screen — for equipment that is no longer in service and, the assessment rows being
+   * immutable, can never be deleted to clear it. Same predicate as the roll-up, the
+   * inspection counters and the project summary; see `object-master/risk-scope.ts`.
+   */
+  it('leaves decommissioned equipment out of the risk counts', async () => {
+    await seedAssessedObject('DB-01', 92, 'NORMAL');
+    await seedAssessedObject('DB-02', 5, 'OUT_OF_SERVICE');
+    await ObjectRecord.updateOne({ code: 'DB-02' }, { $set: { status: 'DECOMMISSIONED' } });
+
+    const risk = (await summary()).risk as {
+      byLevel: { level: string; count: number }[];
+      totalAssessedObjects: number;
+      unassessedObjects: number;
+    };
+
+    expect(risk.totalAssessedObjects).toBe(1);
+    expect(risk.byLevel).toEqual([{ level: 'NORMAL', count: 1 }]);
+    // Excluded outright rather than reclassified: it was assessed, so calling it
+    // unassessed would be a second wrong answer.
+    expect(risk.unassessedObjects).toBe(0);
+  });
+
   it('reports unassessed objects separately rather than folding them into a band', async () => {
     await seedAssessedObject('DB-01', 92, 'NORMAL');
     const type = await ObjectType.findOne({ code: 'DB' });

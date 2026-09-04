@@ -3,6 +3,7 @@ import type { Server } from 'node:http';
 import { createApp } from './app';
 import { connectDatabase, disconnectDatabase } from './config/database';
 import { env } from './config/env';
+import { assertSchemaIndexes } from './config/index-drift';
 import { logger } from './config/logger';
 import {
   startOverdueReconciliationJob,
@@ -59,7 +60,19 @@ async function start(): Promise<void> {
   startUnclaimedWorkJob();
   startReminderJob();
 
+  // Built BEFORE the index check, and that ordering is load bearing. A model registers
+  // itself on the shared mongoose instance when its module is first imported, and the
+  // route tree is what imports them all; checking any earlier would silently inspect only
+  // the handful of models `seedRbac` and the jobs happen to pull in. `index-drift.test.ts`
+  // pins the equivalence between "everything the router loads" and "every model file on
+  // disk", so this stays true as modules are added.
   const app = createApp();
+
+  // Production connects with `autoIndex: false`, so unlike every other environment its
+  // indexes exist only because somebody ran `npm run sync:indexes`. Refuses to start when
+  // a declared UNIQUE index is absent; see index-drift.ts for why that, and not a log.
+  await assertSchemaIndexes();
+
   server = app.listen(env.PORT, () => {
     logger.info(
       { port: env.PORT, env: env.NODE_ENV, timezone: env.APP_TIMEZONE },

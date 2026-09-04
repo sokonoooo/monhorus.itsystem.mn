@@ -19,6 +19,7 @@ import {
 } from '../../common/security/customer-scope';
 import { ObjectNode } from '../objects/object.models';
 import { ObjectRecord, type IObject } from './object-master.models';
+import { countsTowardRisk } from './risk-scope';
 
 /**
  * Load calculation, requirements section 11.5 and nothing beyond it.
@@ -207,9 +208,21 @@ export async function floorLoadSummary(
   const measuredTotalKw =
     measuredReadings.length > 0 ? measuredReadings.reduce((sum, value) => sum + value, 0) : null;
 
+  /**
+   * The band counts, over the same objects the load arithmetic above is willing to speak
+   * for — near enough.
+   *
+   * This response used to contradict itself in a single payload: `totalKw` excluded a
+   * decommissioned panel (rule 17.17) while the `riskCounts` beside it counted that panel's
+   * band, so the floor read as critical because of equipment the same response had just
+   * declined to draw any power from. `countsTowardRisk` is a shade wider than
+   * `countsTowardLoad` — an INACTIVE device draws nothing but its condition is still a live
+   * question — and that file argues the difference.
+   */
   const counts = new Map<RiskLevel, number>();
   let unassessedCount = 0;
   for (const entry of objects) {
+    if (!countsTowardRisk(entry.status)) continue;
     const level = entry.latestAssessment?.riskLevel;
     if (!level) {
       unassessedCount += 1;

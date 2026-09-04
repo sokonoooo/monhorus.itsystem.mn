@@ -549,6 +549,33 @@ describe('Report and inspection API', () => {
     expect(response.body.data).not.toHaveProperty('overallScore');
   });
 
+  /**
+   * The coverage counters answer "how much of this building has been looked at". Equipment
+   * that has been taken out of service is not part of the building any more, and it was
+   * taken out of service for scoring worst — so leaving it in held the header at that band
+   * forever. Same predicate as the roll-up, the dashboard and the project summary; see
+   * `object-master/risk-scope.ts`.
+   */
+  it('leaves decommissioned equipment out of the coverage counters', async () => {
+    const hierarchy = await seedHierarchy();
+    await seedAssessedObject(hierarchy, 'DB-01', 92, 'NORMAL');
+    const retired = await seedAssessedObject(hierarchy, 'DB-02', 5, 'OUT_OF_SERVICE');
+    await ObjectRecord.updateOne(
+      { _id: new Types.ObjectId(retired) },
+      { $set: { status: 'DECOMMISSIONED' } },
+    );
+
+    const response = await request(app)
+      .get(`${API}/inspections/summary`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.totalObjects).toBe(1);
+    expect(response.body.data.assessedObjects).toBe(1);
+    expect(response.body.data.unassessedObjects).toBe(0);
+    expect(response.body.data.counts).toEqual([{ level: 'NORMAL', count: 1 }]);
+  });
+
   it('counts a device once no matter how many times it was assessed', async () => {
     const hierarchy = await seedHierarchy();
     const objectId = await seedAssessedObject(hierarchy, 'DB-01', 38, 'CRITICAL');

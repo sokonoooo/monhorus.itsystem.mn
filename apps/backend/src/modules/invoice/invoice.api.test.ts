@@ -431,6 +431,192 @@ describe('Invoice API', () => {
     expect(second.body.data.skipped[0].customerId).toBe(customerId);
   });
 
+  /**
+   * The P0 this file previously had no case for.
+   *
+   * «Их дэлгүүр» holds two ACTIVE agreements for September — a head office at ₮2,400,000
+   * and a warehouse at ₮600,000. The preview has always shown both rows, ₮3,000,000 in
+   * total. The generator took a customer id list and did a single `findOne` for an
+   * agreement, without a sort, so it billed whichever one the index returned first: one
+   * ₮600,000 invoice, "1 нэхэмжлэл үүслээ", no skipped entry, and the unique index then
+   * refused the missing ₮2,400,000 for that period for ever.
+   */
+  it('bills every active agreement of a customer, not just the first one', async () => {
+    const bigCustomer = await seedCustomer('Их дэлгүүр');
+    await seedAgreement(bigCustomer, 2_400_000);
+    await seedAgreement(bigCustomer, 600_000);
+
+    const preview = await request(app)
+      .get(`${API}/invoices/generation-preview?billingPeriod=2026-09`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(preview.body.data.candidates).toHaveLength(2);
+    expect(
+      preview.body.data.candidates.reduce(
+        (sum: number, candidate: { monthlyFee: number }) => sum + candidate.monthlyFee,
+        0,
+      ),
+    ).toBe(3_000_000);
+
+    const generated = await request(app)
+      .post(`${API}/invoices/generate-monthly`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        billingPeriod: '2026-09',
+        issueDate: '2026-09-01T00:00:00.000Z',
+        dueDate: '2026-09-30T00:00:00.000Z',
+        customerIds: [bigCustomer],
+      });
+
+    expect(generated.status).toBe(201);
+    expect(generated.body.data.skipped).toHaveLength(0);
+    expect(generated.body.data.created).toHaveLength(2);
+    expect(
+      generated.body.data.created.reduce(
+        (sum: number, invoice: { total: number }) => sum + invoice.total,
+        0,
+      ),
+    ).toBe(3_000_000);
+
+    // Each invoice carries the agreement it bills, which is what makes the second run below
+    // able to tell them apart.
+    const stored = await Invoice.find({ customer: bigCustomer }).sort({ total: 1 }).lean();
+    expect(stored.map((invoice) => invoice.total)).toEqual([600_000, 2_400_000]);
+    expect(new Set(stored.map((invoice) => String(invoice.serviceAgreement))).size).toBe(2);
+  });
+
+  /**
+   * Re-running the same period must skip both agreements by name rather than silently
+   * billing one of them again — and must not report a success it did not achieve.
+   */
+  it('skips each already-invoiced agreement of a customer by name', async () => {
+    const bigCustomer = await seedCustomer('Их дэлгүүр');
+    await seedAgreement(bigCustomer, 2_400_000);
+    await seedAgreement(bigCustomer, 600_000);
+
+    const body = {
+      billingPeriod: '2026-09',
+      issueDate: '2026-09-01T00:00:00.000Z',
+      dueDate: '2026-09-30T00:00:00.000Z',
+      customerIds: [bigCustomer],
+    };
+
+    await request(app)
+      .post(`${API}/invoices/generate-monthly`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(body);
+
+    const second = await request(app)
+      .post(`${API}/invoices/generate-monthly`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(body);
+
+    expect(second.body.data.created).toHaveLength(0);
+    expect(second.body.data.skipped).toHaveLength(2);
+    expect(second.body.data.skipped.every((row: { customerId: string }) => row.customerId === bigCustomer)).toBe(true);
+    expect(
+      second.body.data.skipped.every(
+        (row: { serviceAgreementId: string | null }) => row.serviceAgreementId !== null,
+      ),
+    ).toBe(true);
+
+    // The preview agrees: both rows now carry the invoice that blocks them.
+    const preview = await request(app)
+      .get(`${API}/invoices/generation-preview?billingPeriod=2026-09`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(
+      preview.body.data.candidates.every(
+        (candidate: { existingInvoiceId: string | null }) => candidate.existingInvoiceId !== null,
+      ),
+    ).toBe(true);
+  });
+
+  /**
+   * Billing one agreement must not mark the customer's other agreement as done. Keyed on
+   * the customer, the preview marked both rows blocked after the first invoice — so the
+   * second agreement's fee was not merely unbilled, it was invisible.
+   */
+  it('leaves the second agreement billable after the first is invoiced', async () => {
+    const bigCustomer = await seedCustomer('Их дэлгүүр');
+    const first = await seedAgreement(bigCustomer, 2_400_000);
+    await seedAgreement(bigCustomer, 600_000);
+
+    await request(app)
+      .post(`${API}/invoices`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        customerId: bigCustomer,
+        serviceAgreementId: first,
+        billingType: 'MONTHLY_SERVICE',
+        billingPeriod: '2026-09',
+        issueDate: '2026-09-01T00:00:00.000Z',
+        dueDate: '2026-09-30T00:00:00.000Z',
+        lines: [{ description: 'Сарын тогтмол төлбөр', quantity: 1, unitPrice: 2_400_000 }],
+      })
+      .expect(201);
+
+    const preview = await request(app)
+      .get(`${API}/invoices/generation-preview?billingPeriod=2026-09`)
+      .set('Authorization', `Bearer ${token}`);
+
+    const blocked = preview.body.data.candidates.filter(
+      (candidate: { existingInvoiceId: string | null }) => candidate.existingInvoiceId !== null,
+    );
+    expect(blocked).toHaveLength(1);
+    expect(blocked[0].serviceAgreementId).toBe(first);
+
+    const generated = await request(app)
+      .post(`${API}/invoices/generate-monthly`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        billingPeriod: '2026-09',
+        issueDate: '2026-09-01T00:00:00.000Z',
+        dueDate: '2026-09-30T00:00:00.000Z',
+        customerIds: [bigCustomer],
+      });
+
+    expect(generated.body.data.created).toHaveLength(1);
+    expect(generated.body.data.created[0].total).toBe(600_000);
+    expect(generated.body.data.skipped).toHaveLength(1);
+  });
+
+  /**
+   * The unique index is the only thing standing between two concurrent runs and a double
+   * bill, and nothing in this suite had ever made it refuse anything. It is asserted
+   * directly, below the service, because an application pre-check would pass this test
+   * even if the index were missing from the collection entirely.
+   */
+  it('has a unique index that refuses a second invoice for the same agreement', async () => {
+    const agreementId = await seedAgreement(customerId, 1_000_000);
+
+    const base = {
+      customer: customerId,
+      serviceAgreement: agreementId,
+      billingType: 'MONTHLY_SERVICE' as const,
+      billingPeriod: '2026-09',
+      issueDate: new Date('2026-09-01'),
+      dueDate: new Date('2026-09-30'),
+      lines: [],
+      subtotal: 1_000_000,
+      taxPercent: 0,
+      taxAmount: 0,
+      total: 1_000_000,
+      currency: 'MNT',
+      status: 'DRAFT' as const,
+    };
+
+    await Invoice.create({ ...base, invoiceNumber: 'INV-202609-9001' });
+    await expect(Invoice.create({ ...base, invoiceNumber: 'INV-202609-9002' })).rejects.toMatchObject({
+      code: 11000,
+    });
+
+    // A different agreement of the same customer is a different slot, not a duplicate.
+    const other = await seedAgreement(customerId, 500_000);
+    await expect(
+      Invoice.create({ ...base, serviceAgreement: other, invoiceNumber: 'INV-202609-9003' }),
+    ).resolves.toBeTruthy();
+  });
+
   it('writes an audit record for every money event', async () => {
     const before = await AuditLog.countDocuments({ entityType: 'Invoice' });
     const invoiceId = await createInvoice();

@@ -16,6 +16,7 @@ import {
   type ResolvedCustomerScope,
 } from '../../common/security/customer-scope';
 import { ObjectRecord } from '../object-master/object-master.models';
+import { riskScopeFilter } from '../object-master/risk-scope';
 import { ObjectNode } from '../objects/object.models';
 import {
   Report,
@@ -357,9 +358,12 @@ export async function summariseInspections(
   scope: ResolvedCustomerScope,
 ): Promise<InspectionSummaryDto> {
   const objectIds = await scopedObjectIds(query, scope);
+  // Retired equipment is excluded from every counter below, including the repair and
+  // revisit ones: a device out of service is not a device awaiting a revisit. Same
+  // predicate as the rollup and the dashboard; see `object-master/risk-scope.ts`.
   const objectFilter: FilterQuery<Record<string, unknown>> = objectIds
-    ? { _id: { $in: objectIds } }
-    : {};
+    ? { _id: { $in: objectIds }, ...riskScopeFilter }
+    : { ...riskScopeFilter };
 
   const grouped = await ObjectRecord.aggregate<{ _id: RiskLevel | null; count: number }>([
     { $match: objectFilter },

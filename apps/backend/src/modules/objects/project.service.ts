@@ -32,6 +32,7 @@ import type { RequestMeta } from '../../common/utils/request-meta.util';
 import { recordAudit } from '../audit/audit.service';
 import { Employee } from '../employee/employee.model';
 import { ObjectRecord } from '../object-master/object-master.models';
+import { riskScopeFilter } from '../object-master/risk-scope';
 import { rollupOf } from '../report-record/rollup.service';
 import { PlannedWork } from '../planned-work/planned-work.models';
 import { ServiceRequest } from '../service-request/service-request.model';
@@ -359,7 +360,10 @@ export async function riskSummariesFor(
   if (floorIds.length === 0) return summaries;
 
   const rows = await ObjectRecord.aggregate<FloorRiskRow>([
-    { $match: { floor: { $in: floorIds } } },
+    // Retired equipment neither raises the danger marker nor swells «үнэлгээ хийгээгүй».
+    // Same predicate as the rollup, the dashboard and the inspection counters; see
+    // `object-master/risk-scope.ts` for why it is not `countsTowardLoad`.
+    { $match: { floor: { $in: floorIds }, ...riskScopeFilter } },
     {
       $group: {
         _id: { floor: '$floor', level: '$latestAssessment.riskLevel' },

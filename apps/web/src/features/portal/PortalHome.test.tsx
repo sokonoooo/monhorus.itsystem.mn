@@ -1,5 +1,7 @@
 import { PERMISSIONS, type PortalSummaryDto } from '@monhorus/shared';
 import { screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { Route, Routes, useParams } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { invalidateRequestStages } from '../../hooks/use-request-stages';
@@ -63,6 +65,17 @@ function makeSummary(overrides: Partial<PortalSummaryDto> = {}): PortalSummaryDt
 function render() {
   return renderWithAuth(<PortalHomePage />, {
     permissions: PORTAL_PERMISSIONS,
+    role: 'customer',
+    user: CUSTOMER_IDENTITY,
+    route: '/portal',
+    path: '/portal',
+  });
+}
+
+/** The same screen, signed in as somebody who may rate an employee. */
+function renderWithSurveyPermission() {
+  return renderWithAuth(<PortalHomePage />, {
+    permissions: [...PORTAL_PERMISSIONS, PERMISSIONS.PORTAL_SURVEY_SUBMIT],
     role: 'customer',
     user: CUSTOMER_IDENTITY,
     route: '/portal',
@@ -264,5 +277,147 @@ describe('PortalHomePage - the open request tile', () => {
     render();
 
     expect(await openTileValue()).toBe('7');
+  });
+});
+
+/**
+ * A FETCH THAT FAILED IS NOT AN ANSWER.
+ *
+ * The tiles used to read `buildings === null` as "still loading" and everything else as
+ * "loaded", so a rejected buildings request — which set `[]` — flipped all three to a hard
+ * figure: «Анхаарах тоноглол 0». A customer with a genuinely critical floor read a clean
+ * bill of health off a transport error, which is the one failure mode this product must
+ * never have: an absence may be shown, an all-clear may not be invented.
+ */
+describe('PortalHomePage - a fetch that failed', () => {
+  it('shows no equipment figure when the buildings request fails', async () => {
+    vi.spyOn(portalService, 'listBuildings').mockRejectedValue(new Error('boom'));
+
+    render();
+
+    // The affordance first: the customer is told, and offered the retry. Both panels the
+    // buildings call feeds say so, so this is a list rather than a single banner.
+    const banners = await screen.findAllByRole('alert');
+    expect(
+      within(banners[0]!).getByRole('button', { name: 'Дахин оролдох' }),
+    ).toBeInTheDocument();
+
+    // And no tile invents a number. Zero is the specific lie this test exists to catch.
+    for (const label of ['Анхаарах тоноглол', 'Хэвийн тоноглол', 'Үнэлгээ хийгээгүй']) {
+      const tile = (await screen.findByText(label)).closest('div')!.parentElement!;
+      expect(within(tile).queryByText(/^\d+$/)).not.toBeInTheDocument();
+    }
+  });
+
+  it('retries the buildings request when asked to', async () => {
+    const listBuildings = vi
+      .spyOn(portalService, 'listBuildings')
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValue(makePage([makeBuilding({ name: 'Барилга 1' })]));
+
+    render();
+
+    const banners = await screen.findAllByRole('alert');
+    await userEvent.click(within(banners[0]!).getByRole('button', { name: 'Дахин оролдох' }));
+
+    expect(await screen.findByText('Барилга 1')).toBeInTheDocument();
+    expect(listBuildings).toHaveBeenCalledTimes(2);
+  });
+
+  /**
+   * `null` was both "loading" and "failed" for the summary, so a rejected request left
+   * three panels spinning a skeleton for ever with nothing to press.
+   */
+  it('stops spinning and offers a retry when the summary fails', async () => {
+    vi.spyOn(portalService, 'summary').mockRejectedValue(new Error('boom'));
+
+    render();
+
+    const banners = await screen.findAllByRole('alert');
+    expect(banners.length).toBeGreaterThan(0);
+    expect(
+      within(banners[0]!).getByRole('button', { name: 'Дахин оролдох' }),
+    ).toBeInTheDocument();
+  });
+
+  /**
+   * The survey card is the only in-app route to the rating form, so a swallowed failure
+   * removed the whole errand with nothing said.
+   */
+  it('says so when the pending survey list fails', async () => {
+    vi.spyOn(portalService, 'pendingSurveys').mockRejectedValue(new Error('boom'));
+
+    renderWithSurveyPermission();
+
+    expect(
+      await screen.findByText('Үнэлгээний жагсаалт ачаалж чадсангүй'),
+    ).toBeInTheDocument();
+  });
+
+  /**
+   * The inner floors fetch collapsed a failure into `[]`, so the card printed
+   * «12 давхар · 340 тоноглол» directly above «Энэ барилгад давхар бүртгэгдээгүй байна».
+   */
+  it('does not call a building empty when its floors could not be read', async () => {
+    vi.spyOn(portalService, 'listBuildings').mockResolvedValue(
+      makePage([makeBuilding({ name: 'Барилга 1', floorCount: 12, objectCount: 340 })]),
+    );
+    vi.spyOn(portalService, 'listFloors').mockRejectedValue(new Error('boom'));
+
+    render();
+
+    expect(await screen.findByText('Давхрын мэдээлэл ачаалж чадсангүй.')).toBeInTheDocument();
+    expect(
+      screen.queryByText('Энэ барилгад давхар бүртгэгдээгүй байна.'),
+    ).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * WHERE THE SILHOUETTE GOES.
+ *
+ * The bar navigated to `/portal/floors/:id`, a path no route in the product declares, so
+ * every click on the flagship drawing landed on NotFoundPage. Asserted through the REAL
+ * route pattern rather than against the string, so a rename of either side fails here.
+ */
+describe('PortalHomePage - the silhouette link', () => {
+  function FloorProbe() {
+    const { buildingId, floorId } = useParams();
+    return <p data-testid="floor-probe">{`${buildingId}/${floorId}`}</p>;
+  }
+
+  it('opens the floor at the route the router actually declares', async () => {
+    const buildingId = '507f1f77bcf86cd799439011';
+    const floorId = '507f1f77bcf86cd7994390f1';
+    vi.spyOn(portalService, 'listBuildings').mockResolvedValue(
+      makePage([makeBuilding({ id: buildingId, name: 'Барилга 1' })]),
+    );
+    vi.spyOn(portalService, 'listFloors').mockResolvedValue(
+      makePage([makeFloor({ id: floorId, name: '3 давхар', floorNumber: 3 })]),
+    );
+
+    renderWithAuth(
+      <Routes>
+        <Route path="/portal" element={<PortalHomePage />} />
+        <Route
+          path="/portal/sites/:buildingId/floors/:floorId"
+          element={<FloorProbe />}
+        />
+        <Route path="*" element={<p>ХУУДАС ОЛДСОНГҮЙ</p>} />
+      </Routes>,
+      {
+        permissions: PORTAL_PERMISSIONS,
+        role: 'customer',
+        user: CUSTOMER_IDENTITY,
+        route: '/portal',
+      },
+    );
+
+    await userEvent.click(await screen.findByRole('button', { name: /3 давхар/ }));
+
+    expect(await screen.findByTestId('floor-probe')).toHaveTextContent(
+      `${buildingId}/${floorId}`,
+    );
+    expect(screen.queryByText('ХУУДАС ОЛДСОНГҮЙ')).not.toBeInTheDocument();
   });
 });

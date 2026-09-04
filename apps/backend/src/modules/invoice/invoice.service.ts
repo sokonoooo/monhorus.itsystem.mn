@@ -25,7 +25,9 @@ import { AppError } from '../../common/errors/app-error';
 import { ERROR_CODES } from '../../common/errors/error-codes';
 import type { AuthContext } from '../../common/types/express';
 import { creatorName } from '../../common/utils/creator.util';
+import { dayBounds } from '../../common/utils/day-bounds.util';
 import type { RequestMeta } from '../../common/utils/request-meta.util';
+import { env } from '../../config/env';
 import { recordAudit } from '../audit/audit.service';
 import { notify } from '../notification/notification.service';
 import { Customer } from '../objects/object.models';
@@ -44,6 +46,11 @@ const ENTITY = 'Invoice';
 /** Amounts are whole currency units; MNT has no minor unit in practice. */
 function round(value: number): number {
   return Math.round(value);
+}
+
+/** A MongoDB unique-index violation, whatever wrapper mongoose put around it. */
+function isDuplicateKey(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && (error as { code?: number }).code === 11000;
 }
 
 function nameOf(value: unknown): string | null {
@@ -66,6 +73,32 @@ function numberOf(value: unknown, field: string): string | null {
 }
 
 /**
+ * The last instant of the due date, as an Ulaanbaatar calendar day.
+ *
+ * `dueDate` is stored as a calendar date stamped at UTC midnight, so `setUTCHours(23,59…)`
+ * closed the day eight hours early: between 00:00 and 08:00 local the invoice list still
+ * called an invoice SENT while the dashboard — which has always framed the same question
+ * with `dayBounds(now, APP_TIMEZONE)` — already counted it OVERDUE. Two surfaces, one
+ * invoice, two answers, for a third of every day. The day is now framed the way the rest
+ * of the product frames a day.
+ */
+function dueEndOf(dueDate: Date): Date {
+  return dayBounds(dueDate, env.APP_TIMEZONE).end;
+}
+
+/**
+ * The instant an invoice becomes overdue is the start of today, locally: an invoice due
+ * yesterday or earlier is overdue, one due today is not.
+ *
+ * Exported because the list filter, the receivables roll-up and `effectiveInvoiceStatus`
+ * must all frame the same boundary, and because `dashboard.service.ts` reaches the same
+ * instant by the same expression. A test pins the three together across the whole day.
+ */
+export function overdueBoundary(now: Date = new Date()): Date {
+  return dayBounds(now, env.APP_TIMEZONE).start;
+}
+
+/**
  * Requirements 12.3 OVERDUE, derived rather than stored.
  *
  * Only a SENT invoice can become overdue: a draft has not been issued and a paid or
@@ -77,9 +110,7 @@ export function effectiveInvoiceStatus(
   now: Date = new Date(),
 ): InvoiceEffectiveStatus {
   if (invoice.status !== 'SENT') return invoice.status;
-  const dueEnd = new Date(invoice.dueDate);
-  dueEnd.setUTCHours(23, 59, 59, 999);
-  return now > dueEnd ? 'OVERDUE' : 'SENT';
+  return now > dueEndOf(invoice.dueDate) ? 'OVERDUE' : 'SENT';
 }
 
 export function overdueDaysOf(
@@ -87,8 +118,7 @@ export function overdueDaysOf(
   now: Date = new Date(),
 ): number | null {
   if (effectiveInvoiceStatus(invoice, now) !== 'OVERDUE') return null;
-  const dueEnd = new Date(invoice.dueDate);
-  dueEnd.setUTCHours(23, 59, 59, 999);
+  const dueEnd = dueEndOf(invoice.dueDate);
   return Math.floor((now.getTime() - dueEnd.getTime()) / 86_400_000) + 1;
 }
 
@@ -224,8 +254,9 @@ function actorOf(actor: AuthContext): {
 
 export async function listInvoices(
   query: InvoiceListQueryInput,
+  /** Injectable so a test can walk a whole day; production never passes it. */
+  now: Date = new Date(),
 ): Promise<PaginatedData<InvoiceListItemDto> & { summary: InvoiceSummaryDto }> {
-  const now = new Date();
   const filter: FilterQuery<IInvoice> = {};
 
   if (query.customerId) filter.customer = new Types.ObjectId(query.customerId);
@@ -247,10 +278,10 @@ export async function listInvoices(
    */
   if (query.status === 'OVERDUE') {
     filter.status = 'SENT';
-    filter.dueDate = { $lt: startOfDay(now) };
+    filter.dueDate = { $lt: overdueBoundary(now) };
   } else if (query.status === 'SENT') {
     filter.status = 'SENT';
-    filter.dueDate = { $gte: startOfDay(now) };
+    filter.dueDate = { $gte: overdueBoundary(now) };
   } else if (query.status) {
     filter.status = query.status as InvoiceStatus;
   }
@@ -264,7 +295,10 @@ export async function listInvoices(
       .limit(query.limit)
       .lean<WithId<IInvoice>[]>(),
     Invoice.countDocuments(filter),
-    summariseInvoices(query.customerId ? { customer: new Types.ObjectId(query.customerId) } : {}),
+    summariseInvoices(
+      query.customerId ? { customer: new Types.ObjectId(query.customerId) } : {},
+      now,
+    ),
   ]);
 
   return {
@@ -277,18 +311,12 @@ export async function listInvoices(
   };
 }
 
-function startOfDay(date: Date): Date {
-  const copy = new Date(date);
-  copy.setUTCHours(0, 0, 0, 0);
-  return copy;
-}
-
 /** Receivables roll-up, requirements 15.1 and 15.3. */
 export async function summariseInvoices(
   filter: FilterQuery<IInvoice> = {},
+  now: Date = new Date(),
 ): Promise<InvoiceSummaryDto> {
-  const now = new Date();
-  const dueBoundary = startOfDay(now);
+  const dueBoundary = overdueBoundary(now);
   const { currency } = await financeContext();
 
   const rows = await Invoice.aggregate<{ _id: InvoiceStatus; count: number; total: number }>([
@@ -377,11 +405,42 @@ function billableAgreementFilter(billingPeriod: string): FilterQuery<IServiceAgr
 }
 
 /**
+ * The already-invoiced agreements for a period, keyed by agreement id.
+ *
+ * Keyed by AGREEMENT, not by customer. The preview has always returned one row per
+ * agreement while the clash lookup was keyed on the customer, so a customer holding two
+ * agreements had both rows marked as already invoiced the moment either one was billed —
+ * and, worse, the generator only ever billed one of them. Preview and generation now ask
+ * the same question of the same key, which is the only way the two can agree.
+ *
+ * A MONTHLY_SERVICE invoice entered by hand with no agreement attached is deliberately not
+ * treated as a clash: it is not this agreement's monthly bill, nothing can tell which
+ * agreement it was meant for, and treating it as one would put the preview back out of
+ * step with the run.
+ */
+async function invoicedAgreements(
+  billingPeriod: string,
+): Promise<Map<string, { _id: Types.ObjectId; invoiceNumber: string }>> {
+  const existing = await Invoice.find({
+    billingPeriod,
+    billingType: 'MONTHLY_SERVICE',
+    serviceAgreement: { $ne: null },
+    status: { $ne: 'CANCELLED' },
+  })
+    .select('serviceAgreement invoiceNumber')
+    .lean();
+
+  return new Map(existing.map((row) => [String(row.serviceAgreement), row]));
+}
+
+/**
  * What a monthly run would produce, requirements 12.1.
  *
  * Only an ACTIVE agreement whose term covers the period is billable — see
- * `billableAgreementFilter`. A customer whose period is already invoiced is returned with
- * the clash attached rather than omitted, so the operator sees why.
+ * `billableAgreementFilter`. One row per agreement: a customer with a head office and a
+ * warehouse holds two agreements and owes two monthly fees. An agreement whose period is
+ * already invoiced is returned with the clash attached rather than omitted, so the
+ * operator sees why.
  */
 export async function previewMonthlyInvoices(
   billingPeriod: string,
@@ -393,21 +452,12 @@ export async function previewMonthlyInvoices(
     .sort({ agreementNumber: 1 })
     .lean();
 
-  const existing = await Invoice.find({
-    billingPeriod,
-    billingType: 'MONTHLY_SERVICE',
-    status: { $ne: 'CANCELLED' },
-  })
-    .select('customer invoiceNumber')
-    .lean();
-
-  const existingByCustomer = new Map(existing.map((row) => [String(row.customer), row]));
+  const existingByAgreement = await invoicedAgreements(billingPeriod);
 
   const candidates: InvoiceGenerationCandidateDto[] = agreements.map((agreement) => {
-    const customerId = idOf(agreement.customer) ?? '';
-    const clash = existingByCustomer.get(customerId);
+    const clash = existingByAgreement.get(String(agreement._id));
     return {
-      customerId,
+      customerId: idOf(agreement.customer) ?? '',
       customerName: nameOf(agreement.customer) ?? '-',
       serviceAgreementId: String(agreement._id),
       serviceAgreementNumber: agreement.agreementNumber,
@@ -423,13 +473,28 @@ export async function previewMonthlyInvoices(
 
 // -- Write --------------------------------------------------------------------
 
+/**
+ * Requirements 12.3 no-duplicate, asked with the same key the unique index enforces:
+ * customer + agreement + period + type.
+ *
+ * The agreement is part of the key because a customer can legitimately hold more than one
+ * ACTIVE agreement — a head office and a warehouse — and each owes its own monthly fee.
+ * Keyed on the customer alone, the second agreement's invoice was refused for ever and the
+ * money it represented could never be billed for that period.
+ *
+ * An invoice with no agreement keys on `null`, which is a single slot per customer, period
+ * and type: two hand-entered invoices for the same customer, period and type still clash,
+ * exactly as before.
+ */
 async function assertNoDuplicate(
   customerId: Types.ObjectId,
+  serviceAgreementId: Types.ObjectId | null,
   billingPeriod: string,
   billingType: string,
 ): Promise<void> {
   const clash = await Invoice.findOne({
     customer: customerId,
+    serviceAgreement: serviceAgreementId,
     billingPeriod,
     billingType,
     status: { $ne: 'CANCELLED' },
@@ -456,7 +521,15 @@ export async function createInvoice(
     throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Харилцагч олдсонгүй.');
   }
 
-  await assertNoDuplicate(customerId, input.billingPeriod, input.billingType);
+  const serviceAgreementId = input.serviceAgreementId
+    ? new Types.ObjectId(input.serviceAgreementId)
+    : null;
+  await assertNoDuplicate(
+    customerId,
+    serviceAgreementId,
+    input.billingPeriod,
+    input.billingType,
+  );
 
   const { taxPercent, currency } = await financeContext();
   const lines = buildLines(input.lines);
@@ -465,9 +538,7 @@ export async function createInvoice(
   const invoice = await Invoice.create({
     invoiceNumber: await nextInvoiceNumber(),
     customer: customerId,
-    serviceAgreement: input.serviceAgreementId
-      ? new Types.ObjectId(input.serviceAgreementId)
-      : null,
+    serviceAgreement: serviceAgreementId,
     billingType: input.billingType,
     billingPeriod: input.billingPeriod,
     issueDate: new Date(input.issueDate),
@@ -512,46 +583,97 @@ export async function createInvoice(
   return getInvoice(String(invoice._id));
 }
 
+/** One skipped row of a monthly run, named by the agreement it belongs to. */
+export interface SkippedGeneration {
+  /** Kept first and unchanged: the web reads this field. */
+  customerId: string;
+  /** Null only when the customer had no billable agreement at all. */
+  serviceAgreementId: string | null;
+  serviceAgreementNumber: string | null;
+  reason: string;
+}
+
 /**
- * Generates one monthly invoice per selected customer.
+ * Generates one monthly invoice per billable AGREEMENT of each selected customer.
  *
- * Each customer is processed independently: a duplicate on one must not abandon the rest
+ * The run used to be keyed on the customer: it took a customer id list and did a single
+ * `findOne` for an agreement, in index order and without a sort. A customer holding two
+ * ACTIVE agreements — a head office at ₮2,400,000 and a warehouse at ₮600,000 — was shown
+ * two rows totalling ₮3,000,000 by the preview, and then billed for exactly one of them,
+ * whichever the index happened to return first. There was no skipped entry, the run
+ * reported success, and the unique index on (customer, period, type) then refused the
+ * second invoice for ever, so the missing ₮2,400,000 could never be billed for that
+ * period. Every step below is keyed on the agreement id instead, which is the thing an
+ * invoice is actually for.
+ *
+ * The request body still carries `customerIds`, so the web needs no change to keep
+ * working: a ticked customer now bills every agreement of theirs that the preview listed.
+ *
+ * Each agreement is processed independently: a duplicate on one must not abandon the rest
  * of the run, so failures are collected and reported rather than thrown.
  */
 export async function generateMonthlyInvoices(
   input: GenerateMonthlyInvoicesInput,
   actor: AuthContext,
   meta: RequestMeta,
-): Promise<{ created: InvoiceListItemDto[]; skipped: { customerId: string; reason: string }[] }> {
+): Promise<{ created: InvoiceListItemDto[]; skipped: SkippedGeneration[] }> {
   const { taxPercent, currency } = await financeContext();
   const created: InvoiceListItemDto[] = [];
-  const skipped: { customerId: string; reason: string }[] = [];
+  const skipped: SkippedGeneration[] = [];
   const now = new Date();
 
-  for (const customerId of input.customerIds) {
-    const objectId = new Types.ObjectId(customerId);
-    // The same predicate the preview uses. Re-applied here rather than trusted from the
-    // preview because this endpoint takes a customer id list and is callable on its own,
-    // so a stale preview must not be able to bill a term that has since ended.
-    const agreement = await ServiceAgreement.findOne({
-      customer: objectId,
-      ...billableAgreementFilter(input.billingPeriod),
-    })
-      .populate({ path: 'customer', select: 'name' })
-      .lean();
+  // De-duplicated because the same customer twice in the body must not mean two runs.
+  const customerIds = [...new Set(input.customerIds)];
 
-    if (!agreement) {
+  // The same predicate the preview uses. Re-applied here rather than trusted from the
+  // preview because this endpoint takes an id list and is callable on its own, so a stale
+  // preview must not be able to bill a term that has since ended.
+  //
+  // Sorted by agreement number so a run is deterministic: the previous `findOne` had no
+  // sort at all, which is how the choice of which agreement got billed came down to index
+  // order.
+  const agreements = await ServiceAgreement.find({
+    customer: { $in: customerIds.map((id) => new Types.ObjectId(id)) },
+    ...billableAgreementFilter(input.billingPeriod),
+  })
+    .populate({ path: 'customer', select: 'name' })
+    .sort({ agreementNumber: 1 })
+    .lean();
+
+  // A customer with nothing billable is still reported, as before — silence is what made
+  // the original bug invisible.
+  const billableCustomers = new Set(agreements.map((agreement) => idOf(agreement.customer) ?? ''));
+  for (const customerId of customerIds) {
+    if (billableCustomers.has(customerId)) continue;
+    skipped.push({
+      customerId,
+      serviceAgreementId: null,
+      serviceAgreementNumber: null,
+      reason: 'Тухайн тайлант үед хүчинтэй үйлчилгээний нөхцөл олдсонгүй.',
+    });
+  }
+
+  for (const agreement of agreements) {
+    const customerId = idOf(agreement.customer) ?? '';
+    const customerObjectId = new Types.ObjectId(customerId);
+    const skip = (reason: string): void => {
       skipped.push({
         customerId,
-        reason: 'Тухайн тайлант үед хүчинтэй үйлчилгээний нөхцөл олдсонгүй.',
+        serviceAgreementId: String(agreement._id),
+        serviceAgreementNumber: agreement.agreementNumber,
+        reason,
       });
-      continue;
-    }
+    };
 
     try {
-      await assertNoDuplicate(objectId, input.billingPeriod, 'MONTHLY_SERVICE');
+      await assertNoDuplicate(
+        customerObjectId,
+        agreement._id,
+        input.billingPeriod,
+        'MONTHLY_SERVICE',
+      );
     } catch {
-      skipped.push({ customerId, reason: 'Энэ тайлант үед нэхэмжлэл аль хэдийн үүссэн.' });
+      skip(`${agreement.agreementNumber} нөхцөлд энэ тайлант үед нэхэмжлэл аль хэдийн үүссэн.`);
       continue;
     }
 
@@ -566,32 +688,44 @@ export async function generateMonthlyInvoices(
     ];
     const totals = totalsOf(lines, taxPercent);
 
-    const invoice = await Invoice.create({
-      invoiceNumber: await nextInvoiceNumber(now),
-      customer: objectId,
-      serviceAgreement: agreement._id,
-      billingType: 'MONTHLY_SERVICE',
-      billingPeriod: input.billingPeriod,
-      issueDate: new Date(input.issueDate),
-      dueDate: new Date(input.dueDate),
-      lines,
-      taxPercent,
-      ...totals,
-      currency,
-      status: 'DRAFT',
-      statusHistory: [
-        {
-          fromStatus: null,
-          toStatus: 'DRAFT',
-          reason: 'Сарын нэхэмжлэл автоматаар боловсруулсан.',
-          changedBy: new Types.ObjectId(actor.userId),
-          changedByName: actor.fullName ?? null,
-          changedAt: now,
-        },
-      ],
-      createdBy: new Types.ObjectId(actor.userId),
-      createdByName: actor.fullName ?? null,
-    });
+    let invoice;
+    try {
+      invoice = await Invoice.create({
+        invoiceNumber: await nextInvoiceNumber(now),
+        customer: customerObjectId,
+        serviceAgreement: agreement._id,
+        billingType: 'MONTHLY_SERVICE',
+        billingPeriod: input.billingPeriod,
+        issueDate: new Date(input.issueDate),
+        dueDate: new Date(input.dueDate),
+        lines,
+        taxPercent,
+        ...totals,
+        currency,
+        status: 'DRAFT',
+        statusHistory: [
+          {
+            fromStatus: null,
+            toStatus: 'DRAFT',
+            reason: 'Сарын нэхэмжлэл автоматаар боловсруулсан.',
+            changedBy: new Types.ObjectId(actor.userId),
+            changedByName: actor.fullName ?? null,
+            changedAt: now,
+          },
+        ],
+        createdBy: new Types.ObjectId(actor.userId),
+        createdByName: actor.fullName ?? null,
+      });
+    } catch (error) {
+      // The pre-check above loses to a concurrent run; the unique index is what actually
+      // decides. A refused write is reported as a skip rather than abandoning the rest of
+      // the run — and, crucially, rather than being counted as created.
+      if (isDuplicateKey(error)) {
+        skip(`${agreement.agreementNumber} нөхцөлд энэ тайлант үед нэхэмжлэл аль хэдийн үүссэн.`);
+        continue;
+      }
+      throw error;
+    }
 
     await recordAudit({
       entityType: ENTITY,
@@ -602,6 +736,7 @@ export async function generateMonthlyInvoices(
       newValue: {
         invoiceNumber: invoice.invoiceNumber,
         billingPeriod: invoice.billingPeriod,
+        serviceAgreement: agreement.agreementNumber,
         total: invoice.total,
         source: 'MONTHLY_RUN',
       },

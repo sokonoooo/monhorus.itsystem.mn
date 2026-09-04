@@ -54,6 +54,11 @@ export function PlannedWorkReportPage(): ReactElement {
   const [preview, setPreview] = useState<PlannedWorkReportPreviewDto | null>(null);
   const [conclusion, setConclusion] = useState('');
   const [recommendation, setRecommendation] = useState('');
+  /**
+   * The write-up as the server last gave it, so "changed" is a comparison of like with
+   * like: the report holds `string | null`, these two fields hold `string`.
+   */
+  const [savedWriteUp, setSavedWriteUp] = useState({ conclusion: '', recommendation: '' });
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -118,8 +123,13 @@ export function PlannedWorkReportPage(): ReactElement {
       const bundle = await plannedWorkService.report(plannedWorkId);
       setReport(bundle.report);
       setPreview(bundle.preview);
-      setConclusion(bundle.report?.conclusion ?? '');
-      setRecommendation(bundle.report?.recommendation ?? '');
+      const seeded = {
+        conclusion: bundle.report?.conclusion ?? '',
+        recommendation: bundle.report?.recommendation ?? '',
+      };
+      setConclusion(seeded.conclusion);
+      setRecommendation(seeded.recommendation);
+      setSavedWriteUp(seeded);
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : 'Тайлан ачаалж чадсангүй.');
     } finally {
@@ -155,6 +165,18 @@ export function PlannedWorkReportPage(): ReactElement {
     } finally {
       setBusy(false);
     }
+  }
+
+  /** Something is typed into the write-up that the server has not been told about. */
+  const writeUpDirty =
+    conclusion !== savedWriteUp.conclusion || recommendation !== savedWriteUp.recommendation;
+
+  /** The PATCH body, from whatever the two fields currently hold. */
+  function writeUpPayload() {
+    return {
+      conclusion: conclusion.trim() || null,
+      recommendation: recommendation.trim() || null,
+    };
   }
 
   const taskColumns: ReadonlyArray<Column<PlannedWorkReportTaskLineDto>> = [
@@ -354,11 +376,7 @@ export function PlannedWorkReportPage(): ReactElement {
                 variant="secondary"
                 onClick={() =>
                   void run(
-                    () =>
-                      plannedWorkService.updateReport(plannedWorkId!, {
-                        conclusion: conclusion.trim() || null,
-                        recommendation: recommendation.trim() || null,
-                      }),
+                    () => plannedWorkService.updateReport(plannedWorkId!, writeUpPayload()),
                     'Тайлан хадгалагдлаа.',
                   )
                 }
@@ -370,10 +388,27 @@ export function PlannedWorkReportPage(): ReactElement {
             {editable && (
               <Button
                 onClick={() =>
-                  void run(
-                    () => plannedWorkService.submitReport(plannedWorkId!),
-                    'Тайлан хянуулахаар илгээгдлээ.',
-                  )
+                  /*
+                    SAVE FIRST, THEN SUBMIT.
+
+                    This posted the submit alone, and `run` reloads on success — re-seeding
+                    both fields from the stored copy — while SUBMITTED drops out of
+                    `REPORT_SUBMITTABLE_STATUSES` and locks them. So a performer who typed
+                    the Дүгнэлт and pressed this without pressing «Хадгалах» first lost it,
+                    with no way back into the record short of a reviewer returning it.
+
+                    Saved rather than refused: the text is on the screen in front of the
+                    person pressing the button, and this is the same PATCH the save button
+                    issues. A refused save aborts the submit — the throw leaves `run` to
+                    report it — because a report locked against text it never received is
+                    the failure this exists to prevent.
+                  */
+                  void run(async () => {
+                    if (writeUpDirty) {
+                      await plannedWorkService.updateReport(plannedWorkId!, writeUpPayload());
+                    }
+                    return plannedWorkService.submitReport(plannedWorkId!);
+                  }, 'Тайлан хянуулахаар илгээгдлээ.')
                 }
                 disabled={busy || report.submissionBlockers.length > 0}
               >
@@ -465,6 +500,16 @@ export function PlannedWorkReportPage(): ReactElement {
 
         <div className="rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
           <h2 className="mb-3 text-sm font-semibold text-slate-900">Нэгдсэн дүгнэлт ба зөвлөмж</h2>
+
+          {/*
+            Said out loud, so the state is visible before the submit button is pressed
+            rather than only implied by what happens afterwards.
+          */}
+          {editable && writeUpDirty && (
+            <p className="mb-3 text-xs text-amber-700">
+              Хадгалагдаагүй өөрчлөлт байна. Хянуулахаар илгээхэд хамт хадгалагдана.
+            </p>
+          )}
 
           <div className="space-y-3">
             <div>

@@ -171,12 +171,28 @@ const invoiceSchema = new Schema<IInvoice>(
 
 /**
  * Requirements 12.3: no duplicate invoice on the same customer, billing period and
- * billing type.
+ * billing type — read as one invoice per THING BILLED, not one per customer.
+ *
+ * `serviceAgreement` is part of the key. Without it the index read "one MONTHLY_SERVICE
+ * invoice per customer per period", which is wrong the moment a customer holds two ACTIVE
+ * agreements — a head office and a warehouse each owe their own monthly fee. The old index
+ * accepted the first agreement's invoice and then refused the second one permanently, so a
+ * real receivable became unbillable for that period with no error anyone could see.
+ *
+ * A hand-entered invoice with no agreement keys on `null`, and null is a single index key,
+ * so two such invoices for the same customer, period and type still collide exactly as
+ * they did before. Nothing that was refused before is accepted now except the case this
+ * exists to allow.
  *
  * The index is partial so a cancelled invoice frees its slot. Without that, cancelling a
  * wrong invoice would permanently block the correct one for that period, which is the
  * opposite of what the same clause asks for when it requires a replacement to carry the
  * cancelled invoice's reference.
+ *
+ * CHANGING THIS INDEX NEEDS A MIGRATION: production connects with `autoIndex: false`
+ * (`config/database.ts`), so the old three-field index survives a deploy and keeps
+ * refusing the second agreement until it is dropped. See
+ * `src/scripts/migrate-invoice-agreement-index.ts`, or `npm run sync:indexes`.
  */
 // Spelled as an $in over the non-cancelled statuses rather than { $ne: 'CANCELLED' }.
 // MongoDB does not accept $ne in a partialFilterExpression -- it rejects the whole
@@ -185,7 +201,7 @@ const invoiceSchema = new Schema<IInvoice>(
 // block exists for. Derived from INVOICE_STATUSES so a new status is included the
 // moment it is added.
 invoiceSchema.index(
-  { customer: 1, billingPeriod: 1, billingType: 1 },
+  { customer: 1, serviceAgreement: 1, billingPeriod: 1, billingType: 1 },
   {
     unique: true,
     partialFilterExpression: {

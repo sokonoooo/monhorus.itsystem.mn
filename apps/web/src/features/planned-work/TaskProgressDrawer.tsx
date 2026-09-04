@@ -72,6 +72,20 @@ export function TaskProgressDrawer({
   const beforeInputRef = useRef<HTMLInputElement>(null);
   const afterInputRef = useRef<HTMLInputElement>(null);
 
+  /**
+   * Seeds the form from the sub-task — ONCE PER SUB-TASK, not once per object identity.
+   *
+   * KEYED ON `task.id`. This was keyed on `task`, and the detail page deliberately hands
+   * back a NEW object after every photo save so the drawer stays open on the refreshed
+   * evidence. So attaching a photo re-ran this and overwrote the note, the Дүгнэлт, the
+   * score, the recommendation and the quantity from the stored copy — behind a green
+   * «Зураг хавсаргагдлаа» toast, so nothing on screen said the write-up had just been
+   * thrown away. Removing a photo did the same.
+   *
+   * The identity of the sub-task is its id. Opening a DIFFERENT sub-task still re-seeds,
+   * and closing the drawer takes `task` to null, so reopening the same one seeds afresh.
+   */
+  const taskId = task?.id ?? null;
   useEffect(() => {
     if (!task) return;
     setCompletedQuantity(String(task.completedQuantity));
@@ -82,7 +96,8 @@ export function TaskProgressDrawer({
     setSkipped(task.status === 'SKIPPED');
     setFormError(null);
     setFieldErrors({});
-  }, [task]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `task` is read, its id is the key.
+  }, [taskId]);
 
   async function handleSubmit(): Promise<void> {
     if (!task) return;
