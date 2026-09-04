@@ -40,10 +40,15 @@ abstract interface class CustomerPortalRepository {
 
   Future<ApiResult<FloorPlanModel?>> getFloorPlan(String floorId);
 
+  /// One page of the customer's objects. [page] is exposed for the same reason
+  /// [listBuildings] exposes it: `objectListQuerySchema` caps `limit` at 100, and a
+  /// caller that draws a floor plan or counts what is missing from one has to read
+  /// every page; `PaginatedData.totalPages` says how many there are.
   Future<ApiResult<PaginatedData<ObjectListItemModel>>> listObjects(
     ResolvedCustomerScope scope, {
     String? floorId,
     String? buildingId,
+    int page,
   });
 
   Future<ApiResult<ObjectDetailModel>> getObject(String objectId);

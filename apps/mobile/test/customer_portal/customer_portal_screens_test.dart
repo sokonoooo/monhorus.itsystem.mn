@@ -378,6 +378,144 @@ void main() {
       expect(find.text('ЭНЭ ДАВХРЫН ХҮСЭЛТҮҮД'), findsOneWidget);
       expect(find.textContaining('SR-202607-0012'), findsWidgets);
     });
+
+    // The one place in this app where truncation produced a positive false statement
+    // rather than an undercount.
+    //
+    // There is no floor filter on `GET /service-requests`, so the history tab reads
+    // the building's requests and narrows them client-side. Read as a single page of
+    // 100, a floor whose history sits behind the newest hundred got «Энэ давхарт
+    // бүртгэгдсэн үйлчилгээний хүсэлт алга байна» — an assertion of zero about a floor
+    // with a full service record.
+    testWidgets('a floor whose requests are on page two is not declared empty',
+        (WidgetTester tester) async {
+      const String thisFloor = '6d0000000000000000000002';
+      const String otherFloor = '6d00000000000000000000ff';
+
+      final FakeCustomerPortalRepository repository = FakeCustomerPortalRepository(
+        requests: <ServiceRequestListItemModel>[
+          // A hundred newer requests, none of them on this floor.
+          for (int i = 0; i < 100; i++)
+            serviceRequestFixture(
+              id: 'r$i',
+              requestNumber: 'SR-OTHER-${i.toString().padLeft(4, '0')}',
+              floorId: otherFloor,
+              floorName: '9-р давхар',
+            ),
+          // This floor's own history, older, and therefore on page two.
+          serviceRequestFixture(
+            id: 'r-mine',
+            requestNumber: 'SR-202601-0001',
+            floorId: thisFloor,
+          ),
+        ],
+        requestPageSize: 100,
+      );
+
+      await pumpPhone(
+        tester,
+        wrapCustomerScreen(
+          const FloorDetailScreen(
+            floorId: thisFloor,
+            buildingId: '6b0000000000000000000001',
+            buildingName: 'Төв цамхаг',
+            projectName: 'Урьдчилан сэргийлэх үйлчилгээ',
+          ),
+          repository: repository,
+        ),
+      );
+
+      await tester.tap(find.text('ТҮҮХ'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('Энэ давхарт бүртгэгдсэн үйлчилгээний хүсэлт алга байна.'),
+        findsNothing,
+        reason: 'the floor has a request; it was merely on the second page',
+      );
+      expect(find.textContaining('SR-202601-0001'), findsWidgets);
+      expect(repository.requestPagesRequested, contains(2));
+    });
+
+    testWidgets('a walk cut short by the page ceiling refuses to claim a zero',
+        (WidgetTester tester) async {
+      // A building busier than the walk's own ceiling, with nothing on this floor in
+      // what it managed to read. The honest answer is "none turned up in what we
+      // read", never "this floor has none".
+      final FakeCustomerPortalRepository repository = FakeCustomerPortalRepository(
+        requests: <ServiceRequestListItemModel>[
+          for (int i = 0; i < 1000; i++)
+            serviceRequestFixture(
+              id: 'r$i',
+              requestNumber: 'SR-OTHER-${i.toString().padLeft(4, '0')}',
+              floorId: '6d00000000000000000000ff',
+              floorName: '9-р давхар',
+            ),
+        ],
+        requestPageSize: 1,
+      );
+
+      await pumpPhone(
+        tester,
+        wrapCustomerScreen(
+          const FloorDetailScreen(
+            floorId: '6d0000000000000000000002',
+            buildingId: '6b0000000000000000000001',
+            buildingName: 'Төв цамхаг',
+            projectName: 'Урьдчилан сэргийлэх үйлчилгээ',
+          ),
+          repository: repository,
+        ),
+      );
+
+      await tester.tap(find.text('ТҮҮХ'));
+      await tester.pumpAndSettle();
+
+      // Twenty: it walked, and it stopped. Not one, and not a thousand.
+      expect(repository.requestPagesRequested.length, 20);
+      expect(
+        find.text('Энэ давхарт бүртгэгдсэн үйлчилгээний хүсэлт алга байна.'),
+        findsNothing,
+        reason: 'a zero it did not earn must not be stated as one',
+      );
+      expect(find.textContaining('олдсонгүй'), findsOneWidget);
+    });
+
+    testWidgets('a floor with no requests at all still says so plainly',
+        (WidgetTester tester) async {
+      // The honest zero: the walk saw every page and there was nothing on this floor.
+      final FakeCustomerPortalRepository repository = FakeCustomerPortalRepository(
+        requests: <ServiceRequestListItemModel>[
+          serviceRequestFixture(
+            id: 'r-elsewhere',
+            requestNumber: 'SR-OTHER-0001',
+            floorId: '6d00000000000000000000ff',
+            floorName: '9-р давхар',
+          ),
+        ],
+      );
+
+      await pumpPhone(
+        tester,
+        wrapCustomerScreen(
+          const FloorDetailScreen(
+            floorId: '6d0000000000000000000002',
+            buildingId: '6b0000000000000000000001',
+            buildingName: 'Төв цамхаг',
+            projectName: 'Урьдчилан сэргийлэх үйлчилгээ',
+          ),
+          repository: repository,
+        ),
+      );
+
+      await tester.tap(find.text('ТҮҮХ'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('Энэ давхарт бүртгэгдсэн үйлчилгээний хүсэлт алга байна.'),
+        findsOneWidget,
+      );
+    });
   });
 
   group('s-device-detail', () {

@@ -87,8 +87,11 @@ class ProjectRepositoryImpl implements ProjectRepository {
   }
 
   @override
-  Future<ApiResult<PaginatedData<ObjectListItemModel>>> listFloorObjects(String floorId) {
-    return _guard(() => _remote.listFloorObjects(floorId: floorId));
+  Future<ApiResult<PaginatedData<ObjectListItemModel>>> listFloorObjects(
+    String floorId, {
+    int page = 1,
+  }) {
+    return _guard(() => _remote.listFloorObjects(floorId: floorId, page: page));
   }
 
   @override

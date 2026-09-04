@@ -177,6 +177,38 @@ final FutureProviderFamily<FloorPlanModel?, String> floorPlanProvider =
 
 // -- Devices -----------------------------------------------------------------
 
+/// A ceiling on the paging loop, not on the floor.
+///
+/// `totalPages` is the server's own arithmetic, and a server that miscounts it would
+/// spin an unbounded loop forever. Twenty pages of 100 is two thousand devices on one
+/// floor — far past any real one, and the same ceiling the admin web's floor screen
+/// walks under.
+const int _maxObjectPages = 20;
+
+/// Every device on the floor, not the first hundred.
+///
+/// `/floors/:id/objects` caps a page at 100, so a single request silently lost every
+/// device past the first page — a floor with 120 of them drew 100 pins and gave no
+/// hint that twenty were missing. Worse, the screen counts the unplaced from this same
+/// list: «Планд байрлуулаагүй N төхөөрөмж байна» computed over a truncated read is a
+/// figure that looks like an all-clear for devices nobody ever saw. Pages are walked in
+/// order because the first response is what says how many there are.
+Future<List<ObjectListItemModel>> _allFloorObjects(
+  ProjectRepository repository,
+  String floorId,
+) async {
+  final List<ObjectListItemModel> all = <ObjectListItemModel>[];
+  for (int page = 1; page <= _maxObjectPages; page++) {
+    final PaginatedData<ObjectListItemModel> slice =
+        _unwrap(await repository.listFloorObjects(floorId, page: page));
+    all.addAll(slice.items);
+    // An empty page means there is nothing further to read; carrying on would loop
+    // against a server that disagrees with its own `totalPages`.
+    if (slice.items.isEmpty || page >= slice.totalPages) break;
+  }
+  return all;
+}
+
 /// Devices linked to a floor, worst band first so the ones needing work lead.
 ///
 /// An unassessed device sorts after every assessed one: it is an unknown, not a
@@ -185,10 +217,9 @@ final FutureProviderFamily<List<ObjectListItemModel>, String> floorObjectsProvid
     FutureProvider.family<List<ObjectListItemModel>, String>(
         (Ref ref, String floorId) async {
   final ProjectRepository repository = ref.watch(projectRepositoryProvider);
-  final PaginatedData<ObjectListItemModel> page =
-      _unwrap(await repository.listFloorObjects(floorId));
 
-  final List<ObjectListItemModel> objects = page.items.toList();
+  final List<ObjectListItemModel> objects =
+      await _allFloorObjects(repository, floorId);
   objects.sort((ObjectListItemModel a, ObjectListItemModel b) {
     final int? left = a.score;
     final int? right = b.score;

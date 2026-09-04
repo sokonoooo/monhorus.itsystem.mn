@@ -146,6 +146,9 @@ void main() {
   // told not to: a test must not depend on fonts.gstatic.com being reachable.
   setUpAll(() => GoogleFonts.config.allowRuntimeFetching = false);
 
+  /// [repository] swaps the object list for a real repository read rather than a
+  /// canned provider value, which is the only way a test can see whether the provider
+  /// pages. When it is given, [objects] is unused.
   Widget screen({
     required Uint8List bytes,
     required List<Map<String, dynamic>> objects,
@@ -153,6 +156,7 @@ void main() {
     Map<String, Uint8List> icons = const <String, Uint8List>{},
     Set<String> refused = const <String>{},
     List<String>? fetches,
+    FakeCustomerPortalRepository? repository,
   }) {
     return wrapCustomerScreen(
       const FloorDetailScreen(
@@ -161,17 +165,18 @@ void main() {
         buildingName: 'Төв цамхаг',
         projectName: 'Урьдчилан сэргийлэх үйлчилгээ',
       ),
-      repository: FakeCustomerPortalRepository(),
+      repository: repository ?? FakeCustomerPortalRepository(),
       overrides: <Override>[
         floorProvider(_floorId).overrideWith((Ref ref) async => floorFixture()),
         floorPlanProvider(_floorId).overrideWith(
           (Ref ref) async => FloorPlanModel.fromJson(_planJson(mimeType: mimeType)),
         ),
-        floorObjectsProvider(_floorId).overrideWith(
-          (Ref ref) async => objects
-              .map(ObjectListItemModel.fromJson)
-              .toList(growable: false),
-        ),
+        if (repository == null)
+          floorObjectsProvider(_floorId).overrideWith(
+            (Ref ref) async => objects
+                .map(ObjectListItemModel.fromJson)
+                .toList(growable: false),
+          ),
         // The whole family rather than one instance, so an icon is fetched through the
         // same provider the plan is — which is the claim the caching test rests on.
         // Every call is recorded, so "one request for forty markers" is measured rather
@@ -1272,6 +1277,103 @@ void main() {
       expect(marker.width, closeTo(kPlanMarkerDiameter, 0.5));
       expect(marker.center.dx, closeTo(plan.left + plan.width * 0.5, 0.6));
       expect(marker.center.dy, closeTo(plan.top + plan.height * 0.5, 0.6));
+    });
+  });
+  // A floor bigger than one page of the object list.
+  //
+  // `objectListQuerySchema` caps `limit` at 100. A screen that read one page drew 100
+  // pins for a 120-object floor and gave no hint that twenty were missing — and then
+  // computed «Планд байрлуулаагүй N төхөөрөмж байна» from the very same truncated
+  // list, so the caption read as an all-clear about objects it had never been told
+  // about. The admin web walks the pages for exactly this reason.
+  group('a floor larger than one page', () {
+    /// 100 placed objects, the size of one full page.
+    List<ObjectListItemModel> firstPage() => <ObjectListItemModel>[
+          for (int i = 0; i < 100; i++)
+            ObjectListItemModel.fromJson(_objectJson(
+              id: 'p1-$i',
+              code: 'P1-${i.toString().padLeft(3, '0')}',
+              planPosition: <String, dynamic>{'x': 0.5, 'y': 0.5},
+            )),
+        ];
+
+    /// Object 101 is placed on the plan; the nineteen behind it are not.
+    List<ObjectListItemModel> secondPage() => <ObjectListItemModel>[
+          ObjectListItemModel.fromJson(_objectJson(
+            id: 'p2-0',
+            code: 'P2-000',
+            planPosition: <String, dynamic>{'x': 0.25, 'y': 0.75},
+          )),
+          for (int i = 1; i < 20; i++)
+            ObjectListItemModel.fromJson(_objectJson(
+              id: 'p2-$i',
+              code: 'P2-${i.toString().padLeft(3, '0')}',
+            )),
+        ];
+
+    FakeCustomerPortalRepository twoPages() => FakeCustomerPortalRepository(
+          objects: <ObjectListItemModel>[...firstPage(), ...secondPage()],
+          objectPageSize: 100,
+        );
+
+    testWidgets('the plan draws a marker for object 101', (WidgetTester tester) async {
+      final Uint8List bytes = (await tester.runAsync(_planBytes))!;
+      final FakeCustomerPortalRepository repository = twoPages();
+
+      await pumpPlan(
+        tester,
+        () => screen(
+          bytes: bytes,
+          objects: const <Map<String, dynamic>>[],
+          repository: repository,
+        ),
+      );
+
+      expect(repository.objectPagesRequested, <int>[1, 2]);
+      // The object that used to fall off the end of page one.
+      expect(_marker('P2-000'), findsOneWidget);
+      expect(find.byType(PlanMarker), findsNWidgets(101));
+    });
+
+    test('the unplaced count is taken over every page, not the first', () async {
+      final FakeCustomerPortalRepository repository = twoPages();
+      final ProviderContainer container = ProviderContainer(
+        overrides: <Override>[
+          customerPortalRepositoryProvider.overrideWithValue(repository),
+          customerScopeProvider.overrideWithValue(testScope),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      final List<ObjectListItemModel> objects =
+          await container.read(floorObjectsProvider(_floorId).future);
+
+      expect(objects.length, 120);
+      // Nineteen, not the nought a first-page-only read would have reported.
+      expect(unplacedOnPlanCount(objects), 19);
+    });
+
+    test('a server that miscounts its own pages cannot spin the loop', () async {
+      // One object per page, a thousand pages. The walk stops at its own ceiling.
+      final FakeCustomerPortalRepository repository = FakeCustomerPortalRepository(
+        objects: <ObjectListItemModel>[
+          for (int i = 0; i < 1000; i++)
+            ObjectListItemModel.fromJson(_objectJson(id: 'o$i', code: 'C$i')),
+        ],
+        objectPageSize: 1,
+      );
+      final ProviderContainer container = ProviderContainer(
+        overrides: <Override>[
+          customerPortalRepositoryProvider.overrideWithValue(repository),
+          customerScopeProvider.overrideWithValue(testScope),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      await container.read(floorObjectsProvider(_floorId).future);
+
+      // Twenty: it walked, and it stopped. Not one (never walked), not a thousand.
+      expect(repository.objectPagesRequested.length, 20);
     });
   });
 }

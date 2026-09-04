@@ -29,6 +29,9 @@ import 'package:monhorus_employee/features/employee/project/presentation/screens
 import 'package:monhorus_employee/features/employee/project/presentation/widgets/authenticated_image.dart';
 import 'package:monhorus_employee/features/employee/project/presentation/widgets/floor_plan_markers.dart';
 import 'package:monhorus_employee/features/employee/project/presentation/widgets/project_ui.dart';
+import 'package:monhorus_employee/core/network/api_result.dart';
+import 'package:monhorus_employee/core/network/paginated_data.dart';
+import 'package:monhorus_employee/features/employee/project/domain/repositories/project_repository.dart';
 
 const String _floorId = '6d0000000000000000000002';
 const String _planFileId = '6f0000000000000000000009';
@@ -174,12 +177,56 @@ AppUser _technician() => const AppUser(
       },
     );
 
+
+/// A [ProjectRepository] that serves `/floors/:id/objects` in pages, the way the real
+/// one does.
+///
+/// Everything else is left to [noSuchMethod]: this fake exists for one question — does
+/// the caller read past page one — and a method it stubs is a method a test could
+/// accidentally lean on.
+class _PagedProjectRepository implements ProjectRepository {
+  _PagedProjectRepository(this.pages);
+
+  /// One entry per page of the object list, in order.
+  final List<List<Map<String, dynamic>>> pages;
+
+  /// The page numbers asked for, so "it read both pages" is measured, not assumed.
+  final List<int> pagesRequested = <int>[];
+
+  int get _total => pages.fold(0, (int sum, List<Map<String, dynamic>> p) => sum + p.length);
+
+  @override
+  Future<ApiResult<PaginatedData<ObjectListItemModel>>> listFloorObjects(
+    String floorId, {
+    int page = 1,
+  }) async {
+    pagesRequested.add(page);
+    final List<Map<String, dynamic>> slice =
+        page >= 1 && page <= pages.length ? pages[page - 1] : const <Map<String, dynamic>>[];
+    return Success<PaginatedData<ObjectListItemModel>>(
+      PaginatedData<ObjectListItemModel>(
+        items: slice.map(ObjectListItemModel.fromJson).toList(growable: false),
+        page: page,
+        limit: 100,
+        total: _total,
+        totalPages: pages.length,
+      ),
+    );
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
 void main() {
   // The pumps below run in a real async zone (the image decoder needs one), which is
   // also the only condition under which google_fonts reaches for the network. It is
   // told not to: a test must not depend on fonts.gstatic.com being reachable.
   setUpAll(() => GoogleFonts.config.allowRuntimeFetching = false);
 
+  /// [repository] swaps the object list for a real repository read rather than a
+  /// canned provider value, which is the only way a test can see whether the provider
+  /// pages. When it is given, [objects] is unused.
   Widget screen({
     required Uint8List bytes,
     required List<Map<String, dynamic>> objects,
@@ -187,20 +234,23 @@ void main() {
     Map<String, Uint8List> icons = const <String, Uint8List>{},
     Set<String> refused = const <String>{},
     List<String>? fetches,
+    ProjectRepository? repository,
   }) {
     return ProviderScope(
       overrides: <Override>[
         currentUserProvider.overrideWithValue(_technician()),
+        if (repository != null) projectRepositoryProvider.overrideWithValue(repository),
         floorDetailProvider(_floorId).overrideWith(
           (Ref ref) async => FloorModel.fromJson(_floorJson()),
         ),
         floorPlanProvider(_floorId).overrideWith(
           (Ref ref) async => FloorPlanModel.fromJson(_planJson(mimeType: mimeType)),
         ),
-        floorObjectsProvider(_floorId).overrideWith(
-          (Ref ref) async =>
-              objects.map(ObjectListItemModel.fromJson).toList(growable: false),
-        ),
+        if (repository == null)
+          floorObjectsProvider(_floorId).overrideWith(
+            (Ref ref) async =>
+                objects.map(ObjectListItemModel.fromJson).toList(growable: false),
+          ),
         // The whole family rather than one instance, so an icon is fetched through the
         // same provider the plan is — which is the claim the caching test rests on.
         // Every call is recorded, so "one request for forty markers" is measured rather
@@ -1455,6 +1505,97 @@ void main() {
         <String>['NONE', 'FINE', 'WORST'],
       );
       expect(unplacedOnPlanCount(objects), 0);
+    });
+  });
+  // A floor bigger than one page of the object list.
+  //
+  // `/floors/:id/objects` caps a page at 100. A screen that read one page drew 100 pins
+  // for a 120-device floor and said nothing about the twenty it never saw — and then
+  // computed «Планд байрлуулаагүй N төхөөрөмж байна» from the same truncated list, so
+  // the caption read as an all-clear for devices it had never been told about.
+  group('a floor larger than one page', () {
+    /// 100 placed devices, the size of one full page.
+    List<Map<String, dynamic>> firstPage() => <Map<String, dynamic>>[
+          for (int i = 0; i < 100; i++)
+            objectJson(
+              id: 'p1-$i',
+              code: 'P1-${i.toString().padLeft(3, '0')}',
+              planPosition: <String, dynamic>{'x': 0.5, 'y': 0.5},
+            ),
+        ];
+
+    /// Device 101 is placed on the plan; the nineteen behind it are not.
+    List<Map<String, dynamic>> secondPage() => <Map<String, dynamic>>[
+          objectJson(
+            id: 'p2-0',
+            code: 'P2-000',
+            planPosition: <String, dynamic>{'x': 0.25, 'y': 0.75},
+          ),
+          for (int i = 1; i < 20; i++)
+            objectJson(id: 'p2-$i', code: 'P2-${i.toString().padLeft(3, '0')}'),
+        ];
+
+    testWidgets('the plan draws a marker for device 101', (WidgetTester tester) async {
+      final Uint8List bytes = (await tester.runAsync(_planBytes))!;
+      final _PagedProjectRepository repository = _PagedProjectRepository(
+        <List<Map<String, dynamic>>>[firstPage(), secondPage()],
+      );
+
+      await pumpPlan(
+        tester,
+        () => screen(
+          bytes: bytes,
+          objects: const <Map<String, dynamic>>[],
+          repository: repository,
+        ),
+      );
+
+      expect(repository.pagesRequested, <int>[1, 2]);
+      // The device that used to fall off the end of page one.
+      expect(_marker('P2-000'), findsOneWidget);
+      expect(find.byType(PlanMarker), findsNWidgets(101));
+    });
+
+    test('the unplaced count is taken over every page, not the first', () async {
+      final _PagedProjectRepository repository = _PagedProjectRepository(
+        <List<Map<String, dynamic>>>[firstPage(), secondPage()],
+      );
+      final ProviderContainer container = ProviderContainer(
+        overrides: <Override>[
+          currentUserProvider.overrideWithValue(_technician()),
+          projectRepositoryProvider.overrideWithValue(repository),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      final List<ObjectListItemModel> objects =
+          await container.read(floorObjectsProvider(_floorId).future);
+
+      expect(objects.length, 120);
+      // Nineteen, not the nought a first-page-only read would have reported.
+      expect(unplacedOnPlanCount(objects), 19);
+    });
+
+    test('a server that miscounts its own pages cannot spin the loop', () async {
+      // Every page claims there are a thousand more. The walk stops at its own ceiling.
+      final _PagedProjectRepository repository = _PagedProjectRepository(
+        <List<Map<String, dynamic>>>[
+          for (int page = 0; page < 1000; page++)
+            <Map<String, dynamic>>[objectJson(id: 'o$page', code: 'C$page')],
+        ],
+      );
+      final ProviderContainer container = ProviderContainer(
+        overrides: <Override>[
+          currentUserProvider.overrideWithValue(_technician()),
+          projectRepositoryProvider.overrideWithValue(repository),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      await container.read(floorObjectsProvider(_floorId).future);
+
+      // Twenty: it walked, and it stopped. Not one (never walked), not a thousand.
+      expect(repository.pagesRequested.length, 20);
     });
   });
 }

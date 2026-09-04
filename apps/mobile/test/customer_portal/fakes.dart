@@ -355,6 +355,8 @@ ServiceRequestDetailModel serviceRequestFixture({
   String status = 'ASSIGNED',
   bool isUrgent = true,
   bool hasApprovedReport = false,
+  String floorId = '6d0000000000000000000002',
+  String floorName = '2-р давхар',
 }) {
   return ServiceRequestDetailModel.fromJson(<String, dynamic>{
     'id': id,
@@ -372,8 +374,8 @@ ServiceRequestDetailModel serviceRequestFixture({
       'name': 'Төв цамхаг',
     },
     'floor': <String, dynamic>{
-      'id': '6d0000000000000000000002',
-      'name': '2-р давхар',
+      'id': floorId,
+      'name': floorName,
     },
     'room': null,
     'device': <String, dynamic>{
@@ -692,6 +694,8 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
     this.vocabulary = ServerVocabulary.empty,
     this.vocabularyFailure,
     this.buildingPageSize = 100,
+    this.objectPageSize = 100,
+    this.requestPageSize = 100,
   })  : fileBytes = fileBytes ?? Uint8List(0),
         pendingSurveys = pendingSurveys ?? const <SurveyPendingItemModel>[],
         callableObjectTypes =
@@ -731,6 +735,20 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
   /// Page numbers `listBuildings` was called with, so a test can assert the caller
   /// read past the first one instead of summing a truncated list.
   final List<int> buildingPagesRequested = <int>[];
+
+  /// How many objects one page of `GET /objects-master` returns. Defaults to the
+  /// schema's own cap, so the ordinary test sees a single page.
+  final int objectPageSize;
+
+  /// The page numbers `listObjects` was called with. A floor bigger than one page is
+  /// the case the plan's markers and its unplaced count were both silently wrong for.
+  final List<int> objectPagesRequested = <int>[];
+
+  /// How many requests one page of `GET /service-requests` returns.
+  final int requestPageSize;
+
+  /// The page numbers `listServiceRequests` was called with.
+  final List<int> requestPagesRequested = <int>[];
 
   final List<FloorModel> floors;
   final List<ObjectListItemModel> objects;
@@ -835,6 +853,23 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
         totalPages: 1,
       );
 
+  /// One page of [items], the way a capped `limit` makes the real endpoints answer.
+  ///
+  /// `total` is always the whole set, which is exactly the figure a caller must not
+  /// confuse with the number of records it received.
+  PaginatedData<T> _slice<T>(List<T> items, int page, int pageSize) {
+    final int start = (page - 1) * pageSize;
+    return PaginatedData<T>(
+      items: start >= items.length
+          ? const <Never>[]
+          : items.skip(start).take(pageSize).toList(growable: false),
+      page: page,
+      limit: pageSize,
+      total: items.length,
+      totalPages: (items.length / pageSize).ceil().clamp(1, 1 << 30),
+    );
+  }
+
   @override
   Future<ApiResult<PaginatedData<ProjectModel>>> listProjects(
     ResolvedCustomerScope scope,
@@ -895,9 +930,11 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
     ResolvedCustomerScope scope, {
     String? floorId,
     String? buildingId,
+    int page = 1,
   }) async {
     requestedCustomerIds.add(scope.customerId);
-    return _result(_page(objects));
+    objectPagesRequested.add(page);
+    return _result(_slice(objects, page, objectPageSize));
   }
 
   @override
@@ -924,7 +961,8 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
     int limit = 20,
   }) async {
     requestedCustomerIds.add(scope.customerId);
-    return _result(_page(requests));
+    requestPagesRequested.add(page);
+    return _result(_slice(requests, page, requestPageSize));
   }
 
   @override

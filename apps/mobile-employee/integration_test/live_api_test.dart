@@ -1,7 +1,13 @@
 // On-device checks against a LIVE backend. Not part of `flutter test`.
 //
 //   cd apps/mobile-employee
-//   flutter test integration_test -d <device id>
+//   flutter test integration_test -d <device id> \
+//     --dart-define=MONHORUS_TEST_ADMIN_EMAIL="$MONHORUS_TEST_ADMIN_EMAIL" \
+//     --dart-define=MONHORUS_TEST_ADMIN_PASSWORD="$MONHORUS_TEST_ADMIN_PASSWORD" \
+//     --dart-define=MONHORUS_TEST_LINKED_EMAIL="$MONHORUS_TEST_LINKED_EMAIL" \
+//     --dart-define=MONHORUS_TEST_UNLINKED_EMAIL="$MONHORUS_TEST_UNLINKED_EMAIL" \
+//     --dart-define=MONHORUS_TEST_TECH_PASSWORD="$MONHORUS_TEST_TECH_PASSWORD" \
+//     --dart-define=MONHORUS_TEST_TEMP_PASSWORD="$MONHORUS_TEST_TEMP_PASSWORD"
 //
 // These exist because the four things they cover cannot be proved by a hermetic
 // widget test:
@@ -14,25 +20,44 @@
 //   * the forced password change — the first screen every provisioned technician
 //     meets, and the one flow that had never been run against a real server.
 //
+// CREDENTIALS. This suite signs in as a head_admin and as two technicians. None of
+// those values are written down here, and none of them have a default: a missing one
+// fails the test that needed it with a message naming the exact --dart-define it
+// wants. Supply them from your own shell, from a password manager, or from a JSON
+// file passed with `--dart-define-from-file=<file>` that is kept out of git. Never
+// commit any of them — an earlier revision of this file did, which is why they left.
+//
+// Why --dart-define and not the process environment: `flutter test integration_test`
+// compiles the suite into an app and runs it ON the device, where `Platform.environment`
+// is the device's environment, not the host shell's. A --dart-define is compiled in,
+// so it is the only mechanism that reaches the running test. It is also what the rest
+// of this repo already uses for build-time configuration (`scripts/run-mobile.sh`,
+// `AppConfig.apiBaseUrl`).
+//
+//   MONHORUS_TEST_ADMIN_EMAIL      head_admin, used to provision
+//   MONHORUS_TEST_ADMIN_PASSWORD   its passcode
+//   MONHORUS_TEST_LINKED_EMAIL     technician linked to EMP-0003
+//   MONHORUS_TEST_UNLINKED_EMAIL   technician linked to no employee
+//   MONHORUS_TEST_TECH_PASSWORD    the passcode both technicians hold
+//   MONHORUS_TEST_TEMP_PASSWORD    a throwaway passcode the forced-change case issues
+//
 // WHAT THEY NEED. A backend on 127.0.0.1:4000 with the dev data seeded, the TECHNICIAN
-// role converged (`npm run migrate:technician-permissions`), and these three accounts:
+// role converged (`npm run migrate:technician-permissions`), and the three accounts
+// above.
 //
-//   admin@monhorus.mn        / Monhorus2026admin   head_admin, used to provision
-//   scope.tech@monhorus.mn   / Monhorus2026field   technician linked to EMP-0003
-//   unlinked.tech@monhorus.mn/ Monhorus2026field   technician linked to no employee
-//
-// To create the two technicians on a fresh dev database (T = an admin access token):
+// To create the two technicians on a fresh dev database (T = an admin access token,
+// and the angle-bracketed values are the --dart-define values, not literals):
 //
 //   # linked — CREATE_NEW issues the passcode and sets must_change_password, so sign
-//   # in once and replace it with Monhorus2026field before running this suite.
+//   # in once and replace it with <MONHORUS_TEST_TECH_PASSWORD> before running this suite.
 //   POST /employees/<EMP-0003 id>/system-access
-//        {"mode":"CREATE_NEW","email":"scope.tech@monhorus.mn",
-//         "password":"Monhorus2026temp","role":"technician"}
+//        {"mode":"CREATE_NEW","email":"<MONHORUS_TEST_LINKED_EMAIL>",
+//         "password":"<MONHORUS_TEST_TEMP_PASSWORD>","role":"technician"}
 //
 //   # unlinked — a plain account with no employee card behind it
 //   POST /users
-//        {"fullName":"Холбоогүй Ажилтан","email":"unlinked.tech@monhorus.mn",
-//         "password":"Monhorus2026field","role":"technician",
+//        {"fullName":"Холбоогүй Ажилтан","email":"<MONHORUS_TEST_UNLINKED_EMAIL>",
+//         "password":"<MONHORUS_TEST_TECH_PASSWORD>","role":"technician",
 //         "requirePasswordChange":false}
 //
 // The forced-password-change case resets and restores the passcode itself through the
@@ -50,10 +75,52 @@ import 'package:monhorus_employee/features/employee/presentation/screens/employe
 import 'package:monhorus_employee/main.dart';
 
 const String _api = 'http://127.0.0.1:4000/api/v1';
-const String _linked = 'scope.tech@monhorus.mn';
-const String _unlinked = 'unlinked.tech@monhorus.mn';
-const String _password = 'Monhorus2026field';
-const String _temporary = 'Monhorus2026temp';
+
+/// Every credential this suite needs, taken from --dart-define at build time.
+///
+/// `String.fromEnvironment` only accepts a constant name, so each variable appears
+/// once as a literal here rather than being looked up dynamically. An absent define
+/// reads as the empty string; [_define] turns that into a failure rather than into a
+/// silent fallback, because a fallback is how the committed credentials got here.
+const Map<String, String> _credentials = <String, String>{
+  'MONHORUS_TEST_ADMIN_EMAIL': String.fromEnvironment('MONHORUS_TEST_ADMIN_EMAIL'),
+  'MONHORUS_TEST_ADMIN_PASSWORD':
+      String.fromEnvironment('MONHORUS_TEST_ADMIN_PASSWORD'),
+  'MONHORUS_TEST_LINKED_EMAIL': String.fromEnvironment('MONHORUS_TEST_LINKED_EMAIL'),
+  'MONHORUS_TEST_UNLINKED_EMAIL':
+      String.fromEnvironment('MONHORUS_TEST_UNLINKED_EMAIL'),
+  'MONHORUS_TEST_TECH_PASSWORD':
+      String.fromEnvironment('MONHORUS_TEST_TECH_PASSWORD'),
+  'MONHORUS_TEST_TEMP_PASSWORD':
+      String.fromEnvironment('MONHORUS_TEST_TEMP_PASSWORD'),
+};
+
+/// The value supplied for [name], or a test failure that says which one is missing.
+///
+/// Deliberately has no default: this suite would rather not run than run against
+/// whatever account a fallback happened to name.
+String _define(String name) {
+  final String value = _credentials[name] ?? '';
+  if (value.isEmpty) {
+    fail(
+      'Missing --dart-define=$name.\n'
+      'integration_test/live_api_test.dart takes every credential from --dart-define '
+      'and has no defaults. Re-run with:\n'
+      '  flutter test integration_test -d <device id> --dart-define=$name=<value>\n'
+      'The header of that file lists all six variables.',
+    );
+  }
+  return value;
+}
+
+// Read inside the tests, so a missing define fails the case that needed it rather
+// than the whole file at load time.
+String get _adminEmail => _define('MONHORUS_TEST_ADMIN_EMAIL');
+String get _adminPassword => _define('MONHORUS_TEST_ADMIN_PASSWORD');
+String get _linked => _define('MONHORUS_TEST_LINKED_EMAIL');
+String get _unlinked => _define('MONHORUS_TEST_UNLINKED_EMAIL');
+String get _password => _define('MONHORUS_TEST_TECH_PASSWORD');
+String get _temporary => _define('MONHORUS_TEST_TEMP_PASSWORD');
 
 // Хуанли is not a tab: it is pushed from the calendar button in every tab header.
 const List<String> _tabs = <String>['Нүүр', 'Ажил', 'Төсөл', 'Профайл'];
@@ -123,8 +190,8 @@ Future<String> _adminToken() async {
   final Response<dynamic> response = await _dio.post<dynamic>(
     '/auth/login',
     data: <String, String>{
-      'email': 'admin@monhorus.mn',
-      'password': 'Monhorus2026admin',
+      'email': _adminEmail,
+      'password': _adminPassword,
     },
   );
   final Map<String, dynamic> body = response.data as Map<String, dynamic>;

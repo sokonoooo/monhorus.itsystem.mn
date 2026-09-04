@@ -603,7 +603,7 @@ class _Stepper extends StatelessWidget {
 
   final double value;
   final double total;
-  final MaterialUnit unit;
+  final MaterialUnitValue unit;
   final ValueChanged<double>? onStep;
 
   @override
@@ -628,7 +628,7 @@ class _Stepper extends StatelessWidget {
               ),
               const SizedBox(height: 2),
               Text(
-                'нийт ${formatQuantity(total)} ${unit.label}-с',
+                'нийт ${formatQuantityWithUnit(total, unit)}-с',
                 style: const TextStyle(
                   fontSize: 10.5,
                   color: EmployeeTokens.muted,
@@ -701,7 +701,7 @@ class _PreviewBox extends StatelessWidget {
   final double total;
   final double projected;
   final double projectedPercent;
-  final MaterialUnit unit;
+  final MaterialUnitValue unit;
 
   @override
   Widget build(BuildContext context) {
@@ -732,8 +732,9 @@ class _PreviewBox extends StatelessWidget {
             ),
             const TextSpan(text: ' нэмбэл нийт гүйцэтгэл '),
             TextSpan(
-              text: '${formatQuantity(projected)}/${formatQuantity(total)} '
-                  '${unit.label} · ${formatPercent(projectedPercent)}',
+              text: '${formatQuantity(projected)}/'
+                  '${formatQuantityWithUnit(total, unit)} · '
+                  '${formatPercent(projectedPercent)}',
               style: const TextStyle(
                 fontWeight: FontWeight.w800,
                 color: EmployeeTokens.ink,

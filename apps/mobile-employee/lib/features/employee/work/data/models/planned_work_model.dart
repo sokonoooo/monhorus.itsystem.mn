@@ -125,7 +125,7 @@ class PlannedWorkTaskModel {
   final String? floorName;
   final String title;
   final String? description;
-  final MaterialUnit unit;
+  final MaterialUnitValue unit;
   final double totalQuantity;
   final double completedQuantity;
 
@@ -213,7 +213,7 @@ class PlannedWorkTaskModel {
       floorName: parseString(json['floorName']),
       title: parseStringOr(json['title'], 'Дэд ажил'),
       description: parseString(json['description']),
-      unit: MaterialUnit.fromWire(json['unit'] as String?),
+      unit: MaterialUnitValue.fromWire(json['unit'] as String?),
       totalQuantity: total,
       completedQuantity: completed,
       remainingQuantity: parseDouble(json['remainingQuantity']),
@@ -323,7 +323,7 @@ class PlannedWorkMaterialModel {
   /// Үлдсэн — stored server-side, never `quantity - consumedQuantity` on the device.
   final double remainingQuantity;
 
-  final MaterialUnit unit;
+  final MaterialUnitValue unit;
 
   factory PlannedWorkMaterialModel.fromJson(Map<String, dynamic> json) {
     return PlannedWorkMaterialModel(
@@ -332,7 +332,7 @@ class PlannedWorkMaterialModel {
       quantity: parseDoubleOr(json['quantity'], 0),
       consumedQuantity: parseDoubleOr(json['consumedQuantity'], 0),
       remainingQuantity: parseDoubleOr(json['remainingQuantity'], 0),
-      unit: MaterialUnit.fromWire(json['unit'] as String?),
+      unit: MaterialUnitValue.fromWire(json['unit'] as String?),
     );
   }
 }
@@ -367,7 +367,7 @@ class TaskMaterialUsageModel {
   final String materialName;
 
   final double quantity;
-  final MaterialUnit unit;
+  final MaterialUnitValue unit;
 
   /// Who recorded it. Null on the wire when the name could not be resolved, so the
   /// readout omits the attribution rather than inventing one.
@@ -382,7 +382,7 @@ class TaskMaterialUsageModel {
       materialItemId: parseStringOr(json['materialItemId'], ''),
       materialName: parseStringOr(json['materialName'], '-'),
       quantity: parseDoubleOr(json['quantity'], 0),
-      unit: MaterialUnit.fromWire(json['unit'] as String?),
+      unit: MaterialUnitValue.fromWire(json['unit'] as String?),
       recordedByName: parseString(json['recordedByName']),
       recordedAt: parseDate(json['recordedAt']),
     );
@@ -761,7 +761,7 @@ class PlannedWorkReportTaskLineModel {
   final String id;
   final String title;
   final String floorName;
-  final MaterialUnit unit;
+  final MaterialUnitValue unit;
   final double totalQuantity;
   final double completedQuantity;
 
@@ -781,7 +781,7 @@ class PlannedWorkReportTaskLineModel {
       id: parseStringOr(json['id'], ''),
       title: parseStringOr(json['title'], '-'),
       floorName: parseStringOr(json['floorName'], '-'),
-      unit: MaterialUnit.fromWire(json['unit'] as String?),
+      unit: MaterialUnitValue.fromWire(json['unit'] as String?),
       totalQuantity: parseDoubleOr(json['totalQuantity'], 0),
       completedQuantity: parseDoubleOr(json['completedQuantity'], 0),
       progressPercent: parseDouble(json['progressPercent']),
