@@ -1,6 +1,7 @@
 import {
   INVOICE_BILLING_TYPES,
   INVOICE_BILLING_TYPE_LABELS,
+  TAX_UNSET_NOTE,
   createInvoiceSchema,
   type CustomerDto,
   type InvoiceBillingType,
@@ -14,9 +15,12 @@ import { useToast } from '../../components/ui/ToastProvider';
 import { FIELD_TEXTAREA, FILTER_LABEL } from '../../components/ui/control-styles';
 import { ApiError } from '../../lib/api-client';
 import { addDaysToToday, currentMonthInput, todayDateInput } from '../../lib/calendar-date';
+import {
+  INVOICE_FINANCE_UNAVAILABLE_NOTE,
+  useInvoiceFinance,
+} from '../../hooks/use-invoice-finance';
 import { invoiceTotals } from '../../lib/invoice-totals';
 import { invoiceService } from '../../services/invoice.service';
-import { settingsService } from '../../services/settings.service';
 import { Field, SelectInput, TextInput } from '../employees/FormControls';
 
 interface LineDraft {
@@ -63,14 +67,25 @@ export function InvoiceFormDrawer({
   const [billingType, setBillingType] = useState<InvoiceBillingType>('ADDITIONAL_SERVICE');
   const [billingPeriod, setBillingPeriod] = useState(() => currentMonthInput());
   const [issueDate, setIssueDate] = useState(() => todayDateInput());
-  const [dueDate, setDueDate] = useState(() => addDays(30));
+  // Empty until `finance.invoice_due_days` is known. It deliberately does not start at 30:
+  // a term nobody configured, printed on a document the customer is expected to pay by
+  // that date, is a figure this drawer has no business inventing.
+  const [dueDate, setDueDate] = useState('');
   const [notes, setNotes] = useState('');
   const [lines, setLines] = useState<LineDraft[]>([emptyLine()]);
 
-  const [taxPercent, setTaxPercent] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  /**
+   * Tax and the due-day default come from the finance settings and from nowhere else.
+   *
+   * A null rate means the settings could not be read, which is a different state from a
+   * rate of zero and is rendered as one: no percentage, no total, and no submission.
+   */
+  const finance = useInvoiceFinance(open);
+  const taxPercent = finance.status === 'ready' ? finance.taxPercent : null;
 
   useEffect(() => {
     if (!open) return;
@@ -78,24 +93,19 @@ export function InvoiceFormDrawer({
     setBillingType('ADDITIONAL_SERVICE');
     setBillingPeriod(currentMonthInput());
     setIssueDate(todayDateInput());
+    setDueDate('');
     setNotes('');
     setLines([emptyLine()]);
     setFormError(null);
     setFieldErrors({});
-
-    // Tax and the due-day default come from the finance settings, so the drawer never
-    // hardcodes either figure.
-    void settingsService
-      .get()
-      .then((settings) => {
-        const entries = settings.groups.flatMap((group) => group.entries);
-        const tax = entries.find((entry) => entry.key === 'finance.tax_percent');
-        const dueDays = entries.find((entry) => entry.key === 'finance.invoice_due_days');
-        setTaxPercent(Number(tax?.value ?? 0));
-        setDueDate(addDays(Number(dueDays?.value ?? 30)));
-      })
-      .catch(() => undefined);
   }, [open]);
+
+  // Fires once per successful read, because the hook produces one state object per fetch.
+  // A due date the user has since typed over is therefore never clobbered.
+  useEffect(() => {
+    if (finance.status !== 'ready') return;
+    setDueDate(addDays(finance.dueDays));
+  }, [finance]);
 
   function updateLine(index: number, patch: Partial<LineDraft>): void {
     setLines((current) =>
@@ -103,15 +113,20 @@ export function InvoiceFormDrawer({
     );
   }
 
+  // Only the subtotal is knowable without the rate; the tax and total below are rendered
+  // as a dash until one is, rather than as a zero the server would disagree with.
   const { subtotal, taxAmount, total } = invoiceTotals(
     lines.map((line) => ({
       quantity: toNumber(line.quantity),
       unitPrice: toNumber(line.unitPrice),
     })),
-    taxPercent,
+    taxPercent ?? 0,
   );
 
   async function handleSubmit(): Promise<void> {
+    // The button is already disabled; this is the guard that does not depend on the button.
+    if (finance.status !== 'ready') return;
+
     setFormError(null);
     setFieldErrors({});
 
@@ -167,7 +182,11 @@ export function InvoiceFormDrawer({
           <Button variant="secondary" onClick={onClose} disabled={submitting}>
             Цуцлах
           </Button>
-          <Button onClick={() => void handleSubmit()} loading={submitting}>
+          <Button
+            onClick={() => void handleSubmit()}
+            loading={submitting}
+            disabled={finance.status !== 'ready'}
+          >
             Хадгалах
           </Button>
         </>
@@ -175,6 +194,9 @@ export function InvoiceFormDrawer({
     >
       <div className="space-y-4">
         {formError && <Alert variant="error">{formError}</Alert>}
+        {finance.status === 'unavailable' && (
+          <Alert variant="warning">{INVOICE_FINANCE_UNAVAILABLE_NOTE}</Alert>
+        )}
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field label="Харилцагч" required error={fieldErrors.customerId}>
@@ -266,22 +288,36 @@ export function InvoiceFormDrawer({
           </div>
         </fieldset>
 
-        <dl className="grid grid-cols-3 gap-3 rounded-lg bg-slate-50 p-3 text-sm">
-          <div>
-            <dt className="text-xs text-slate-500">Дүн</dt>
-            <dd className="tabular-nums text-slate-900">{subtotal.toLocaleString('mn-MN')}</dd>
-          </div>
-          <div>
-            <dt className="text-xs text-slate-500">Татвар ({taxPercent}%)</dt>
-            <dd className="tabular-nums text-slate-900">{taxAmount.toLocaleString('mn-MN')}</dd>
-          </div>
-          <div>
-            <dt className="text-xs text-slate-500">Нийт</dt>
-            <dd className="font-semibold tabular-nums text-slate-900">
-              {total.toLocaleString('mn-MN')}
-            </dd>
-          </div>
-        </dl>
+        <div>
+          <dl className="grid grid-cols-3 gap-3 rounded-lg bg-slate-50 p-3 text-sm">
+            <div>
+              <dt className="text-xs text-slate-500">Дүн</dt>
+              <dd className="tabular-nums text-slate-900">{subtotal.toLocaleString('mn-MN')}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-slate-500">
+                {taxPercent === null ? 'Татвар' : `Татвар (${taxPercent}%)`}
+              </dt>
+              <dd className="tabular-nums text-slate-900">
+                {taxPercent === null ? '—' : taxAmount.toLocaleString('mn-MN')}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-xs text-slate-500">Нийт</dt>
+              <dd className="font-semibold tabular-nums text-slate-900">
+                {taxPercent === null ? '—' : total.toLocaleString('mn-MN')}
+              </dd>
+            </div>
+          </dl>
+          {/*
+            A zero rate is legal and is left working; it is only made impossible to miss,
+            beside the figure it explains. Not an `Alert variant="info"`: every blue info
+            notice was withdrawn from this app on purpose and the pattern does not come back.
+          */}
+          {taxPercent === 0 && (
+            <p className="mt-1.5 text-xs font-medium text-amber-700">{TAX_UNSET_NOTE}</p>
+          )}
+        </div>
 
         <div>
           <label htmlFor="invoice-notes" className={FILTER_LABEL}>
