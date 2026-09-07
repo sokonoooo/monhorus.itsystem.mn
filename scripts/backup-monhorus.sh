@@ -22,6 +22,7 @@
 #   MONGODB_URI     overrides the value in ENV_FILE
 #   UPLOAD_DIR      overrides the value in ENV_FILE
 #   SKIP_SPACE_CHECK=1  bypass the pre-flight disk estimate (know why before you do)
+#   OPLOG           auto (default) | 1 = require | 0 = never. See "Point-in-time" below.
 #
 # The host disk runs 83-88% full. Retention and the pre-flight space check are not
 # decoration: a dump that fills the last gigabyte takes the API, mongod and four
@@ -32,6 +33,7 @@ BACKUP_DIR="${BACKUP_DIR:-/var/backups/monhorus}"
 RETENTION_DAYS="${RETENTION_DAYS:-14}"
 MIN_FREE_MB="${MIN_FREE_MB:-512}"
 ENV_FILE="${ENV_FILE:-/etc/monhorus/backend.env}"
+OPLOG_MODE="${OPLOG:-auto}"
 
 TS="$(date +%F-%H%M%S)"
 DB_ARCHIVE="$BACKUP_DIR/db-$TS.archive.gz"
@@ -72,6 +74,40 @@ read_env_var() {
     \'*\') value="${value#\'}"; value="${value%\'}" ;;
   esac
   printf '%s' "$value"
+}
+
+# mongodump treats a database in the URI path exactly as --db, and --oplog is refused on
+# anything but a full-instance dump. Strip the path, keep the query -- losing
+# ?replicaSet=rs0 would connect direct to the node and defeat the read preference. Same
+# helper, same reasoning, as restore-monhorus.sh.
+uri_strip_db() {
+  local uri="$1" scheme rest query authority
+  scheme="${uri%%://*}"; rest="${uri#*://}"
+  query=""
+  case "$rest" in *\?*) query="?${rest#*\?}"; rest="${rest%%\?*}" ;; esac
+  authority="${rest%%/*}"
+  printf '%s://%s/%s' "$scheme" "$authority" "$query"
+}
+
+# Can this credential, on this instance, take an --oplog dump? Answers on stdout: nothing
+# on success, the reason on failure. Cheap, read-only, and asked before anything is
+# written -- the alternative is discovering it from a failed dump at 02:30.
+oplog_probe() {
+  local uri="$1" out
+  command -v mongosh >/dev/null 2>&1 || { printf 'mongosh absent, cannot verify oplog access'; return 1; }
+  out="$(mongosh --quiet "$uri" --eval '
+    try {
+      if (!db.hello().setName) { print("NO:not a replica set member"); quit(0); }
+      db.getSiblingDB("local").getCollection("oplog.rs").find().limit(1).toArray();
+      db.getSiblingDB("config").getCollection("transactions").find().limit(1).toArray();
+      print("YES");
+    } catch (e) { print("NO:" + (e.codeName || e.message)); }' 2>/dev/null || true)"
+  out="$(printf '%s' "$out" | tr -d '\r' | tail -n 1)"
+  case "$out" in
+    YES)  return 0 ;;
+    NO:*) printf '%s' "${out#NO:}"; return 1 ;;
+    *)    printf 'probe returned no answer (mongosh could not connect)'; return 1 ;;
+  esac
 }
 
 if [ -z "${MONGODB_URI:-}" ] || [ -z "${UPLOAD_DIR:-}" ]; then
@@ -147,8 +183,75 @@ fi
 # ---------------------------------------------------------------------------
 # Database
 # ---------------------------------------------------------------------------
-log "mongodump     -> $(basename "$DB_ARCHIVE")"
-mongodump --uri="$MONGODB_URI" --archive="$DB_ARCHIVE.partial" --gzip --quiet \
+# Point-in-time, or not.
+#
+# Without --oplog mongodump reads the collections one after another while the API keeps
+# serving, so the archive is a smear across the minute or two the dump takes rather than a
+# picture of one instant. A restore can then hold an audit row referencing a document
+# written after that document's own collection had already been read. --oplog closes the
+# gap: mongodump captures every write made *during* the dump and mongorestore --oplogReplay
+# applies them afterwards, landing the restore on a single consistent instant.
+#
+# It cannot simply be switched on here. Two prerequisites, both confirmed against
+# mongodump 100.14.0 and a MongoDB 8.2 replica set:
+#
+#   1. The dump must cover the whole instance. MONGODB_URI names a database
+#      (.../monhorus?authSource=monhorus&replicaSet=rs0) and a URI with a database path is
+#      a --db dump, which mongodump refuses outright:
+#          Failed: bad option: --oplog mode only supported on full dumps
+#      Hence uri_strip_db above.
+#   2. The credential must read local.oplog.rs and config.transactions. The application
+#      user this deployment documents is readWrite on monhorus alone and gets:
+#          Failed: error getting oplog start: config.transactions.findOne error:
+#          (Unauthorized) not authorized on config to execute command
+#      MongoDB's built-in `backup` role is exactly the grant that satisfies both reads.
+#
+# So it is opt-in by capability rather than by assumption: probe, and if the answer is no,
+# take the dump this script has always taken and say so in the journal in as many words.
+# Refusing to back up at all because a credential lacks a role would be the worse failure
+# of the two -- but a quieter backup that does not announce itself is the failure this
+# whole script is written against, so it announces itself. OPLOG=1 makes it fatal instead.
+#
+# To turn it on, put a backup-role credential in /etc/monhorus/backup.env, which the
+# systemd unit already reads and which overrides the value in backend.env:
+#     mongosh --port 27017 -u monhorusAdmin --authenticationDatabase admin --eval \
+#       'db.getSiblingDB("admin").createUser({user:"monhorusBackup",pwd:"<PW>",
+#          roles:[{role:"backup",db:"admin"}]})'
+#     # /etc/monhorus/backup.env
+#     MONGODB_URI="mongodb://monhorusBackup:<PW>@127.0.0.1:27017/?authSource=admin&replicaSet=rs0"
+#
+# Read section 9 of DEPLOYMENT_MONHORUS_PROD.md before doing so: an --oplog archive is a
+# full-instance dump, and mongorestore forbids --oplogReplay together with any --nsExclude,
+# so a production restore of one also rewrites admin.system.users.
+DUMP_URI="$MONGODB_URI"
+dump_args=(--archive="$DB_ARCHIVE.partial" --gzip --quiet)
+oplog_note="not point-in-time"
+
+if [ "$OPLOG_MODE" = "0" ]; then
+  log "oplog         disabled (OPLOG=0) -- archive is not a point-in-time snapshot"
+else
+  instance_uri="$(uri_strip_db "$MONGODB_URI")"
+  if oplog_reason="$(oplog_probe "$instance_uri")"; then
+    DUMP_URI="$instance_uri"
+    dump_args+=(--oplog)
+    oplog_note="point-in-time (--oplog)"
+    log "oplog         yes -- full-instance point-in-time dump"
+  elif [ "$OPLOG_MODE" = "1" ]; then
+    die "OPLOG=1 was requested but this dump cannot carry an oplog: ${oplog_reason}. Give the backup credential the built-in 'backup' role and put it in MONGODB_URI in /etc/monhorus/backup.env, or unset OPLOG. NO BACKUP WAS TAKEN."
+  else
+    log "oplog         NO -- ${oplog_reason}"
+    log "WARNING       this archive is NOT a point-in-time snapshot. Collections are read"
+    log "              sequentially while the API keeps writing, so a restore of it can"
+    log "              contain a row referencing a document whose collection was dumped"
+    log "              before that document existed. To fix, give the backup credential the"
+    log "              built-in 'backup' role and set MONGODB_URI in /etc/monhorus/backup.env"
+    log "              -- section 9 of DEPLOYMENT_MONHORUS_PROD.md has the commands and the"
+    log "              consequences. Set OPLOG=0 to accept it and stop logging this."
+  fi
+fi
+
+log "mongodump     -> $(basename "$DB_ARCHIVE")  [$oplog_note]"
+mongodump --uri="$DUMP_URI" "${dump_args[@]}" \
   || die "mongodump failed"
 [ -s "$DB_ARCHIVE.partial" ] || die "mongodump produced an empty archive"
 mv -f -- "$DB_ARCHIVE.partial" "$DB_ARCHIVE"
@@ -173,6 +276,6 @@ db_size="$(du -h "$DB_ARCHIVE" | awk '{print $1}')"
 up_size="$(du -h "$UPLOADS_ARCHIVE" | awk '{print $1}')"
 files="$(tar -tzf "$UPLOADS_ARCHIVE" | grep -cv '/$' || true)"
 
-log "ok            db=$db_size uploads=$up_size (${files} files)"
+log "ok            db=$db_size uploads=$up_size (${files} files)  db archive: $oplog_note"
 log "free after    $(df -Ph "$BACKUP_DIR" | awk 'NR==2 {print $4}')"
 log "backup done   ts=$TS"

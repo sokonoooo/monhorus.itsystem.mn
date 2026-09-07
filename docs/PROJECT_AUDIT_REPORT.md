@@ -1077,6 +1077,12 @@ Separately: `nodemailer@6.9.16` carries a **high** advisory (SMTP command inject
 
 - **Severity:** High · **Application:** Tooling · **Feature:** Static analysis
 - **Path:** `package.json:19`; `turbo.json`
+- **RESOLVED 2026-09-07 — by deletion, not by installing a linter.** The root `lint` script
+  and the `turbo.json` `lint` task are both gone. `npm run lint` now exits **1** with
+  `npm error Missing script: "lint"`, so nothing reports a pass it did not earn. The
+  finding below stands as the record of why. **TypeScript static analysis is still
+  MISSING** — the false green was removed, the gap it concealed was not filled, and the
+  recommended fix at the end of this entry is still the fix.
 
 **Evidence (verified three ways).**
 
@@ -1097,7 +1103,7 @@ This is directly implicated in findings already in this report: the unhandled pr
 
 **Note:** Dart is fine — both apps have `analysis_options.yaml` with `flutter_lints ^5.0.0`.
 
-**Recommended fix.** Add ESLint with `@typescript-eslint` and `eslint-plugin-react-hooks` to `apps/backend` and `apps/web`, and gate it in CI. Expect a substantial first-run backlog.
+**Recommended fix.** Add ESLint with `@typescript-eslint` and `eslint-plugin-react-hooks` to `apps/backend` and `apps/web`, and gate it in CI. Expect a substantial first-run backlog. Until that happens there is no `lint` script to run: the removal took away the false pass, so re-introducing a linter means adding per-workspace `lint` scripts and a `lint` task to `turbo.json` again, alongside the config and dependencies.
 
 ---
 
@@ -1601,7 +1607,7 @@ Repo-wide total **2,322**. Zero failures, zero `.skip`/`.only`/`.todo`. **The do
 | Database backup | **MISSING** | No script, no timer, no cron anywhere in the repository. Restore is one sentence with an ellipsis, never rehearsed (C-1) |
 | Android signing key backup | **PARTIAL** | Signing correctly wired; **no keystore committed** (verified — only `key.properties.example`); fingerprint and verification step documented. But the key exists on **one Windows machine** (`C:\Ajil\monhorus-keys\`) with no backup, and a missing `key.properties` silently debug-signs the release |
 | CI/CD | **MISSING** | No `.github/`, no pipeline, no deploy script. `packages/shared` and both mobile apps run nowhere (H-34) |
-| Static analysis (lint) | **MISSING** | `npm run lint` passes unconditionally — **no ESLint dependency, config or per-package script exists anywhere** (H-43). Dart is correctly linted in both apps |
+| Static analysis (lint) | **MISSING** | **No ESLint dependency, config or per-package script exists anywhere** (H-43). `npm run lint` used to pass unconditionally; it was removed on 2026-09-07 and now fails as an unknown script, so the gap is at least visible. Dart is correctly linted in both apps — via `flutter analyze`, which no npm or turbo task invokes |
 | Dependency hygiene | **PARTIAL** | Lockfile verified in sync (709 entries, `npm ls --package-lock-only --all` exit 0; the `nodemailer` fix in `39648f4` is complete). But `npm audit --omit=dev` reports 1 critical + 3 high, all clearable by one `bcrypt` bump (H-42) |
 | Rate limiting | **PARTIAL** | Implemented on `/auth` only; **disabled in production**; `skipSuccessfulRequests` absent; one bucket shared across four endpoints (H-40) |
 | Monitoring/logging | **PARTIAL** | Structured pino NDJSON with good redaction (gap: `body`). **No metrics, no alerting, no log shipping, no log rotation**; `/health` cannot detect an unhealthy service (H-37) |
@@ -1668,7 +1674,7 @@ Verified by reading the code, not inferred:
 
 ### Tier 2 — Production blockers
 
-11. **Bump `bcrypt` to `^6`** — clears 1 critical + 3 high production advisories in one line, and `nodemailer` before the mail feature ships (H-42). 12. `sourcemap: 'hidden'` + deny `*.map` in nginx (H-33). 13. Fix `DEPLOYMENT_MONHORUS_PROD.md` §6/§8 build commands (H-36) — one edit, prevents every future release reverting TLS. 14. Back up the Android keystore to a password manager or encrypted archive (task #1). 15. Add `skipSuccessfulRequests: true`, re-enable the limiter, give `/forgot-password` its own bucket (H-40). 16. Fix the iOS bundle identifier before any TestFlight build (H-23). 17. Make `/health` check `mongoose.connection.readyState` — the precondition for any monitoring (H-37). 18. Add CI running `npm test`, both `flutter test` suites, `npm audit --omit=dev` and `sync-indexes --dry-run` (H-34, H-42). 19. **Introduce ESLint** — `npm run lint` currently passes unconditionally because no ESLint exists (H-43). 20. Move `sync-indexes` into `ExecStartPre` rather than human memory; invert its default to require `--apply` (H-30, M-40). 21. Delete `rename-task-conclusion-to-note.ts` (M-39). 22. Reconcile the two runbooks on `--omit=dev`; document `NODE_ENV` as a boot precondition (H-35). 23. **Rotate the head-admin password committed in `live_api_test.dart`** (M-50).
+11. **Bump `bcrypt` to `^6`** — clears 1 critical + 3 high production advisories in one line, and `nodemailer` before the mail feature ships (H-42). 12. `sourcemap: 'hidden'` + deny `*.map` in nginx (H-33). 13. Fix `DEPLOYMENT_MONHORUS_PROD.md` §6/§8 build commands (H-36) — one edit, prevents every future release reverting TLS. 14. Back up the Android keystore to a password manager or encrypted archive (task #1). 15. Add `skipSuccessfulRequests: true`, re-enable the limiter, give `/forgot-password` its own bucket (H-40). 16. Fix the iOS bundle identifier before any TestFlight build (H-23). 17. Make `/health` check `mongoose.connection.readyState` — the precondition for any monitoring (H-37). 18. Add CI running `npm test`, both `flutter test` suites, `npm audit --omit=dev` and `sync-indexes --dry-run` (H-34, H-42). 19. **Introduce ESLint** — no ESLint exists (H-43). The `npm run lint` task that used to pass unconditionally was deleted on 2026-09-07, so this is now a visible gap rather than a false green. 20. Move `sync-indexes` into `ExecStartPre` rather than human memory; invert its default to require `--apply` (H-30, M-40). 21. Delete `rename-task-conclusion-to-note.ts` (M-39). 22. Reconcile the two runbooks on `--omit=dev`; document `NODE_ENV` as a boot precondition (H-35). 23. **Rotate the head-admin password committed in `live_api_test.dart`** (M-50).
 
 ### Tier 3 — Critical business flows
 
@@ -1709,7 +1715,7 @@ Verified by reading the code, not inferred:
 5. **Thread `AuthContext` into the five report/PDF loaders.** One line per route; closes the largest disclosure surface, where any technician can download any customer's inspection report with photographs. *(H-1)*
 6. **Back up the Android signing keystore.** It exists on one machine. If that machine dies, every user must uninstall and reinstall, losing on-device data. Lowest effort, highest ratio in the report. *(Task #1)*
 7. **Before deploying the mail feature:** redact `body` in the logger, refuse the log transport in production, and make `APP_WEB_BASE_URL` and `SMTP_HOST` required when `NODE_ENV=production`. Otherwise the first deploy turns password reset into a token-disclosure channel that also sends dead links. *(H-32)*
-8. **Add CI, and give it something to run.** The whole suite takes 2m10s — cheaper than the drift it would have caught. Include `packages/shared`, both Flutter suites, `npm audit --omit=dev`, and a Dart↔TypeScript constant parity check, which would have caught the planned-work enum drift. Note that `npm run lint` is currently a no-op because **no ESLint exists in the repository**, so a CI lint step needs ESLint introduced first. *(H-34, H-43, H-24)*
+8. **Add CI, and give it something to run.** The whole suite takes 2m10s — cheaper than the drift it would have caught. Include `packages/shared`, both Flutter suites, `npm audit --omit=dev`, and a Dart↔TypeScript constant parity check, which would have caught the planned-work enum drift. Note that there is no `lint` script to call: **no ESLint exists in the repository**, and the no-op `npm run lint` was removed on 2026-09-07, so a CI lint step needs ESLint introduced first. Dart analysis is available but is not wired to npm or turbo — CI must call `flutter analyze` per app. *(H-34, H-43, H-24)*
 9. **Bump `bcrypt` to `^6`.** One line removes the entire `node-pre-gyp → tar` chain carrying a critical and three high advisories from production dependencies, plus five deprecated transitive packages. Bump `nodemailer` in the same change, before the mail feature ships. *(H-42)*
 10. **Fix the deploy runbook's build commands, disable production source maps, and move `sync-indexes` into `ExecStartPre`.** §6 currently reverts the TLS migration on every release and self-verifies as correct; `/assets/*.js.map` publishes the admin console's full source; and skipping the index step silently voids duplicate-invoice prevention, report idempotency and unique emails — damage that surfaces weeks later, when the index can no longer be built. *(H-36, H-33, H-30)*
 

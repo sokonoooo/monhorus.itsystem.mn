@@ -90,8 +90,14 @@ export interface DashboardPlannedWorkSummary {
   overdue: number;
   completed: number;
   /**
-   * Quantity-weighted mean progress across non-archived work: summed completed quantity
-   * over summed total quantity, the same aggregation a single work's own percent uses.
+   * Quantity-weighted mean progress across COMMITTED work — the same set the counters
+   * beside it use, i.e. everything but `PLANNED_WORK_UNCOMMITTED_STATUSES`: summed
+   * completed quantity over summed total quantity, the same aggregation a single work's
+   * own percent uses.
+   *
+   * It was previously weighed across non-archived work, which biased it down from both
+   * ends at once: every finished-and-approved work (genuinely 100%) was excluded, while
+   * every DRAFT (0%) was counted.
    *
    * Null when there is nothing to weigh — no work, or no quantity recorded against any of
    * it — following the convention `resolutionHours` uses for a figure that cannot yet be

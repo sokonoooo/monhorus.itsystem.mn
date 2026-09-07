@@ -58,8 +58,12 @@ async function seedRequest(overrides: Record<string, unknown> = {}): Promise<str
 }
 
 /** A planned work carrying a quantity rollup, which is what the average is weighted by. */
-async function seedPlannedWork(totalQuantity: number, completedQuantity: number): Promise<void> {
-  await PlannedWork.create({
+async function seedPlannedWork(
+  totalQuantity: number,
+  completedQuantity: number,
+  overrides: Record<string, unknown> = {},
+): Promise<string> {
+  const created = await PlannedWork.create({
     workNumber: await nextWorkNumber(),
     customer: fixture.customerId,
     building: fixture.buildingId,
@@ -71,7 +75,9 @@ async function seedPlannedWork(totalQuantity: number, completedQuantity: number)
     totalQuantity,
     completedQuantity,
     taskCount: 1,
+    ...overrides,
   });
+  return String(created._id);
 }
 
 /** An assessed object, written head-last because the head reference is required. */
@@ -338,6 +344,68 @@ describe('Dashboard API', () => {
     expect(today.items[0]?.assigneeNames).toEqual([]);
   });
 
+  /**
+   * The counters are totals; the list is a page of it.
+   *
+   * They were both derived from one capped `find`, so every counter silently saturated at
+   * the fetch limit: forty-five overdue jobs printed «Хугацаа хэтэрсэн 40», and «Яаралтай»
+   * printed only the urgent ones that happened to fall inside the forty rows the sort
+   * admitted. A counter that cannot exceed the length of the list beneath it is not
+   * measuring the day, it is measuring the query.
+   */
+  it('counts today by query rather than over the capped list', async () => {
+    // Distinct deadlines, oldest first, so the sort is deterministic: the twelve urgent
+    // ones are the LATEST due, which puts five of them outside the forty rows fetched.
+    for (let index = 0; index < 45; index += 1) {
+      await seedRequest({
+        status: 'ASSIGNED',
+        assignedEmployees: [],
+        isUrgent: index >= 33,
+        slaDueAt: new Date(Date.now() - (45 - index) * 3_600_000),
+      });
+    }
+
+    const today = (await summary()).today as {
+      dueCount: number;
+      overdueCount: number;
+      urgentCount: number;
+      unassignedCount: number;
+      items: unknown[];
+    };
+
+    expect(today.dueCount).toBe(45);
+    expect(today.overdueCount).toBe(45);
+    expect(today.urgentCount).toBe(12);
+    expect(today.unassignedCount).toBe(45);
+    // The list stays capped. That is the point of separating the two.
+    expect(today.items).toHaveLength(40);
+  });
+
+  /** The same separation on the planned-work side, which has its own capped fetch. */
+  it('counts overdue planned work by query rather than over the capped list', async () => {
+    for (let index = 0; index < 45; index += 1) {
+      await seedPlannedWork(1, 0, {
+        status: 'PLANNED',
+        assignedEmployees: [],
+        plannedStartDate: new Date(Date.now() - 3 * 86_400_000),
+        plannedEndDate: new Date(Date.now() - 2 * 86_400_000),
+        originalPlannedEndDate: new Date(Date.now() - 2 * 86_400_000),
+      });
+    }
+
+    const today = (await summary()).today as {
+      dueCount: number;
+      overdueCount: number;
+      unassignedCount: number;
+      items: unknown[];
+    };
+
+    expect(today.overdueCount).toBe(45);
+    expect(today.dueCount).toBe(45);
+    expect(today.unassignedCount).toBe(45);
+    expect(today.items).toHaveLength(40);
+  });
+
   it('stamps the day with the configured timezone', async () => {
     const today = (await summary()).today as { date: string; timezone: string };
     expect(today.timezone).toBe('Asia/Ulaanbaatar');
@@ -438,6 +506,79 @@ describe('Dashboard API', () => {
       averageProgress: number | null;
     };
     expect(plannedWork.total).toBe(1);
+    expect(plannedWork.averageProgress).toBeNull();
+  });
+
+  /**
+   * ARCHIVED is the state of work done PROPERLY — finished, written up and signed off.
+   * `archiveAfterReportApproval` is reachable only from report approval and only from
+   * COMPLETED, so nothing else can produce it. Dropping it made «Дууссан» count only work
+   * finished but not yet approved: approving the report removed the work from the
+   * numerator, and a tenant that keeps up with its paperwork watched the tile fall to
+   * zero. Meanwhile «Нийт» counted drafts and cancellations as outstanding commitments.
+   *
+   * Both halves are asserted, not just the ratio: a numerator and a denominator that are
+   * wrong together can still print a plausible percentage.
+   */
+  it('counts approved-and-archived work as done, and leaves uncommitted work out of both halves', async () => {
+    await seedPlannedWork(10, 10, { status: 'ARCHIVED', archivedAt: new Date() }); // done and signed off
+    await seedPlannedWork(10, 10, { status: 'COMPLETED' }); // done, report not yet approved
+    await seedPlannedWork(10, 3, { status: 'STARTED' }); // running
+    await seedPlannedWork(10, 0, { status: 'DRAFT' }); // never submitted to anybody
+    await seedPlannedWork(10, 0, { status: 'PENDING_APPROVAL' }); // submitted, unapproved
+    await seedPlannedWork(10, 0, { status: 'REJECTED' }); // sent back to its author
+    await seedPlannedWork(10, 0, { status: 'CANCELLED', cancelReason: 'Хэрэггүй боллоо.' });
+
+    const plannedWork = (await summary()).plannedWork as {
+      total: number;
+      completed: number;
+      inProgress: number;
+      overdue: number;
+    };
+
+    // Denominator: the work this business actually committed to — STARTED, COMPLETED,
+    // ARCHIVED. DRAFT, PENDING_APPROVAL, REJECTED and CANCELLED are not commitments.
+    expect(plannedWork.total).toBe(3);
+    // Numerator: finished work, whether or not the write-up has been approved yet.
+    expect(plannedWork.completed).toBe(2);
+    expect(plannedWork.inProgress).toBe(1);
+    expect(plannedWork.overdue).toBe(0);
+  });
+
+  /**
+   * The same exclusion, seen through the progress bar. Weighting over a set that dropped
+   * every archived (genuinely finished) work and kept every DRAFT at 0% biased the figure
+   * low in both directions at once.
+   */
+  it('weights average progress over committed work, archived included and drafts excluded', async () => {
+    await seedPlannedWork(100, 100, { status: 'ARCHIVED', archivedAt: new Date() });
+    await seedPlannedWork(100, 0, { status: 'DRAFT' });
+
+    const plannedWork = (await summary()).plannedWork as {
+      total: number;
+      averageProgress: number | null;
+    };
+    expect(plannedWork.total).toBe(1);
+    expect(plannedWork.averageProgress).toBe(100);
+  });
+
+  /**
+   * Matches PLANNED_WORK_COMPLETION_RATE in `report.service.ts`, whose
+   * `PLANNED_WORK_UNCOMMITTED_STATUSES` excludes CANCELLED with the reasoning recorded
+   * there: a cancellation is a decision not to do the work, not a failure to do it. The
+   * tile and the KPI carry the same label — «Төлөвлөгөөт ажлын гүйцэтгэл» — so they must
+   * not answer the same question differently.
+   */
+  it('leaves a cancelled work out of the denominator, as the completion-rate KPI does', async () => {
+    await seedPlannedWork(10, 0, { status: 'CANCELLED', cancelReason: 'Захиалагч татгалзсан.' });
+
+    const plannedWork = (await summary()).plannedWork as {
+      total: number;
+      completed: number;
+      averageProgress: number | null;
+    };
+    expect(plannedWork.total).toBe(0);
+    expect(plannedWork.completed).toBe(0);
     expect(plannedWork.averageProgress).toBeNull();
   });
 

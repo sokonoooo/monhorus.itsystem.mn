@@ -414,3 +414,72 @@ export function resumeTargetStatus(hasActualStartDate: boolean): PlannedWorkLife
 export function isTerminalLifecycleStatus(status: PlannedWorkLifecycleStatus): boolean {
   return status === 'ARCHIVED' || status === 'CANCELLED';
 }
+
+
+/**
+ * «Хийгдсэн» — the numerator of the planned-work completion figure.
+ *
+ * ARCHIVED belongs here, and leaving it out is what made the figure fall every time the
+ * office got BETTER at closing paperwork. Approving a planned-work report archives the
+ * work: `archiveAfterReportApproval` is reachable only from the report-approval flow and
+ * refuses anything whose status is not already COMPLETED, so ARCHIVED means "finished,
+ * written up and signed off" — the most complete state a planned work reaches, not a
+ * hidden one. Counting it as a shortfall printed 15% where the truth was 83%.
+ */
+export const PLANNED_WORK_DELIVERED_STATUSES: readonly PlannedWorkLifecycleStatus[] = [
+  'COMPLETED',
+  'ARCHIVED',
+];
+
+/**
+ * What is NOT in the denominator — the exclusion list.
+ *
+ * The question is «of the work this business committed to, how much is done», so the
+ * denominator is work that was actually committed:
+ *
+ *   - CANCELLED is out. A cancellation is a decision not to do the work, not a failure to
+ *     do it. Leaving it in means every cancellation permanently lowers the score and the
+ *     only way to raise it again is to stop cancelling work that should be cancelled.
+ *   - DRAFT is out. It was never submitted to anybody; it is a scratch pad its author may
+ *     delete, and nothing has been promised.
+ *   - PENDING_APPROVAL and REJECTED are out for the same reason. Both are submitted but
+ *     unapproved, and the label for PLANNED is «Төлөвлөгдсөн» precisely because approval
+ *     is the point at which a work becomes planned. Counting a work an approver has not
+ *     yet seen — or has sent back — as an unmet commitment charges the delivery crew for
+ *     the approver's queue.
+ *
+ * Everything else stays in: PLANNED, STARTED and PAUSED are outstanding commitments,
+ * COMPLETED and ARCHIVED are met ones. OVERDUE never appears because it is derived on read
+ * and never stored, so an overdue work sits in the denominator under its stored
+ * PLANNED/STARTED/PAUSED status — committed and not yet done, which is correct.
+ *
+ * An EXCLUSION list rather than an inclusion one, so a lifecycle status added later lands
+ * in the denominator and is VISIBLE, rather than disappearing from both halves of the
+ * ratio without a sound.
+ *
+ * WHY THIS LIVES IN SHARED. The dashboard tile and the KPI are the same question asked on
+ * two screens, under one heading: `KPI_LABELS.PLANNED_WORK_COMPLETION_RATE` is
+ * «Төлөвлөгөөт ажлын гүйцэтгэл», which is verbatim the title of the dashboard tile in
+ * `DashboardPage.tsx`. They were previously free to disagree, and did — that divergence is
+ * the whole reason this pair was consolidated. Do not restate either list in a module.
+ */
+export const PLANNED_WORK_UNCOMMITTED_STATUSES: readonly PlannedWorkLifecycleStatus[] = [
+  'DRAFT',
+  'PENDING_APPROVAL',
+  'REJECTED',
+  'CANCELLED',
+];
+
+/**
+ * Delivered, asked of an EFFECTIVE status.
+ *
+ * The dashboard classifies by `effectiveStatusOf`, whose union adds OVERDUE, so it cannot
+ * call `.includes` on the lifecycle-typed array above. The widening is sound rather than a
+ * cast: `PLANNED_WORK_EFFECTIVE_STATUSES` is `[...PLANNED_WORK_LIFECYCLE_STATUSES,
+ * 'OVERDUE']`, so every lifecycle status IS an effective one, and readonly arrays are
+ * covariant. OVERDUE is derived from a date and is never delivered.
+ */
+export function isDeliveredPlannedWorkStatus(status: PlannedWorkEffectiveStatus): boolean {
+  const delivered: readonly PlannedWorkEffectiveStatus[] = PLANNED_WORK_DELIVERED_STATUSES;
+  return delivered.includes(status);
+}

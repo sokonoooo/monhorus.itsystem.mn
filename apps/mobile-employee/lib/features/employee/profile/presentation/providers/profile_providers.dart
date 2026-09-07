@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../../core/error/failure.dart';
 import '../../../../../core/network/api_result.dart';
+import '../../../../auth/domain/entities/app_user.dart';
 import '../../../../auth/presentation/providers/auth_provider.dart';
 import '../../../identity/employee_self.dart';
 import '../../../identity/employee_self_provider.dart';
@@ -93,8 +94,21 @@ final FutureProvider<EmployeeRecordState> employeeRecordProvider =
 });
 
 /// Bytes of the employee photo behind `GET /files/:fileId`.
+///
+/// Keyed on the signed-in account, like the Төсөл tab's reads. It is not `autoDispose`
+/// and it caches on the file id alone, so the previous technician's portrait survived a
+/// sign-out sitting in the container: `ProviderScope` is above `MaterialApp` and
+/// `logout()` clears nothing. `/files/:fileId` is tenant-scoped — the same id is not the
+/// same answer for the next person — and a portrait held for an account nobody is signed
+/// into is somebody else's personal data left in memory on a shared handset.
+///
+/// The id rather than the [AppUser]: `/auth/me` is re-read on mount and answers with a
+/// new object every time, so watching the object would re-download the photo on every
+/// visit to the tab.
 final FutureProviderFamily<Uint8List, String> employeePhotoProvider =
     FutureProvider.family<Uint8List, String>((Ref ref, String fileId) async {
+  ref.watch(currentUserProvider.select((AppUser? user) => user?.id));
+
   final ProfileRepository repository = ref.watch(profileRepositoryProvider);
   return _unwrap(await repository.downloadFile(fileId));
 });
