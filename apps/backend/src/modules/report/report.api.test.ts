@@ -20,7 +20,9 @@ import { Invoice } from '../invoice/invoice.model';
 import { ObjectAssessment, ObjectRecord, ObjectType } from '../object-master/object-master.models';
 import { Customer, ObjectNode } from '../objects/object.models';
 import { writeReport } from '../report-record/report-record.service';
+import { PlannedWork } from '../planned-work/planned-work.models';
 import { ServiceRequest, nextRequestNumber } from '../service-request/service-request.model';
+import { truncationNotice } from './report.service';
 
 const API = '/api/v1';
 
@@ -229,6 +231,31 @@ async function seedClosedRequest(
   });
 
   await ServiceRequest.collection.updateOne({ _id: created._id }, { $set: { createdAt, completedAt } });
+}
+
+/**
+ * One planned work in a known lifecycle state, dated inside the KPI window.
+ *
+ * `plannedStartDate` is what both the PLANNED_WORK report and the KPI range on, so it is
+ * the only date these cases need to control.
+ */
+async function seedPlannedWork(
+  hierarchy: Hierarchy,
+  workNumber: string,
+  status: string,
+  plannedStartDate: Date,
+): Promise<void> {
+  await PlannedWork.create({
+    workNumber,
+    project: hierarchy.projectId,
+    building: hierarchy.buildingId,
+    customer: hierarchy.customerId,
+    title: `Төлөвлөгөөт ажил ${workNumber}`,
+    plannedStartDate,
+    plannedEndDate: new Date(plannedStartDate.getTime() + 86_400_000),
+    originalPlannedEndDate: new Date(plannedStartDate.getTime() + 86_400_000),
+    status,
+  });
 }
 
 /** One invoice of the given status and amount, issued now so both money windows see it. */
@@ -727,6 +754,119 @@ describe('Report and inspection API', () => {
 
     expect(dashboard.body.data.finance.monthRevenue).toBe(reported);
     expect(reported).toBe(500_000);
+  });
+
+  /**
+   * P0-8. APPROVING THE REPORT ARCHIVES THE WORK, SO ARCHIVED IS A COMPLETION.
+   *
+   * `archiveAfterReportApproval` refuses anything but a COMPLETED work, so ARCHIVED is
+   * reachable only through "finished, reported and approved" — the most complete state a
+   * planned work has. Counting only COMPLETED put those twelve works in the denominator
+   * and in neither numerator, so the KPI fell every time the office closed paperwork:
+   * this exact set printed 15% where the truth is 83%.
+   */
+  it('counts an archived work as completed and leaves a cancelled one out entirely', async () => {
+    const hierarchy = await seedHierarchy();
+    const planned = new Date('2026-07-10T00:00:00.000Z');
+
+    // 12 completed and report-approved, 3 completed awaiting approval, 3 running, 2 dropped.
+    for (let index = 0; index < 12; index += 1) {
+      await seedPlannedWork(hierarchy, `PW-ARC-${index}`, 'ARCHIVED', planned);
+    }
+    for (let index = 0; index < 3; index += 1) {
+      await seedPlannedWork(hierarchy, `PW-CMP-${index}`, 'COMPLETED', planned);
+    }
+    for (let index = 0; index < 3; index += 1) {
+      await seedPlannedWork(hierarchy, `PW-RUN-${index}`, 'STARTED', planned);
+    }
+    for (let index = 0; index < 2; index += 1) {
+      await seedPlannedWork(hierarchy, `PW-CAN-${index}`, 'CANCELLED', planned);
+    }
+
+    const response = await request(app)
+      .get(`${API}/reports/kpi?dateFrom=2026-07-01T00:00:00.000Z&dateTo=2026-07-31T00:00:00.000Z`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(response.status).toBe(200);
+    const completion = response.body.data.values.find(
+      (value: { key: string }) => value.key === 'PLANNED_WORK_COMPLETION_RATE',
+    );
+
+    // 15 delivered of 18 committed. Twenty works exist; the two cancellations are not a
+    // failure to deliver and are outside both halves of the ratio.
+    expect(completion.numerator).toBe(15);
+    expect(completion.denominator).toBe(18);
+    expect(completion.value).toBe(83);
+  });
+
+  /** A work nobody ever submitted is not yet a commitment, so it cannot be a shortfall. */
+  it('leaves unsubmitted and unapproved work out of the completion denominator', async () => {
+    const hierarchy = await seedHierarchy();
+    const planned = new Date('2026-07-10T00:00:00.000Z');
+
+    await seedPlannedWork(hierarchy, 'PW-DONE', 'ARCHIVED', planned);
+    await seedPlannedWork(hierarchy, 'PW-DRAFT', 'DRAFT', planned);
+    await seedPlannedWork(hierarchy, 'PW-PENDING', 'PENDING_APPROVAL', planned);
+    await seedPlannedWork(hierarchy, 'PW-REJECTED', 'REJECTED', planned);
+
+    const response = await request(app)
+      .get(`${API}/reports/kpi?dateFrom=2026-07-01T00:00:00.000Z&dateTo=2026-07-31T00:00:00.000Z`)
+      .set('Authorization', `Bearer ${token}`);
+
+    const completion = response.body.data.values.find(
+      (value: { key: string }) => value.key === 'PLANNED_WORK_COMPLETION_RATE',
+    );
+
+    expect(completion.denominator).toBe(1);
+    expect(completion.numerator).toBe(1);
+    expect(completion.value).toBe(100);
+  });
+
+  /**
+   * P0-15. A CAPPED EXPORT MUST NOT CARRY A FOOTER DESCRIBING THE ROWS IT DROPPED.
+   *
+   * The footer is aggregated over the whole filtered set — that is what makes it right on
+   * a paged screen — so on a capped export it described 1,200 rows in a 1,000-row file.
+   * The file itself now says how much of the report it holds instead.
+   */
+  it('does not let a capped CSV export claim a total it did not export', async () => {
+    const hierarchy = await seedHierarchy();
+    const planned = new Date('2026-07-10T00:00:00.000Z');
+    for (let index = 0; index < 3; index += 1) {
+      await seedPlannedWork(hierarchy, `PW-CSV-${index}`, 'COMPLETED', planned);
+    }
+
+    const response = await request(app)
+      .get(`${API}/reports/PLANNED_WORK?dateFrom=2026-07-01&dateTo=2026-07-31&limit=2&format=csv`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(response.status).toBe(200);
+    const lines = response.text.replace('\ufeff', '').split('\r\n').filter(Boolean);
+
+    // Header plus the two rows the cap allowed, plus the notice — and no more.
+    expect(lines).toHaveLength(4);
+    // The whole-set footer describes three works; only two are in the file.
+    expect(response.text).not.toContain('Нийт 3');
+    // And the file states what it is, so it cannot be filed as a complete report. The
+    // notice names both figures, so the two rows present can be reconciled against three.
+    expect(response.text).toContain(truncationNotice(2, 3));
+  });
+
+  /** An export that fits keeps its footer: nothing was dropped, so nothing is disclaimed. */
+  it('keeps the whole-set footer on an export that was not capped', async () => {
+    const hierarchy = await seedHierarchy();
+    const planned = new Date('2026-07-10T00:00:00.000Z');
+    for (let index = 0; index < 3; index += 1) {
+      await seedPlannedWork(hierarchy, `PW-FULL-${index}`, 'COMPLETED', planned);
+    }
+
+    const response = await request(app)
+      .get(`${API}/reports/PLANNED_WORK?dateFrom=2026-07-01&dateTo=2026-07-31&limit=50&format=csv`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(response.status).toBe(200);
+    expect(response.text).toContain('Нийт 3');
+    expect(response.text).not.toContain('Анхааруулга');
   });
 
   it('hides the conclusion report from a caller without object_master.view', async () => {

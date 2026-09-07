@@ -154,13 +154,88 @@ describe('ReportsPage', () => {
     expect(download).toHaveBeenCalledWith('SLA', expect.objectContaining({ limit: 1000 }));
   });
 
-  /** A capped row set must be stated, so an export is never mistaken for a complete one. */
-  it('warns when the row set was truncated', async () => {
-    vi.spyOn(reportService, 'run').mockResolvedValue(makeReportResult({ truncatedAt: 1000 }));
+  /**
+   * P0-15. THE OLD BANNER COULD NOT FIRE, AND THE TEST THAT COVERED IT MOCKED A VALUE THE
+   * REAL CODE NEVER PRODUCES.
+   *
+   * The banner was driven by `report.truncatedAt`, which the server sets only when the
+   * request carries `format=csv`. The screen never sends that — only `downloadCsv` does —
+   * so on this page `truncatedAt` is always null and the banner was unreachable. The
+   * previous test here mocked `run` as returning `truncatedAt: 1000` and passed, which
+   * certified dead UI: a mock asserting an impossible state is worse than no test.
+   *
+   * The reachable fact is the one the screen already holds. `report.total` is the row
+   * count for exactly the filters an export uses — `handleExport` drops only `page` — so
+   * comparing it to the export cap is the same question, asked with data that exists.
+   */
+  it('warns before the export that the file will hold only part of the report', async () => {
+    vi.spyOn(reportService, 'run').mockResolvedValue(
+      makeReportResult({ total: 1200, totalPages: 48 }),
+    );
+
+    renderWithAuth(<ReportsPage />, {
+      permissions: [PERMISSIONS.REPORT_VIEW, PERMISSIONS.REPORT_EXPORT],
+    });
+
+    expect(await screen.findByText(/эхний 1000 мөр л багтана/)).toBeInTheDocument();
+    expect(screen.getByText(/нийт 1200 мөртэй/)).toBeInTheDocument();
+  });
+
+  it('says nothing about a cap when the whole report fits in one export', async () => {
+    vi.spyOn(reportService, 'run').mockResolvedValue(makeReportResult({ total: 2 }));
+
+    renderWithAuth(<ReportsPage />, {
+      permissions: [PERMISSIONS.REPORT_VIEW, PERMISSIONS.REPORT_EXPORT],
+    });
+
+    await screen.findByRole('table');
+    expect(screen.queryByText(/л багтана/)).not.toBeInTheDocument();
+  });
+
+  /** A reader with no export button is not warned about the shape of a file they cannot ask for. */
+  it('does not warn a reader who may not export', async () => {
+    vi.spyOn(reportService, 'run').mockResolvedValue(
+      makeReportResult({ total: 1200, totalPages: 48 }),
+    );
 
     renderWithAuth(<ReportsPage />, { permissions: [PERMISSIONS.REPORT_VIEW] });
 
-    expect(await screen.findByText(/1000-аар хязгаарлагдсан/)).toBeInTheDocument();
+    await screen.findByRole('table');
+    expect(screen.queryByText(/л багтана/)).not.toBeInTheDocument();
+  });
+
+  /**
+   * The download used to report a flat success whatever came back, so a partial file and a
+   * complete one were announced with the same four words.
+   */
+  it('states how much of the report a capped download actually contained', async () => {
+    vi.spyOn(reportService, 'run').mockResolvedValue(
+      makeReportResult({ total: 1200, totalPages: 48 }),
+    );
+    vi.spyOn(reportService, 'downloadCsv').mockResolvedValue(undefined);
+    const user = userEvent.setup();
+
+    renderWithAuth(<ReportsPage />, {
+      permissions: [PERMISSIONS.REPORT_VIEW, PERMISSIONS.REPORT_EXPORT],
+    });
+
+    await user.click(await screen.findByRole('button', { name: 'Excel (CSV) татах' }));
+
+    expect(await screen.findByText(/1200 мөрөөс эхний 1000 мөр багтсан/)).toBeInTheDocument();
+  });
+
+  it('reports a plain success when the export carried the whole report', async () => {
+    vi.spyOn(reportService, 'run').mockResolvedValue(makeReportResult({ total: 2 }));
+    vi.spyOn(reportService, 'downloadCsv').mockResolvedValue(undefined);
+    const user = userEvent.setup();
+
+    renderWithAuth(<ReportsPage />, {
+      permissions: [PERMISSIONS.REPORT_VIEW, PERMISSIONS.REPORT_EXPORT],
+    });
+
+    await user.click(await screen.findByRole('button', { name: 'Excel (CSV) татах' }));
+
+    expect(await screen.findByText('CSV файл татагдлаа.')).toBeInTheDocument();
   });
 
   it('shows an empty state when the range has no rows', async () => {

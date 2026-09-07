@@ -280,6 +280,23 @@ async function syncItems(
     keep.push(saved._id);
   }
 
+  /**
+   * A HARD delete, on purpose, and it stays one.
+   *
+   * A withdrawn finding must disappear from every read that lists a report's items — the
+   * report detail, the list's item count, the object's own report list, Үзлэг ба дүгнэлт,
+   * the risk aggregates. There are a dozen such queries across four modules; a soft flag
+   * would have to be honoured by every one of them, and the first that forgot would keep
+   * reporting a finding the source has retracted, which is exactly the thing this delete
+   * exists to prevent.
+   *
+   * Deleting the row does destroy its `_id`, and the assessment history used to key its
+   * idempotency guard on that id — so withdrawing an object and adding it back appended a
+   * second, permanently undeletable history row. The guard now keys on the NATURAL key,
+   * `(object, sourceReport, newScore)`, which is what `{ report, object }` being unique on
+   * this collection means: the same finding, whatever id the item happens to carry today.
+   * See `appendAssessmentHistory`.
+   */
   await ReportItem.deleteMany({ report: reportId, _id: { $nin: keep } });
 }
 
