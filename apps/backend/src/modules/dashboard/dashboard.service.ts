@@ -11,6 +11,8 @@ import {
   aggregateProgress,
   slaConfigOf,
   reconcileDashboardLayout,
+  type PlannedWorkEffectiveStatus,
+  type PlannedWorkLifecycleStatus,
   type DashboardLayoutDto,
   type DashboardWidgetPreference,
   type DashboardLayoutInput,
@@ -46,6 +48,7 @@ import { Customer, ObjectNode } from '../objects/object.models';
 import { PlannedWork, type IPlannedWork } from '../planned-work/planned-work.models';
 import { resolveAssignedWorkFilter } from '../planned-work/planned-work.scope';
 import { ServiceRequest, type IServiceRequest } from '../service-request/service-request.model';
+import { slaBreachFilter } from '../service-request/sla.service';
 import { getSettings } from '../settings/settings.service';
 import { ServiceAgreement } from '../service-agreement/service-agreement.model';
 
@@ -231,9 +234,11 @@ async function requestBlock(
       withScope<IServiceRequest>({ slaDueAt: { $gte: now, $lte: todayEnd }, ...open }, scope),
     ),
     ServiceRequest.countDocuments(withScope<IServiceRequest>(nearBreachFilter, scope)),
-    ServiceRequest.countDocuments(
-      withScope<IServiceRequest>({ slaDueAt: { $lt: now }, ...open }, scope),
-    ),
+    // "SLA зөрчил" is [slaBreachFilter], the query form of the one definition the KPI
+    // tile and the 15.2 SLA report also count on. This tile used to ask only for work that
+    // is open and past due, so a breach that was later completed vanished from the number
+    // the moment it was closed and the three screens never agreed.
+    ServiceRequest.countDocuments(withScope<IServiceRequest>(slaBreachFilter(now), scope)),
     ServiceRequest.countDocuments(
       withScope<IServiceRequest>(
         { status: 'COMPLETED', completedAt: { $gte: todayStart, $lte: todayEnd } },
@@ -364,12 +369,72 @@ async function monthlyTrendBlock(
   return months.map((month) => ({ month, count: found.get(month) ?? 0 }));
 }
 
+/**
+ * «Дууссан» for the planned-work tile.
+ *
+ * ARCHIVED belongs here. `archiveAfterReportApproval` is reachable only from the report
+ * approval flow and refuses anything whose status is not already COMPLETED, so ARCHIVED
+ * means "finished, written up and signed off" — the most complete state a planned work
+ * reaches, not a hidden one. The block used to exclude it outright, which made «Дууссан»
+ * count only work finished but NOT yet approved: approving the report removed the work
+ * from the numerator, so a tenant that keeps up with its paperwork watched the tile trend
+ * toward zero while the crew was doing everything right.
+ *
+ * Same set as `PLANNED_WORK_DELIVERED_STATUSES` in `report.service.ts`, which is the
+ * numerator of PLANNED_WORK_COMPLETION_RATE — the KPI that carries this tile's own label,
+ * «Төлөвлөгөөт ажлын гүйцэтгэл». The two are restated rather than shared only because
+ * they sit in different modules; they must be changed together, and belong in
+ * `packages/shared/src/constants/planned-work.ts` next to the lifecycle vocabulary.
+ */
+const PLANNED_WORK_DELIVERED_STATUSES: readonly PlannedWorkEffectiveStatus[] = [
+  'COMPLETED',
+  'ARCHIVED',
+];
+
+/**
+ * What «Нийт» does NOT count — the denominator's exclusion list.
+ *
+ * The tile answers «of the work this business committed to, how much is done», so the
+ * denominator is work actually committed to. `total: works.length` over
+ * `{ status: { $ne: 'ARCHIVED' } }` answered neither question: it dropped the most
+ * complete state there is and counted scratch pads and cancellations as outstanding.
+ *
+ *   - CANCELLED is out. A cancellation is a decision not to do the work, not a failure
+ *     to do it; leaving it in means every cancellation permanently lowers the tile.
+ *   - DRAFT is out. Never submitted to anybody, deletable by its author, nothing promised.
+ *   - PENDING_APPROVAL and REJECTED are out. Both are submitted but unapproved, and
+ *     approval is the point at which a work becomes «Төлөвлөгдсөн»; charging the delivery
+ *     crew for the approver's queue is not a measure of delivery.
+ *
+ * Everything else stays in: PLANNED, STARTED and PAUSED are outstanding commitments,
+ * COMPLETED and ARCHIVED are met ones. OVERDUE never appears because it is derived on
+ * read, so an overdue work sits here under its stored PLANNED/STARTED/PAUSED status —
+ * committed and not yet done, which is correct.
+ *
+ * VERBATIM the list `report.service.ts` applies to PLANNED_WORK_COMPLETION_RATE
+ * (`PLANNED_WORK_UNCOMMITTED_STATUSES`), deliberately: the tile and the KPI are the same
+ * question asked on two screens, and they were previously free to disagree.
+ *
+ * Written as an EXCLUSION list rather than an inclusion one so a lifecycle status added
+ * later lands in the denominator and is visible, rather than vanishing from both halves
+ * of the ratio without a sound.
+ */
+const PLANNED_WORK_UNCOMMITTED_STATUSES: readonly PlannedWorkLifecycleStatus[] = [
+  'DRAFT',
+  'PENDING_APPROVAL',
+  'REJECTED',
+  'CANCELLED',
+];
+
 async function plannedWorkBlock(
   now: Date,
   scope: FilterQuery<IPlannedWork> | null,
 ): Promise<DashboardPlannedWorkSummary> {
   const works = await PlannedWork.find(
-    withScope<IPlannedWork>({ status: { $ne: 'ARCHIVED' } }, scope),
+    withScope<IPlannedWork>(
+      { status: { $nin: PLANNED_WORK_UNCOMMITTED_STATUSES } },
+      scope,
+    ),
   )
     .select('status plannedEndDate totalQuantity completedQuantity')
     .lean();
@@ -382,7 +447,7 @@ async function plannedWorkBlock(
     const effective = effectiveStatusOf(work, now);
     if (effective === 'OVERDUE') overdue += 1;
     else if (effective === 'STARTED') inProgress += 1;
-    else if (effective === 'COMPLETED') completed += 1;
+    else if (PLANNED_WORK_DELIVERED_STATUSES.includes(effective)) completed += 1;
   }
 
   /**
@@ -391,6 +456,15 @@ async function plannedWorkBlock(
    * The mean of the per-work percentages is a different number: it lets a single-task job
    * outweigh a five-hundred-task one, which is exactly the weighting doctrine this
    * codebase settled.
+   *
+   * Weighted over the SAME committed set as the counters above, which is what repairs the
+   * second half of this block's bias: the previous set excluded every archived work — the
+   * ones that are genuinely finished — while including every DRAFT at 0%, so the bar was
+   * pushed down from both ends at once.
+   *
+   * NOTE for whoever owns `packages/shared/src/types/dashboard.types.ts`: the doc on
+   * `averageProgress` still says "across non-archived work". That is now stale and should
+   * read "across committed work"; it is out of this module's scope to edit.
    */
   const progress = aggregateProgress(
     works.map((work) => ({
