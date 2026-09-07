@@ -344,6 +344,68 @@ describe('Dashboard API', () => {
     expect(today.items[0]?.assigneeNames).toEqual([]);
   });
 
+  /**
+   * The counters are totals; the list is a page of it.
+   *
+   * They were both derived from one capped `find`, so every counter silently saturated at
+   * the fetch limit: forty-five overdue jobs printed «Хугацаа хэтэрсэн 40», and «Яаралтай»
+   * printed only the urgent ones that happened to fall inside the forty rows the sort
+   * admitted. A counter that cannot exceed the length of the list beneath it is not
+   * measuring the day, it is measuring the query.
+   */
+  it('counts today by query rather than over the capped list', async () => {
+    // Distinct deadlines, oldest first, so the sort is deterministic: the twelve urgent
+    // ones are the LATEST due, which puts five of them outside the forty rows fetched.
+    for (let index = 0; index < 45; index += 1) {
+      await seedRequest({
+        status: 'ASSIGNED',
+        assignedEmployees: [],
+        isUrgent: index >= 33,
+        slaDueAt: new Date(Date.now() - (45 - index) * 3_600_000),
+      });
+    }
+
+    const today = (await summary()).today as {
+      dueCount: number;
+      overdueCount: number;
+      urgentCount: number;
+      unassignedCount: number;
+      items: unknown[];
+    };
+
+    expect(today.dueCount).toBe(45);
+    expect(today.overdueCount).toBe(45);
+    expect(today.urgentCount).toBe(12);
+    expect(today.unassignedCount).toBe(45);
+    // The list stays capped. That is the point of separating the two.
+    expect(today.items).toHaveLength(40);
+  });
+
+  /** The same separation on the planned-work side, which has its own capped fetch. */
+  it('counts overdue planned work by query rather than over the capped list', async () => {
+    for (let index = 0; index < 45; index += 1) {
+      await seedPlannedWork(1, 0, {
+        status: 'PLANNED',
+        assignedEmployees: [],
+        plannedStartDate: new Date(Date.now() - 3 * 86_400_000),
+        plannedEndDate: new Date(Date.now() - 2 * 86_400_000),
+        originalPlannedEndDate: new Date(Date.now() - 2 * 86_400_000),
+      });
+    }
+
+    const today = (await summary()).today as {
+      dueCount: number;
+      overdueCount: number;
+      unassignedCount: number;
+      items: unknown[];
+    };
+
+    expect(today.overdueCount).toBe(45);
+    expect(today.dueCount).toBe(45);
+    expect(today.unassignedCount).toBe(45);
+    expect(today.items).toHaveLength(40);
+  });
+
   it('stamps the day with the configured timezone', async () => {
     const today = (await summary()).today as { date: string; timezone: string };
     expect(today.timezone).toBe('Asia/Ulaanbaatar');

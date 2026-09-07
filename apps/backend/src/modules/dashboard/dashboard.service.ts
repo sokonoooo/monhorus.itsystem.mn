@@ -37,7 +37,7 @@ import type { AuthContext } from '../../common/types/express';
 import { dayBounds, dayBoundsAgo, localDateString, monthStart } from '../../common/utils/day-bounds.util';
 import { monthEnd, monthWindow, windowStart } from '../../common/utils/month-window.util';
 import { env } from '../../config/env';
-import { effectiveStatusOf } from '../planned-work/planned-work.overdue.service';
+import { effectiveStatusOf, overdueBoundary } from '../planned-work/planned-work.overdue.service';
 import { listCustomWidgets } from './dashboard-insight.service';
 import { DashboardLayout, type IDashboardWidgetPreference } from './dashboard-layout.model';
 import { Employee } from '../employee/employee.model';
@@ -68,6 +68,10 @@ const TREND_DAYS = 14;
 
 /** How far the long view reaches. Six, matching the span the portal risk history uses. */
 const MONTHLY_TREND_MONTHS = 6;
+/**
+ * How many rows the Today list carries. A cap on the LIST only — never on the counters
+ * beside it, which are queries. See `todayBlock`.
+ */
 const TODAY_ITEM_LIMIT = 40;
 const WORKLOAD_ROW_LIMIT = 8;
 
@@ -589,20 +593,26 @@ async function todayBlock(
 
   const items: DashboardTodayItem[] = [];
 
+  /**
+   * Anything that lands today: due today, already past due and unfinished, or urgent and
+   * still open. An overdue job from last week is today's problem too.
+   *
+   * Named and reused rather than inlined, because the counters below must ask about the
+   * SAME set the list is drawn from. They are separate queries against this filter, not
+   * a second reading of the rows the list happens to have loaded.
+   */
+  const requestBase: FilterQuery<IServiceRequest> = {
+    status: { $nin: SETTLED_REQUEST_STATUSES },
+    $or: [{ slaDueAt: { $lte: end } }, { isUrgent: true }],
+  };
+
+  const workBase: FilterQuery<IPlannedWork> = {
+    status: { $in: ['PLANNED', 'STARTED', 'PAUSED'] },
+    plannedStartDate: { $lte: end },
+  };
+
   if (canSeeRequests) {
-    /**
-     * Anything that lands today: due today, already past due and unfinished, or
-     * urgent and still open. An overdue job from last week is today's problem too.
-     */
-    const requests = await ServiceRequest.find(
-      withScope<IServiceRequest>(
-        {
-          status: { $nin: SETTLED_REQUEST_STATUSES },
-          $or: [{ slaDueAt: { $lte: end } }, { isUrgent: true }],
-        },
-        requestScope,
-      ),
-    )
+    const requests = await ServiceRequest.find(withScope<IServiceRequest>(requestBase, requestScope))
       .populate([
         { path: 'customer', select: 'name' },
         { path: 'building', select: 'name' },
@@ -635,15 +645,7 @@ async function todayBlock(
   }
 
   if (canSeePlannedWork) {
-    const works = await PlannedWork.find(
-      withScope<IPlannedWork>(
-        {
-          status: { $in: ['PLANNED', 'STARTED', 'PAUSED'] },
-          plannedStartDate: { $lte: end },
-        },
-        workScope,
-      ),
-    )
+    const works = await PlannedWork.find(withScope<IPlannedWork>(workBase, workScope))
       .populate([
         { path: 'customer', select: 'name' },
         { path: 'building', select: 'name' },
@@ -683,22 +685,89 @@ async function todayBlock(
     return (left.dueAt ?? '').localeCompare(right.dueAt ?? '');
   });
 
-  const completedCount = canSeeRequests
-    ? await ServiceRequest.countDocuments(
-        withScope<IServiceRequest>(
-          { status: 'COMPLETED', completedAt: { $gte: start, $lte: end } },
-          requestScope,
-        ),
-      )
-    : 0;
+  /**
+   * THE COUNTERS ARE QUERIES, NOT A SECOND READING OF THE LIST.
+   *
+   * They used to be `items.filter(...).length` over the merged array above, which put two
+   * distortions in one payload. The array is two `.limit(40)` fetches, so every counter
+   * saturated at forty per kind — forty-five overdue jobs printed «Хугацаа хэтэрсэн 40»,
+   * and «Яаралтай» counted only the urgent rows the deadline sort happened to admit. And
+   * the array holds up to eighty rows while the list beneath renders forty, so the
+   * counters were computed over a set the reader could not see either.
+   *
+   * `completedCount` was already a real `countDocuments` and was rendered beside them, so
+   * one counter in the row was a total and four were artefacts of a page size. They now
+   * all follow that shape: same base filter, same scope, one predicate each.
+   *
+   * The LIST stays capped. A counter is a total and a list is a page of it; separating
+   * them is the fix, not raising the limit.
+   */
+  const countRequests = (extra: FilterQuery<IServiceRequest>): Promise<number> =>
+    canSeeRequests
+      ? ServiceRequest.countDocuments(
+          withScope<IServiceRequest>({ ...requestBase, ...extra }, requestScope),
+        )
+      : Promise.resolve(0);
+
+  const countWorks = (extra: FilterQuery<IPlannedWork>): Promise<number> =>
+    canSeePlannedWork
+      ? PlannedWork.countDocuments(withScope<IPlannedWork>({ ...workBase, ...extra }, workScope))
+      : Promise.resolve(0);
+
+  /**
+   * The instant a planned work's deadline must fall before to read as OVERDUE: the start
+   * of today in Ulaanbaatar, which is exactly what `effectiveStatusOf` applies to the
+   * rows in the list. Taken from the single funnel rather than restated, so the counter
+   * and the badges on the rows can never drift apart.
+   */
+  const overdueFrom = overdueBoundary(now);
+
+  const [
+    dueRequests,
+    dueWorks,
+    overdueRequests,
+    overdueWorks,
+    urgentRequests,
+    unassignedRequests,
+    unassignedWorks,
+    completedCount,
+  ] = await Promise.all([
+    // Due by the end of today. A request admitted only for being urgent, with a deadline
+    // later in the week, is outside this — the same test the list rows carry.
+    countRequests({ slaDueAt: { $lte: end } }),
+    countWorks({ plannedEndDate: { $lte: end } }),
+
+    countRequests({ slaDueAt: { $lt: now } }),
+    countWorks({ plannedEndDate: { $lt: overdueFrom } }),
+
+    // Only a request can be urgent; a planned work is never flagged, so there is no
+    // second query to add here rather than a zero to hide.
+    countRequests({ isUrgent: true }),
+
+    // Asked of the stored array rather than of the populated names the rows carry. The
+    // two agree unless an assignment points at an employee record that no longer exists,
+    // and then this is the honest answer: nobody was assigned is a different fact from
+    // no assignee resolved.
+    countRequests({ assignedEmployees: { $size: 0 } }),
+    countWorks({ assignedEmployees: { $size: 0 } }),
+
+    canSeeRequests
+      ? ServiceRequest.countDocuments(
+          withScope<IServiceRequest>(
+            { status: 'COMPLETED', completedAt: { $gte: start, $lte: end } },
+            requestScope,
+          ),
+        )
+      : Promise.resolve(0),
+  ]);
 
   return {
     date,
     timezone: timeZone,
-    dueCount: items.filter((item) => item.dueAt !== null && item.dueAt <= end.toISOString()).length,
-    overdueCount: items.filter((item) => item.isOverdue).length,
-    urgentCount: items.filter((item) => item.isUrgent).length,
-    unassignedCount: items.filter((item) => item.assigneeNames.length === 0).length,
+    dueCount: dueRequests + dueWorks,
+    overdueCount: overdueRequests + overdueWorks,
+    urgentCount: urgentRequests,
+    unassignedCount: unassignedRequests + unassignedWorks,
     completedCount,
     items: items.slice(0, TODAY_ITEM_LIMIT),
   };
