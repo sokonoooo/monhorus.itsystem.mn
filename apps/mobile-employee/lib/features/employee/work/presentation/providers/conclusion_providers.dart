@@ -839,6 +839,12 @@ T _unwrapResult<T>(ApiResult<T> result) => result.when(
 /// second definition of "which floors exist".
 final FutureProviderFamily<List<FloorModel>, String> conclusionFloorsProvider =
     FutureProvider.family<List<FloorModel>, String>((Ref ref, String buildingId) async {
+  // Keyed on WHO is signed in, for the reason spelled out on [conclusionEditorProvider]:
+  // not `autoDispose`, keyed only on the building, and the container outlives the
+  // session, so the next technician on the handset was shown the floors the previous one
+  // loaded — a tenant-scoped read answered out of another account's cache.
+  ref.watch(currentUserProvider.select((AppUser? user) => user?.id));
+
   final PaginatedData<FloorModel> page =
       _unwrapResult(await ref.watch(projectRepositoryProvider).listFloors(buildingId));
   return page.items;
@@ -862,6 +868,12 @@ const int _maxEquipmentPages = 20;
 /// arrives here at all — the route is tenant-scoped server-side.
 final FutureProviderFamily<List<ObjectListItemModel>, String> conclusionEquipmentProvider =
     FutureProvider.family<List<ObjectListItemModel>, String>((Ref ref, String floorId) async {
+  // Keyed on WHO is signed in, like [conclusionFloorsProvider] above and for the same
+  // reason — except that it matters more here. This is the list a finding is recorded
+  // AGAINST, two technicians genuinely share a floorId, and nothing about a picker
+  // answered out of the previous session's cache looks wrong on screen.
+  ref.watch(currentUserProvider.select((AppUser? user) => user?.id));
+
   final ProjectRepository repository = ref.watch(projectRepositoryProvider);
   final List<ObjectListItemModel> all = <ObjectListItemModel>[];
 
