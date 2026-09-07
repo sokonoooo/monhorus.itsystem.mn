@@ -1,4 +1,4 @@
-import { PERMISSIONS } from '@monhorus/shared';
+import { PERMISSIONS, progressPercentOf } from '@monhorus/shared';
 import type { Express } from 'express';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -244,6 +244,10 @@ async function seedPlannedWork(
   workNumber: string,
   status: string,
   plannedStartDate: Date,
+  quantity: { totalQuantity: number; completedQuantity: number } = {
+    totalQuantity: 0,
+    completedQuantity: 0,
+  },
 ): Promise<void> {
   await PlannedWork.create({
     workNumber,
@@ -255,22 +259,93 @@ async function seedPlannedWork(
     plannedEndDate: new Date(plannedStartDate.getTime() + 86_400_000),
     originalPlannedEndDate: new Date(plannedStartDate.getTime() + 86_400_000),
     status,
+    ...quantity,
+    taskCount: quantity.totalQuantity,
+    // Written the way the progress service writes it, so the stored percent and the
+    // quantities a roll-up weighs by cannot disagree inside one seeded work.
+    progressPercent: progressPercentOf(quantity.totalQuantity, quantity.completedQuantity),
   });
 }
 
-/** One invoice of the given status and amount, issued now so both money windows see it. */
+/**
+ * An open request whose deadline has already passed — a breach under the one definition in
+ * `sla.service`, without depending on any particular status label.
+ */
+async function seedBreachedRequest(hierarchy: Hierarchy, slaDueAt: Date): Promise<void> {
+  await ServiceRequest.create({
+    requestNumber: await nextRequestNumber(),
+    customer: hierarchy.customerId,
+    building: hierarchy.buildingId,
+    floor: hierarchy.floorId,
+    requestType: 'STANDARD_CALL',
+    isUrgent: false,
+    description: 'Гэрэл асахгүй байна.',
+    contactName: 'Бат',
+    contactPhone: '99112233',
+    status: 'NEW',
+    slaStartedAt: new Date(slaDueAt.getTime() - 4 * 3_600_000),
+    slaDueAt,
+  });
+}
+
+/**
+ * One assessed object belonging to a named customer, assessed at a chosen instant.
+ *
+ * `seedAssessedObject` above pins every assessment to one date and one customer, which
+ * cannot express "whose row is this" or "which page does it land on".
+ */
+async function seedAssessmentFor(
+  hierarchy: Hierarchy,
+  customerId: string,
+  code: string,
+  assessedAt: Date,
+): Promise<void> {
+  const object = await ObjectRecord.create({
+    code,
+    name: `Самбар ${code}`,
+    category: 'PANEL',
+    objectType: hierarchy.objectTypeId,
+    customer: customerId,
+    floor: hierarchy.floorId,
+    status: 'ACTIVE',
+    panel: { capacityKw: 25, location: null, protection: null },
+    latestAssessment: null,
+  });
+
+  await ObjectAssessment.create({
+    object: object._id,
+    previousScore: null,
+    newScore: 55,
+    riskLevel: 'CRITICAL',
+    assessedByName: 'Б. Энхтөр',
+    assessedAt,
+    conclusion: 'Кабелийн тусгаарлагчид хэт халалт илэрсэн.',
+    recommendation: 'Ачааллыг тэнцвэржүүлэх.',
+    repairRequired: true,
+    revisitRequired: false,
+  });
+}
+
+/**
+ * One invoice of the given status and amount.
+ *
+ * Issued now by default, so both money windows see it. `issueDate` is passed explicitly by
+ * the cases that need an invoice OUTSIDE the reported window — the receivable is a balance
+ * and has to keep counting one, while revenue is a flow and must not.
+ */
 async function seedInvoice(
   customerId: string,
   status: string,
   total: number,
   billingPeriod: string,
+  issueDate: Date = new Date(),
 ): Promise<void> {
   await Invoice.create({
     invoiceNumber: `INV-TEST-${billingPeriod}-${status}`,
     customer: customerId,
     billingType: 'MONTHLY_SERVICE',
     billingPeriod,
-    issueDate: new Date(),
+    issueDate,
     dueDate: new Date(Date.now() + 7 * 86_400_000),
     lines: [],
     subtotal: total,
@@ -867,6 +942,189 @@ describe('Report and inspection API', () => {
     expect(response.status).toBe(200);
     expect(response.text).toContain('Нийт 3');
     expect(response.text).not.toContain('Анхааруулга');
+  });
+
+  /**
+   * 4A. THE RECEIVABLE IS A BALANCE, SO IT IS NOT WINDOWED.
+   *
+   * `summariseInvoices` and the dashboard both report it over every invoice, and the
+   * published formula («Илгээсэн боловч төлөгдөөгүй нэхэмжлэл») names no period. Windowing
+   * it made a customer's unpaid year-old invoice vanish from the figure that exists to say
+   * what is owed. Revenue beside it stays windowed, because revenue really is a flow.
+   */
+  it('reports the receivable as the standing balance while revenue stays inside the window', async () => {
+    const hierarchy = await seedHierarchy();
+    const now = new Date();
+    const longAgo = new Date(now.getTime() - 400 * 86_400_000);
+
+    // Unpaid and old: owed today, issued long before the window.
+    await seedInvoice(hierarchy.customerId, 'SENT', 700_000, '2025-01', longAgo);
+    // Unpaid and current: owed today, and revenue for this window.
+    await seedInvoice(hierarchy.customerId, 'SENT', 200_000, '2026-02');
+    // Settled: revenue for this window, and owed by nobody.
+    await seedInvoice(hierarchy.customerId, 'PAID', 300_000, '2026-03');
+
+    const dateFrom = new Date(now.getTime() - 86_400_000).toISOString();
+    const dateTo = new Date(now.getTime() + 86_400_000).toISOString();
+
+    const [response, dashboard] = await Promise.all([
+      request(app)
+        .get(`${API}/reports/kpi?dateFrom=${dateFrom}&dateTo=${dateTo}`)
+        .set('Authorization', `Bearer ${token}`),
+      request(app).get(`${API}/dashboard/summary`).set('Authorization', `Bearer ${token}`),
+    ]);
+
+    expect(response.status).toBe(200);
+    const valueOf = (key: string): number =>
+      response.body.data.values.find((value: { key: string }) => value.key === key).value;
+
+    // Everything sent and still unpaid, whenever it was issued.
+    expect(valueOf('RECEIVABLE_TOTAL')).toBe(900_000);
+    // Sent plus paid, inside the window only: the old invoice is not this window's revenue.
+    expect(valueOf('MONTHLY_REVENUE')).toBe(500_000);
+    // And the tile that has always been all-time agrees, rather than quietly differing.
+    expect(dashboard.body.data.finance.receivableTotal).toBe(valueOf('RECEIVABLE_TOTAL'));
+  });
+
+  /**
+   * 4B. THE CUSTOMER REPORT MUST NOT MIX WINDOWS SILENTLY.
+   *
+   * Under a header reading one month, the invoiced column was all-time: a customer billed
+   * for a year showed that year's total beside March's request count. The flow column is
+   * now windowed at the query; the balance columns stay all-time and say so in their label.
+   */
+  it('windows the invoiced column of the customer report and leaves the balance all-time', async () => {
+    const hierarchy = await seedHierarchy();
+
+    await seedInvoice(hierarchy.customerId, 'SENT', 100_000, '2026-02', new Date('2026-02-10T00:00:00.000Z'));
+    await seedInvoice(hierarchy.customerId, 'SENT', 200_000, '2026-03', new Date('2026-03-10T00:00:00.000Z'));
+    await seedInvoice(hierarchy.customerId, 'SENT', 400_000, '2026-04', new Date('2026-04-10T00:00:00.000Z'));
+
+    const response = await request(app)
+      .get(`${API}/reports/CUSTOMER?dateFrom=2026-03-01&dateTo=2026-03-31`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(response.status).toBe(200);
+    const row = response.body.data.rows.find(
+      (candidate: { customer: string }) => candidate.customer === 'Central Tower ХХК',
+    );
+
+    // Billed IN March. February and April are other months' revenue.
+    expect(row.invoicedTotal).toBe(200_000);
+    // Owed TODAY, which is every unpaid invoice regardless of the window.
+    expect(row.receivableTotal).toBe(700_000);
+    expect(response.body.data.totals.invoicedTotal).toBe(200_000);
+    expect(response.body.data.totals.receivableTotal).toBe(700_000);
+
+    // The header says March, so the column that is not March has to say so itself.
+    const labelOfColumn = (key: string): string =>
+      response.body.data.columns.find((column: { key: string }) => column.key === key).label;
+    expect(labelOfColumn('receivableTotal')).toContain('нийт');
+  });
+
+  /**
+   * 4C. THE SLA FOOTER DESCRIBES THE REPORT, NOT THE PAGE.
+   *
+   * «Нийт 137 · Зөрчсөн 25» came from two different sets: the total counted the filter, the
+   * breach count reduced the twenty rows on screen. Page six of the same report said
+   * «Зөрчсөн 0» while nothing about the report had changed.
+   */
+  it('counts SLA breaches over the whole filtered set, not the page on screen', async () => {
+    const hierarchy = await seedHierarchy();
+    const overdue = new Date(Date.now() - 10 * 3_600_000);
+    for (let index = 0; index < 3; index += 1) {
+      await seedBreachedRequest(hierarchy, new Date(overdue.getTime() + index * 60_000));
+    }
+
+    const [first, last] = await Promise.all([
+      request(app)
+        .get(`${API}/reports/SLA?page=1&limit=2`)
+        .set('Authorization', `Bearer ${token}`),
+      request(app)
+        .get(`${API}/reports/SLA?page=2&limit=2`)
+        .set('Authorization', `Bearer ${token}`),
+    ]);
+
+    expect(first.status).toBe(200);
+    expect(first.body.data.rows).toHaveLength(2);
+    expect(last.body.data.rows).toHaveLength(1);
+
+    // Both footers describe the same three-request report, as «Нийт» already did.
+    expect(first.body.data.totals).toMatchObject({ requestNumber: 'Нийт 3', slaResult: 'Зөрчсөн 3' });
+    expect(last.body.data.totals).toMatchObject({ requestNumber: 'Нийт 3', slaResult: 'Зөрчсөн 3' });
+  });
+
+  /**
+   * 4D. FILTERING AFTER PAGINATION IS NOT FILTERING.
+   *
+   * The customer filter was applied to the already-truncated page, so a customer-scoped
+   * report showed a handful of rows under a total counting every customer's assessments,
+   * and the pager offered pages that were empty on arrival.
+   */
+  it('applies the risk report customer filter before paginating, not after', async () => {
+    const hierarchy = await seedHierarchy();
+    const other = await Customer.create({ code: 'C-RPT-B', name: 'Өөр харилцагч ХХК' });
+    const base = new Date('2026-07-01T00:00:00.000Z');
+
+    // Interleaved in time, so a filter applied after the sort-and-slice cannot get lucky.
+    for (let index = 0; index < 3; index += 1) {
+      await seedAssessmentFor(hierarchy, hierarchy.customerId, `MINE-${index}`, new Date(base.getTime() + index * 2 * 86_400_000));
+      await seedAssessmentFor(hierarchy, String(other._id), `THEIRS-${index}`, new Date(base.getTime() + (index * 2 + 1) * 86_400_000));
+    }
+
+    const [first, second] = await Promise.all([
+      request(app)
+        .get(`${API}/reports/RISK_ASSESSMENT?customerId=${hierarchy.customerId}&page=1&limit=2`)
+        .set('Authorization', `Bearer ${token}`),
+      request(app)
+        .get(`${API}/reports/RISK_ASSESSMENT?customerId=${hierarchy.customerId}&page=2&limit=2`)
+        .set('Authorization', `Bearer ${token}`),
+    ]);
+
+    expect(first.status).toBe(200);
+    // Three of the six assessments belong to this customer, and the pager must say three.
+    expect(first.body.data.total).toBe(3);
+    expect(first.body.data.totalPages).toBe(2);
+    expect(String(first.body.data.totals.objectCode)).toBe('Нийт 3');
+
+    const codes = [...first.body.data.rows, ...second.body.data.rows].map(
+      (row: { objectCode: string }) => row.objectCode,
+    );
+    // Newest first, and nobody else's equipment on any page.
+    expect(codes).toEqual(['MINE-2', 'MINE-1', 'MINE-0']);
+  });
+
+  /**
+   * 4E. THE FOOTER PROGRESS IS QUANTITY-WEIGHTED, AS EVERY OTHER ROLL-UP IN THE CODEBASE IS.
+   *
+   * `$avg` over the per-work percentages let a one-task job outweigh a five-hundred-task
+   * one. `aggregateProgress` on the dashboard names that mean as the wrong answer for this
+   * metric, and the stored per-work percent is itself a quantity-weighted ratio, so the mean
+   * of the ratios was never the ratio of the set.
+   */
+  it('weights the planned-work footer progress by quantity, not by work item', async () => {
+    const hierarchy = await seedHierarchy();
+    const planned = new Date('2026-07-10T00:00:00.000Z');
+
+    // One task, finished. The mean of percentages hands this the same weight as the next.
+    await seedPlannedWork(hierarchy, 'PW-SMALL', 'COMPLETED', planned, {
+      totalQuantity: 1,
+      completedQuantity: 1,
+    });
+    // Five hundred tasks, none of them done.
+    await seedPlannedWork(hierarchy, 'PW-LARGE', 'STARTED', planned, {
+      totalQuantity: 500,
+      completedQuantity: 0,
+    });
+
+    const response = await request(app)
+      .get(`${API}/reports/PLANNED_WORK?dateFrom=2026-07-01&dateTo=2026-07-31`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(response.status).toBe(200);
+    // 1 of 501 units is 0.2%. The unweighted mean of 100% and 0% would print 50%.
+    expect(response.body.data.totals.progressPercent).toBe(0.2);
+    expect(response.body.data.totals.progressPercent).not.toBe(50);
   });
 
   it('hides the conclusion report from a caller without object_master.view', async () => {

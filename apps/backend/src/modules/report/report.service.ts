@@ -6,6 +6,9 @@ import {
   KPI_PURPOSES,
   KPI_UNITS,
   PLANNED_WORK_STATUS_LABELS,
+  progressPercentOf,
+  PLANNED_WORK_DELIVERED_STATUSES,
+  PLANNED_WORK_UNCOMMITTED_STATUSES,
   REPORT_DESCRIPTIONS,
   REPORT_LABELS,
   REPORT_STATUS_LABELS,
@@ -20,6 +23,7 @@ import {
   type ReportQueryInput,
   type ReportResultDto,
   type ReportRowDto,
+  type ServiceRequestStatus,
 } from '@monhorus/shared';
 import { Types, type FilterQuery } from 'mongoose';
 
@@ -33,6 +37,8 @@ import { PlannedWork } from '../planned-work/planned-work.models';
 import { effectiveStatusOf } from '../planned-work/planned-work.overdue.service';
 import { Report, ReportItem } from '../report-record/report-record.model';
 import { ServiceRequest } from '../service-request/service-request.model';
+import { isTerminalServiceRequestStatus } from '../service-request/service-request.terminality';
+import { isSlaBreached, slaBreachExpr, slaBreachFilter } from '../service-request/sla.service';
 import { riskBandLabelOf } from '../settings/risk-band.label';
 import { getSettings, getRiskBands } from '../settings/settings.service';
 
@@ -124,9 +130,21 @@ async function plannedWorkReport(query: ReportQueryInput): Promise<ReportResultD
   };
 
   const now = new Date();
-  // The window, the count and the footer's average are asked for together. The average is
-  // aggregated over the whole filtered set rather than reduced over `rows`: a mean of the
-  // twenty rows on screen is not the mean of the report.
+  /**
+   * The window, the count and the footer's progress are asked for together. The progress is
+   * aggregated over the whole filtered set rather than reduced over `rows`: a figure taken
+   * from the twenty rows on screen is not the figure for the report.
+   *
+   * QUANTITY-WEIGHTED, not a mean of the per-work percentages. This was `$avg` over
+   * `progressPercent`, which gave a one-task job the same say as a five-hundred-task one —
+   * the reading `aggregateProgress` on the dashboard names as the wrong answer for exactly
+   * this metric, and the one the codebase settled against. The stored `progressPercent` is
+   * itself `completedQuantity / totalQuantity` for a single work, so the mean of those
+   * ratios was never the ratio of the set; summing the two quantities and dividing once is.
+   *
+   * `completedQuantity` is clamped per work, as the progress service clamps it: a stored
+   * overshoot on one work must not be allowed to pay for another work's shortfall.
+   */
   const [works, total, summary] = await Promise.all([
     PlannedWork.find(filter)
       .populate([
@@ -139,9 +157,17 @@ async function plannedWorkReport(query: ReportQueryInput): Promise<ReportResultD
       .limit(query.limit)
       .lean(),
     PlannedWork.countDocuments(filter),
-    PlannedWork.aggregate<{ progress: number }>([
+    PlannedWork.aggregate<{ totalQuantity: number; completedQuantity: number }>([
       { $match: filter },
-      { $group: { _id: null, progress: { $avg: '$progressPercent' } } },
+      {
+        $group: {
+          _id: null,
+          totalQuantity: { $sum: '$totalQuantity' },
+          completedQuantity: {
+            $sum: { $min: ['$completedQuantity', '$totalQuantity'] },
+          },
+        },
+      },
     ]),
   ]);
 
@@ -182,7 +208,12 @@ async function plannedWorkReport(query: ReportQueryInput): Promise<ReportResultD
     total > 0
       ? {
           workNumber: `Нийт ${total}`,
-          progressPercent: Math.round(summary[0]?.progress ?? 0),
+          // Null, not zero, when there is nothing to weigh — no quantity recorded against
+          // any of the matched works. Zero would read as "all of it is untouched".
+          progressPercent:
+            summary[0] && summary[0].totalQuantity > 0
+              ? progressPercentOf(summary[0].totalQuantity, summary[0].completedQuantity)
+              : null,
         }
       : null,
     total,
@@ -255,26 +286,49 @@ async function serviceWorkReport(query: ReportQueryInput): Promise<ReportResultD
 // -- 15.2 Эрсдэл ба үнэлгээ ---------------------------------------------------
 
 async function riskAssessmentReport(query: ReportQueryInput): Promise<ReportResultDto> {
+  /**
+   * THE CUSTOMER FILTER IS PART OF THE QUERY, NOT A PASS OVER THE PAGE.
+   *
+   * It used to be applied to the array `.skip().limit()` had already truncated, while both
+   * the window and `countDocuments` ran unfiltered: a customer-scoped report showed however
+   * many of one arbitrary page happened to belong to them under a footer counting every
+   * customer's assessments, and the pager offered pages that arrived empty. Filtering has
+   * to precede pagination, and the count has to be of the same set the rows come from.
+   *
+   * An assessment references its equipment and not the customer, so the scope is resolved
+   * through the objects first. That is a projection of ObjectIds for one customer's
+   * registry, not a page of assembled rows — the same trade the employee report makes for
+   * its footer — and it is what lets the filter live in the query at all.
+   */
+  const filter: FilterQuery<Record<string, unknown>> = {
+    ...withinRange('assessedAt', query),
+    ...(query.customerId
+      ? {
+          object: {
+            $in: (
+              await ObjectRecord.find({ customer: new Types.ObjectId(query.customerId) })
+                .select('_id')
+                .lean()
+            ).map((object) => object._id),
+          },
+        }
+      : {}),
+  };
+
   const [assessments, total] = await Promise.all([
-    ObjectAssessment.find(withinRange('assessedAt', query))
+    ObjectAssessment.find(filter)
     .populate({ path: 'object', select: 'code name customer' })
     .sort({ assessedAt: -1 })
       .skip(skipFor(query))
       .limit(query.limit)
       .lean(),
-    ObjectAssessment.countDocuments(withinRange('assessedAt', query)),
+    ObjectAssessment.countDocuments(filter),
   ]);
-
-  const filtered = query.customerId
-    ? assessments.filter(
-        (row) => labelOf(row.object, 'customer') === query.customerId,
-      )
-    : assessments;
 
   // The band names an operator configured, not the ones this build shipped with.
   const bands = await getRiskBands();
 
-  const rows: Row[] = filtered.map((assessment) => ({
+  const rows: Row[] = assessments.map((assessment) => ({
     objectCode: labelOf(assessment.object, 'code'),
     objectName: nameOf(assessment.object),
     score: assessment.newScore,
@@ -312,13 +366,47 @@ async function riskAssessmentReport(query: ReportQueryInput): Promise<ReportResu
 
 // -- 15.2 SLA ------------------------------------------------------------------
 
+/**
+ * The four outcomes an SLA row can carry, drawn from the same three buckets
+ * [isSlaBreached] uses so the wording can never contradict the count beside it.
+ *
+ * CANCELLED gets its own word. It is void rather than met or missed, and neither of the
+ * two labels that used to be available said so: before this it read «Зөрчсөн» (breached),
+ * and reading it off `breached` alone would now flip it to «Идэвхтэй» (active) — a
+ * withdrawn call described as live work. Both are wrong in the same way, by forcing a
+ * request with no SLA verdict into a column that only has verdicts.
+ */
+function slaResultLabel(status: ServiceRequestStatus, breached: boolean): string {
+  if (status === 'CANCELLED') return 'Цуцалсан';
+  if (isTerminalServiceRequestStatus(status)) {
+    return breached ? 'Хугацаа хэтэрсэн' : 'Хугацаанд багтсан';
+  }
+  return breached ? 'Зөрчсөн' : 'Идэвхтэй';
+}
+
 async function slaReport(query: ReportQueryInput): Promise<ReportResultDto> {
   const filter: FilterQuery<Record<string, unknown>> = {
     ...withinRange('createdAt', query),
     ...(query.customerId ? { customer: new Types.ObjectId(query.customerId) } : {}),
   };
 
-  const [requests, total] = await Promise.all([
+  const now = new Date();
+
+  /**
+   * THE FOOTER DESCRIBES THE REPORT; THE ROWS ARE A PAGE OF IT.
+   *
+   * «Зөрчсөн» was reduced over `rows`, the `.skip().limit()` window, and then printed beside
+   * a «Нийт» that came from `countDocuments`. Two different sets under one footer: page one
+   * of a 137-row report read «Нийт 137 · Зөрчсөн 25» and page six of the same report read
+   * «Зөрчсөн 0», with nothing about the report having changed. It is now counted the way the
+   * total already was, over everything the filter matches.
+   *
+   * [slaBreachFilter] RETURNS AN `$or`, so it is combined under `$and` rather than spread:
+   * spreading it would leave the report's own `createdAt`/`customer` scope in place but let
+   * the `$or` match requests outside it, and a second `$or` would simply overwrite the
+   * first. `filter` itself never carries an `$and`, so this merge cannot clobber it either.
+   */
+  const [requests, total, breachedCount] = await Promise.all([
     ServiceRequest.find(filter)
     .populate({ path: 'customer', select: 'name' })
     .sort({ slaDueAt: 1 })
@@ -326,34 +414,28 @@ async function slaReport(query: ReportQueryInput): Promise<ReportResultDto> {
       .limit(query.limit)
       .lean(),
     ServiceRequest.countDocuments(filter),
+    ServiceRequest.countDocuments({ ...filter, $and: [slaBreachFilter(now)] }),
   ]);
 
-  const now = new Date();
+  /**
+   * The verdict comes from [isSlaBreached], the same rule the KPI tile and the dashboard
+   * counter run. This row used to decide "settled" from `completedAt` being present, which
+   * left a cancelled request — never stamped, never re-opened — reading as a live call in
+   * permanent breach. Status decides settlement; `completedAt` only supplies the instant.
+   */
   const rows: Row[] = requests.map((request) => {
     const settledAt = request.completedAt;
-    const breached = settledAt
-      ? settledAt > request.slaDueAt
-      : now > request.slaDueAt;
+    const breached = isSlaBreached(request, now);
     return {
       requestNumber: request.requestNumber,
       customer: nameOf(request.customer),
       status: SERVICE_REQUEST_STATUS_LABELS[request.status],
       slaDueAt: isoOrNull(request.slaDueAt),
       completedAt: isoOrNull(settledAt),
-      slaResult: settledAt
-        ? breached
-          ? 'Хугацаа хэтэрсэн'
-          : 'Хугацаанд багтсан'
-        : breached
-          ? 'Зөрчсөн'
-          : 'Идэвхтэй',
+      slaResult: slaResultLabel(request.status, breached),
       extendedMinutes: request.slaExtendedMinutes,
     };
   });
-
-  const breachedCount = rows.filter(
-    (row) => row.slaResult === 'Зөрчсөн' || row.slaResult === 'Хугацаа хэтэрсэн',
-  ).length;
 
   return envelope(
     'SLA',
@@ -393,11 +475,33 @@ async function customerReport(query: ReportQueryInput): Promise<ReportResultDto>
 
   const ids = customers.map((customer) => customer._id);
   const range = withinRange('createdAt', query);
-
-  // Four grouped aggregations rather than four queries per customer, plus one more for
-  // the footer. The four above are scoped to the customers ON THIS PAGE, because that is
-  // what the rows need; the footer describes every customer the filter matches, so it
-  // cannot reuse them.
+  /**
+   * ONE HEADER, TWO HONEST KINDS OF COLUMN.
+   *
+   * Under a header reading «2026-03-01 – 2026-03-31» the request and planned-work columns
+   * counted March while the invoiced and receivable columns were all-time, so a customer
+   * billed for a year showed that year's money beside March's work. The two are not the
+   * same kind of figure and the fix is not to window all four:
+   *
+   * FLOWS ARE WINDOWED, at the query and not by a pass over the results. Requests, works
+   * and `invoicedTotal` all happened during a period and are now all scoped to the one in
+   * the header. Invoices range on `issueDate`, the date the KPI's revenue also ranges on
+   * and the one an invoice is actually dated by — `createdAt` is when the row was written.
+   *
+   * BALANCES ARE AS OF TODAY, and their labels now say so rather than letting the header
+   * speak for them. `receivableTotal` is what is owed now, all-time by definition (4A, and
+   * the same figure `summariseInvoices` and the dashboard publish); `objectCount` and
+   * `criticalCount` are the customer's registry as it stands, since equipment installed in
+   * February has not stopped existing in March. Windowing any of the three would answer a
+   * question nobody asks — "how much was owed to us by invoices we happened to raise in
+   * March" — and would have to be read as a balance anyway.
+   *
+   * Grouped aggregations rather than a query per customer, plus one more for the footer.
+   * Those scoped to `ids` describe the customers ON THIS PAGE, because that is what the
+   * rows need; the footer describes every customer the filter matches, so it cannot reuse
+   * them.
+   */
+  const invoiceRange = withinRange('issueDate', query);
   /**
    * Which bands count as "critical" is configuration, so the level names cannot be
    * literals inside the pipeline: a renamed band would silently stop being counted and
@@ -408,7 +512,8 @@ async function customerReport(query: ReportQueryInput): Promise<ReportResultDto>
     .filter((band) => band.requiresConclusion)
     .map((band) => band.level);
 
-  const [requests, works, invoices, objects, wholeSet] = await Promise.all([
+  const [requests, works, invoiced, receivable, objects, wholeSet, wholeSetReceivable] =
+    await Promise.all([
     ServiceRequest.aggregate<{ _id: Types.ObjectId; count: number }>([
       { $match: { customer: { $in: ids }, ...range } },
       { $group: { _id: '$customer', count: { $sum: 1 } } },
@@ -417,15 +522,15 @@ async function customerReport(query: ReportQueryInput): Promise<ReportResultDto>
       { $match: { customer: { $in: ids }, ...range } },
       { $group: { _id: '$customer', count: { $sum: 1 } } },
     ]),
-    Invoice.aggregate<{ _id: Types.ObjectId; total: number; unpaid: number }>([
-      { $match: { customer: { $in: ids }, status: { $ne: 'CANCELLED' } } },
-      {
-        $group: {
-          _id: '$customer',
-          total: { $sum: '$total' },
-          unpaid: { $sum: { $cond: [{ $eq: ['$status', 'SENT'] }, '$total', 0] } },
-        },
-      },
+    // Billed in the window. A cancelled invoice was never billed for anything.
+    Invoice.aggregate<{ _id: Types.ObjectId; total: number }>([
+      { $match: { customer: { $in: ids }, status: { $ne: 'CANCELLED' }, ...invoiceRange } },
+      { $group: { _id: '$customer', total: { $sum: '$total' } } },
+    ]),
+    // Owed today, whenever it was billed.
+    Invoice.aggregate<{ _id: Types.ObjectId; unpaid: number }>([
+      { $match: { customer: { $in: ids }, status: 'SENT' } },
+      { $group: { _id: '$customer', unpaid: { $sum: '$total' } } },
     ]),
     ObjectRecord.aggregate<{ _id: Types.ObjectId; count: number; critical: number }>([
       { $match: { customer: { $in: ids } } },
@@ -445,31 +550,37 @@ async function customerReport(query: ReportQueryInput): Promise<ReportResultDto>
         },
       },
     ]),
-    Invoice.aggregate<{ total: number; unpaid: number }>([
+    // The same two figures over every customer the filter matches, each keeping its own
+    // window: the footer must read the same way the column above it does.
+    Invoice.aggregate<{ total: number }>([
       {
         $match: {
           ...(query.customerId ? { customer: new Types.ObjectId(query.customerId) } : {}),
           status: { $ne: 'CANCELLED' },
+          ...invoiceRange,
         },
       },
+      { $group: { _id: null, total: { $sum: '$total' } } },
+    ]),
+    Invoice.aggregate<{ unpaid: number }>([
       {
-        $group: {
-          _id: null,
-          total: { $sum: '$total' },
-          unpaid: { $sum: { $cond: [{ $eq: ['$status', 'SENT'] }, '$total', 0] } },
+        $match: {
+          ...(query.customerId ? { customer: new Types.ObjectId(query.customerId) } : {}),
+          status: 'SENT',
         },
       },
+      { $group: { _id: null, unpaid: { $sum: '$total' } } },
     ]),
   ]);
 
   const requestsBy = new Map(requests.map((row) => [String(row._id), row.count]));
   const worksBy = new Map(works.map((row) => [String(row._id), row.count]));
-  const invoicesBy = new Map(invoices.map((row) => [String(row._id), row]));
+  const invoicedBy = new Map(invoiced.map((row) => [String(row._id), row.total]));
+  const receivableBy = new Map(receivable.map((row) => [String(row._id), row.unpaid]));
   const objectsBy = new Map(objects.map((row) => [String(row._id), row]));
 
   const rows: Row[] = customers.map((customer) => {
     const key = String(customer._id);
-    const invoice = invoicesBy.get(key);
     const object = objectsBy.get(key);
     return {
       customer: customer.name,
@@ -477,8 +588,8 @@ async function customerReport(query: ReportQueryInput): Promise<ReportResultDto>
       criticalCount: object?.critical ?? 0,
       requestCount: requestsBy.get(key) ?? 0,
       plannedWorkCount: worksBy.get(key) ?? 0,
-      invoicedTotal: invoice?.total ?? 0,
-      receivableTotal: invoice?.unpaid ?? 0,
+      invoicedTotal: invoicedBy.get(key) ?? 0,
+      receivableTotal: receivableBy.get(key) ?? 0,
     };
   });
 
@@ -487,19 +598,22 @@ async function customerReport(query: ReportQueryInput): Promise<ReportResultDto>
     query,
     [
       { key: 'customer', label: 'Харилцагч', format: 'TEXT' },
-      { key: 'objectCount', label: 'Объект', format: 'NUMBER', align: 'right' },
-      { key: 'criticalCount', label: 'Улаан/хар', format: 'NUMBER', align: 'right' },
+      // The three balance columns carry «одоо»/«нийт» in their own labels: the date header
+      // above them describes the flow columns, and without this a reader would take it to
+      // describe all seven.
+      { key: 'objectCount', label: 'Объект (одоо)', format: 'NUMBER', align: 'right' },
+      { key: 'criticalCount', label: 'Улаан/хар (одоо)', format: 'NUMBER', align: 'right' },
       { key: 'requestCount', label: 'Хүсэлт', format: 'NUMBER', align: 'right' },
       { key: 'plannedWorkCount', label: 'Төлөвлөгөөт ажил', format: 'NUMBER', align: 'right' },
       { key: 'invoicedTotal', label: 'Нэхэмжилсэн', format: 'MONEY', align: 'right' },
-      { key: 'receivableTotal', label: 'Авлага', format: 'MONEY', align: 'right' },
+      { key: 'receivableTotal', label: 'Авлага (нийт үлдэгдэл)', format: 'MONEY', align: 'right' },
     ],
     rows,
     total > 0
       ? {
           customer: `Нийт ${total}`,
           invoicedTotal: wholeSet[0]?.total ?? 0,
-          receivableTotal: wholeSet[0]?.unpaid ?? 0,
+          receivableTotal: wholeSetReceivable[0]?.unpaid ?? 0,
         }
       : null,
     total,
@@ -908,62 +1022,16 @@ function rate(numerator: number, denominator: number): number | null {
   return denominator === 0 ? null : Math.round((numerator / denominator) * 100);
 }
 
-/**
- * «Хийгдсэн» for PLANNED_WORK_COMPLETION_RATE.
- *
- * ARCHIVED belongs here, and leaving it out is what made the KPI fall every time the
- * office got better at closing paperwork. Approving a planned-work report archives the
- * work — `planned-work.report.service.ts` calls `archiveAfterReportApproval`, which
- * refuses anything whose status is not already COMPLETED — so ARCHIVED is reachable only
- * through "finished, reported and approved". It is the most complete state a planned work
- * has, and it was being counted as a shortfall: twelve archived, three awaiting approval,
- * three running and two cancelled printed 15% where the truth is 83%.
- */
-const PLANNED_WORK_DELIVERED_STATUSES: readonly PlannedWorkLifecycleStatus[] = [
-  'COMPLETED',
-  'ARCHIVED',
-];
-
-/**
- * What is NOT in the denominator of PLANNED_WORK_COMPLETION_RATE.
- *
- * The KPI answers «of the work this business committed to delivering in the range, how
- * much did it deliver», so the denominator is work that was actually committed:
- *
- *   - CANCELLED is out. A cancellation is a decision not to do the work, not a failure to
- *     do it. Leaving it in means every cancellation permanently lowers the score and the
- *     only way to raise it again is to stop cancelling work that should be cancelled.
- *   - DRAFT is out. It was never submitted to anybody; it is a scratch pad its author may
- *     delete, and nothing has been promised.
- *   - PENDING_APPROVAL and REJECTED are out for the same reason. Both are submitted but
- *     unapproved, and the label for PLANNED is «Төлөвлөгдсөн» precisely because approval
- *     is the point at which a work becomes planned. Counting a work an approver has not
- *     yet seen — or has sent back — as an unmet commitment charges the delivery crew for
- *     the approver's queue.
- *
- * Everything else stays in: PLANNED, STARTED and PAUSED are outstanding commitments, and
- * COMPLETED and ARCHIVED are met ones. OVERDUE never appears here because it is derived
- * on read and never stored, so an overdue work sits in the denominator under its stored
- * PLANNED/STARTED/PAUSED status, which is correct — it is committed and not yet done.
- *
- * This is written as an exclusion list rather than an inclusion one so that a lifecycle
- * status added later lands in the denominator and is visible, rather than disappearing
- * from both halves of the ratio without a sound.
- */
-const PLANNED_WORK_UNCOMMITTED_STATUSES: readonly PlannedWorkLifecycleStatus[] = [
-  'DRAFT',
-  'PENDING_APPROVAL',
-  'REJECTED',
-  'CANCELLED',
-];
-
 export async function buildKpis(dateFrom: string, dateTo: string): Promise<KpiSummaryDto> {
   const from = new Date(dateFrom);
   const to = new Date(dateTo);
+  // One clock for the whole summary: the breach expression is evaluated against it, so a
+  // request cannot be judged open against one instant and settled against another.
+  const now = new Date();
   const range = { createdAt: { $gte: from, $lte: to } };
   const settings = await getSettings();
 
-  const [completed, plannedWorks, revisits, invoiceTotals] = await Promise.all([
+  const [completed, plannedWorks, revisits, revenueTotals, receivableTotals] = await Promise.all([
     ServiceRequest.aggregate<{
       _id: null;
       completed: number;
@@ -999,30 +1067,10 @@ export async function buildKpis(dateFrom: string, dateTo: string): Promise<KpiSu
               ],
             },
           },
-          breached: {
-            $sum: {
-              $cond: [
-                {
-                  $or: [
-                    {
-                      $and: [
-                        { $ne: ['$completedAt', null] },
-                        { $gt: ['$completedAt', '$slaDueAt'] },
-                      ],
-                    },
-                    {
-                      $and: [
-                        { $eq: ['$completedAt', null] },
-                        { $lt: ['$slaDueAt', new Date()] },
-                      ],
-                    },
-                  ],
-                },
-                1,
-                0,
-              ],
-            },
-          },
+          // "SLA зөрчил" is [isSlaBreached] and nothing else. This used to test
+          // `completedAt == null && slaDueAt < now`, which made every cancelled request a
+          // permanent breach — a cancellation never writes `completedAt`.
+          breached: { $sum: { $cond: [slaBreachExpr(now), 1, 0] } },
         },
       },
     ]),
@@ -1044,27 +1092,43 @@ export async function buildKpis(dateFrom: string, dateTo: string): Promise<KpiSu
       },
     ]),
     ServiceRequest.countDocuments({ ...range, status: 'REVISIT_REQUIRED' }),
-    Invoice.aggregate<{ _id: null; revenue: number; receivable: number }>([
+    Invoice.aggregate<{ _id: null; revenue: number }>([
       /**
        * The published formula is "sent and paid", so a draft is not revenue: it has not
        * left the building and can still be edited or dropped. OVERDUE is not matched here
        * because it is not a stored status — an overdue invoice is a SENT one whose due
        * date has passed, and it is already counted.
+       *
+       * Revenue IS a flow, so this one keeps the window. The receivable below does not.
        */
       { $match: { issueDate: { $gte: from, $lte: to }, status: { $in: INVOICE_REVENUE_STATUSES } } },
-      {
-        $group: {
-          _id: null,
-          revenue: { $sum: '$total' },
-          receivable: { $sum: { $cond: [{ $eq: ['$status', 'SENT'] }, '$total', 0] } },
-        },
-      },
+      { $group: { _id: null, revenue: { $sum: '$total' } } },
+    ]),
+    /**
+     * A RECEIVABLE IS A BALANCE, NOT A FLOW, SO IT IS NOT WINDOWED.
+     *
+     * This shared the revenue pipeline's `$match` and so reported "sent inside this window
+     * and not yet paid" — which is not a figure anybody wants: a customer's year-old unpaid
+     * invoice, the very thing the number exists to surface, disappeared from it the moment
+     * the window moved past its issue date, and the tile fell as debts aged.
+     *
+     * "Outstanding as of the period end" is not implementable and would be worse if it
+     * were: `status` is the invoice's CURRENT state with no history behind it, so pairing
+     * it with `issueDate <= to` yields neither the balance then nor the balance now. The
+     * two other places that publish this figure — `summariseInvoices` and the dashboard's
+     * finance tile — both read every SENT invoice with no date bound at all, and
+     * `KPI_FORMULAS.RECEIVABLE_TOTAL` («Илгээсэн боловч төлөгдөөгүй нэхэмжлэл») names no
+     * period, so the published formula is already the all-time one. This is now the same
+     * number those two reach, as MONTHLY_REVENUE and the dashboard's revenue already are.
+     */
+    Invoice.aggregate<{ _id: null; receivable: number }>([
+      { $match: { status: 'SENT' } },
+      { $group: { _id: null, receivable: { $sum: '$total' } } },
     ]),
   ]);
 
   const requestStats = completed[0];
   const workStats = plannedWorks[0];
-  const money = invoiceTotals[0];
 
   const completedCount = requestStats?.completed ?? 0;
 
@@ -1095,8 +1159,8 @@ export async function buildKpis(dateFrom: string, dateTo: string): Promise<KpiSu
         workStats?.total ?? 0,
       ),
       kpi('REVISIT_COUNT', revisits, null, null),
-      kpi('MONTHLY_REVENUE', money?.revenue ?? 0, null, null),
-      kpi('RECEIVABLE_TOTAL', money?.receivable ?? 0, null, null),
+      kpi('MONTHLY_REVENUE', revenueTotals[0]?.revenue ?? 0, null, null),
+      kpi('RECEIVABLE_TOTAL', receivableTotals[0]?.receivable ?? 0, null, null),
     ],
   };
 }
