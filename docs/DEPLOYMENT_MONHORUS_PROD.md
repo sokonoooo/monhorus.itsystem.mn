@@ -475,6 +475,75 @@ Restore: `mongorestore --archive=... --gzip --drop`, then untar uploads back to
 which supersedes the manual procedure here and adds retention, a disk-space guard and a
 rehearsed restore. Run the ad-hoc commands above only for a one-off dump outside the timer.
 
+### That dump is not a point-in-time snapshot
+
+The command above — and the nightly one, as it runs today — has no `--oplog`. mongod is a
+replica set and the API keeps serving through the 02:30 window, so mongodump reads the
+collections one after another and the archive is a **smear across the dump's duration**,
+not a picture of one instant. A restore of it can hold a row that references a document
+written after that document's own collection had already been read. For a database whose
+audit rows point at other documents, that is a real inconsistency, not a theoretical one.
+
+`--oplog` closes it: mongodump captures every write made *during* the dump, and
+`mongorestore --oplogReplay` applies them afterwards so the restore lands on a single
+instant. **It cannot simply be added to the command above.** Two prerequisites, both
+confirmed against `mongodump`/`mongorestore` 100.14.0 and a MongoDB 8.2 replica set:
+
+| Prerequisite | Why | What you get without it |
+|---|---|---|
+| The dump must cover the **whole instance** | A URI with a database path (`…/monhorus?authSource=…`) is a `--db` dump | `Failed: bad option: --oplog mode only supported on full dumps` |
+| The credential must read `local.oplog.rs` **and** `config.transactions` | `monhorusApp` is `readWrite` on `monhorus` only | `Failed: error getting oplog start: config.transactions.findOne error: (Unauthorized) not authorized on config` |
+
+So `backup-monhorus.sh` **probes for both before it dumps** and does not assume either. If
+the probe passes it dumps the instance with `--oplog` and logs
+`oplog  yes -- full-instance point-in-time dump`. If it fails it takes exactly the dump it
+has always taken and logs `oplog  NO -- <reason>` followed by a warning that the archive is
+not point-in-time. The backup still happens: refusing to dump because a credential lacks a
+role would be the worse of the two failures. What it will not do is stay quiet about it.
+
+`OPLOG=1` in `/etc/monhorus/backup.env` makes the missing capability fatal instead
+(`NO BACKUP WAS TAKEN`); `OPLOG=0` accepts the smear and stops logging the warning.
+
+**To turn point-in-time backups on**, give the backup its own credential — the built-in
+`backup` role is exactly the grant, and it is read-only, so it cannot be used to restore:
+
+```bash
+mongosh --port 27017 -u monhorusAdmin --authenticationDatabase admin --eval '
+  db.getSiblingDB("admin").createUser({
+    user: "monhorusBackup", pwd: "<PASSWORD>",
+    roles: [{ role: "backup", db: "admin" }] })'
+```
+
+Then add the URI to `/etc/monhorus/backup.env` — **with no database in the path**. The
+systemd unit already reads that file and the script prefers it over `backend.env`, so no
+unit edit is needed:
+
+```ini
+MONGODB_URI=mongodb://monhorusBackup:<PASSWORD>@127.0.0.1:27017/?authSource=admin&replicaSet=rs0
+```
+
+Confirm from the journal that the next run says `oplog  yes`, and that the closing line
+reads `db archive: point-in-time (--oplog)`.
+
+**Know what you are turning on before you do.** An `--oplog` archive is a full-instance
+dump, and it changes what a restore of it touches:
+
+- **It contains every database on the host, `admin` included.** `mongorestore` refuses
+  `--oplogReplay` alongside any `--nsExclude` (`cannot use --oplogReplay with excludes
+  specified`), so a real production restore of one **also restores `admin.system.users`**.
+  A mongod password rotated since the backup reverts to the old one, and the backend's
+  `MONGODB_URI` stops authenticating until it is rotated again. There is no way around
+  this in mongorestore; it is a consequence of the format, and it is why section 12's
+  rollback note matters.
+- **The archive is larger**, by `admin` and `config` — a few hundred KB, not a factor.
+- **Restoring one needs a write-capable credential.** The `backup` role is read-only; use
+  `monhorusAdmin` (or a `restore`-role user) for `restore-monhorus.sh`, not the backup user.
+- **Rehearsals cannot replay the oplog at all** — see section 12.
+
+Archives taken before this is switched on carry no oplog, and `restore-monhorus.sh` detects
+that and restores them exactly as it always has. Nothing already in `/var/backups/monhorus`
+becomes unrestorable.
+
 ---
 
 ## 10. Verification
@@ -661,13 +730,31 @@ The argument is a date, a full stamp, `latest`, or a path to either archive; the
 finds the matching pair and refuses to proceed if one half is missing. Without
 `--confirm` it prints what it would destroy and exits 2.
 
+It reads `MONGODB_URI` from `/etc/monhorus/backend.env`, which is the application user.
+That is enough for any archive taken today. **Once section 9's `--oplog` backups are
+switched on it is not** — a full-instance archive writes into `admin` as well, which
+`monhorusApp` cannot do and the read-only `backup` user cannot either. Restore those with
+an administrative credential:
+
+```bash
+sudo MONGODB_URI='mongodb://monhorusAdmin:<PASSWORD>@127.0.0.1:27017/monhorus?authSource=admin&replicaSet=rs0' \
+     /usr/local/sbin/restore-monhorus.sh latest --confirm
+```
+
 What it does, in order: stops `monhorus-api` → takes a `pre-restore-*.archive.gz` of the
 current database → `mongorestore --drop` → extracts the uploads → `chown -R
 monhorus:monhorus` and sets dirs `0750`, files `0640` → starts `monhorus-api`. The service
 is restarted even if the restore fails partway.
 
-Three things to know before you rely on it:
+Four things to know before you rely on it:
 
+- **Whether the restore is point-in-time depends on the archive.** The script asks the
+  archive rather than assuming: it probes with `mongorestore --dryRun --oplogReplay`, which
+  writes nothing, and adds `--oplogReplay` only when an oplog is actually there. An archive
+  taken before section 9's `--oplog` change has none, and passing `--oplogReplay` to one is
+  a hard failure (`no oplog file to replay; make sure you run mongodump with --oplog`) —
+  which is precisely why it is detected rather than assumed. The journal says which you got:
+  `oplog  replaying`, or `oplog  none in this archive -- restoring as-is, NOT point-in-time`.
 - **`--drop` only drops what the archive contains.** A collection created after the
   backup survives the restore. Usually harmless; occasionally the explanation for
   behaviour that makes no sense afterwards.
@@ -700,6 +787,27 @@ sudo /usr/local/sbin/restore-monhorus.sh latest --confirm \
 
 `--db` remaps the namespace, `--uploads-dir` redirects the files and `--no-service` leaves
 the API running. Then check what came back:
+
+**A rehearsal never replays the oplog, and cannot.** `mongorestore` refuses the
+combination outright — `cannot use --oplogReplay with namespace renames specified` — so a
+`--db`-remapped restore reproduces the dump's own smear rather than the point-in-time
+state, whatever the archive holds. The script says so in the journal rather than leaving
+you to infer it. This is a limit on what a rehearsal can prove, not a fault in the
+archive: the un-remapped production restore does replay it.
+
+Two things the script does automatically when rehearsing a full-instance (`--oplog`)
+archive, both of which matter:
+
+- **`admin.*` and `config.*` are excluded from the source.** A full-instance archive
+  carries this host's database users, and a rehearsal that restored them would rewrite the
+  live instance's credentials while claiming to touch nothing. Excluded, it cannot.
+- **The target database name is excluded from the source too.** A full-instance archive
+  taken while a previous `monhorus_rehearsal` was still lying around contains that database
+  as well, and remapping `monhorus.*` onto it collides with its own stale copy —
+  `Failed: cannot restore with conflicting namespace destinations`. This is why the
+  clean-up below is a prerequisite for the *next* rehearsal, not just tidiness. The script
+  now excludes it so a forgotten drop cannot fail the run, but drop it anyway: the disk
+  does not have room for a spare copy of the database either.
 
 ```bash
 mongosh --quiet "mongodb://127.0.0.1:27017/monhorus_rehearsal?replicaSet=rs0" --eval '
@@ -743,3 +851,15 @@ Not verified: the systemd units have never been loaded by a running systemd (the
 written and syntax-checked on macOS). Run the `list-timers` and manual-start checks above
 on the host the first time, and do not assume the timer is armed until `NEXT` shows a
 date.
+
+**This sign-off covers the archive format as it stands today, and only that.** The
+2026-09-07 change in section 9 leaves that format untouched *until someone creates the
+`backup`-role credential* — the probe fails on the current application user, so the nightly
+dump is byte-for-byte the one this rehearsal proved. The day that credential is added the
+archive becomes a full-instance `--oplog` dump, which is a **different shape**: it carries
+`admin.*`, a production restore of it rewrites `admin.system.users`, and it needs a
+write-capable credential to restore. *That* is a change to the schema and the Mongo
+handling of the kind the paragraph above says to re-rehearse after, and this record does
+not cover it. Re-run the rehearsal against the first `--oplog` archive before relying on
+one, and sign it off below. Whether the existing entry stands until then is the operator's
+call, not this document's.

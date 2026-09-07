@@ -290,6 +290,15 @@ sudo -u monhorus tar czf /var/backups/monhorus/uploads-$(date +%F).tar.gz -C /va
 Restore is `mongorestore --archive=... --gzip --drop` and untarring the uploads back to the
 path named by `UPLOAD_DIR`.
 
+**This is the ad-hoc form, and it is not a point-in-time snapshot.** The URI names a
+database, so it is a `--db` dump; mongod is a replica set and the application keeps writing
+while collections are read one after another, which makes the archive a smear across the
+dump rather than a picture of one instant. Adding `--oplog` here does not work —
+`mongodump` answers `--oplog mode only supported on full dumps`, and `monhorusApp` cannot
+read `local.oplog.rs` in any case. The scripted backup handles this properly: see
+**`DEPLOYMENT_MONHORUS_PROD.md` section 9**, which supersedes this snippet, and use
+`scripts/backup-monhorus.sh` rather than the command above for anything scheduled.
+
 ---
 
 ## 5. Backend environment

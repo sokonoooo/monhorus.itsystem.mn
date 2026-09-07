@@ -130,6 +130,36 @@ uri_db_name() {
   esac
 }
 
+# Can this credential take an --oplog safety dump of this instance? Same probe, same
+# prerequisites, as backup-monhorus.sh: a full-instance dump and a credential that can read
+# local.oplog.rs and config.transactions. Prints the reason on failure.
+oplog_probe() {
+  local uri="$1" out
+  command -v mongosh >/dev/null 2>&1 || { printf 'mongosh absent, cannot verify oplog access'; return 1; }
+  out="$(mongosh --quiet "$uri" --eval '
+    try {
+      if (!db.hello().setName) { print("NO:not a replica set member"); quit(0); }
+      db.getSiblingDB("local").getCollection("oplog.rs").find().limit(1).toArray();
+      db.getSiblingDB("config").getCollection("transactions").find().limit(1).toArray();
+      print("YES");
+    } catch (e) { print("NO:" + (e.codeName || e.message)); }' 2>/dev/null || true)"
+  out="$(printf '%s' "$out" | tr -d '\r' | tail -n 1)"
+  case "$out" in
+    YES)  return 0 ;;
+    NO:*) printf '%s' "${out#NO:}"; return 1 ;;
+    *)    printf 'probe returned no answer (mongosh could not connect)'; return 1 ;;
+  esac
+}
+
+# Does this archive carry an oplog? Asked rather than assumed, because every archive taken
+# before the --oplog change does not, and passing --oplogReplay to one of those is a hard
+# failure -- `Failed: no oplog file to replay; make sure you run mongodump with --oplog` --
+# which would make the entire existing retention window unrestorable. --dryRun answers it
+# without writing anything: exit 0 when the oplog is there, exit 1 when it is not.
+archive_has_oplog() {
+  mongorestore --uri="$1" --archive="$2" --gzip --oplogReplay --dryRun --quiet >/dev/null 2>&1
+}
+
 # ---------------------------------------------------------------------------
 # Resolve the archive pair
 # ---------------------------------------------------------------------------
@@ -211,15 +241,76 @@ if [ "$DO_DB" -eq 1 ]; then
   if [ "$PRE_DUMP" -eq 1 ]; then
     mkdir -p -- "$BACKUP_DIR"
     pre="$BACKUP_DIR/pre-restore-$(date +%F-%H%M%S).archive.gz"
-    log "safety dump   $(basename "$pre")  (current state, before anything is dropped)"
-    if ! mongodump --uri="$MONGODB_URI" --archive="$pre" --gzip --quiet; then
+
+    # This dump is the only way back from a mistyped date, so it gets the same treatment
+    # as the nightly one: point-in-time when the credential allows it, and honest in the
+    # log when it does not. Note that on the normal path the API has already been stopped
+    # a few lines above, so nothing is writing and the distinction is largely academic --
+    # it is real for --no-service, which is how rehearsals run.
+    pre_uri="$MONGODB_URI"
+    pre_args=(--archive="$pre" --gzip --quiet)
+    if pre_reason="$(oplog_probe "$(uri_strip_db "$MONGODB_URI")")"; then
+      pre_uri="$(uri_strip_db "$MONGODB_URI")"
+      pre_args+=(--oplog)
+      log "safety dump   $(basename "$pre")  (current state, point-in-time, before anything is dropped)"
+    else
+      log "safety dump   $(basename "$pre")  (current state, before anything is dropped)"
+      log "              not point-in-time: ${pre_reason}"
+    fi
+
+    if ! mongodump --uri="$pre_uri" "${pre_args[@]}"; then
       rm -f -- "$pre"
       die "the pre-restore safety dump failed -- refusing to drop a database we cannot roll back. Pass --no-pre-dump to override."
     fi
   fi
 
   restore_args=(--uri="$base_uri" --archive="$DB_ARCHIVE" --gzip --drop --quiet)
+
+  remap=0
   if [ -n "$TARGET_DB" ] && [ -n "$archive_db" ] && [ "$TARGET_DB" != "$archive_db" ]; then
+    remap=1
+  fi
+
+  # --oplogReplay is what turns an --oplog archive from a smear into a snapshot, but
+  # mongorestore refuses it in two situations, both of which occur here. Verified against
+  # mongorestore 100.14.0:
+  #
+  #   with --nsFrom/--nsTo   Failed: cannot use --oplogReplay with namespace renames specified
+  #   with --nsExclude       Failed: cannot use --oplogReplay with excludes specified
+  #
+  # The first rules it out for the rehearsal in section 12 of the runbook, which restores
+  # into monhorus_rehearsal. The second means a real restore of a full-instance archive
+  # cannot hold admin.* back, so it rewrites this host's database users as a side effect.
+  # Both are stated rather than worked around, because neither has a workaround.
+  if archive_has_oplog "$base_uri" "$DB_ARCHIVE"; then
+    if [ "$remap" -eq 1 ]; then
+      log "oplog         present, NOT replayed -- mongorestore refuses --oplogReplay next to a"
+      log "              namespace rename. This rehearsal reproduces the dump's own smear, not"
+      log "              the point-in-time state; only an un-remapped restore replays it."
+      log "              admin.* and config.* excluded so a rehearsal cannot rewrite the live"
+      log "              host's database users, which a full-instance archive would otherwise do."
+      restore_args+=(--nsExclude='admin.*' --nsExclude='config.*')
+
+      # A full-instance archive carries *every* database on the host, so if a previous
+      # rehearsal left $TARGET_DB behind it is inside this archive too, and remapping
+      # monhorus.* onto it collides with its own stale copy:
+      #     Failed: cannot restore with conflicting namespace destinations
+      # Drop the archive's copy of the target and keep only the remapped source.
+      log "              $TARGET_DB.* excluded from the source: a full-instance archive may"
+      log "              carry a leftover copy of it, which would collide with the remap."
+      restore_args+=(--nsExclude="$TARGET_DB.*")
+    else
+      log "oplog         replaying -- the restore lands on the instant the dump finished"
+      log "NOTE          this is a full-instance archive, and --nsExclude cannot be combined"
+      log "              with --oplogReplay, so admin.system.users is restored along with it."
+      log "              A mongod password rotated since the backup reverts to the old one."
+      restore_args+=(--oplogReplay)
+    fi
+  else
+    log "oplog         none in this archive -- restoring as-is, NOT point-in-time"
+  fi
+
+  if [ "$remap" -eq 1 ]; then
     log "remapping     $archive_db -> $TARGET_DB"
     restore_args+=(--nsFrom="$archive_db.*" --nsTo="$TARGET_DB.*")
   fi
