@@ -167,8 +167,17 @@ limiter off. What is currently unbounded is spraying one password across many ac
 ### 9. No CI
 
 No workflow file anywhere. The suite is 969 tests across 45 files and takes ~4½ minutes —
-cheap to run on every push. Add typecheck, lint, test, and a `sync-indexes --dry-run`
+cheap to run on every push. Add typecheck, test, and a `sync-indexes --dry-run`
 against a throwaway database.
+
+**There is no lint step to add.** `npm run lint` was removed on 2026-09-07: it delegated to
+a turbo task that no workspace implemented, so it reported success having checked nothing.
+No ESLint, Prettier or Biome dependency or config exists in any of the four `package.json`
+files, so putting linting in CI means introducing a linter first — it is not a line in a
+workflow file. Dart is the exception and is already covered: both Flutter apps carry
+`analysis_options.yaml` with `flutter_lints`, but that runs through `flutter analyze`, which
+no npm or turbo task has ever invoked. A CI job wanting Dart analysis must call
+`flutter analyze` in each app directory itself.
 
 ### 10. Deployment is manual
 
