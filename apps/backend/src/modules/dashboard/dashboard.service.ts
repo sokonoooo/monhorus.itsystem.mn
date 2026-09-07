@@ -9,7 +9,6 @@ import {
   SERVICE_REQUEST_STATUS_LABELS,
   SETTING_KEYS,
   aggregateProgress,
-  effectivePlannedWorkStatus,
   slaConfigOf,
   reconcileDashboardLayout,
   type DashboardLayoutDto,
@@ -36,6 +35,7 @@ import type { AuthContext } from '../../common/types/express';
 import { dayBounds, dayBoundsAgo, localDateString, monthStart } from '../../common/utils/day-bounds.util';
 import { monthEnd, monthWindow, windowStart } from '../../common/utils/month-window.util';
 import { env } from '../../config/env';
+import { effectiveStatusOf } from '../planned-work/planned-work.overdue.service';
 import { listCustomWidgets } from './dashboard-insight.service';
 import { DashboardLayout, type IDashboardWidgetPreference } from './dashboard-layout.model';
 import { Employee } from '../employee/employee.model';
@@ -379,7 +379,7 @@ async function plannedWorkBlock(
   let completed = 0;
 
   for (const work of works) {
-    const effective = effectivePlannedWorkStatus(work.status, work.plannedEndDate, now);
+    const effective = effectiveStatusOf(work, now);
     if (effective === 'OVERDUE') overdue += 1;
     else if (effective === 'STARTED') inProgress += 1;
     else if (effective === 'COMPLETED') completed += 1;
@@ -583,7 +583,7 @@ async function todayBlock(
       const assignees = Array.isArray(work.assignedEmployees)
         ? (work.assignedEmployees as unknown as { firstName: string; lastName: string }[])
         : [];
-      const effective = effectivePlannedWorkStatus(work.status, work.plannedEndDate, now);
+      const effective = effectiveStatusOf(work, now);
       items.push({
         id: String(work._id),
         kind: 'PLANNED_WORK',

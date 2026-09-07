@@ -12,7 +12,6 @@ import {
   REPORT_TYPE_LABELS,
   SERVICE_REQUEST_STATUS_LABELS,
   SETTING_KEYS,
-  effectivePlannedWorkStatus,
   type KpiSummaryDto,
   type KpiValueDto,
   type ReportColumnDto,
@@ -30,6 +29,7 @@ import { effectiveInvoiceStatus } from '../invoice/invoice.service';
 import { ObjectAssessment, ObjectRecord } from '../object-master/object-master.models';
 import { Customer } from '../objects/object.models';
 import { PlannedWork } from '../planned-work/planned-work.models';
+import { effectiveStatusOf } from '../planned-work/planned-work.overdue.service';
 import { Report, ReportItem } from '../report-record/report-record.model';
 import { ServiceRequest } from '../service-request/service-request.model';
 import { riskBandLabelOf } from '../settings/risk-band.label';
@@ -151,9 +151,7 @@ async function plannedWorkReport(query: ReportQueryInput): Promise<ReportResultD
     plannedStart: isoOrNull(work.plannedStartDate),
     plannedEnd: isoOrNull(work.plannedEndDate),
     actualEnd: isoOrNull(work.actualEndDate),
-    status: PLANNED_WORK_STATUS_LABELS[
-      effectivePlannedWorkStatus(work.status, work.plannedEndDate, now)
-    ],
+    status: PLANNED_WORK_STATUS_LABELS[effectiveStatusOf(work, now)],
     taskCount: work.taskCount,
     progressPercent: work.progressPercent,
     completedLate: work.completedLate ? 'Тийм' : 'Үгүй',

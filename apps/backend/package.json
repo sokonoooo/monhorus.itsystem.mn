@@ -20,7 +20,8 @@
     "backfill:assessment-judged-by": "tsx src/scripts/backfill-assessment-judged-by.ts",
     "migrate:drop-request-type": "tsx src/scripts/drop-request-type.ts",
     "migrate:risk-bands": "tsx src/scripts/migrate-risk-bands.ts",
-    "migrate:planned-materials": "tsx src/scripts/migrate-planned-materials-to-catalogue.ts"
+    "migrate:planned-materials": "tsx src/scripts/migrate-planned-materials-to-catalogue.ts",
+    "repair:planned-work-overdue-day": "tsx src/scripts/repair-planned-work-overdue-day.ts"
   },
   "dependencies": {
     "@monhorus/shared": "*",
