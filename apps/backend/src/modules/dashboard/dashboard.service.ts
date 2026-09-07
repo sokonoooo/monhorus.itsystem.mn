@@ -11,6 +11,8 @@ import {
   aggregateProgress,
   slaConfigOf,
   reconcileDashboardLayout,
+  PLANNED_WORK_UNCOMMITTED_STATUSES,
+  isDeliveredPlannedWorkStatus,
   type PlannedWorkEffectiveStatus,
   type PlannedWorkLifecycleStatus,
   type DashboardLayoutDto,
@@ -374,62 +376,21 @@ async function monthlyTrendBlock(
 }
 
 /**
- * «Дууссан» for the planned-work tile.
+ * The «Төлөвлөгөөт ажлын гүйцэтгэл» tile.
  *
- * ARCHIVED belongs here. `archiveAfterReportApproval` is reachable only from the report
- * approval flow and refuses anything whose status is not already COMPLETED, so ARCHIVED
- * means "finished, written up and signed off" — the most complete state a planned work
- * reaches, not a hidden one. The block used to exclude it outright, which made «Дууссан»
- * count only work finished but NOT yet approved: approving the report removed the work
- * from the numerator, so a tenant that keeps up with its paperwork watched the tile trend
- * toward zero while the crew was doing everything right.
+ * Numerator and denominator both come from `packages/shared` — see
+ * `PLANNED_WORK_DELIVERED_STATUSES` and `PLANNED_WORK_UNCOMMITTED_STATUSES`, which carry
+ * the reasoning. They are shared rather than restated here because this tile and the
+ * PLANNED_WORK_COMPLETION_RATE KPI in `report.service.ts` are the same question asked on
+ * two screens, under the identical heading, and they were previously free to disagree.
  *
- * Same set as `PLANNED_WORK_DELIVERED_STATUSES` in `report.service.ts`, which is the
- * numerator of PLANNED_WORK_COMPLETION_RATE — the KPI that carries this tile's own label,
- * «Төлөвлөгөөт ажлын гүйцэтгэл». The two are restated rather than shared only because
- * they sit in different modules; they must be changed together, and belong in
- * `packages/shared/src/constants/planned-work.ts` next to the lifecycle vocabulary.
+ * What this replaced: `{ status: { $ne: 'ARCHIVED' } }`, which answered neither half. It
+ * dropped the most complete state there is — approving a report archives the work, so
+ * closing paperwork REMOVED work from «Дууссан» — while counting scratch pads and
+ * cancellations as outstanding commitments in «Нийт». `averageProgress` carried the same
+ * bias from both ends at once: every archived work (genuinely 100%) excluded, every DRAFT
+ * (0%) included.
  */
-const PLANNED_WORK_DELIVERED_STATUSES: readonly PlannedWorkEffectiveStatus[] = [
-  'COMPLETED',
-  'ARCHIVED',
-];
-
-/**
- * What «Нийт» does NOT count — the denominator's exclusion list.
- *
- * The tile answers «of the work this business committed to, how much is done», so the
- * denominator is work actually committed to. `total: works.length` over
- * `{ status: { $ne: 'ARCHIVED' } }` answered neither question: it dropped the most
- * complete state there is and counted scratch pads and cancellations as outstanding.
- *
- *   - CANCELLED is out. A cancellation is a decision not to do the work, not a failure
- *     to do it; leaving it in means every cancellation permanently lowers the tile.
- *   - DRAFT is out. Never submitted to anybody, deletable by its author, nothing promised.
- *   - PENDING_APPROVAL and REJECTED are out. Both are submitted but unapproved, and
- *     approval is the point at which a work becomes «Төлөвлөгдсөн»; charging the delivery
- *     crew for the approver's queue is not a measure of delivery.
- *
- * Everything else stays in: PLANNED, STARTED and PAUSED are outstanding commitments,
- * COMPLETED and ARCHIVED are met ones. OVERDUE never appears because it is derived on
- * read, so an overdue work sits here under its stored PLANNED/STARTED/PAUSED status —
- * committed and not yet done, which is correct.
- *
- * VERBATIM the list `report.service.ts` applies to PLANNED_WORK_COMPLETION_RATE
- * (`PLANNED_WORK_UNCOMMITTED_STATUSES`), deliberately: the tile and the KPI are the same
- * question asked on two screens, and they were previously free to disagree.
- *
- * Written as an EXCLUSION list rather than an inclusion one so a lifecycle status added
- * later lands in the denominator and is visible, rather than vanishing from both halves
- * of the ratio without a sound.
- */
-const PLANNED_WORK_UNCOMMITTED_STATUSES: readonly PlannedWorkLifecycleStatus[] = [
-  'DRAFT',
-  'PENDING_APPROVAL',
-  'REJECTED',
-  'CANCELLED',
-];
-
 async function plannedWorkBlock(
   now: Date,
   scope: FilterQuery<IPlannedWork> | null,
@@ -451,7 +412,7 @@ async function plannedWorkBlock(
     const effective = effectiveStatusOf(work, now);
     if (effective === 'OVERDUE') overdue += 1;
     else if (effective === 'STARTED') inProgress += 1;
-    else if (PLANNED_WORK_DELIVERED_STATUSES.includes(effective)) completed += 1;
+    else if (isDeliveredPlannedWorkStatus(effective)) completed += 1;
   }
 
   /**
