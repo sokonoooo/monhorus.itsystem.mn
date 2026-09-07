@@ -14,6 +14,7 @@ import {
   SETTING_KEYS,
   type KpiSummaryDto,
   type KpiValueDto,
+  type PlannedWorkLifecycleStatus,
   type ReportColumnDto,
   type ReportKey,
   type ReportQueryInput,
@@ -106,7 +107,9 @@ function envelope(
     // A paged reader reaches every row through `totalPages`, so nothing is hidden from
     // them and there is nothing to warn about. The CSV export is the exception: it renders
     // one window and offers no way to ask for the next, so a capped export still says so
-    // rather than passing itself off as the whole report.
+    // rather than passing itself off as the whole report. `reportToCsv` is what acts on
+    // this — it swaps the whole-set footer for `truncationNotice`, so the fact travels
+    // inside the file and not only in a JSON envelope the download never sees.
     truncatedAt: query.format === 'csv' && total > query.limit ? query.limit : null,
   };
 }
@@ -905,6 +908,55 @@ function rate(numerator: number, denominator: number): number | null {
   return denominator === 0 ? null : Math.round((numerator / denominator) * 100);
 }
 
+/**
+ * «Хийгдсэн» for PLANNED_WORK_COMPLETION_RATE.
+ *
+ * ARCHIVED belongs here, and leaving it out is what made the KPI fall every time the
+ * office got better at closing paperwork. Approving a planned-work report archives the
+ * work — `planned-work.report.service.ts` calls `archiveAfterReportApproval`, which
+ * refuses anything whose status is not already COMPLETED — so ARCHIVED is reachable only
+ * through "finished, reported and approved". It is the most complete state a planned work
+ * has, and it was being counted as a shortfall: twelve archived, three awaiting approval,
+ * three running and two cancelled printed 15% where the truth is 83%.
+ */
+const PLANNED_WORK_DELIVERED_STATUSES: readonly PlannedWorkLifecycleStatus[] = [
+  'COMPLETED',
+  'ARCHIVED',
+];
+
+/**
+ * What is NOT in the denominator of PLANNED_WORK_COMPLETION_RATE.
+ *
+ * The KPI answers «of the work this business committed to delivering in the range, how
+ * much did it deliver», so the denominator is work that was actually committed:
+ *
+ *   - CANCELLED is out. A cancellation is a decision not to do the work, not a failure to
+ *     do it. Leaving it in means every cancellation permanently lowers the score and the
+ *     only way to raise it again is to stop cancelling work that should be cancelled.
+ *   - DRAFT is out. It was never submitted to anybody; it is a scratch pad its author may
+ *     delete, and nothing has been promised.
+ *   - PENDING_APPROVAL and REJECTED are out for the same reason. Both are submitted but
+ *     unapproved, and the label for PLANNED is «Төлөвлөгдсөн» precisely because approval
+ *     is the point at which a work becomes planned. Counting a work an approver has not
+ *     yet seen — or has sent back — as an unmet commitment charges the delivery crew for
+ *     the approver's queue.
+ *
+ * Everything else stays in: PLANNED, STARTED and PAUSED are outstanding commitments, and
+ * COMPLETED and ARCHIVED are met ones. OVERDUE never appears here because it is derived
+ * on read and never stored, so an overdue work sits in the denominator under its stored
+ * PLANNED/STARTED/PAUSED status, which is correct — it is committed and not yet done.
+ *
+ * This is written as an exclusion list rather than an inclusion one so that a lifecycle
+ * status added later lands in the denominator and is visible, rather than disappearing
+ * from both halves of the ratio without a sound.
+ */
+const PLANNED_WORK_UNCOMMITTED_STATUSES: readonly PlannedWorkLifecycleStatus[] = [
+  'DRAFT',
+  'PENDING_APPROVAL',
+  'REJECTED',
+  'CANCELLED',
+];
+
 export async function buildKpis(dateFrom: string, dateTo: string): Promise<KpiSummaryDto> {
   const from = new Date(dateFrom);
   const to = new Date(dateTo);
@@ -975,12 +1027,19 @@ export async function buildKpis(dateFrom: string, dateTo: string): Promise<KpiSu
       },
     ]),
     PlannedWork.aggregate<{ _id: null; total: number; completed: number }>([
-      { $match: { plannedStartDate: { $gte: from, $lte: to } } },
+      {
+        $match: {
+          plannedStartDate: { $gte: from, $lte: to },
+          status: { $nin: PLANNED_WORK_UNCOMMITTED_STATUSES },
+        },
+      },
       {
         $group: {
           _id: null,
           total: { $sum: 1 },
-          completed: { $sum: { $cond: [{ $eq: ['$status', 'COMPLETED'] }, 1, 0] } },
+          completed: {
+            $sum: { $cond: [{ $in: ['$status', PLANNED_WORK_DELIVERED_STATUSES] }, 1, 0] },
+          },
         },
       },
     ]),
@@ -1043,11 +1102,30 @@ export async function buildKpis(dateFrom: string, dateTo: string): Promise<KpiSu
 }
 
 /**
+ * The line a truncated export carries in place of its footer.
+ *
+ * Exported so a test names this string rather than keeping a second copy of it that can
+ * drift from the one the file actually carries.
+ */
+export function truncationNotice(exported: number, total: number): string {
+  return `Анхааруулга: энэ файлд тайлангийн нийт ${total} мөрөөс эхний ${exported} мөр багтсан. Нийлбэр мөр татагдаагүй мөрүүдийг бас тоолох тул хасагдсан.`;
+}
+
+/**
  * CSV with a UTF-8 BOM.
  *
  * The BOM is what makes Excel open Cyrillic correctly on a double click instead of
  * mangling it into Latin-1, which is the whole reason CSV is an acceptable answer to the
  * rule 17.20 Excel requirement.
+ *
+ * THE FOOTER IS DROPPED WHEN THE EXPORT WAS CAPPED, and this is the point of `truncatedAt`
+ * reaching here at all. Every builder aggregates `totals` over the WHOLE filtered set —
+ * which is right on a paged screen, where the reader can reach every row — but an export
+ * renders one window and offers no way to ask for the next. A 1,200-row report capped at
+ * 1,000 was therefore downloaded as 1,000 rows under a footer reading «Нийт 1200»: a
+ * financial or SLA document that disagreed with itself, and nothing in it said so, so it
+ * was filed as complete. A file that cannot state a figure it did not export is worth more
+ * than one that carries a total nobody can reconcile against its own rows.
  */
 export function reportToCsv(report: ReportResultDto): string {
   const escape = (value: string | number | null): string => {
@@ -1060,7 +1138,10 @@ export function reportToCsv(report: ReportResultDto): string {
   for (const row of report.rows) {
     lines.push(report.columns.map((column) => escape(row[column.key] ?? null)).join(','));
   }
-  if (report.totals) {
+
+  if (report.truncatedAt !== null) {
+    lines.push(escape(truncationNotice(report.rows.length, report.total)));
+  } else if (report.totals) {
     lines.push(report.columns.map((column) => escape(report.totals?.[column.key] ?? null)).join(','));
   }
 

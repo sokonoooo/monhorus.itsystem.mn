@@ -121,7 +121,21 @@ function KpiCard({ kpi }: { kpi: KpiValueDto }): ReactElement {
  */
 const REPORT_PAGE_SIZE = 25;
 
-/** What an export asks for: one response carrying the whole report, as it always has. */
+/**
+ * What an export asks for: one response, carrying up to this many rows.
+ *
+ * A report longer than this is exported in part, and the reader is told so twice — by the
+ * banner below before they press the button, and by the toast that reports what the file
+ * actually held. The server writes the same fact into the file itself in place of the
+ * whole-set footer, so a partial export cannot be filed as a complete one even once it has
+ * left this screen.
+ *
+ * The cap is self-imposed: `reportQuerySchema` allows five thousand. It is left where it
+ * is deliberately. Raising it does not fix an export that omits rows, it only moves the
+ * row count at which the omission starts, and a five-thousand-row report is a request the
+ * screen's own pager already serves better. This number should change only if somebody
+ * measures the response, not because the schema happens to permit more.
+ */
 const REPORT_EXPORT_LIMIT = 1000;
 
 export function ReportsPage(): ReactElement {
@@ -205,15 +219,38 @@ export function ReportsPage(): ReactElement {
     setSearchParams(next);
   }
 
+  /**
+   * Whether an export under the current filters would leave rows behind.
+   *
+   * `report.total` counts exactly what an export would ask for: `handleExport` sends this
+   * same query with only `page` removed, so the filtered set is identical and its size is
+   * already on screen. This is the truncation signal the page used to look for in
+   * `report.truncatedAt` — a field the server sets only for a `format=csv` request, which
+   * this screen never makes, so it was always null and the old banner never rendered.
+   *
+   * It is shown only to a reader who can export, because it describes a file nobody else
+   * can ask for.
+   */
+  const exportWillBeCapped = canExport && (report?.total ?? 0) > REPORT_EXPORT_LIMIT;
+
   async function handleExport(): Promise<void> {
     setExporting(true);
     try {
-      // Deliberately NOT `query`: an export has no pager, so it carries the whole report
-      // rather than the window the screen happens to be showing. The high limit is the
-      // one this page has always exported with; only the page is dropped.
+      // Deliberately NOT `query`: an export has no pager, so it carries as much of the
+      // report as one response is allowed to hold rather than the window the screen
+      // happens to be showing. Only the page is dropped.
       const { page: _page, ...whole } = query;
+      const total = report?.total ?? 0;
       await reportService.downloadCsv(reportKey, { ...whole, limit: REPORT_EXPORT_LIMIT });
-      notify('CSV файл татагдлаа.', 'success');
+      // A partial file and a complete one used to be announced with the same four words.
+      if (total > REPORT_EXPORT_LIMIT) {
+        notify(
+          `CSV файл татагдлаа. Тайлангийн нийт ${total} мөрөөс эхний ${REPORT_EXPORT_LIMIT} мөр багтсан.`,
+          'info',
+        );
+      } else {
+        notify('CSV файл татагдлаа.', 'success');
+      }
     } catch (caught) {
       notify(caught instanceof ApiError ? caught.message : 'Татаж чадсангүй.', 'error');
     } finally {
@@ -302,10 +339,11 @@ export function ReportsPage(): ReactElement {
 
       <p className="mb-3 text-xs text-slate-500">{REPORT_DESCRIPTIONS[reportKey]}</p>
 
-      {report?.truncatedAt !== null && report?.truncatedAt !== undefined && (
+      {exportWillBeCapped && (
         <div className="mb-3">
           <Alert variant="warning">
-            Мөрийн тоо {report.truncatedAt}-аар хязгаарлагдсан. Огнооны хязгаарыг нарийсгана уу.
+            Excel (CSV) татахад эхний {REPORT_EXPORT_LIMIT} мөр л багтана. Тайлан нийт{' '}
+            {report?.total} мөртэй тул огнооны хязгаарыг нарийсгана уу.
           </Alert>
         </div>
       )}

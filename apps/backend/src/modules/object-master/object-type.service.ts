@@ -14,6 +14,7 @@ import type { AuthContext } from '../../common/types/express';
 import { CREATOR_POPULATE, creatorName } from '../../common/utils/creator.util';
 import type { RequestMeta } from '../../common/utils/request-meta.util';
 import { recordAudit } from '../audit/audit.service';
+import { ServiceRequest } from '../service-request/service-request.model';
 import { deleteStoredFile } from '../storage/storage.service';
 import { StoredFile } from '../storage/stored-file.model';
 import { ObjectRecord, ObjectType, type IObjectType } from './object-master.models';
@@ -353,7 +354,56 @@ export async function updateObjectType(
   return toObjectTypeDto(type, counts.get(String(type._id)) ?? 0);
 }
 
-/** Deletion is refused while any object still uses the type; deactivate instead. */
+/**
+ * Everything that still points at this type, counted and named.
+ *
+ * Shaped after `deleteBlockersOf` in object-master.service.ts, and for the same reason: a
+ * refusal is only actionable if it says WHICH dependant to go and look at. "In use" sends
+ * an administrator to the object register, which for a call-only type is empty.
+ *
+ * THERE ARE TWO INDEPENDENT REFERENCES, not one.
+ *
+ *  - `ObjectRecord.objectType` — the type as a classification of registered equipment.
+ *  - `ServiceRequest.objectType` — the type as the SUBJECT of a call. A `canCreateCall`
+ *    type need never be instantiated as an object at all: a customer raises the call
+ *    against the type, and `callSlaHours` on the type is what sets the deadline. Guarding
+ *    only the first left this one open, and deleting a type out from under a live call is
+ *    not a dangling label — `extendSla` re-reads the type through `equipmentSlaHoursFor`,
+ *    gets null for a type that is gone, and recomputes the window from `slaStartedAt` on
+ *    the GLOBAL default. A 24-hour call handed +120 minutes lands sixteen hours EARLIER
+ *    than it started, instantly breached, with an audit row reading "SLA extended".
+ *
+ * TERMINAL REQUESTS BLOCK TOO — deliberately, and this is the non-obvious half.
+ *
+ * A completed request's SLA looks like history, but it is not read-only history. Nothing
+ * on the `extend-sla` route or in `extendSla` itself tests the status, so the deadline of
+ * a COMPLETED request can still be recomputed, and `evaluateSla` decides WITHIN_SLA versus
+ * LATE by comparing `completedAt` against exactly that stored `slaDueAt`. Deleting the
+ * type is therefore enough to flip a finished job from met to missed on the next
+ * extension. Beyond that, `slaWindowHours` documents a null equipment window as meaning
+ * "raised before types carried hours" — so a delete does not merely drop a label, it
+ * rewrites a completed call's window as historic-and-unknown, which is a claim about the
+ * past that is false. Reporting over past calls resolves the type for its name as well.
+ *
+ * The type's own `isActive` is not consulted: the reference is what blocks, not the
+ * activity. Deactivation is the intended retirement path — it closes the call form via
+ * `assertCallableEquipmentType` while leaving every existing reference intact — but
+ * nothing about being deactivated makes those references safe to break, and before this
+ * guard a deactivated type still deleted freely while live calls named it.
+ */
+async function deleteBlockersOfType(objectTypeId: Types.ObjectId): Promise<string[]> {
+  const blockers: string[] = [];
+
+  const objects = await ObjectRecord.countDocuments({ objectType: objectTypeId });
+  if (objects > 0) blockers.push(`${objects} объект энэ төрлөөр бүртгэгдсэн.`);
+
+  const requests = await ServiceRequest.countDocuments({ objectType: objectTypeId });
+  if (requests > 0) blockers.push(`${requests} үйлчилгээний хүсэлт энэ төрлийг заасан.`);
+
+  return blockers;
+}
+
+/** Deletion is refused while anything still references the type; deactivate instead. */
 export async function deleteObjectType(
   objectTypeId: string,
   actor: AuthContext,
@@ -362,11 +412,11 @@ export async function deleteObjectType(
   const type = await ObjectType.findById(objectTypeId);
   if (!type) throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Тоноглолын төрөл олдсонгүй.');
 
-  const inUse = await ObjectRecord.countDocuments({ objectType: type._id });
-  if (inUse > 0) {
+  const blockers = await deleteBlockersOfType(type._id);
+  if (blockers.length > 0) {
     throw AppError.conflict(
       ERROR_CODES.DUPLICATE_KEY,
-      `Энэ төрлийг ${inUse} объект ашиглаж байгаа тул устгах боломжгүй. Идэвхгүй болгоно уу.`,
+      `Энэ төрлийг ашиглаж байгаа тул устгах боломжгүй. ${blockers.join(' ')} Идэвхгүй болгоно уу.`,
     );
   }
 

@@ -518,10 +518,18 @@ export interface IObjectAssessment {
    * The report finding this row was raised from, when it did not come from the manual
    * assessment screen.
    *
-   * `sourceReportItem` is the idempotency key of the whole history write: `syncItems`
-   * upserts one item per (report, object), so the item's id survives every re-approval and
-   * re-publish of the same report and identifies the finding rather than the attempt to
-   * apply it. Null for a manual assessment, which is an event with no correctable record
+   * `(object, sourceReport, newScore)` is the idempotency key of the whole history write,
+   * enforced by the unique index below. It identifies the FINDING rather than the attempt
+   * to apply it, so re-approving and re-publishing the same report add nothing.
+   *
+   * `sourceReportItem` used to be that key and could not be. `syncItems` upserts one item
+   * per (report, object) but hard-deletes any object the source no longer names, so an
+   * object withdrawn from a planned work and added back came through with a NEW item id
+   * for the same finding — and the guard missed. The pair above is the natural key of the
+   * same row (`ReportItem` declares `{ report, object }` unique) and does not move when the
+   * item is re-minted. The field stays as the provenance link the backfills follow.
+   *
+   * Both are null for a manual assessment, which is an event with no correctable record
    * behind it and so deduplicates against nothing.
    */
   sourceReport: Types.ObjectId | null;
@@ -580,9 +588,40 @@ const objectAssessmentSchema = new Schema<IObjectAssessment>(
 );
 
 objectAssessmentSchema.index({ object: 1, assessedAt: -1 });
+
 /**
- * The lookup behind the idempotency guard, sparse because only report-raised rows carry
- * the key and a manual assessment must not collide with the many other manual ones.
+ * ONE history row per finding — the no-duplicate guarantee for a collection that cannot be
+ * corrected afterwards.
+ *
+ * `appendAssessmentHistory` looks the row up before it writes, but a lookup is
+ * check-then-write and loses the race between two concurrent applies of the same report.
+ * This collection blocks every update and delete hook, so a duplicate that gets in is
+ * permanent: the equipment's Үнэлгээний түүх shows the same finding twice, for good. That
+ * makes it exactly the collection where the rule has to live in the database.
+ *
+ * Keyed on `(object, sourceReport, newScore)` rather than on the report item's id, because
+ * `syncItems` legitimately deletes and re-creates an item when its source stops and starts
+ * naming the object, minting a new id for the same finding. `ReportItem` already declares
+ * `{ report, object }` unique, so this triple names the same thing and survives that.
+ *
+ * Partial, because the key is only meaningful for a report-raised row: a manual assessment
+ * carries no source report, is an event rather than a correctable record, and several of
+ * them reaching the same score on the same equipment are several real findings that must
+ * all be kept. `$type: 'objectId'` rather than `sparse`, so a row storing an explicit null
+ * is excluded too — the field is declared `default: null`, so every manual row has one.
+ *
+ * Production connects with `autoIndex: false`, so shipping this is not enough on its own:
+ * `migrate-assessment-source-report-index.ts` is the deploy step, and it also clears the
+ * duplicates already written before the index can build over them.
+ */
+objectAssessmentSchema.index(
+  { object: 1, sourceReport: 1, newScore: 1 },
+  { unique: true, partialFilterExpression: { sourceReport: { $type: 'objectId' } } },
+);
+
+/**
+ * The legacy lookup, kept behind the natural key above. Sparse because only report-raised
+ * rows carry it and a manual assessment must not collide with the many other manual ones.
  */
 objectAssessmentSchema.index({ sourceReportItem: 1, newScore: 1 }, { sparse: true });
 
