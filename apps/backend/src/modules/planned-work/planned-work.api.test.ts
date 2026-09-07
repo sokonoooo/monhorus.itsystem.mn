@@ -1520,6 +1520,46 @@ describe('overdue behaviour', () => {
     expect(forbidden.status).toBe(403);
   });
 
+  /**
+   * The refusal is an exact-instant comparison against the stored deadline. Framing
+   * OVERDUE on the local day moved no stored date, so this still behaves — a client that
+   * reopens the drawer and submits without touching the field is still refused rather than
+   * writing a no-op schedule-history entry.
+   */
+  it('refuses a reschedule that does not actually change the date', async () => {
+    const workId = await createWork();
+
+    const response = await request(app)
+      .post(`${API}/planned-work/${workId}/reschedule`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ plannedEndDate: '2026-07-31T00:00:00.000Z', reason: 'Хугацаа сунгах' });
+
+    expect(response.status).toBe(400);
+    expect(response.body.message).toContain('өмнөхтэй ижил');
+  });
+
+  /**
+   * The parent's window is compared instant-to-instant against the sub-task's. Both are
+   * still written by the same client under the same convention, so a sub-task that ends on
+   * the parent's last day is inside the window — as it was before the overdue framing
+   * changed.
+   */
+  it('accepts a sub-task ending on the parent work’s last day', async () => {
+    const workId = await createWork();
+
+    const response = await request(app)
+      .post(`${API}/planned-work/${workId}/tasks`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(
+        validTask({
+          plannedStartDate: '2026-07-31T00:00:00.000Z',
+          plannedEndDate: '2026-07-31T00:00:00.000Z',
+        }),
+      );
+
+    expect(response.status).toBe(201);
+  });
+
   it('refuses a reschedule that would strand a sub-task outside the window', async () => {
     const workId = await createWork();
     await addTask(workId, { plannedEndDate: '2026-07-20T00:00:00.000Z' });

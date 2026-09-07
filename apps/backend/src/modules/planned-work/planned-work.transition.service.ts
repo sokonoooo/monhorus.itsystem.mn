@@ -36,6 +36,7 @@ import {
   type IPlannedWork,
 } from './planned-work.models';
 import { assertEmployeesExist } from './planned-work.crew';
+import { deadlineEndOf } from './planned-work.overdue.service';
 import { allTasksComplete, completionBlockersOf } from './planned-work.progress.service';
 import { assertPlannedWorkAssignmentScope } from './planned-work.scope';
 
@@ -392,11 +393,15 @@ export async function transitionPlannedWork(
 
       case 'COMPLETE': {
         update.actualEndDate = now;
-        // Lateness is preserved in reporting history even though the work is finished.
-        const late = now.getTime() > work.plannedEndDate.getTime();
+        // Lateness is preserved in reporting history even though the work is finished, so
+        // it has to be framed on the same local day the OVERDUE state is framed on. Against
+        // the raw stored instant, a work finished at 09:00 on its own due date was recorded
+        // as an hour late, permanently. See `overdueBoundary`.
+        const deadlineEnd = deadlineEndOf(work.plannedEndDate);
+        const late = now.getTime() > deadlineEnd.getTime();
         update.completedLate = late;
         update.delayMinutes = late
-          ? Math.round((now.getTime() - work.plannedEndDate.getTime()) / 60_000)
+          ? Math.round((now.getTime() - deadlineEnd.getTime()) / 60_000)
           : null;
         break;
       }

@@ -65,6 +65,7 @@ import {
   clearOverdueAfterReschedule,
   effectiveStatusOf,
   markOverdueIfNeeded,
+  overdueBoundary,
   reconcileOverdueForWorks,
 } from './planned-work.overdue.service';
 import {
@@ -763,11 +764,13 @@ export async function listPlannedWork(
    */
   if (query.status === 'OVERDUE') {
     filter.status = { $in: ['PLANNED', 'STARTED', 'PAUSED'] };
-    filter.plannedEndDate = { ...(filter.plannedEndDate as object), $lt: now };
+    // Same boundary the DTO's `effectiveStatus` is computed from, so the `?status=OVERDUE`
+    // filter and the badge on each row cannot disagree. See `overdueBoundary`.
+    filter.plannedEndDate = { ...(filter.plannedEndDate as object), $lt: overdueBoundary(now) };
   } else if (query.status) {
     filter.status = query.status;
     if (['PLANNED', 'STARTED', 'PAUSED'].includes(query.status)) {
-      filter.plannedEndDate = { ...(filter.plannedEndDate as object), $gte: now };
+      filter.plannedEndDate = { ...(filter.plannedEndDate as object), $gte: overdueBoundary(now) };
     }
   } else if (!query.includeArchived) {
     // Archived work is history; it is hidden unless explicitly requested.

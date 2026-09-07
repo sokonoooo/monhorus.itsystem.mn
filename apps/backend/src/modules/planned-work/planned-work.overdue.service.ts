@@ -6,6 +6,8 @@ import {
 } from '@monhorus/shared';
 import { type HydratedDocument } from 'mongoose';
 
+import { dayBounds } from '../../common/utils/day-bounds.util';
+import { env } from '../../config/env';
 import { logger } from '../../config/logger';
 import { recordAudit } from '../audit/audit.service';
 import { PlannedWork, type IPlannedWork } from './planned-work.models';
@@ -31,11 +33,63 @@ type Doc<T> = HydratedDocument<T>;
  *      missing just because the job has not run yet.
  */
 
+/**
+ * The instant a deadline must fall strictly before to count as breached: the start of
+ * today in Ulaanbaatar. A work due yesterday or earlier is overdue; one due today is not.
+ *
+ * WHY THE `now` SIDE AND NOT THE STORED SIDE. `plannedEndDate` is a calendar date, not an
+ * instant. Every surface that writes it uses `<input type="date">`, every surface that
+ * reads it back does `iso.slice(0, 10)`, and nothing in the product can express a time of
+ * day for a deadline. The web stamps that date at UTC midnight, which is 08:00 in
+ * Ulaanbaatar — so comparing the raw stored value against a raw `now` called a work due
+ * 10 September overdue at 08:01 on the 10th, with a full working day still to run. It
+ * then persisted `overdueAt`, wrote a one-time breach audit event and fired
+ * `PLANNED_WORK_OVERDUE`.
+ *
+ * Normalising `now` down to the start of the local day, rather than rewriting the stored
+ * instant, is the fix `invoice.service.ts` already applies to `dueDate` — the sibling
+ * field with the sibling bug (see `overdueBoundary` there, reached by the same
+ * expression). It is the better half of the trade for three reasons:
+ *
+ *   1. It is expressible in a Mongo query. `runOverdueReconciliation` filters on
+ *      `plannedEndDate` in the database; `dayBounds(plannedEndDate)` cannot be applied to
+ *      a stored field without an aggregation, but a normalised `now` is just a value.
+ *   2. It repairs every existing row at once. Rewriting stored instants would fix only
+ *      the rows a migration reached, and would leave every future client that stamps a
+ *      date at UTC midnight — the natural thing to do — silently reintroducing the bug.
+ *   3. It keeps one convention for "a calendar date stored as an instant" across the
+ *      codebase instead of two.
+ *
+ * Consequence worth naming: a caller that sends a genuinely precise instant has it
+ * rounded out to the end of that local day. That is deliberate — the field means a day —
+ * and it matches how an invoice due date behaves.
+ */
+export function overdueBoundary(now: Date = new Date()): Date {
+  return dayBounds(now, env.APP_TIMEZONE).start;
+}
+
+/**
+ * The last instant of the deadline day, in Ulaanbaatar.
+ *
+ * The anchor lateness is measured from, so a work completed at 09:00 on its own due date
+ * is not "an hour late". Mirrors `dueEndOf` in `invoice.service.ts`.
+ */
+export function deadlineEndOf(plannedEndDate: Date): Date {
+  return dayBounds(plannedEndDate, env.APP_TIMEZONE).end;
+}
+
+/**
+ * The single funnel for the derived status.
+ *
+ * Every caller goes through here rather than calling `effectivePlannedWorkStatus`
+ * directly, so the boundary is applied by construction instead of by each caller
+ * remembering to normalise `now`.
+ */
 export function effectiveStatusOf(
   work: Pick<IPlannedWork, 'status' | 'plannedEndDate'>,
   now: Date = new Date(),
 ): PlannedWorkEffectiveStatus {
-  return effectivePlannedWorkStatus(work.status, work.plannedEndDate, now);
+  return effectivePlannedWorkStatus(work.status, work.plannedEndDate, overdueBoundary(now));
 }
 
 /**
@@ -55,7 +109,8 @@ export async function markOverdueIfNeeded(
 ): Promise<boolean> {
   if (!isOverdueEligible(work.status)) return false;
   if (work.overdueAt !== null) return false;
-  if (work.plannedEndDate.getTime() >= now.getTime()) return false;
+  // Framed on the local day, not the raw instant. See `overdueBoundary`.
+  if (work.plannedEndDate.getTime() >= overdueBoundary(now).getTime()) return false;
 
   const claimed = await PlannedWork.updateOne(
     { _id: work._id, overdueAt: null },
@@ -97,7 +152,9 @@ export async function clearOverdueAfterReschedule(
   now: Date = new Date(),
 ): Promise<boolean> {
   if (work.overdueAt === null) return false;
-  if (work.plannedEndDate.getTime() < now.getTime()) return false;
+  // Same boundary as `markOverdueIfNeeded`, so a reschedule to today lifts the breach
+  // rather than leaving a work stamped for a deadline that has not actually passed.
+  if (work.plannedEndDate.getTime() < overdueBoundary(now).getTime()) return false;
 
   await PlannedWork.updateOne(
     { _id: work._id },
@@ -132,7 +189,9 @@ export async function runOverdueReconciliation(
 ): Promise<OverdueReconciliationResult> {
   const candidates = await PlannedWork.find({
     status: { $in: OVERDUE_ELIGIBLE_LIFECYCLE_STATUSES },
-    plannedEndDate: { $lt: now },
+    // The normalised boundary is a plain value, so the local-day framing survives being
+    // pushed down into the query and the index still bounds the scan.
+    plannedEndDate: { $lt: overdueBoundary(now) },
     overdueAt: null,
   }).limit(1000);
 
