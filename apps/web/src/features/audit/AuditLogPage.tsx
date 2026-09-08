@@ -17,7 +17,7 @@ import {
 } from '../../components/ui/control-styles';
 import { useTableColumns } from '../../hooks/use-table-columns';
 import { ApiError } from '../../lib/api-client';
-import { BUSINESS_TIME_ZONE } from '../../lib/business-day';
+import { BUSINESS_TIME_ZONE, businessDayEnd, businessDayStart } from '../../lib/business-day';
 import {
   auditService,
   type AuditEntryDto,
@@ -62,8 +62,19 @@ export function AuditLogPage(): ReactElement {
       ...(searchParams.get('entityType') ? { entityType: searchParams.get('entityType')! } : {}),
       ...(searchParams.get('action') ? { action: searchParams.get('action')! } : {}),
       ...(searchParams.get('search') ? { search: searchParams.get('search')! } : {}),
-      ...(searchParams.get('from') ? { from: searchParams.get('from')! } : {}),
-      ...(searchParams.get('to') ? { to: searchParams.get('to')! } : {}),
+      /*
+       * The instants bounding the chosen Ulaanbaatar days.
+       *
+       * The bare `yyyy-mm-dd` an `<input type="date">` holds went through untouched, and the
+       * endpoint reads it with `new Date(...)` — UTC midnight, which is 08:00 here. Each end
+       * therefore fell on the wrong day, and Эхлэх = Дуусах collapsed `$gte` and `$lte` onto a
+       * single instant, so a day full of activity rendered as no activity at all.
+       * `businessDayStart`/`businessDayEnd` mirror the backend's own `dayBounds`, the same way
+       * the reports and inspections screens do, so both ends of the request now mean the day
+       * the reader picked.
+       */
+      ...(searchParams.get('from') ? { from: businessDayStart(searchParams.get('from')!) } : {}),
+      ...(searchParams.get('to') ? { to: businessDayEnd(searchParams.get('to')!) } : {}),
     };
   }, [searchParams]);
 
