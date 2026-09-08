@@ -19,6 +19,7 @@ function makeAccount(overrides: Partial<UserDto> = {}): UserDto {
     email: 'bold@central.mn',
     phone: null,
     role: 'customer',
+    roleIds: [],
     status: 'active',
     customerId: 'c1',
     customerName: 'Central Tower ХХК',
