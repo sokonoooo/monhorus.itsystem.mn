@@ -43,9 +43,21 @@ export interface VocabularyStageDto {
  * range the backend itself is banding scores against rather than a cut point a client would
  * have to re-derive.
  *
- * The four behaviour flags (`requiresConclusion` and friends) are deliberately NOT here.
- * They govern what the API accepts, and the API is where they are enforced; publishing them
- * to every signed-in caller would invite a client to decide a question the server owns.
+ * `requiresConclusion` AND `requiresRecommendation` ARE HERE, and the distinction they draw
+ * is worth stating. They govern what the API accepts, and the API is still where that is
+ * ENFORCED — `recordObjectAssessment` resolves the band itself and is the only thing that
+ * can refuse a write. What they are published FOR is the other half: so a form can ask for
+ * the fields the server is about to demand instead of deriving them from the band's NAME.
+ *
+ * That derivation is what this omission actually produced. `ObjectFormPage` gated its
+ * conditional fields on `level === 'CRITICAL' || level === 'OUT_OF_SERVICE'` — the exact
+ * construction the backend discarded, with a comment saying that written this way the rule
+ * silently means "the two bands that happened to be called that". It asked for nothing at
+ * all in the bands between, so a score there wrote the object and then lost its assessment
+ * to a refusal naming a control the page had never rendered.
+ *
+ * `decommissions` and `notifies` stay behind: they are consequences the server carries out,
+ * not fields a form collects, and nothing on a screen depends on knowing them.
  */
 export interface VocabularyRiskBandDto {
   level: RiskLevel;
@@ -53,6 +65,13 @@ export interface VocabularyRiskBandDto {
   colour: RiskColour;
   min: number;
   max: number;
+  /** A finding in this band must carry a written conclusion and what was done about it. */
+  requiresConclusion: boolean;
+  /**
+   * A finding in this band must carry a recommendation — and, unless it already carries a
+   * conclusion, a repair or a revisit alongside it.
+   */
+  requiresRecommendation: boolean;
 }
 
 export interface VocabularyDto {

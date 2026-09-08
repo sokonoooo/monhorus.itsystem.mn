@@ -7,7 +7,17 @@ import { RiskLegend, RiskSummaryCell, ScoreBar, ScorePercent } from './ObjectBad
 
 /** One resolved band, as `useRiskBands` hands them over. */
 function band(level: RiskLevel, min: number, max: number): RiskBandView {
-  return { level, min, max, label: RISK_LEVEL_LABELS[level], colour: 'green' };
+  return {
+    level,
+    min,
+    max,
+    label: RISK_LEVEL_LABELS[level],
+    colour: 'green',
+    // Nothing these badges draw depends on what a band demands; they are here because a
+    // band without its flags is one no caller may read as "demands nothing".
+    requiresConclusion: false,
+    requiresRecommendation: false,
+  };
 }
 
 describe('ScorePercent', () => {

@@ -1,4 +1,9 @@
-import { DEFAULT_SERVICE_REQUEST_STAGES, PERMISSIONS, SETTING_KEYS } from '@monhorus/shared';
+import {
+  DEFAULT_RISK_BANDS,
+  DEFAULT_SERVICE_REQUEST_STAGES,
+  PERMISSIONS,
+  SETTING_KEYS,
+} from '@monhorus/shared';
 import type { Express } from 'express';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -97,6 +102,65 @@ describe('GET /vocabulary', () => {
     // CANCELLED is the stage that proves `onBoard` carries information rather than being
     // constant: it stays out of the board while remaining findable in a filter.
     expect(stages.find((stage) => stage.key === 'CANCELLED')?.onBoard).toBe(false);
+  });
+
+  /**
+   * WHAT A BAND DEMANDS TRAVELS WITH THE BAND.
+   *
+   * These two flags were withheld, and the cost was `ObjectFormPage` gating section 10.1 on
+   * `level === 'CRITICAL' || level === 'OUT_OF_SERVICE'` — the construction
+   * object-master.service.ts warns against, because it means "the two bands that happened
+   * to be called that". It asked for nothing at all in the bands between, so a score of
+   * 41-80 on a conclusion-generating type wrote the object and then had its assessment
+   * refused over a field the page had never rendered.
+   *
+   * Publishing them moves no enforcement: `recordObjectAssessment` still resolves the band
+   * itself and is still the only thing that can refuse a write. It only lets a form ask the
+   * question the server is about to ask.
+   */
+  it('publishes what each band demands, so a form need not infer it from the name', async () => {
+    const response = await request(app)
+      .get(`${API}/vocabulary`)
+      .set('Authorization', `Bearer ${adminToken}`);
+
+    expect(response.status).toBe(200);
+    const bands = response.body.data.riskBands as {
+      level: string;
+      requiresConclusion: boolean;
+      requiresRecommendation: boolean;
+    }[];
+
+    for (const band of bands) {
+      const configured = DEFAULT_RISK_BANDS.find((entry) => entry.key === band.level);
+      expect(configured).toBeDefined();
+      expect(band.requiresConclusion).toBe(configured!.requiresConclusion);
+      expect(band.requiresRecommendation).toBe(configured!.requiresRecommendation);
+    }
+
+    // The band that proves the flags carry information the name does not: it asks for a
+    // recommendation and a follow-up while asking for no written conclusion, and it is
+    // neither of the two the old client-side rule named.
+    const scheduleRepair = bands.find((band) => band.level === 'SCHEDULE_REPAIR');
+    expect(scheduleRepair?.requiresRecommendation).toBe(true);
+    expect(scheduleRepair?.requiresConclusion).toBe(false);
+  });
+
+  /**
+   * Only the two flags a form needs to collect a field. `decommissions` and `notifies` are
+   * consequences the server carries out — publishing them would invite a client to predict
+   * an action rather than ask for an answer, which is the habit this endpoint is unwinding.
+   */
+  it('withholds the flags that govern consequences rather than fields', async () => {
+    const response = await request(app)
+      .get(`${API}/vocabulary`)
+      .set('Authorization', `Bearer ${adminToken}`);
+
+    const bands = response.body.data.riskBands as Record<string, unknown>[];
+    expect(bands.length).toBeGreaterThan(0);
+    for (const band of bands) {
+      expect(band).not.toHaveProperty('decommissions');
+      expect(band).not.toHaveProperty('notifies');
+    }
   });
 
   /**

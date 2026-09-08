@@ -187,6 +187,15 @@ export function AccessPage(): ReactElement {
     }
   }
 
+  /**
+   * Saves the drawer's selection as the account's whole role set.
+   *
+   * An empty selection is allowed and means what it says — parking a login with no
+   * authority is a real operation, and the backend gates it behind `rbac.manage` and the
+   * last-administrator rule. It is safe to offer only because the drawer is seeded: what
+   * is unticked is what the administrator saw and unticked, never a list that failed to
+   * load.
+   */
   async function handleAssign(): Promise<void> {
     if (!assignTarget) return;
     setAssignBusy(true);
@@ -368,7 +377,12 @@ export function AccessPage(): ReactElement {
                 label: 'Role оноох',
                 onSelect: () => {
                   setAssignTarget(row);
-                  setAssignSelection([]);
+                  // Seeded from the row, not empty. The endpoint REPLACES the set, so an
+                  // empty drawer meant the first save stripped every role the account
+                  // held — grants the administrator was never shown. The ids come off
+                  // the row already on screen, so there is no second request that could
+                  // fail and leave a blank checklist looking like "no roles".
+                  setAssignSelection([...row.roleIds]);
                 },
                 disabled: !canManage,
                 disabledReason: 'Эрх хүрэлцэхгүй',

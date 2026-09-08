@@ -177,8 +177,24 @@ describe('InspectionListPage', () => {
       requestStages: [],
       // Nothing starts at 0, so a score below 30 falls in no band at all.
       riskBands: [
-        { level: 'NORMAL', label: 'Хэвийн', colour: 'green', min: 95, max: 100 },
-        { level: 'OUT_OF_SERVICE', label: 'Ашиглах боломжгүй', colour: 'black', min: 30, max: 94 },
+        {
+          level: 'NORMAL',
+          label: 'Хэвийн',
+          colour: 'green',
+          min: 95,
+          max: 100,
+          requiresConclusion: false,
+          requiresRecommendation: false,
+        },
+        {
+          level: 'OUT_OF_SERVICE',
+          label: 'Ашиглах боломжгүй',
+          colour: 'black',
+          min: 30,
+          max: 94,
+          requiresConclusion: true,
+          requiresRecommendation: true,
+        },
       ],
     });
     vi.spyOn(inspectionService, 'list').mockResolvedValue(makePage([makeInspection()]));

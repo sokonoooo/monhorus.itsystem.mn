@@ -59,12 +59,35 @@ vocabularyRouter.get(
           hidden: stage.hidden,
           onBoard: stage.onBoard,
         })),
+        /*
+         * `requiresConclusion` AND `requiresRecommendation` ARE PART OF THE ANSWER.
+         *
+         * They were withheld on the reasoning that they govern what the API accepts and
+         * the API is where they are enforced. The first half is right and nothing about
+         * enforcement changes: `recordObjectAssessment` still resolves the band itself and
+         * is still the only thing that can refuse a write. The second half was the mistake
+         * — it left every form with a band's demands to GUESS, and the only material to
+         * guess from is the band's name. `ObjectFormPage` guessed
+         * `level === 'CRITICAL' || level === 'OUT_OF_SERVICE'`, which is the exact
+         * construction object-master.service.ts warns against, and was wrong for every
+         * band in between: it asked for none of the fields the server was about to demand,
+         * so the object was written and its assessment refused on a control the page did
+         * not render.
+         *
+         * A band's demands are the band's own property. Publishing them lets a form ask
+         * the right question; it does not let it answer one. `decommissions` and
+         * `notifies` stay behind, because those are consequences the server carries out
+         * rather than fields a form has to collect, and a client with no use for a flag is
+         * a client that will find one.
+         */
         riskBands: bands.map((band) => ({
           level: band.level,
           label: band.labelMn,
           colour: band.colour,
           min: band.min,
           max: band.max,
+          requiresConclusion: band.requiresConclusion,
+          requiresRecommendation: band.requiresRecommendation,
         })),
       });
     } catch (error) {

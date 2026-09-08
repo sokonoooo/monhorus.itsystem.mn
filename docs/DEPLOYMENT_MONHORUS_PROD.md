@@ -634,19 +634,23 @@ section takes ten minutes and does not touch production.
 
 ### Install
 
-Four files, all from `scripts/` in the repository:
+Six files, all from `scripts/` in the repository:
 
 ```bash
 # On the workstation
 scp scripts/backup-monhorus.sh scripts/restore-monhorus.sh \
+    scripts/monhorus-backup-notify.sh \
     scripts/monhorus-backup.service scripts/monhorus-backup.timer \
+    scripts/monhorus-backup-failure.service \
     its@103.87.255.221:/tmp/
 
 # On the host
 sudo install -m 0750 -o root -g root /tmp/backup-monhorus.sh  /usr/local/sbin/
 sudo install -m 0750 -o root -g root /tmp/restore-monhorus.sh /usr/local/sbin/
+sudo install -m 0750 -o root -g root /tmp/monhorus-backup-notify.sh /usr/local/sbin/
 sudo install -m 0644 -o root -g root /tmp/monhorus-backup.service /etc/systemd/system/
 sudo install -m 0644 -o root -g root /tmp/monhorus-backup.timer   /etc/systemd/system/
+sudo install -m 0644 -o root -g root /tmp/monhorus-backup-failure.service /etc/systemd/system/
 sudo mkdir -p /var/backups/monhorus && sudo chmod 0700 /var/backups/monhorus
 
 sudo systemctl daemon-reload
@@ -685,15 +689,49 @@ A good run ends with `ok  db=… uploads=… (N files)` and the unit at
 `systemctl status` shows `failed` and the reason is the last line in the journal. The
 whole reason the script exits non-zero on a half-failure is so this stays true.
 
+### Both archives are integrity-checked before they count
+
+A `verify  gzip -t db-<stamp>.archive.gz` line appears between the dump and the tar. Both
+halves are now checked; only the uploads half used to be.
+
+A byte count is not a check. An archive truncated by a full disk is non-empty, so it was
+renamed to its final name and counted as a good backup until the day it was needed — on a
+disk at 83–88% that is the failure mode, not a hypothetical. `mongodump --archive --gzip`
+writes a single gzip stream, so `gzip -t` walks it end to end and validates the CRC32 and
+length in the trailer. It catches truncation and corruption, behaves identically for
+`--oplog` and non-`--oplog` archives, and needs no server, credential or network, so it
+cannot touch the database and cannot mistake a connection failure for a corrupt archive.
+
+When it fires, the partial is discarded and **the previous archives are untouched**:
+
+```
+ERROR: the database archive failed its integrity check: the gzip stream is truncated or
+corrupt, which is what a full disk produces. The partial has been discarded and NO USABLE
+DUMP WAS TAKEN -- the previous archives are untouched.
+```
+
+`gzip` is checked for at pre-flight, before anything is dumped, so a host that cannot run
+the check aborts cleanly instead of producing an archive nothing can vouch for.
+`VERIFY_DB=0` skips the check and warns on every run; there is no good reason to set it.
+
+> **Do not replace this with `mongorestore --dryRun`.** It is the obvious candidate and it
+> does not work. Measured against mongorestore 100.14.0 and MongoDB 8.2.3, `--dryRun` never
+> reads the archive body: it exits **0** on archives truncated to half their length, in both
+> shapes, reporting `0 document(s) restored successfully`. It would be a check that always
+> passes. (`restore-monhorus.sh` uses `--dryRun` only to ask whether an oplog is *present*,
+> which is answered from the archive prelude — that use is unaffected.)
+
 ### Schedule and retention
 
 | | |
 |---|---|
 | When | daily 02:30 local, plus up to 30 min of random delay |
 | Missed runs | `Persistent=true` — a run missed while the host was down fires on boot |
-| Kept | 14 days, then pruned |
+| Kept | 14 days, then pruned — **but never fewer than the 3 newest runs, whatever their age** |
 | Where | `/var/backups/monhorus`, mode 0700, archives 0600 |
 | Names | `db-<date>-<time>.archive.gz`, `uploads-<date>-<time>.tar.gz` |
+| On failure | `OnFailure=` fires `monhorus-backup-failure.service`, which posts to `ALERT_WEBHOOK_URL` |
+| On success | `HEARTBEAT_URL` is pinged, if set |
 
 `RandomizedDelaySec` is not cosmetic on this box: four other sites and a PostgreSQL share
 the disk, and starting every nightly job on the same minute is how a 1.6 GB host falls
@@ -705,7 +743,10 @@ script cannot revert them:
 ```ini
 BACKUP_DIR=/mnt/offhost/monhorus
 RETENTION_DAYS=21
+KEEP_MIN_RUNS=3
 MIN_FREE_MB=768
+ALERT_WEBHOOK_URL=https://hooks.slack.com/services/T000/B000/xxxx
+HEARTBEAT_URL=https://hc-ping.com/<uuid>
 ```
 
 **14 days is a disk decision, not a policy decision.** The root filesystem runs 83–88%
@@ -714,6 +755,89 @@ full. Before raising retention, measure: `du -sh /var/backups/monhorus` and
 journal — `insufficient disk space … NO BACKUP WAS TAKEN` — which is the one message in
 this system that must never be ignored, because it means the retention window is quietly
 ageing out with nothing replacing it.
+
+### The retention floor, and why the prune still runs first
+
+The prune runs **before** the dump, deliberately: reclaiming expired archives before
+writing a new one is what lets a disk at 88% keep backing itself up. That ordering is
+unchanged.
+
+What changed is that age is no longer the only rule. `KEEP_MIN_RUNS` (default 3) of each
+nightly family survive regardless of age.
+
+Without that floor the prune had a failure mode that emptied the directory. `RETENTION_DAYS`
+is measured from each archive's own date, not from the last success, so once the backup had
+been failing for longer than the window **every** archive on disk was expired and the prune
+deleted all of them — while the timer still reported itself armed. Reproduced against 15
+nightly pairs and a pre-restore dump: **31 files in, 0 files out.** With the floor, the same
+input leaves the 3 newest of each family.
+
+In a healthy week the floor never binds: fourteen runs are on disk, the fifteenth expires,
+thirteen remain, and the space is reclaimed exactly as before. **When it does bind, that is
+itself the alarm** — it cannot happen unless nothing has succeeded in `RETENTION_DAYS` — so
+the run logs it in as many words:
+
+```
+WARNING  every archive in /var/backups/monhorus is past its retention date. The nightly
+         backup has not succeeded in 14 days and nobody acted.
+```
+
+`pre-restore-*.archive.gz` is outside the floor on purpose: it is the rollback for one
+specific manual restore, not a copy of the system's history, and pinning those forever on
+this disk is the worse trade. Setting `KEEP_MIN_RUNS=0` restores the old delete-everything
+behaviour; there is no good reason to.
+
+### Failure notification — what you must configure
+
+**Nothing reaches anyone until `ALERT_WEBHOOK_URL` is set.** Before this existed the whole
+notification design was "a human runs `systemctl status`", which is exactly how a failure
+streak runs for a fortnight unnoticed.
+
+`monhorus-backup.service` names `monhorus-backup-failure.service` in `OnFailure=`. That unit
+runs `monhorus-backup-notify.sh`, which posts the subject line plus the last 25 journal
+lines to `ALERT_WEBHOOK_URL`. A webhook rather than mail because this host has no mail relay
+and none should be assumed — one HTTPS POST reaches Slack, Mattermost, Discord, Telegram,
+ntfy, Gotify or a check-in service.
+
+```ini
+# /etc/monhorus/backup.env
+ALERT_WEBHOOK_URL=https://hooks.slack.com/services/T000/B000/xxxx
+ALERT_WEBHOOK_FORMAT=json      # json (default) posts {"text": "..."}; text posts text/plain
+ALERT_WEBHOOK_JSON_KEY=text    # Discord wants "content"
+ALERT_MAIL_TO=ops@example.com  # optional, and only if a mailer is already installed
+```
+
+Test it without breaking anything — the unit can be started directly:
+
+```bash
+sudo systemctl start monhorus-backup-failure.service
+systemctl status monhorus-backup-failure.service --no-pager
+```
+
+**The notifier cannot fail silently either.** If nothing was delivered — including when
+`ALERT_WEBHOOK_URL` was never set, which counts as not delivered — it does three things:
+exits non-zero so it appears in `systemctl --failed`, logs the reason, and writes
+`ALERT-UNSENT-<stamp>.txt` into `BACKUP_DIR`. The next **successful** backup run prints
+those markers in its own journal:
+
+```
+ALERT UNSENT  ALERT-UNSENT-2026-09-08-023114.txt -- an earlier failure was never notified
+```
+
+Read the marker, fix the webhook, then delete the file.
+
+### The dead-man switch
+
+`OnFailure=` covers runs that fail. It cannot cover runs that **never happen** — a masked
+unit, a disabled timer, a host that stayed off — and that is the shape the 15-day scenario
+actually takes. Only something off this host, noticing the *absence* of a signal, catches it.
+
+Set `HEARTBEAT_URL` to a check-in URL (healthchecks.io, Better Uptime, any cron monitor) and
+the script pings it after a successful run. Configure the monitor's period to a little over
+24 h. A failed ping is logged but does **not** fail the backup — the archives are good, and
+the monitor will alarm at the other end regardless.
+
+This is the only one of the three that detects "the timer was switched off in March".
 
 **Everything is on one disk.** These archives protect against a bad deploy, a wrong
 `deleteMany` and a corrupted collection. They protect against nothing that destroys the

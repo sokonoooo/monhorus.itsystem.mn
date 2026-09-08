@@ -52,6 +52,9 @@ export function toUserDto(user: UserDocument | (IUser & { _id: Types.ObjectId })
     email: user.email,
     phone: user.phone,
     role: user.role,
+    // Read off the document rather than joined: the ids are stored on the user itself, so
+    // a list of a hundred accounts carries their grants without a hundred extra reads.
+    roleIds: user.roles.map((roleId) => String(roleId)),
     status: user.status,
     customerId: customer ? String(populated ? populated._id : customer) : null,
     customerName: populated?.name ?? null,

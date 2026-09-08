@@ -36,6 +36,7 @@ function makeAccount(overrides: Partial<UserDto> = {}): UserDto {
     email: 'dorj@test.mn',
     phone: null,
     role: 'technician',
+    roleIds: [],
     status: 'active',
     customerId: null,
     customerName: null,
@@ -268,6 +269,108 @@ describe('AccessPage', () => {
     const assign = screen.getByRole('menuitem', { name: 'Role оноох' });
     expect(assign).toBeDisabled();
     expect(assign).toHaveAttribute('title', 'Эрх хүрэлцэхгүй');
+  });
+
+  /**
+   * The drawer is a REPLACEMENT, not an addition.
+   *
+   * `POST /rbac/users/:userId/roles` sends `kind: 'EXPLICIT'`, so whatever the drawer
+   * posts becomes the account's entire role set. Opening it with an empty selection
+   * therefore showed every box unticked for a user who held roles, and the first save
+   * stripped them — the admin never saw what they were destroying. It seeds from the
+   * row now, so the boxes on screen are the grants that exist.
+   */
+  it('seeds the role drawer with the roles the account already holds', async () => {
+    vi.spyOn(rbacService, 'roles').mockResolvedValue([
+      makeRole({ id: 'r1', name: 'Санхүү' }),
+      makeRole({ id: 'r2', name: 'Диспетчер' }),
+      makeRole({ id: 'r3', name: 'Удирдлага' }),
+    ]);
+    mockUserPage([makeAccount({ roleIds: ['r1', 'r2'] })]);
+    const user = userEvent.setup();
+
+    renderWithAuth(<AccessPage />, {
+      permissions: [PERMISSIONS.RBAC_VIEW, PERMISSIONS.RBAC_MANAGE],
+      route: '/access?tab=users',
+    });
+
+    await screen.findByText('Дорж Бат');
+    const row = within(screen.getByRole('table')).getAllByRole('row')[1]!;
+    await user.click(within(row).getByRole('button', { name: 'Үйлдэл' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Role оноох' }));
+
+    const drawer = await screen.findByRole('dialog');
+    expect(within(drawer).getByRole('checkbox', { name: /Санхүү/ })).toBeChecked();
+    expect(within(drawer).getByRole('checkbox', { name: /Диспетчер/ })).toBeChecked();
+    expect(within(drawer).getByRole('checkbox', { name: /Удирдлага/ })).not.toBeChecked();
+  });
+
+  /**
+   * Adding one role must add one role. The endpoint replaces the set, so a save that
+   * carried only the newly ticked box was a silent revocation of the other two.
+   */
+  it('sends the existing roles alongside the one just ticked', async () => {
+    vi.spyOn(rbacService, 'roles').mockResolvedValue([
+      makeRole({ id: 'r1', name: 'Санхүү' }),
+      makeRole({ id: 'r2', name: 'Диспетчер' }),
+      makeRole({ id: 'r3', name: 'Удирдлага' }),
+    ]);
+    mockUserPage([makeAccount({ roleIds: ['r1', 'r2'] })]);
+    const assign = vi
+      .spyOn(rbacService, 'assignRoles')
+      .mockResolvedValue({ roleIds: ['r1', 'r2', 'r3'] });
+    const user = userEvent.setup();
+
+    renderWithAuth(<AccessPage />, {
+      permissions: [PERMISSIONS.RBAC_VIEW, PERMISSIONS.RBAC_MANAGE],
+      route: '/access?tab=users',
+    });
+
+    await screen.findByText('Дорж Бат');
+    const row = within(screen.getByRole('table')).getAllByRole('row')[1]!;
+    await user.click(within(row).getByRole('button', { name: 'Үйлдэл' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Role оноох' }));
+
+    const drawer = await screen.findByRole('dialog');
+    await user.click(within(drawer).getByRole('checkbox', { name: /Удирдлага/ }));
+    await user.click(within(drawer).getByRole('button', { name: 'Хадгалах' }));
+
+    await waitFor(() => expect(assign).toHaveBeenCalledTimes(1));
+    const [userId, roleIds] = assign.mock.calls[0]!;
+    expect(userId).toBe('u9');
+    // The set, not the order: the drawer holds the seeded ids first and appends the new one.
+    expect([...roleIds].sort()).toEqual(['r1', 'r2', 'r3']);
+  });
+
+  /**
+   * A grant the drawer could not draw is still a grant.
+   *
+   * The checklist renders the role catalogue; an account may hold a role missing from it
+   * (a stale id, or a catalogue that came back short). Unticking every visible box is a
+   * deliberate strip and is allowed — but it may only strip what the admin was actually
+   * shown, so an unrendered id survives the save.
+   */
+  it('keeps a held role the checklist never rendered', async () => {
+    vi.spyOn(rbacService, 'roles').mockResolvedValue([makeRole({ id: 'r1', name: 'Санхүү' })]);
+    mockUserPage([makeAccount({ roleIds: ['r1', 'r-unlisted'] })]);
+    const assign = vi.spyOn(rbacService, 'assignRoles').mockResolvedValue({ roleIds: [] });
+    const user = userEvent.setup();
+
+    renderWithAuth(<AccessPage />, {
+      permissions: [PERMISSIONS.RBAC_VIEW, PERMISSIONS.RBAC_MANAGE],
+      route: '/access?tab=users',
+    });
+
+    await screen.findByText('Дорж Бат');
+    const row = within(screen.getByRole('table')).getAllByRole('row')[1]!;
+    await user.click(within(row).getByRole('button', { name: 'Үйлдэл' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Role оноох' }));
+
+    const drawer = await screen.findByRole('dialog');
+    await user.click(within(drawer).getByRole('checkbox', { name: /Санхүү/ }));
+    await user.click(within(drawer).getByRole('button', { name: 'Хадгалах' }));
+
+    await waitFor(() => expect(assign).toHaveBeenCalledWith('u9', ['r-unlisted']));
   });
 
   it('suspends a user after the confirmation is accepted', async () => {

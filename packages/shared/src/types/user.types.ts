@@ -7,6 +7,20 @@ export interface UserDto {
   email: string;
   phone: string | null;
   role: UserRole;
+  /**
+   * The dynamic RBAC roles this account holds, as ids.
+   *
+   * Carried on the row because assigning roles is a REPLACEMENT — the endpoint takes the
+   * whole set — so a screen offering that action has to be able to show what is held
+   * before it is asked to send what should be. Without it the role drawer opened with
+   * every box unticked and the first save stripped the account. Free to fill: the ids
+   * live on the user document itself, so no list endpoint pays a join for them.
+   *
+   * Ids only, deliberately: every screen that offers the assignment already loads the
+   * role catalogue to draw the checklist, so a name resolved here would be a second copy
+   * of something the client is holding anyway.
+   */
+  roleIds: string[];
   status: AccountStatus;
   /**
    * The customer organisation this account belongs to.

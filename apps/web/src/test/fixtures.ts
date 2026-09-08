@@ -149,6 +149,10 @@ export function makeVocabulary(
       colour: band.colour,
       min: band.min,
       max: band.max,
+      // What the band DEMANDS travels with it, which is the whole reason a form may read
+      // these rather than infer them from the level's name.
+      requiresConclusion: band.requiresConclusion,
+      requiresRecommendation: band.requiresRecommendation,
     })),
   };
 }

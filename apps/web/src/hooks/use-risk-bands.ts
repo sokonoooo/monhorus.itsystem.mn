@@ -25,9 +25,9 @@ import { vocabularyService, type VocabularyRiskBandDto } from '../services/vocab
  * apps refuse to print thresholds for exactly this reason, and `use-sla-hours.ts` takes the
  * same line.
  *
- * THAT NULL IS LOAD-BEARING, not tidiness: `ObjectFormPage` reads it as "I cannot tell which
- * side of the line this score falls on" and demands a conclusion, a recommendation and the
- * action taken for ANY score rather than guessing. Returning the shipped ladder here would
+ * THAT NULL IS LOAD-BEARING, not tidiness: `ObjectFormPage` reads it as "I cannot tell what
+ * this score's band demands" and asks for every conditional field for ANY score rather than
+ * guessing. Returning the shipped ladder here would
  * silently turn that into "the shipped ladder is in force", and an installation that had
  * re-cut its bands would skip the very fields the backend is about to demand — writing the
  * object and then losing its assessment to a refusal.
@@ -54,6 +54,23 @@ let inflight: Promise<readonly RiskBandView[] | null> | null = null;
 function tiles(bands: readonly VocabularyRiskBandDto[]): boolean {
   if (bands.length === 0) return false;
   if (bands.some((band) => !Number.isInteger(band.min) || !Number.isInteger(band.max))) {
+    return false;
+  }
+  /*
+   * A BAND WITHOUT ITS FLAGS IS NOT A BAND THIS BUILD UNDERSTANDS.
+   *
+   * Only a server older than this bundle can answer without them, and the tempting reading
+   * of a missing boolean — falsy, so nothing is required — is the dangerous one: it would
+   * quietly tell `ObjectFormPage` that the black band demands no conclusion. Unknown is the
+   * honest answer, and the form's answer to unknown is to ask for everything.
+   */
+  if (
+    bands.some(
+      (band) =>
+        typeof band.requiresConclusion !== 'boolean' ||
+        typeof band.requiresRecommendation !== 'boolean',
+    )
+  ) {
     return false;
   }
 
@@ -83,6 +100,8 @@ async function loadBands(): Promise<readonly RiskBandView[] | null> {
         colour: band.colour,
         min: band.min,
         max: band.max,
+        requiresConclusion: band.requiresConclusion,
+        requiresRecommendation: band.requiresRecommendation,
       }));
       return cached;
     })

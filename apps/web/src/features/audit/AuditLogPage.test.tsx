@@ -1,5 +1,5 @@
 import { PERMISSIONS, type PaginatedData } from '@monhorus/shared';
-import { screen, within } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -151,6 +151,72 @@ describe('AuditLogPage', () => {
     expect(
       screen.queryByText(/Цалинтай холбоотой бүртгэлийг харахын тулд/),
     ).not.toBeInTheDocument();
+  });
+
+  /**
+   * THE RANGE IS AN ULAANBAATAR DAY, NOT A UTC ONE.
+   *
+   * `<input type="date">` holds a bare `yyyy-mm-dd`, and this page sent it through
+   * untouched. The backend reads it with `new Date(...)`, which is UTC midnight — 08:00 in
+   * Ulaanbaatar. So `Эхлэх = Дуусах = the same day` collapsed `$gte` and `$lte` onto one
+   * instant and a day full of activity rendered «Шүүлтүүрт тохирох бүртгэл алга»: the screen
+   * stating there was no activity when there was. `businessDayStart`/`businessDayEnd` are
+   * what the reports and inspections screens already use for exactly this.
+   */
+  it('frames a single-day filter on the whole Ulaanbaatar day', async () => {
+    const list = vi.spyOn(auditService, 'list').mockResolvedValue(makePage([]));
+
+    renderWithAuth(<AuditLogPage />, {
+      permissions: [PERMISSIONS.AUDIT_VIEW],
+      route: '/audit?from=2026-09-07&to=2026-09-07',
+    });
+
+    await waitFor(() => expect(list).toHaveBeenCalled());
+    const query = list.mock.calls[0]![0]!;
+    expect(query.from).toBe('2026-09-06T16:00:00.000Z');
+    expect(query.to).toBe('2026-09-07T15:59:59.999Z');
+
+    // A window, not an instant: the two ends of one chosen day must not coincide.
+    expect(query.from).not.toBe(query.to);
+  });
+
+  /**
+   * The two records the old range dropped: the ones nearest each edge of the chosen days.
+   */
+  it('includes records at both edges of the chosen days', async () => {
+    const list = vi.spyOn(auditService, 'list').mockResolvedValue(makePage([]));
+
+    renderWithAuth(<AuditLogPage />, {
+      permissions: [PERMISSIONS.AUDIT_VIEW],
+      route: '/audit?from=2026-09-01&to=2026-09-07',
+    });
+
+    await waitFor(() => expect(list).toHaveBeenCalled());
+    const query = list.mock.calls[0]![0]!;
+
+    // 00:30 on 1 September in Ulaanbaatar, and 23:30 on the 7th.
+    const firstMorning = Date.parse('2026-08-31T16:30:00.000Z');
+    const lastEvening = Date.parse('2026-09-07T15:30:00.000Z');
+
+    expect(Date.parse(query.from!)).toBeLessThanOrEqual(firstMorning);
+    expect(Date.parse(query.to!)).toBeGreaterThanOrEqual(lastEvening);
+
+    // And nothing from the day either side.
+    expect(Date.parse(query.from!)).toBeGreaterThan(Date.parse('2026-08-31T15:30:00.000Z'));
+    expect(Date.parse(query.to!)).toBeLessThan(Date.parse('2026-09-07T16:30:00.000Z'));
+  });
+
+  /** The inputs still hold the calendar date the reader picked, not the instant sent. */
+  it('keeps the date inputs showing the plain calendar dates', async () => {
+    vi.spyOn(auditService, 'list').mockResolvedValue(makePage([]));
+
+    renderWithAuth(<AuditLogPage />, {
+      permissions: [PERMISSIONS.AUDIT_VIEW],
+      route: '/audit?from=2026-09-07&to=2026-09-07',
+    });
+
+    expect(await screen.findByLabelText('Эхлэх')).toHaveValue('2026-09-07');
+    expect(screen.getByLabelText('Дуусах')).toHaveValue('2026-09-07');
   });
 
   it('shows before and after values in the detail drawer', async () => {
