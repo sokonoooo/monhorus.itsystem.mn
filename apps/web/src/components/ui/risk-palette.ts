@@ -9,10 +9,15 @@ import {
 /**
  * One band as a screen needs it: what it is called, what colour it is, and what it covers.
  *
- * The shape `GET /vocabulary` publishes, and deliberately narrower than the shared
- * `RiskBand`. The four behaviour flags — must carry a conclusion, decommissions, notifies —
- * decide what the API ACCEPTS, and the API is the only place that may decide it; a type
- * that carried them here would invite a screen to answer a question the server owns.
+ * The shape `GET /vocabulary` publishes, and still narrower than the shared `RiskBand`:
+ * `decommissions` and `notifies` are consequences the server carries out and no screen has
+ * any use for them.
+ *
+ * The two `requires*` flags are here because a FORM has to ask for the fields the server is
+ * about to demand, and the only alternative on offer was deriving them from the band's name
+ * — which is what `ObjectFormPage` did, and it was wrong for every band between the two it
+ * named. Deciding what the API accepts is still the API's; asking the right question is the
+ * form's, and it cannot do that from a label and a colour.
  */
 export interface RiskBandView {
   readonly level: RiskLevel;
@@ -21,6 +26,13 @@ export interface RiskBandView {
   /** Inclusive score range. Already resolved by the server, never re-derived here. */
   readonly min: number;
   readonly max: number;
+  /** A finding in this band must carry a written conclusion and the action taken. */
+  readonly requiresConclusion: boolean;
+  /**
+   * A finding in this band must carry a recommendation — and, unless it already carries a
+   * conclusion, a repair or a revisit alongside it.
+   */
+  readonly requiresRecommendation: boolean;
 }
 
 /**

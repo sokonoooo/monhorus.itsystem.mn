@@ -77,13 +77,40 @@ describe('risk aggregation across buildings', () => {
  * tested four compiled keys, so a customer whose worst equipment sat in a band the operator
  * had added was told everything was normal.
  */
+/**
+ * What a band demands is no business of a chart, but a `RiskBandView` carries it, and it
+ * carries it precisely so nobody may read a missing flag as "demands nothing".
+ */
+const DEMANDS_NOTHING = { requiresConclusion: false, requiresRecommendation: false } as const;
+
 const RECUT_BANDS: readonly RiskBandView[] = [
-  { level: 'NORMAL', label: 'Асуудалгүй', colour: 'green', min: 86, max: 100 },
-  { level: 'ATTENTION', label: 'Ажиглах', colour: 'yellow', min: 71, max: 85 },
-  { level: 'BAND_6', label: 'Хяналтад авах', colour: 'blue', min: 56, max: 70 },
-  { level: 'SCHEDULE_REPAIR', label: 'Засварын хуваарьт', colour: 'orange', min: 41, max: 55 },
-  { level: 'CRITICAL', label: 'Аюултай', colour: 'red', min: 21, max: 40 },
-  { level: 'OUT_OF_SERVICE', label: 'Зогсоосон', colour: 'black', min: 0, max: 20 },
+  { level: 'NORMAL', label: 'Асуудалгүй', colour: 'green', min: 86, max: 100, ...DEMANDS_NOTHING },
+  { level: 'ATTENTION', label: 'Ажиглах', colour: 'yellow', min: 71, max: 85, ...DEMANDS_NOTHING },
+  {
+    level: 'BAND_6',
+    label: 'Хяналтад авах',
+    colour: 'blue',
+    min: 56,
+    max: 70,
+    ...DEMANDS_NOTHING,
+  },
+  {
+    level: 'SCHEDULE_REPAIR',
+    label: 'Засварын хуваарьт',
+    colour: 'orange',
+    min: 41,
+    max: 55,
+    ...DEMANDS_NOTHING,
+  },
+  { level: 'CRITICAL', label: 'Аюултай', colour: 'red', min: 21, max: 40, ...DEMANDS_NOTHING },
+  {
+    level: 'OUT_OF_SERVICE',
+    label: 'Зогсоосон',
+    colour: 'black',
+    min: 0,
+    max: 20,
+    ...DEMANDS_NOTHING,
+  },
 ];
 
 describe('the headline sentence', () => {

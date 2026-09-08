@@ -7,6 +7,7 @@ import {
   updateObjectSchema,
   validateAttributeValues,
   type CustomerDto,
+  type DispatchCandidateDto,
   type FloorDto,
   type ObjectCategory,
   type ObjectListItemDto,
@@ -28,6 +29,7 @@ import { ApiError } from '../../../lib/api-client';
 import { objectService } from '../../../services/object.service';
 import { objectMasterService, objectTypeService } from '../../../services/object-master.service';
 import { projectService } from '../../../services/project.service';
+import { dispatchService } from '../../../services/service-request.service';
 import { Field, SelectInput, TextInput } from '../../employees/FormControls';
 import {
   ObjectAttributeFields,
@@ -167,6 +169,33 @@ export function ObjectFormPage(): ReactElement {
   // score lands in the red or black band. It was missing entirely, so every red score
   // created the object and then lost the assessment.
   const [initialActionTaken, setInitialActionTaken] = useState('');
+  /**
+   * THE FOLLOW-UP. Section 10.1's other demand, and the one this form could not answer.
+   *
+   * `recordAssessment` refuses any band that asks for a recommendation without also asking
+   * for a written conclusion unless one of these two is set — in the shipped ladder every
+   * score from 41 to 80. Neither control existed here and neither field was sent, so on a
+   * conclusion-generating type such a score wrote the object and then lost its assessment to
+   * a refusal naming a field the page could not render, leaving the panel below as the end
+   * of the road. `AssessmentDrawer` and the employee app both carry the pair; this is the
+   * same pair, asked in the same way, so the two entry points cannot disagree about what an
+   * assessment consists of.
+   *
+   * ASKED FOR EVERY SCORE rather than for a band this file names. Which bands demand a
+   * follow-up is the band's own property (`requiresRecommendation && !requiresConclusion`),
+   * and those flags are deliberately not published to clients — see `vocabulary.service.ts`.
+   * A form that guessed would be guessing by band NAME, which is the mistake the backend
+   * comment at `object-master.service.ts` exists to warn against. Offering the pair to every
+   * score states nothing about where any threshold lies and leaves the answer to the server.
+   */
+  const [initialRepairRequired, setInitialRepairRequired] = useState(false);
+  const [initialRevisitRequired, setInitialRevisitRequired] = useState(false);
+  // Section 9.3: a revisit carries a date and an owner, and the shared schema refuses it
+  // without both — so both are asked here rather than failing after the object is written.
+  const [initialRevisitDate, setInitialRevisitDate] = useState('');
+  const [initialRevisitOwnerEmployeeId, setInitialRevisitOwnerEmployeeId] = useState('');
+  /** Who a revisit can be assigned to. Fetched only once one is actually asked for. */
+  const [revisitCandidates, setRevisitCandidates] = useState<DispatchCandidateDto[]>([]);
   // Every assessment needs photographic evidence, this one included. The object does not
   // exist yet, so the file is held here and uploaded on save.
   const [initialPhoto, setInitialPhoto] = useState<File | null>(null);
@@ -444,6 +473,28 @@ export function ObjectFormPage(): ReactElement {
   }, [customerId]);
 
   /**
+   * The people a revisit can be handed to, fetched only once one has been asked for.
+   *
+   * Registering equipment is the common case and it needs no employee list at all, so the
+   * call is deferred to the tick of the box rather than made on every mount. A failure
+   * leaves the select empty; the save still refuses without an owner, which is the same
+   * answer the backend gives.
+   */
+  useEffect(() => {
+    if (!initialRevisitRequired) return undefined;
+    let cancelled = false;
+    dispatchService
+      .employeeCandidates({})
+      .then((candidates) => {
+        if (!cancelled) setRevisitCandidates(candidates);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [initialRevisitRequired]);
+
+  /**
    * A code proposed for a device being registered into a panel.
    *
    * Asked of the backend, never guessed here: codes are unique per customer and this page
@@ -522,20 +573,72 @@ export function ObjectFormPage(): ReactElement {
   const scoreTyped = Number.isFinite(parsedScore);
   const initialRiskLevel =
     scoreTyped && bands !== null ? riskLevelForScore(parsedScore, bands) : null;
-  // Section 10.1: the red and black bands require a conclusion, a recommendation and the
-  // action taken. Nothing here decides where those bands start.
-  const redOrBlack = initialRiskLevel === 'CRITICAL' || initialRiskLevel === 'OUT_OF_SERVICE';
+  /** That band as the ladder describes it, flags and all. */
+  const initialBand =
+    initialRiskLevel !== null
+      ? (bands?.find((band) => band.level === initialRiskLevel) ?? null)
+      : null;
   /**
-   * Whether the three section 10.1 findings are demanded before anything is written.
+   * Whether this form can tell what the typed score's band demands.
    *
-   * `bands === null` means the thresholds could not be read, so this form cannot tell
-   * which side of the line a typed score falls on. It asks for all three rather than
-   * guess: the object and the assessment are two calls, and skipping the check would let
-   * the second one fail after the object is already on record with its score thrown away.
-   * The form still states no threshold — it only asks for more.
+   * TWO WAYS TO NOT KNOW, answered identically. `bands === null` is the configuration
+   * failing to read at all. A score whose band is absent from the ladder that did read is
+   * the same ignorance arriving differently — a level this build has never seen — and
+   * treating it as "demands nothing" would be the silent version of the bug this whole
+   * change exists to remove.
+   *
+   * The answer to not knowing is to ask for everything. The object and the assessment are
+   * two calls, and a check skipped here lets the second one fail after the first has
+   * already put the object on record with its score thrown away. The form still states no
+   * threshold and names no band — it only asks for more.
    */
-  const bandsUnknown = bands === null;
-  const requiresFindings = bandsUnknown ? scoreTyped : redOrBlack;
+  const bandsUnknown = bands === null || (scoreTyped && initialBand === null);
+  /**
+   * Section 10.1, transcribed from the band's own flags.
+   *
+   * THIS IS THE SAME RULE `recordObjectAssessment` APPLIES, in the same terms:
+   * `requiresConclusion` asks for a conclusion and the action taken; `requiresRecommendation`
+   * asks for a recommendation, and — only where no conclusion is already demanded, since a
+   * band demanding both would make the conclusion redundant — for a repair or a revisit.
+   *
+   * It used to read `level === 'CRITICAL' || level === 'OUT_OF_SERVICE'`, which meant "the
+   * two bands that happened to be called that" and so asked for nothing whatsoever in the
+   * bands between them — the bands that in the shipped ladder demand a recommendation and a
+   * follow-up. Nothing here names a band, a key, a threshold or a position in the ladder;
+   * rename or re-cut the ladder in Тохиргоо and the question this form asks moves with it.
+   */
+  const requiresConclusion = bandsUnknown ? scoreTyped : (initialBand?.requiresConclusion ?? false);
+  const requiresRecommendation = bandsUnknown
+    ? scoreTyped
+    : (initialBand?.requiresRecommendation ?? false);
+  const requiresFollowUp = bandsUnknown
+    ? scoreTyped
+    : (initialBand?.requiresRecommendation ?? false) && !initialBand?.requiresConclusion;
+  /** Whether the band demands anything at all beyond the score and its photograph. */
+  const requiresFindings = requiresConclusion || requiresRecommendation || requiresFollowUp;
+
+  /**
+   * What the band is asking for, named as the band names itself.
+   *
+   * Assembled from the flags rather than written per band, so a ladder with a shape nobody
+   * has shipped yet still explains itself. Empty when the band demands nothing, which is
+   * what keeps the healthy band silent.
+   */
+  const bandDemands = [
+    ...(requiresConclusion ? ['дүгнэлт', 'авах арга хэмжээ'] : []),
+    ...(requiresRecommendation ? ['зөвлөмж'] : []),
+    ...(requiresFollowUp ? ['засвар эсвэл давтан үзлэг'] : []),
+  ];
+  /**
+   * How a refusal names the reason.
+   *
+   * The band's own label, which is the wording the backend refuses in — so the message the
+   * form shows before the write and the message the server would have shown after it read
+   * the same, and neither is a band name compiled into this file.
+   */
+  const because = bandsUnknown
+    ? 'Үнэлгээний түвшин тодорхойгүй тул'
+    : `«${initialBand?.label ?? ''}» түвшинд`;
 
   /**
    * Whether the chosen category's attribute fields already carry anything.
@@ -687,16 +790,21 @@ export function ObjectFormPage(): ReactElement {
      * whose score was thrown away.
      */
     if (wantsAssessment && requiresFindings) {
-      const because = bandsUnknown ? 'Үнэлгээний түвшин тодорхойгүй тул' : 'Улаан/хар төлөвт';
       const missing: Record<string, string> = {};
-      if (!initialConclusion.trim()) {
+      if (requiresConclusion && !initialConclusion.trim()) {
         missing['assessment.conclusion'] = `${because} дүгнэлт заавал.`;
       }
-      if (!initialRecommendation.trim()) {
+      if (requiresRecommendation && !initialRecommendation.trim()) {
         missing['assessment.recommendation'] = `${because} зөвлөмж заавал.`;
       }
-      if (!initialActionTaken.trim()) {
+      if (requiresConclusion && !initialActionTaken.trim()) {
         missing['assessment.actionTaken'] = `${because} авах арга хэмжээ заавал.`;
+      }
+      // The follow-up the band asks for instead of a written conclusion. Reported against
+      // the revisit box because that is the control the backend names in its own refusal;
+      // ticking either one answers it.
+      if (requiresFollowUp && !initialRepairRequired && !initialRevisitRequired) {
+        missing['assessment.revisitRequired'] = `${because} засвар эсвэл давтан үзлэг заавал.`;
       }
       if (Object.keys(missing).length > 0) {
         setFieldErrors(missing);
@@ -739,6 +847,12 @@ export function ObjectFormPage(): ReactElement {
           conclusion: initialConclusion.trim() || null,
           recommendation: initialRecommendation.trim() || null,
           actionTaken: initialActionTaken.trim() || null,
+          // Sent on every assessment, ticked or not: the band decides what it demands, and
+          // a field the form withholds is one the server can only read as "not required".
+          repairRequired: initialRepairRequired,
+          revisitRequired: initialRevisitRequired,
+          revisitDate: initialRevisitDate ? `${initialRevisitDate}T00:00:00.000Z` : null,
+          revisitOwnerEmployeeId: initialRevisitOwnerEmployeeId || null,
           photoIds: [photoId],
         });
         if (!assessment.success) {
@@ -822,6 +936,10 @@ export function ObjectFormPage(): ReactElement {
           setInitialConclusion('');
           setInitialRecommendation('');
           setInitialActionTaken('');
+          setInitialRepairRequired(false);
+          setInitialRevisitRequired(false);
+          setInitialRevisitDate('');
+          setInitialRevisitOwnerEmployeeId('');
           setInitialPhoto(null);
         }
       }
@@ -1293,7 +1411,7 @@ export function ObjectFormPage(): ReactElement {
               </Field>
               <Field
                 label="Дүгнэлт"
-                required={requiresFindings}
+                required={requiresConclusion}
                 error={fieldErrors['assessment.conclusion']}
               >
                 <TextInput
@@ -1304,7 +1422,7 @@ export function ObjectFormPage(): ReactElement {
               </Field>
               <Field
                 label="Зөвлөмж"
-                required={requiresFindings}
+                required={requiresRecommendation}
                 error={fieldErrors['assessment.recommendation']}
               >
                 <TextInput
@@ -1314,21 +1432,15 @@ export function ObjectFormPage(): ReactElement {
                 />
               </Field>
               {/*
-                Section 10.1 asks for the action taken alongside the conclusion and the
-                recommendation once the score is red or black. It is always available, and
-                only required in those bands, which is the same rule the backend applies.
+                Section 10.1 asks for the action taken alongside the conclusion, so the two
+                are demanded by the same flag. Always available, required only where the
+                band says so — the same rule, off the same flag, that the backend applies.
               */}
               <Field
                 label="Авах арга хэмжээ"
-                required={requiresFindings}
+                required={requiresConclusion}
                 error={fieldErrors['assessment.actionTaken']}
-                hint={
-                  redOrBlack
-                    ? 'Улаан/хар төлөвт заавал'
-                    : requiresFindings
-                      ? 'Заавал'
-                      : 'Газар дээр нь хийсэн ажил'
-                }
+                hint={requiresConclusion ? 'Заавал' : 'Газар дээр нь хийсэн ажил'}
               >
                 <TextInput
                   value={initialActionTaken}
@@ -1338,20 +1450,93 @@ export function ObjectFormPage(): ReactElement {
               </Field>
             </div>
 
-            {redOrBlack && (
+            {/*
+              The follow-up, offered for every score.
+
+              A band that asks for a recommendation without asking for a written conclusion
+              is refused unless one of these two is set, and which bands those are is the
+              band's own property — not something this file may infer from a name. Both are
+              therefore always available and neither is ever pre-ticked: the technician says
+              what the equipment needs, and the server holds the rule.
+            */}
+            <div className="mt-3 space-y-2">
+              <label className="flex items-center gap-2 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={initialRepairRequired}
+                  onChange={(event) => setInitialRepairRequired(event.target.checked)}
+                  disabled={submitting}
+                  className="h-4 w-4 rounded border-slate-300"
+                />
+                Засвар шаардлагатай
+              </label>
+              {fieldErrors['assessment.repairRequired'] && (
+                <p className="text-xs text-red-600">{fieldErrors['assessment.repairRequired']}</p>
+              )}
+
+              <label className="flex items-center gap-2 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={initialRevisitRequired}
+                  onChange={(event) => setInitialRevisitRequired(event.target.checked)}
+                  disabled={submitting}
+                  className="h-4 w-4 rounded border-slate-300"
+                />
+                Дахин үзлэг шаардлагатай
+              </label>
+              {fieldErrors['assessment.revisitRequired'] && (
+                <p className="text-xs text-red-600">{fieldErrors['assessment.revisitRequired']}</p>
+              )}
+
+              {initialRevisitRequired && (
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <Field
+                    label="Дахин очих огноо"
+                    required
+                    error={fieldErrors['assessment.revisitDate']}
+                  >
+                    <TextInput
+                      type="date"
+                      value={initialRevisitDate}
+                      onChange={setInitialRevisitDate}
+                      disabled={submitting}
+                    />
+                  </Field>
+                  <Field
+                    label="Хариуцагч"
+                    required
+                    error={fieldErrors['assessment.revisitOwnerEmployeeId']}
+                  >
+                    <SelectInput
+                      value={initialRevisitOwnerEmployeeId}
+                      onChange={setInitialRevisitOwnerEmployeeId}
+                      placeholder="Ажилтан сонгох"
+                      options={revisitCandidates.map((employee) => ({
+                        value: employee.id,
+                        label: `${employee.lastName} ${employee.firstName}`,
+                      }))}
+                      disabled={submitting}
+                    />
+                  </Field>
+                </div>
+              )}
+            </div>
+
+            {/* The band, and what it asks for, both in its own words. No threshold is
+                printed: which scores land here is the ladder's business, not this form's. */}
+            {!bandsUnknown && bandDemands.length > 0 && (
               <p className="mt-2 text-xs text-amber-700">
-                Оруулсан оноо улаан/хар түвшинд байна: дүгнэлт, зөвлөмж, авах арга хэмжээ
-                гурвуулаа заавал.
+                Оруулсан оноо «{initialBand?.label}» түвшинд байна: {bandDemands.join(', ')}{' '}
+                заавал.
               </p>
             )}
 
-            {/* No threshold is stated here — none is known. The form only says why it is
-                asking for all three. */}
+            {/* No threshold is stated here either — none is known. The form only says why
+                it is asking for everything. */}
             {bandsUnknown && scoreTyped && (
               <p className="mt-2 text-xs text-amber-700">
                 Үнэлгээний түвшний тохиргоог уншиж чадсангүй. Аль түвшинд байгааг
-                тодорхойлох боломжгүй тул дүгнэлт, зөвлөмж, авах арга хэмжээ гурвуулаа
-                заавал.
+                тодорхойлох боломжгүй тул {bandDemands.join(', ')} бүгд заавал.
               </p>
             )}
 
