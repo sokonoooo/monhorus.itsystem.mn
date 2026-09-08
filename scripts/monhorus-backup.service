@@ -6,6 +6,18 @@ Documentation=file:///srv/clients/monhorus/docs/DEPLOYMENT_MONHORUS_PROD.md
 Requires=mongod.service
 After=mongod.service local-fs.target
 
+# The failed state above is necessary but was never sufficient: nothing read it. Until
+# this line the entire notification design was "a human runs systemctl status", so a
+# failure streak could run for a fortnight with the timer still reporting itself armed.
+# OnFailure= fires the notifier on every failed run, which is also why Persistent=true in
+# the timer is right rather than harmful -- a nightly re-fire of a broken backup now
+# produces a nightly alert instead of nightly silence.
+#
+# This covers runs that FAIL. It cannot cover runs that never happen -- a masked unit, a
+# disabled timer, a host that stayed off. Set HEARTBEAT_URL in /etc/monhorus/backup.env
+# for that: the script pings it on success and an external monitor alarms on its absence.
+OnFailure=monhorus-backup-failure.service
+
 [Service]
 Type=oneshot
 User=root
@@ -40,19 +52,28 @@ CPUSchedulingPolicy=idle
 # A dump that hangs must not still be holding the disk when tomorrow's timer fires.
 TimeoutStartSec=3600
 
-# Writes only to the backup destination and reads only what it dumps. ProtectSystem is
-# deliberately not 'strict': BACKUP_DIR is operator-configurable and may be a mount that
-# strict mode would hide.
+# Writes only to the backup destination and reads only what it dumps.
 #
-# Two of these have teeth if the setup changes:
+# ProtectSystem=full is 'full' and not 'strict' deliberately: full makes /usr, /boot and
+# /etc read-only, which is everything this unit has no business writing, while leaving
+# /var, /srv and /mnt writable. strict would make the ENTIRE filesystem read-only, and
+# BACKUP_DIR is operator-configurable -- /var/backups/monhorus by default, an NFS or
+# sshfs mount when the destination is moved off-host -- so strict would break every
+# documented destination. (This comment described that choice for several rounds while no
+# ProtectSystem= directive existed at all; the directive is the half that was missing.)
+#
+# Three of these have teeth if the setup changes:
 #   PrivateTmp    is safe only while MONGODB_URI is a TCP address (127.0.0.1:27017, as it
 #                 is here). Point it at a unix socket under /tmp and the dump cannot see it.
 #   ProtectHome   makes /home and /root invisible. A BACKUP_DIR under either will fail
 #                 with a confusing "No such file or directory" -- drop this line if you
 #                 move the destination there.
+#   ProtectSystem a BACKUP_DIR under /usr or /etc would fail the same way. Nothing sane
+#                 puts it there, but that is the shape of the failure if something does.
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
+ProtectSystem=full
 ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true

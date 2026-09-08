@@ -1,0 +1,42 @@
+[Unit]
+Description=Notify that the Monhorus backup failed
+Documentation=file:///srv/clients/monhorus/docs/DEPLOYMENT_MONHORUS_PROD.md
+
+# Reached only via OnFailure= in monhorus-backup.service. It deliberately has no
+# OnFailure= of its own: a notifier that alerts about its own failure to alert is a loop.
+# Its failure is made visible the other two ways instead -- a non-zero exit puts this unit
+# in failed state for `systemctl --failed`, and the script leaves an ALERT-UNSENT-*.txt
+# marker in BACKUP_DIR that the next successful backup run prints in its journal.
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+
+# The same file the backup unit reads, so ALERT_WEBHOOK_URL lives in one place:
+#   ALERT_WEBHOOK_URL=https://hooks.slack.com/services/...
+#   ALERT_WEBHOOK_FORMAT=json
+# The leading '-' means the unit still runs when the file is absent -- and the script
+# treats an unconfigured webhook as an undelivered alert, not as nothing to do.
+EnvironmentFile=-/etc/monhorus/backup.env
+
+ExecStart=/usr/local/sbin/monhorus-backup-notify.sh monhorus-backup.service
+
+# curl is allowed --max-time 30 with 3 retries and a 5s delay; this bounds the unit above
+# the worst case so a hanging endpoint fails the notifier rather than hanging it.
+TimeoutStartSec=180
+
+# This one is not nice'd. It is a handful of HTTP bytes, it only runs when something has
+# already gone wrong, and it is the run that most needs to finish.
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=monhorus-backup-alert
