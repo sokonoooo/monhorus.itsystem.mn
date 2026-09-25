@@ -12,7 +12,12 @@ set -euo pipefail
 
 APK_DIR="${APK_DIR:-/srv/clients/monhorus/apk}"
 TZ_NAME="${TZ_NAME:-Asia/Ulaanbaatar}"
-BASE_URL="${BASE_URL:-https://monhorus.itsystem.mn}"
+BASE_URL="${BASE_URL:-https://www.agata.mn}"
+# The hostname the APKs actually dial, shown to the reader. Kept beside BASE_URL so a domain
+# move updates both at once -- this page telling users the old address is how a working
+# server still reads as broken.
+API_HOST="${API_HOST:-www.agata.mn}"
+LEGACY_HOST="${LEGACY_HOST:-monhorus.itsystem.mn}"
 
 cd "$APK_DIR"
 
@@ -117,8 +122,9 @@ cat > index.html.new <<HTML
   </div>
 
   <p class="note">
-    Апп нь <code>monhorus.itsystem.mn</code> сервертэй HTTPS-ээр холбогдоно.<br>
-    Вэб хувилбар: <a href="${BASE_URL}">monhorus.itsystem.mn</a>
+    Апп нь <code>${API_HOST}</code> сервертэй HTTPS-ээр холбогдоно.<br>
+    Вэб хувилбар: <a href="${BASE_URL}">${API_HOST}</a><br>
+    Хуучин хаяг <code>${LEGACY_HOST}</code> ажилласаар байна.
   </p>
 </main>
 </body>
