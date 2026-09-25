@@ -21,7 +21,9 @@
     "migrate:drop-request-type": "tsx src/scripts/drop-request-type.ts",
     "migrate:risk-bands": "tsx src/scripts/migrate-risk-bands.ts",
     "migrate:planned-materials": "tsx src/scripts/migrate-planned-materials-to-catalogue.ts",
-    "repair:planned-work-overdue-day": "tsx src/scripts/repair-planned-work-overdue-day.ts"
+    "repair:planned-work-overdue-day": "tsx src/scripts/repair-planned-work-overdue-day.ts",
+    "migrate:assessment-source-report-index": "tsx src/scripts/migrate-assessment-source-report-index.ts",
+    "migrate:invoice-agreement-index": "tsx src/scripts/migrate-invoice-agreement-index.ts"
   },
   "dependencies": {
     "@monhorus/shared": "*",

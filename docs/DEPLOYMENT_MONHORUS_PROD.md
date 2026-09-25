@@ -13,8 +13,9 @@ bootstrap script does — read `DEPLOYMENT_UBUNTU.md` first. This file does not 
 
 | Concern | Value |
 |---|---|
-| Web admin + API | **`https://monhorus.itsystem.mn`** |
-| Android APK download | **`https://monhorus.itsystem.mn/apk/`** |
+| Web admin + API | **`https://www.agata.mn`** |
+| Android APK download | **`https://www.agata.mn/apk/`** |
+| Previous name (kept, API only) | `https://monhorus.itsystem.mn` |
 | Legacy web + API (kept) | `http://103.87.255.221:3020` |
 | Legacy APK download (kept) | `http://103.87.255.221:3021` |
 | Backend process | `127.0.0.1:4000`, systemd unit `monhorus-api` |
@@ -28,6 +29,21 @@ bootstrap script does — read `DEPLOYMENT_UBUNTU.md` first. This file does not 
 **TLS is live as of 2026-08-13.** The `monhorus.itsystem.mn` A record was repointed from
 `103.87.255.199` to this host, certbot issued a certificate (expires 2026-11-11, renewal
 timer installed), and `:80` now 301s to `:443`. Section 7 records the migration.
+
+**The primary name moved to `www.agata.mn` on 2026-09-04, and the apex on 2026-09-07.**
+One certificate (`/etc/letsencrypt/live/www.agata.mn/`, expires 2026-12-06) covers
+`www.agata.mn`, `api.agata.mn` and the apex `agata.mn`, in a vhost of its own so the older
+certificate is untouched. All three serve the same web root and proxy to the same backend;
+`api.agata.mn` is **not** an API-only host, it serves the SPA as well.
+
+**On the two older names, only the browser paths redirect.** `agata.mn` and
+`monhorus.itsystem.mn` answer `/` with `308 https://www.agata.mn$request_uri`, while
+`/api/v1/`, `/health` and `/apk/` on them still proxy to `127.0.0.1:4000` untouched.
+Redirecting `/api` would break every handset that already has the old name compiled in:
+both apps use `dio` with `validateStatus: status < 500`, so a 3xx arrives as a success they
+then fail to parse, and Dart's `HttpClient` does not resend a POST body across a redirect.
+**After any nginx change, `POST https://monhorus.itsystem.mn/api/v1/auth/login` must answer
+400/401 and never a 3xx.** That one call is the regression test.
 
 **The IP-and-port sites are deliberately still running.** Every APK installed on a handset
 before 2026-08-13 has `http://103.87.255.221:3020/api/v1` compiled into it and would lose
@@ -130,9 +146,14 @@ machine and the feature is silently useless — the send succeeds, the log looks
 only the recipient ever sees the broken link.
 
 ```ini
-APP_WEB_BASE_URL=https://monhorus.itsystem.mn
+APP_WEB_BASE_URL=https://www.agata.mn
 PASSWORD_RESET_TTL_MINUTES=60
 ```
+
+This one does not get a redirect to save it. The old name would 308 a browser to the new
+one, so a stale value here still *works* — which is exactly why it is easy to leave behind
+and hard to notice. Move it whenever the canonical name moves, and restart; it was changed
+on the server on 2026-09-07.
 
 ### Mail degrades instead of failing
 
@@ -163,8 +184,14 @@ dependencies are required; on this host they are not.
 
 Available: `bootstrap-head-admin`, `converge-system-role-permissions`,
 `backfill-user-roles`, `backfill-report-assessment-history`, `backfill-assessment-judged-by`,
-`rename-task-conclusion-to-note`, `migrate-reports`, **`sync-indexes`**.
+`rename-task-conclusion-to-note`, `migrate-reports`, **`sync-indexes`**,
+**`migrate-assessment-source-report-index`**, **`migrate-invoice-agreement-index`**.
 Never `seed-dev-data`.
+
+The last two are index migrations that arrived with the 2026-09-25 release and are part of
+section 6's ordered deploy step, not optional extras. Read why there before running either:
+**one of them must run before `sync-indexes`, or `sync-indexes` fails and the next boot
+refuses to start.**
 
 ---
 
@@ -214,7 +241,7 @@ neighbour). So build on a workstation and ship artefacts.
 
 **Do not pass `VITE_API_BASE_URL` on the command line.** `apps/web/.env.production` is
 committed for exactly this reason and already carries
-`https://monhorus.itsystem.mn/api/v1`; a value given on the command line silently
+`https://www.agata.mn/api/v1`; a value given on the command line silently
 overrides it, and because the origin is compiled in there is no runtime configuration to
 correct the bundle afterwards. Until 2026-09-04 this section told you to override it with
 `http://103.87.255.221:3020/api/v1` and then `grep` the bundle for that same string — a
@@ -227,11 +254,14 @@ the retired plain-HTTP host. If a build genuinely needs a different origin, edit
 npm ci
 npm run build            # apps/web/.env.production supplies VITE_API_BASE_URL
 
-# Verify before shipping: the bundle must carry the TLS origin, and must carry neither
-# localhost nor the retired plain-HTTP origin
-grep -ro "monhorus.itsystem.mn/api/v1" apps/web/dist/assets/ | head -1   # must match
-grep -ro "localhost:4000"              apps/web/dist/assets/ | head -1   # must be empty
-grep -ro "103.87.255.221:3020"         apps/web/dist/assets/ | head -1   # must be empty
+# Verify before shipping: the bundle must carry the current origin, and must carry none of
+# the three it has been wrong with before -- localhost, the retired plain-HTTP host, and now
+# the previous domain. Move these lines whenever .env.production moves, together: a grep
+# left naming the old origin is a check that passes precisely when the build is wrong.
+grep -ro "www.agata.mn/api/v1"  apps/web/dist/assets/ | head -1   # must match
+grep -ro "localhost:4000"       apps/web/dist/assets/ | head -1   # must be empty
+grep -ro "103.87.255.221:3020"  apps/web/dist/assets/ | head -1   # must be empty
+grep -ro "monhorus.itsystem.mn" apps/web/dist/assets/ | head -1   # must be empty
 
 tar czf monhorus.tar.gz --exclude=node_modules --exclude=.git --exclude='*.pdf' \
   --exclude=apps/mobile --exclude=apps/mobile-employee \
@@ -245,10 +275,14 @@ tar xzf monhorus.tar.gz -C /srv/clients/monhorus
 cd /srv/clients/monhorus && npm ci --omit=dev
 sudo chmod -R a+rX /srv/clients/monhorus/apps/web/dist
 
-# 1. What the migrations WOULD do, against the new build. Both are dry by default and
-#    write nothing. Read the output; that is the point of the step.
+# 1. What the migrations WOULD do, against the new build. All are dry by default and write
+#    nothing. Read the output; that is the point of the step. Read the first one's in
+#    particular: it is the only migration in this repository that DELETES rows, and its dry
+#    run lists every id and assessedAt it would remove.
 sudo bash -c 'set -a; . /etc/monhorus/backend.env; set +a
 cd /srv/clients/monhorus/apps/backend
+runuser -p -u monhorus -- node dist/scripts/migrate-assessment-source-report-index.js --dry-run
+runuser -p -u monhorus -- node dist/scripts/migrate-invoice-agreement-index.js --dry-run
 runuser -p -u monhorus -- node dist/scripts/sync-indexes.js --dry-run
 runuser -p -u monhorus -- node dist/scripts/converge-system-role-permissions.js'
 
@@ -258,8 +292,24 @@ runuser -p -u monhorus -- node dist/scripts/converge-system-role-permissions.js'
 #    or permissions": that judgement cannot be made reliably from a tarball, and only one
 #    half of it ever had a signal. On a release that changed neither, this is two no-ops.
 #    `--apply` grants missing defaults only; it never revokes without `--revoke-extra`.
+#
+#    THE ORDER IS NOT ARBITRARY. migrate-assessment-source-report-index goes first because
+#    ObjectAssessment already holds duplicate rows -- written by the bug that migration
+#    fixes -- and the partial-unique index the schema now declares cannot build over them.
+#    sync-indexes would try, fail on the first duplicate it meets, leave the index absent,
+#    and hand you a driver error instead of a list of what has to go. The boot in step 4
+#    then finds a declared UNIQUE index missing and EXITS, so running sync-indexes in the
+#    wrong order is an outage and not a warning. The dedupe script removes the replays and
+#    builds the index itself, after which sync-indexes has nothing left to do.
+#
+#    migrate-invoice-agreement-index re-keys the invoice uniqueness index onto the
+#    agreement. Safe by construction -- the new key is strictly finer, so anything the old
+#    index accepted satisfies it too -- but between the drop and the create nothing enforces
+#    the rule, so do not run it while a monthly invoice generation is in flight.
 sudo bash -c 'set -a; . /etc/monhorus/backend.env; set +a
 cd /srv/clients/monhorus/apps/backend
+runuser -p -u monhorus -- node dist/scripts/migrate-assessment-source-report-index.js --apply
+runuser -p -u monhorus -- node dist/scripts/migrate-invoice-agreement-index.js --apply
 runuser -p -u monhorus -- node dist/scripts/sync-indexes.js
 runuser -p -u monhorus -- node dist/scripts/converge-system-role-permissions.js --apply'
 
@@ -318,7 +368,11 @@ sudo certbot --nginx -d monhorus.itsystem.mn        # needs :80 reachable for HT
 All four follow-on steps were completed together — doing fewer half-migrates the system:
 
 1. `CORS_ORIGINS=https://monhorus.itsystem.mn,http://103.87.255.221:3020`. Both, not one:
-   the second keeps already-installed APKs working. Restart after editing.
+   the second keeps already-installed APKs working. Restart after editing. **The 2026-09-04
+   move appended the agata names to this same list rather than replacing it** — every origin
+   any installed build might send stays on it, so the list only ever grows. Adding a
+   hostname to nginx and forgetting it here is a browser-only failure, which is why it
+   reads as "the API is down" from the web and fine from a phone.
 2. Web bundle rebuilt against `https://monhorus.itsystem.mn/api/v1`. That value moved
    into the committed `apps/web/.env.production` at the same time, which is why section 6
    no longer sets it on the command line.
@@ -329,8 +383,13 @@ All four follow-on steps were completed together — doing fewer half-migrates t
    modules inherit from the Flutter SDK rather than pinning, so it can move on an SDK
    upgrade without anyone choosing to move it.
 
-**iOS is no longer blocked by transport security.** Nothing else about an iOS build has
-been attempted — no signing identity, no provisioning profile, no App Store account.
+**iOS is no longer blocked by transport security.** As of 2026-09-25 both apps also carry
+an `ios/ExportOptions.plist` for an `app-store-connect` export under Apple team
+`5FL7VAQZCX`, with manual signing against the profiles `Monhorus Employee AppStore` and
+`Monhorus Customer AppStore`, and both are versioned `1.0.0+3`. On iOS they are named
+**Agata** and **Agata Employee**; the bundle identifiers did not change, and neither did
+the Android labels. Archiving and uploading still need a Mac — nothing has been built or
+submitted from this repository's CI or from the Windows workstation.
 
 ### Renewal
 
@@ -345,17 +404,19 @@ shift it onto the wrong block.
 
 ## 8. The Android apps
 
-Rebuilt and republished **2026-08-13** against the TLS origin. Downloadable from
-`https://monhorus.itsystem.mn/apk/` (and still from `http://103.87.255.221:3021`).
+Rebuilt and republished **2026-09-04** against `https://www.agata.mn`. Downloadable from
+`https://www.agata.mn/apk/`, and still from `https://monhorus.itsystem.mn/apk/` and
+`http://103.87.255.221:3021` — all three serve the same two files from the same directory.
 
 | | Employee | Customer |
 |---|---|---|
 | File | `monhorus-employee.apk` | `monhorus-customer.apk` |
 | applicationId | `mn.itsystem.monhorusEmployee` | `mn.itsystem.monhorus` |
-| Label | Monhorus Employee | Monhorus Mobile |
+| Label (Android) | Monhorus Employee | Monhorus Mobile |
+| Display name (iOS) | Agata Employee | Agata |
 | Size | 55.0 MB | 53.5 MB |
 | minSdk / target | 24 (Android 7.0) / 36 | 24 / 36 |
-| API origin | `https://monhorus.itsystem.mn/api/v1` | same |
+| API origin | `https://www.agata.mn/api/v1` | same |
 
 `applicationId` is the identity Android and Firebase match on, and is what
 `adb uninstall` takes. It is **not** the Gradle `namespace`, which both modules keep at
@@ -391,8 +452,27 @@ workstation at `C:\dev` (Flutter 3.44.8 / Dart 3.12.2, Temurin JDK 17, Android S
 
 ```bash
 cd apps/mobile-employee     # and again in apps/mobile
-flutter build apk --release --dart-define=API_BASE_URL=https://monhorus.itsystem.mn/api/v1
+flutter build apk --release --dart-define=API_BASE_URL=https://www.agata.mn/api/v1
 ```
+
+**`--dart-define` is not optional, and its absence is silent.** `API_BASE_URL` is the only
+`String.fromEnvironment` in either app, so that one flag is the whole configuration, and
+the value is used verbatim -- it must include `/api/v1`. Without it `AppConfig.apiBaseUrl`
+falls back to `http://10.0.2.2:4000/api/v1`, the Android emulator's alias for whichever
+machine ran the build. The APK still compiles, signs, installs and opens; it simply can
+never sign in, and the server sees zero requests, which is indistinguishable from a quiet
+day. This shipped undetected twice, on 2026-08-20 and 2026-08-21, and took both apps down
+until somebody thought to look. So gate the publish on the compiled string rather than on
+the build succeeding -- unzip the APK and check `lib/arm64-v8a/libapp.so`, on the file
+**downloaded back from the site** and not only on the local artefact:
+
+```bash
+LC_ALL=C grep -acoF 'https://www.agata.mn/api/v1' libapp.so   # must be >= 1
+LC_ALL=C grep -acoF 'http://10.0.2.2:4000'        libapp.so   # must be 0
+```
+
+A correct build tree-shakes the emulator constant away entirely, so `production>=1,
+emulator=0` is the signature of a good APK.
 
 **The origin must be the `https://` one.** Both apps deny cleartext outright in
 `network_security_config.xml` (below), and iOS App Transport Security exempts only RFC1918
@@ -558,9 +638,17 @@ front the same backend, so a path that answers on `:3020` and 404s over TLS mean
 # /health answers for its dependencies now: 200 only when Mongo is connected AND answered
 # a command just then, 503 with a Mongolian reason otherwise. Read the body, not just the
 # code -- data.database carries state, ping, pingMs, replicaSet and isPrimary.
-curl -s -w '\n%{http_code}\n' https://monhorus.itsystem.mn/health   # 200 + "status":"ok"
-curl -s -o /dev/null -w '%{http_code}\n' https://monhorus.itsystem.mn/any/deep/route  # 200 = SPA fallback
-curl -s -o /dev/null -w '%{http_code}\n' https://monhorus.itsystem.mn/apk/            # 200 = APK page
+curl -s -w '\n%{http_code}\n' https://www.agata.mn/health   # 200 + "status":"ok"
+curl -s -o /dev/null -w '%{http_code}\n' https://www.agata.mn/any/deep/route  # 200 = SPA fallback
+curl -s -o /dev/null -w '%{http_code}\n' https://www.agata.mn/apk/            # 200 = APK page
+
+# The previous name must still answer for the handsets that carry it. Its browser root
+# redirects; its API and APK paths must not.
+curl -s -w '\n%{http_code}\n' https://monhorus.itsystem.mn/health            # 200
+curl -s -o /dev/null -w '%{http_code}\n' https://monhorus.itsystem.mn/apk/    # 200
+curl -s -o /dev/null -w '%{http_code}\n' https://monhorus.itsystem.mn/        # 308 = redirect live
+curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'Content-Type: application/json' \
+  -d '{}' https://monhorus.itsystem.mn/api/v1/auth/login                      # 400, NEVER 3xx
 
 curl -s http://103.87.255.221:3020/health                    # timezone echo proves env loaded
 curl -s -o /dev/null -w '%{http_code}\n' http://103.87.255.221:3020/any/deep/route   # 200 = SPA fallback
@@ -578,11 +666,11 @@ Login, and note the token path — **`data.tokens.accessToken`**, not `data.acce
 `DEPLOYMENT_UBUNTU.md` §13 states:
 
 ```bash
-TOKEN=$(curl -s -X POST https://monhorus.itsystem.mn/api/v1/auth/login \
+TOKEN=$(curl -s -X POST https://www.agata.mn/api/v1/auth/login \
   -H 'Content-Type: application/json' \
   -d '{"email":"...","password":"..."}' \
   | node -pe 'JSON.parse(require("fs").readFileSync(0)).data.tokens.accessToken')
-curl -s https://monhorus.itsystem.mn/api/v1/auth/me -H "Authorization: Bearer $TOKEN"
+curl -s https://www.agata.mn/api/v1/auth/me -H "Authorization: Bearer $TOKEN"
 ```
 
 Health of the deeper invariants:
