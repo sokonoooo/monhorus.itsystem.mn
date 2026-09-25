@@ -1,0 +1,625 @@
+The following plugins do not support Swift Package Manager for ios:
+  - flutter_secure_storage
+This will become an error in a future version of Flutter. Please contact the plugin maintainers to request Swift Package Manager adoption.
+00:00 +0: loading /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_fault_pin_test.dart
+00:00 +0: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_fault_pin_test.dart: (setUpAll)
+00:00 +0: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_fault_pin_test.dart: the pin sits on its fraction of the painted plan
+Error: google_fonts was unable to load font FiraSansCondensed-SemiBold because the following exception occurred:
+Exception: GoogleFonts.config.allowRuntimeFetching is false but font FiraSansCondensed-SemiBold was not found in the application assets. Ensure FiraSansCondensed-SemiBold.ttf exists in a folder that is included in your pubspec's assets.
+
+There is likely something wrong with your test. Please see https://github.com/flutter/packages/blob/main/packages/google_fonts/example/test for examples of how to test with google_fonts.
+If troubleshooting doesn't solve the problem, please file an issue at https://github.com/flutter/flutter/issues/new/choose.
+
+Error: google_fonts was unable to load font FiraSans-Regular because the following exception occurred:
+Exception: GoogleFonts.config.allowRuntimeFetching is false but font FiraSans-Regular was not found in the application assets. Ensure FiraSans-Regular.ttf exists in a folder that is included in your pubspec's assets.
+
+There is likely something wrong with your test. Please see https://github.com/flutter/packages/blob/main/packages/google_fonts/example/test for examples of how to test with google_fonts.
+If troubleshooting doesn't solve the problem, please file an issue at https://github.com/flutter/flutter/issues/new/choose.
+
+Error: google_fonts was unable to load font FiraSans-Medium because the following exception occurred:
+Exception: GoogleFonts.config.allowRuntimeFetching is false but font FiraSans-Medium was not found in the application assets. Ensure FiraSans-Medium.ttf exists in a folder that is included in your pubspec's assets.
+
+There is likely something wrong with your test. Please see https://github.com/flutter/packages/blob/main/packages/google_fonts/example/test for examples of how to test with google_fonts.
+If troubleshooting doesn't solve the problem, please file an issue at https://github.com/flutter/flutter/issues/new/choose.
+
+00:01 +1: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_fault_pin_test.dart: the pin sits on its fraction of the painted plan
+00:02 +2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_fault_pin_test.dart: the pin sits on its fraction of the painted plan
+Error: google_fonts was unable to load font FiraSans-Regular because the following exception occurred:
+Exception: GoogleFonts.config.allowRuntimeFetching is false but font FiraSans-Regular was not found in the application assets. Ensure FiraSans-Regular.ttf exists in a folder that is included in your pubspec's assets.
+
+There is likely something wrong with your test. Please see https://github.com/flutter/packages/blob/main/packages/google_fonts/example/test for examples of how to test with google_fonts.
+If troubleshooting doesn't solve the problem, please file an issue at https://github.com/flutter/flutter/issues/new/choose.
+
+Error: google_fonts was unable to load font FiraSans-Medium because the following exception occurred:
+Exception: GoogleFonts.config.allowRuntimeFetching is false but font FiraSans-Medium was not found in the application assets. Ensure FiraSans-Medium.ttf exists in a folder that is included in your pubspec's assets.
+
+There is likely something wrong with your test. Please see https://github.com/flutter/packages/blob/main/packages/google_fonts/example/test for examples of how to test with google_fonts.
+If troubleshooting doesn't solve the problem, please file an issue at https://github.com/flutter/flutter/issues/new/choose.
+
+Error: google_fonts was unable to load font FiraSansCondensed-SemiBold because the following exception occurred:
+Exception: GoogleFonts.config.allowRuntimeFetching is false but font FiraSansCondensed-SemiBold was not found in the application assets. Ensure FiraSansCondensed-SemiBold.ttf exists in a folder that is included in your pubspec's assets.
+
+There is likely something wrong with your test. Please see https://github.com/flutter/packages/blob/main/packages/google_fonts/example/test for examples of how to test with google_fonts.
+If troubleshooting doesn't solve the problem, please file an issue at https://github.com/flutter/flutter/issues/new/choose.
+
+00:02 +3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_fault_pin_test.dart: the pin sits on its fraction of the painted plan
+00:02 +4: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_fault_pin_test.dart: the pin sits on its fraction of the painted plan
+00:02 +5: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_fault_pin_test.dart: the pin sits on its fraction of the painted plan
+00:02 +6: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_fault_pin_test.dart: the pin sits on its fraction of the painted plan
+00:02 +7: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_fault_pin_test.dart: the pin sits on its fraction of the painted plan
+00:02 +8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_fault_pin_test.dart: the pin sits on its fraction of the painted plan
+00:02 +9: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_fault_pin_test.dart: the pin sits on its fraction of the painted plan
+00:02 +9: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/session_switch_test.dart: a second technician does not inherit the first one's unsaved conclusion
+Push: this install is NOT registered for notifications. They will only appear in the in-app list.
+Push: this install is NOT registered for notifications. They will only appear in the in-app list.
+Push: this install is NOT registered for notifications. They will only appear in the in-app list.
+00:02 +10: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_fault_pin_test.dart: the pin sits on its fraction of the painted plan
+00:02 +10: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/session_switch_test.dart: the same technician keeps their draft across a screen they left
+Push: this install is NOT registered for notifications. They will only appear in the in-app list.
+Push: this install is NOT registered for notifications. They will only appear in the in-app list.
+00:02 +11: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_fault_pin_test.dart: the pin sits on its fraction of the painted plan
+00:02 +11: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/session_switch_test.dart: a second technician is not served the first one's project list
+Push: this install is NOT registered for notifications. They will only appear in the in-app list.
+Push: this install is NOT registered for notifications. They will only appear in the in-app list.
+Push: this install is NOT registered for notifications. They will only appear in the in-app list.
+00:02 +12: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_fault_pin_test.dart: the pin sits on its fraction of the painted plan
+00:02 +12: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/session_switch_test.dart: a second technician is not served the first one's floor plan bytes
+Push: this install is NOT registered for notifications. They will only appear in the in-app list.
+Push: this install is NOT registered for notifications. They will only appear in the in-app list.
+Push: this install is NOT registered for notifications. They will only appear in the in-app list.
+00:02 +13: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_fault_pin_test.dart: the pin sits on its fraction of the painted plan
+00:02 +13: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/session_switch_test.dart: a second technician is not served the first one's equipment-picker floors
+Push: this install is NOT registered for notifications. They will only appear in the in-app list.
+Push: this install is NOT registered for notifications. They will only appear in the in-app list.
+Push: this install is NOT registered for notifications. They will only appear in the in-app list.
+00:02 +14: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_fault_pin_test.dart: the pin sits on its fraction of the painted plan
+00:02 +14: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/session_switch_test.dart: a second technician is not served the first one's employee photo
+Push: this install is NOT registered for notifications. They will only appear in the in-app list.
+Push: this install is NOT registered for notifications. They will only appear in the in-app list.
+Push: this install is NOT registered for notifications. They will only appear in the in-app list.
+00:02 +15: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_fault_pin_test.dart: the pin sits on its fraction of the painted plan
+00:02 +15: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/session_switch_test.dart: a second technician is not served the first one's equipment picker
+Push: this install is NOT registered for notifications. They will only appear in the in-app list.
+Push: this install is NOT registered for notifications. They will only appear in the in-app list.
+Push: this install is NOT registered for notifications. They will only appear in the in-app list.
+00:02 +16: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_fault_pin_test.dart: the pin sits on its fraction of the painted plan
+00:02 +16: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/session_switch_test.dart: the project list is still cached within one session
+Push: this install is NOT registered for notifications. They will only appear in the in-app list.
+Push: this install is NOT registered for notifications. They will only appear in the in-app list.
+00:02 +17: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_fault_pin_test.dart: the pin sits on its fraction of the painted plan
+00:02 +18: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_fault_pin_test.dart: nothing on the screen can move the pin
+00:02 +19: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_fault_pin_test.dart: nothing on the screen can move the pin
+00:02 +20: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_fault_pin_test.dart: nothing on the screen can move the pin
+00:02 +21: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_fault_pin_test.dart: nothing on the screen can move the pin
+00:02 +22: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_fault_pin_test.dart: nothing on the screen can move the pin
+00:02 +23: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_fault_pin_test.dart: nothing on the screen can move the pin
+00:02 +24: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_fault_pin_test.dart: nothing on the screen can move the pin
+00:02 +25: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_fault_pin_test.dart: nothing on the screen can move the pin
+00:02 +26: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_fault_pin_test.dart: nothing on the screen can move the pin
+00:02 +27: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_fault_pin_test.dart: nothing on the screen can move the pin
+00:03 +28: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/planned_work_approval_test.dart: the approval gate on the detail screen REJECT is a button and APPROVE is a sentence
+00:03 +29: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/planned_work_approval_test.dart: the approval gate on the detail screen REJECT is a button and APPROVE is a sentence
+00:03 +30: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/planned_work_approval_test.dart: the approval gate on the detail screen REJECT is a button and APPROVE is a sentence
+00:03 +31: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/planned_work_approval_test.dart: the approval gate on the detail screen REJECT is a button and APPROVE is a sentence
+00:04 +32: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_fault_pin_test.dart: a PDF plan is named as one, not pushed through an image decoder
+00:04 +33: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_fault_pin_test.dart: a PDF plan is named as one, not pushed through an image decoder
+00:04 +34: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_fault_pin_test.dart: a plan that fails to load explains itself and costs nothing else
+00:04 +35: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_fault_pin_test.dart: planPosition off the wire comes through as the normalised pair the customer stored
+00:04 +36: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_fault_pin_test.dart: planPosition off the wire is null when the request carries no mark
+00:04 +37: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_fault_pin_test.dart: planPosition off the wire a malformed or out-of-range coordinate costs the pin, not the record
+00:04 +38: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_fault_pin_test.dart: planPosition off the wire the exact corners are legal positions
+00:04 +39: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_fault_pin_test.dart: (tearDownAll)
+00:05 +39: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/floor_plan_markers_test.dart: (setUpAll)
+00:05 +39: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/floor_plan_markers_test.dart: the plan is painted at its own aspect ratio, with no letterbox
+00:06 +40: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/floor_plan_markers_test.dart: the plan is painted at its own aspect ratio, with no letterbox
+Error: google_fonts was unable to load font FiraSansCondensed-SemiBold because the following exception occurred:
+Exception: GoogleFonts.config.allowRuntimeFetching is false but font FiraSansCondensed-SemiBold was not found in the application assets. Ensure FiraSansCondensed-SemiBold.ttf exists in a folder that is included in your pubspec's assets.
+
+There is likely something wrong with your test. Please see https://github.com/flutter/packages/blob/main/packages/google_fonts/example/test for examples of how to test with google_fonts.
+If troubleshooting doesn't solve the problem, please file an issue at https://github.com/flutter/flutter/issues/new/choose.
+
+Error: google_fonts was unable to load font FiraSans-Regular because the following exception occurred:
+Exception: GoogleFonts.config.allowRuntimeFetching is false but font FiraSans-Regular was not found in the application assets. Ensure FiraSans-Regular.ttf exists in a folder that is included in your pubspec's assets.
+
+There is likely something wrong with your test. Please see https://github.com/flutter/packages/blob/main/packages/google_fonts/example/test for examples of how to test with google_fonts.
+If troubleshooting doesn't solve the problem, please file an issue at https://github.com/flutter/flutter/issues/new/choose.
+
+Error: google_fonts was unable to load font FiraSans-Medium because the following exception occurred:
+Exception: GoogleFonts.config.allowRuntimeFetching is false but font FiraSans-Medium was not found in the application assets. Ensure FiraSans-Medium.ttf exists in a folder that is included in your pubspec's assets.
+
+There is likely something wrong with your test. Please see https://github.com/flutter/packages/blob/main/packages/google_fonts/example/test for examples of how to test with google_fonts.
+If troubleshooting doesn't solve the problem, please file an issue at https://github.com/flutter/flutter/issues/new/choose.
+
+00:06 +41: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/floor_plan_markers_test.dart: the plan is painted at its own aspect ratio, with no letterbox
+00:06 +42: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/floor_plan_markers_test.dart: the plan is painted at its own aspect ratio, with no letterbox
+00:06 +43: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/floor_plan_markers_test.dart: the plan is painted at its own aspect ratio, with no letterbox
+00:06 +43: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/core/push/push_registration_test.dart: an install FCM issues no token for is reported as unregistered
+Push not registered: FCM issued no token for this install
+00:06 +44: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/floor_plan_markers_test.dart: the plan is painted at its own aspect ratio, with no letterbox
+Error: google_fonts was unable to load font FiraSans-Regular because the following exception occurred:
+Exception: GoogleFonts.config.allowRuntimeFetching is false but font FiraSans-Regular was not found in the application assets. Ensure FiraSans-Regular.ttf exists in a folder that is included in your pubspec's assets.
+
+There is likely something wrong with your test. Please see https://github.com/flutter/packages/blob/main/packages/google_fonts/example/test for examples of how to test with google_fonts.
+If troubleshooting doesn't solve the problem, please file an issue at https://github.com/flutter/flutter/issues/new/choose.
+
+Error: google_fonts was unable to load font FiraSansCondensed-SemiBold because the following exception occurred:
+Exception: GoogleFonts.config.allowRuntimeFetching is false but font FiraSansCondensed-SemiBold was not found in the application assets. Ensure FiraSansCondensed-SemiBold.ttf exists in a folder that is included in your pubspec's assets.
+
+There is likely something wrong with your test. Please see https://github.com/flutter/packages/blob/main/packages/google_fonts/example/test for examples of how to test with google_fonts.
+If troubleshooting doesn't solve the problem, please file an issue at https://github.com/flutter/flutter/issues/new/choose.
+
+Error: google_fonts was unable to load font FiraSans-Medium because the following exception occurred:
+Exception: GoogleFonts.config.allowRuntimeFetching is false but font FiraSans-Medium was not found in the application assets. Ensure FiraSans-Medium.ttf exists in a folder that is included in your pubspec's assets.
+
+There is likely something wrong with your test. Please see https://github.com/flutter/packages/blob/main/packages/google_fonts/example/test for examples of how to test with google_fonts.
+If troubleshooting doesn't solve the problem, please file an issue at https://github.com/flutter/flutter/issues/new/choose.
+
+00:07 +45: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/floor_plan_markers_test.dart: a marker is centred on its fraction of the painted plan
+00:07 +46: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/floor_plan_markers_test.dart: a marker is centred on its fraction of the painted plan
+00:07 +47: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/floor_plan_markers_test.dart: a marker is centred on its fraction of the painted plan
+00:07 +48: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/floor_plan_markers_test.dart: a marker is centred on its fraction of the painted plan
+00:07 +49: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/floor_plan_markers_test.dart: a marker is centred on its fraction of the painted plan
+00:07 +50: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/floor_plan_markers_test.dart: a marker is centred on its fraction of the painted plan
+00:07 +51: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/floor_plan_markers_test.dart: a marker is centred on its fraction of the painted plan
+00:07 +52: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/floor_plan_markers_test.dart: a marker is centred on its fraction of the painted plan
+00:07 +53: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/floor_plan_markers_test.dart: a marker is centred on its fraction of the painted plan
+00:07 +54: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/floor_plan_markers_test.dart: a marker is centred on its fraction of the painted plan
+00:07 +55: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/floor_plan_markers_test.dart: a marker is centred on its fraction of the painted plan
+00:07 +56: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/floor_plan_markers_test.dart: a marker is centred on its fraction of the painted plan
+00:07 +57: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/forced_password_change_test.dart: an admin-issued passcode routes to ChangePasswordScreen and cannot be escaped
+00:08 +58: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/forced_password_change_test.dart: an admin-issued passcode routes to ChangePasswordScreen and cannot be escaped
+00:08 +59: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/forced_password_change_test.dart: an admin-issued passcode routes to ChangePasswordScreen and cannot be escaped
+00:08 +59: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/floor_plan_markers_test.dart: a PDF plan keeps its notice and draws no markers
+Error: google_fonts was unable to load font FiraSans-Regular because the following exception occurred:
+Exception: GoogleFonts.config.allowRuntimeFetching is false but font FiraSans-Regular was not found in the application assets. Ensure FiraSans-Regular.ttf exists in a folder that is included in your pubspec's assets.
+
+There is likely something wrong with your test. Please see https://github.com/flutter/packages/blob/main/packages/google_fonts/example/test for examples of how to test with google_fonts.
+If troubleshooting doesn't solve the problem, please file an issue at https://github.com/flutter/flutter/issues/new/choose.
+
+00:09 +60: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/device_assessment_render_check_test.dart: the assess button is drawn for a holder of object_master.assess
+00:09 +61: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/device_assessment_render_check_test.dart: the assess button is drawn for a holder of object_master.assess
+00:09 +62: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/device_assessment_render_check_test.dart: the assess button is drawn for a holder of object_master.assess
+00:09 +63: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/device_assessment_render_check_test.dart: the assess button is drawn for a holder of object_master.assess
+00:09 +64: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/device_assessment_render_check_test.dart: the assess button is drawn for a holder of object_master.assess
+00:09 +65: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/device_assessment_render_check_test.dart: the assess button is drawn for a holder of object_master.assess
+00:09 +66: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/device_assessment_render_check_test.dart: the assess button is drawn for a holder of object_master.assess
+00:09 +67: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/device_assessment_render_check_test.dart: the assess button is drawn for a holder of object_master.assess
+00:09 +68: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/device_assessment_render_check_test.dart: the assess button is drawn for a holder of object_master.assess
+00:09 +69: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/device_assessment_render_check_test.dart: the assess button is drawn for a holder of object_master.assess
+00:09 +70: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/device_assessment_render_check_test.dart: the assess button is drawn for a holder of object_master.assess
+00:09 +71: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/device_assessment_render_check_test.dart: the assess button is drawn for a holder of object_master.assess
+00:09 +72: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/device_assessment_render_check_test.dart: the assess button is drawn for a holder of object_master.assess
+00:09 +73: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/device_assessment_render_check_test.dart: the assess button is drawn for a holder of object_master.assess
+00:09 +74: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/device_assessment_render_check_test.dart: the assess button is drawn for a holder of object_master.assess
+00:09 +75: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/device_assessment_render_check_test.dart: the assess button is drawn for a holder of object_master.assess
+00:09 +76: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/device_assessment_render_check_test.dart: the assess button is drawn for a holder of object_master.assess
+00:09 +77: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/device_assessment_render_check_test.dart: the assess button is drawn for a holder of object_master.assess
+00:09 +77: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/forced_password_change_test.dart: the screen refuses a weak or mismatched replacement locally
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following _Exception was thrown running a test:
+Exception: Asset 'shaders/ink_sparkle.frag' manifest could not be decoded: INVALID_ARGUMENT:
+Unsupported runtime stages format version. Expected 2, got 1.
+
+When the exception was thrown, this was the stack:
+#0      new FragmentProgram._fromAsset (dart:ui/painting.dart:5433:7)
+#1      FragmentProgram.fromAsset.<anonymous closure> (dart:ui/painting.dart:5461:39)
+#12     FakeAsync.run.<anonymous closure>.<anonymous closure> (package:fake_async/fake_async.dart:189:18)
+#13     FakeAsync.flushMicrotasks (package:fake_async/fake_async.dart:200:32)
+#14     AutomatedTestWidgetsFlutterBinding.runTest.<anonymous closure> (package:flutter_test/src/binding.dart:2506:17)
+(elided 25 frames from dart:async and package:stack_trace)
+
+The test description was:
+  the screen refuses a weak or mismatched replacement locally
+════════════════════════════════════════════════════════════════════════════════════════════════════
+00:09 +77 -1: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/device_assessment_render_check_test.dart: the assess button is drawn for a holder of object_master.assess
+00:09 +77 -1: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/forced_password_change_test.dart: the screen refuses a weak or mismatched replacement locally [E]
+  Test failed. See exception logs above.
+  The test description was: the screen refuses a weak or mismatched replacement locally
+  
+00:09 +78 -1: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/device_assessment_render_check_test.dart: the assess button is drawn for a holder of object_master.assess
+00:10 +79 -1: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/floor_plan_markers_test.dart: the plan cannot be pinched smaller than the box it fits
+00:10 +80 -1: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/floor_plan_markers_test.dart: the plan cannot be pinched smaller than the box it fits
+00:10 +81 -1: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/forced_password_change_test.dart: changing the password signs the account out, and the new one gets the shell
+00:10 +82 -1: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/forced_password_change_test.dart: changing the password signs the account out, and the new one gets the shell
+00:10 +83 -1: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/forced_password_change_test.dart: changing the password signs the account out, and the new one gets the shell
+Push: this install is NOT registered for notifications. They will only appear in the in-app list.
+00:11 +83 -1: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/device_assessment_render_check_test.dart: the sheet refuses to save until evidence has been uploaded
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following _Exception was thrown running a test:
+Exception: Asset 'shaders/ink_sparkle.frag' manifest could not be decoded: INVALID_ARGUMENT:
+Unsupported runtime stages format version. Expected 2, got 1.
+
+When the exception was thrown, this was the stack:
+#0      new FragmentProgram._fromAsset (dart:ui/painting.dart:5433:7)
+#1      FragmentProgram.fromAsset.<anonymous closure> (dart:ui/painting.dart:5461:39)
+#12     FakeAsync.run.<anonymous closure>.<anonymous closure> (package:fake_async/fake_async.dart:189:18)
+#13     FakeAsync.flushMicrotasks (package:fake_async/fake_async.dart:200:32)
+#14     AutomatedTestWidgetsFlutterBinding.runTest.<anonymous closure> (package:flutter_test/src/binding.dart:2506:17)
+(elided 25 frames from dart:async and package:stack_trace)
+
+The test description was:
+  the sheet refuses to save until evidence has been uploaded
+════════════════════════════════════════════════════════════════════════════════════════════════════
+00:11 +83 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/forced_password_change_test.dart: changing the password signs the account out, and the new one gets the shell
+00:11 +83 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/device_assessment_render_check_test.dart: the sheet refuses to save until evidence has been uploaded [E]
+  Test failed. See exception logs above.
+  The test description was: the sheet refuses to save until evidence has been uploaded
+  
+00:11 +84 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/forced_password_change_test.dart: changing the password signs the account out, and the new one gets the shell
+00:11 +85 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/profile_render_check_test.dart: a linked technician sees their own card and performance figures
+00:11 +85 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/forced_password_change_test.dart: an already-active session is never sent to the forced screen
+Push: this install is NOT registered for notifications. They will only appear in the in-app list.
+00:11 +86 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/profile_render_check_test.dart: a linked technician sees their own card and performance figures
+00:11 +87 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/profile_render_check_test.dart: a linked technician sees their own card and performance figures
+00:11 +88 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/profile_render_check_test.dart: a linked technician sees their own card and performance figures
+00:12 +89 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/profile_render_check_test.dart: a linked technician sees their own card and performance figures
+00:12 +90 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/profile_render_check_test.dart: a linked technician sees their own card and performance figures
+00:12 +91 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/profile_render_check_test.dart: a linked technician sees their own card and performance figures
+00:12 +92 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/profile_render_check_test.dart: a linked technician sees their own card and performance figures
+00:12 +93 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/device_assessment_render_check_test.dart: the sheet asks the equipment type's own questions
+00:13 +94 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/floor_plan_markers_test.dart: custom object type icons a type with an uploaded icon draws it instead of the built-in glyph
+00:13 +95 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/floor_plan_markers_test.dart: custom object type icons a type with an uploaded icon draws it instead of the built-in glyph
+00:13 +96 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/device_assessment_render_check_test.dart: the sheet opens on the answers already recorded
+00:13 +97 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/device_assessment_render_check_test.dart: the sheet opens on the answers already recorded
+00:13 +98 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/floor_plan_markers_test.dart: custom object type icons the uploaded icon is tinted with the risk band, not left as drawn
+00:13 +99 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/device_assessment_render_check_test.dart: a required attribute is named when it is left unanswered
+00:13 +100 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/employee_shell_smoke_test.dart: all four tabs mount and can be switched between
+00:14 +101 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/employee_shell_smoke_test.dart: all four tabs mount and can be switched between
+00:14 +102 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/employee_shell_smoke_test.dart: all four tabs mount and can be switched between
+00:14 +103 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/employee_shell_smoke_test.dart: all four tabs mount and can be switched between
+00:14 +104 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/employee_shell_smoke_test.dart: all four tabs mount and can be switched between
+00:15 +105 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/employee_shell_smoke_test.dart: all four tabs mount and can be switched between
+00:15 +106 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/employee_shell_smoke_test.dart: all four tabs mount and can be switched between
+00:15 +107 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/employee_shell_smoke_test.dart: all four tabs mount and can be switched between
+00:15 +108 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/employee_shell_smoke_test.dart: all four tabs mount and can be switched between
+00:15 +109 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/employee_shell_smoke_test.dart: all four tabs mount and can be switched between
+00:15 +110 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/employee_shell_smoke_test.dart: all four tabs mount and can be switched between
+00:15 +111 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/employee_shell_smoke_test.dart: all four tabs mount and can be switched between
+00:15 +112 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/employee_shell_smoke_test.dart: all four tabs mount and can be switched between
+00:15 +113 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/employee_shell_smoke_test.dart: all four tabs mount and can be switched between
+00:15 +114 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/employee_shell_smoke_test.dart: all four tabs mount and can be switched between
+00:15 +115 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/floor_plan_markers_test.dart: custom object type icons bytes that are not SVG fall back rather than taking the plan down
+00:15 +116 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/honest_counts_test.dart: a truncated read is disclosed rather than printed as a fact a complete read states the figure outright
+00:15 +117 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/honest_counts_test.dart: a truncated read is disclosed rather than printed as a fact a complete read states the figure outright
+00:15 +118 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/honest_counts_test.dart: a truncated read is disclosed rather than printed as a fact a complete read states the figure outright
+00:15 +119 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/honest_counts_test.dart: a truncated read is disclosed rather than printed as a fact a complete read states the figure outright
+00:15 +120 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/honest_counts_test.dart: a truncated read is disclosed rather than printed as a fact a complete read states the figure outright
+00:15 +121 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/honest_counts_test.dart: a truncated read is disclosed rather than printed as a fact a complete read states the figure outright
+00:15 +122 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/honest_counts_test.dart: a truncated read is disclosed rather than printed as a fact a complete read states the figure outright
+00:16 +123 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/honest_counts_test.dart: a truncated read is disclosed rather than printed as a fact a complete read states the figure outright
+00:16 +124 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/honest_counts_test.dart: a truncated read is disclosed rather than printed as a fact a complete read states the figure outright
+00:16 +124 -2: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/employee_shell_smoke_test.dart: Нүүр: the calendar button pushes the schedule
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following _Exception was thrown running a test:
+Exception: Asset 'shaders/ink_sparkle.frag' manifest could not be decoded: INVALID_ARGUMENT:
+Unsupported runtime stages format version. Expected 2, got 1.
+
+When the exception was thrown, this was the stack:
+#0      new FragmentProgram._fromAsset (dart:ui/painting.dart:5433:7)
+#1      FragmentProgram.fromAsset.<anonymous closure> (dart:ui/painting.dart:5461:39)
+#12     FakeAsync.run.<anonymous closure>.<anonymous closure> (package:fake_async/fake_async.dart:189:18)
+#13     FakeAsync.flushMicrotasks (package:fake_async/fake_async.dart:200:32)
+#14     AutomatedTestWidgetsFlutterBinding.runTest.<anonymous closure> (package:flutter_test/src/binding.dart:2506:17)
+(elided 25 frames from dart:async and package:stack_trace)
+
+The test description was:
+  Нүүр: the calendar button pushes the schedule
+════════════════════════════════════════════════════════════════════════════════════════════════════
+00:16 +124 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/honest_counts_test.dart: a truncated read is disclosed rather than printed as a fact a complete read states the figure outright
+00:16 +124 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/employee_shell_smoke_test.dart: Нүүр: the calendar button pushes the schedule [E]
+  Test failed. See exception logs above.
+  The test description was: Нүүр: the calendar button pushes the schedule
+  
+00:16 +125 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/material_unit_test.dart: a task carrying an unknown unit is never drawn as ширхэг
+00:16 +126 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/material_unit_test.dart: a task carrying an unknown unit is never drawn as ширхэг
+00:16 +127 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/material_unit_test.dart: a task carrying an unknown unit is never drawn as ширхэг
+00:16 +128 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/material_unit_test.dart: a task carrying an unknown unit is never drawn as ширхэг
+00:16 +129 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/material_unit_test.dart: a task carrying an unknown unit is never drawn as ширхэг
+00:16 +130 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/material_unit_test.dart: a task carrying an unknown unit is never drawn as ширхэг
+00:16 +131 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/material_unit_test.dart: a task carrying an unknown unit is never drawn as ширхэг
+00:17 +132 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/material_unit_test.dart: a task carrying an unknown unit is never drawn as ширхэг
+00:17 +133 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/material_unit_test.dart: a task carrying an unknown unit is never drawn as ширхэг
+00:17 +134 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/floor_plan_markers_test.dart: the code label is hidden at fit and shown once the plan is magnified
+00:17 +135 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/material_unit_test.dart: a known unit still reads as its Mongolian name
+00:17 +136 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/floor_plan_markers_test.dart: the code label does not move the dot off its coordinate
+00:17 +137 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/floor_plan_markers_test.dart: the code label does not move the dot off its coordinate
+00:17 +138 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/employee_shell_smoke_test.dart: Ажил carries the calendar and the bell, in that order
+00:17 +139 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/employee_shell_smoke_test.dart: Ажил carries the calendar and the bell, in that order
+00:17 +140 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/employee_shell_smoke_test.dart: Ажил carries the calendar and the bell, in that order
+00:17 +141 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/employee_shell_smoke_test.dart: Ажил carries the calendar and the bell, in that order
+00:17 +142 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/employee_shell_smoke_test.dart: Ажил carries the calendar and the bell, in that order
+00:17 +143 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/employee_shell_smoke_test.dart: Ажил carries the calendar and the bell, in that order
+00:17 +144 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/floor_plan_markers_test.dart: a floor larger than one page the plan draws a marker for device 101
+00:17 +145 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/floor_plan_markers_test.dart: a floor larger than one page the plan draws a marker for device 101
+00:18 +146 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/floor_plan_markers_test.dart: a floor larger than one page the plan draws a marker for device 101
+00:18 +147 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/floor_plan_markers_test.dart: a floor larger than one page the plan draws a marker for device 101
+00:18 +148 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/employee_shell_smoke_test.dart: Төсөл: the calendar button pushes the schedule
+00:18 +149 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/employee_shell_smoke_test.dart: Төсөл: the calendar button pushes the schedule
+00:18 +150 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/employee_shell_smoke_test.dart: Төсөл: the calendar button pushes the schedule
+00:19 +151 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/calendar_render_check_test.dart: a planned-work row opens the planned work
+00:19 +152 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/calendar_render_check_test.dart: a planned-work row opens the planned work
+00:19 +153 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/calendar_render_check_test.dart: a planned-work row opens the planned work
+00:19 +154 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/calendar_render_check_test.dart: a planned-work row opens the planned work
+00:19 +155 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/calendar_render_check_test.dart: a planned-work row opens the planned work
+00:20 +156 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/calendar_render_check_test.dart: a planned-work row opens the planned work
+00:20 +157 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/calendar_render_check_test.dart: a planned-work row opens the planned work
+00:20 +158 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/calendar_render_check_test.dart: a planned-work row opens the planned work
+00:20 +158 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/device_detail_render_test.dart: reports lists the reports for this equipment and drops the event timeline
+Error: google_fonts was unable to load font FiraSansCondensed-SemiBold because the following exception occurred:
+Exception: GoogleFonts.config.allowRuntimeFetching is false but font FiraSansCondensed-SemiBold was not found in the application assets. Ensure FiraSansCondensed-SemiBold.ttf exists in a folder that is included in your pubspec's assets.
+
+There is likely something wrong with your test. Please see https://github.com/flutter/packages/blob/main/packages/google_fonts/example/test for examples of how to test with google_fonts.
+If troubleshooting doesn't solve the problem, please file an issue at https://github.com/flutter/flutter/issues/new/choose.
+
+Error: google_fonts was unable to load font FiraSans-Regular because the following exception occurred:
+Exception: GoogleFonts.config.allowRuntimeFetching is false but font FiraSans-Regular was not found in the application assets. Ensure FiraSans-Regular.ttf exists in a folder that is included in your pubspec's assets.
+
+There is likely something wrong with your test. Please see https://github.com/flutter/packages/blob/main/packages/google_fonts/example/test for examples of how to test with google_fonts.
+If troubleshooting doesn't solve the problem, please file an issue at https://github.com/flutter/flutter/issues/new/choose.
+
+00:20 +159 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/calendar_render_check_test.dart: a planned-work row opens the planned work
+00:20 +160 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/calendar_render_check_test.dart: a planned-work row opens the planned work
+00:20 +160 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/device_detail_render_test.dart: reports lists the reports for this equipment and drops the event timeline
+Error: google_fonts was unable to load font FiraSansCondensed-SemiBold because the following exception occurred:
+Exception: GoogleFonts.config.allowRuntimeFetching is false but font FiraSansCondensed-SemiBold was not found in the application assets. Ensure FiraSansCondensed-SemiBold.ttf exists in a folder that is included in your pubspec's assets.
+
+There is likely something wrong with your test. Please see https://github.com/flutter/packages/blob/main/packages/google_fonts/example/test for examples of how to test with google_fonts.
+If troubleshooting doesn't solve the problem, please file an issue at https://github.com/flutter/flutter/issues/new/choose.
+
+Error: google_fonts was unable to load font FiraSans-Regular because the following exception occurred:
+Exception: GoogleFonts.config.allowRuntimeFetching is false but font FiraSans-Regular was not found in the application assets. Ensure FiraSans-Regular.ttf exists in a folder that is included in your pubspec's assets.
+
+There is likely something wrong with your test. Please see https://github.com/flutter/packages/blob/main/packages/google_fonts/example/test for examples of how to test with google_fonts.
+If troubleshooting doesn't solve the problem, please file an issue at https://github.com/flutter/flutter/issues/new/choose.
+
+Error: google_fonts was unable to load font FiraSans-Medium because the following exception occurred:
+Exception: GoogleFonts.config.allowRuntimeFetching is false but font FiraSans-Medium was not found in the application assets. Ensure FiraSans-Medium.ttf exists in a folder that is included in your pubspec's assets.
+
+There is likely something wrong with your test. Please see https://github.com/flutter/packages/blob/main/packages/google_fonts/example/test for examples of how to test with google_fonts.
+If troubleshooting doesn't solve the problem, please file an issue at https://github.com/flutter/flutter/issues/new/choose.
+
+00:20 +161 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/calendar_render_check_test.dart: a planned-work row opens the planned work
+00:20 +162 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/calendar_render_check_test.dart: a planned-work row opens the planned work
+00:21 +163 -3: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/calendar_render_check_test.dart: a planned-work row opens the planned work
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following _Exception was thrown running a test:
+Exception: Asset 'shaders/ink_sparkle.frag' manifest could not be decoded: INVALID_ARGUMENT:
+Unsupported runtime stages format version. Expected 2, got 1.
+
+When the exception was thrown, this was the stack:
+#0      new FragmentProgram._fromAsset (dart:ui/painting.dart:5433:7)
+#1      FragmentProgram.fromAsset.<anonymous closure> (dart:ui/painting.dart:5461:39)
+#12     FakeAsync.run.<anonymous closure>.<anonymous closure> (package:fake_async/fake_async.dart:189:18)
+#13     FakeAsync.flushMicrotasks (package:fake_async/fake_async.dart:200:32)
+#14     AutomatedTestWidgetsFlutterBinding.runTest.<anonymous closure> (package:flutter_test/src/binding.dart:2506:17)
+(elided 25 frames from dart:async and package:stack_trace)
+
+The test description was:
+  a planned-work row opens the planned work
+════════════════════════════════════════════════════════════════════════════════════════════════════
+00:21 +163 -4: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/device_detail_render_test.dart: reports says so plainly when the equipment has no reports
+00:21 +163 -4: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/calendar_render_check_test.dart: a planned-work row opens the planned work [E]
+  Test failed. See exception logs above.
+  The test description was: a planned-work row opens the planned work
+  
+00:21 +164 -4: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/device_detail_render_test.dart: reports opens the report, showing this equipment own finding
+00:21 +165 -4: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/device_detail_render_test.dart: reports opens the report, showing this equipment own finding
+00:22 +166 -4: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/calendar_render_check_test.dart: a row carrying no source id is not tappable
+00:22 +167 -4: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/calendar_render_check_test.dart: a row carrying no source id is not tappable
+00:22 +168 -4: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/calendar_render_check_test.dart: a row carrying no source id is not tappable
+00:22 +169 -4: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/calendar_render_check_test.dart: a row carrying no source id is not tappable
+00:22 +170 -4: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/calendar_render_check_test.dart: a row carrying no source id is not tappable
+00:22 +171 -4: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/calendar_render_check_test.dart: a row carrying no source id is not tappable
+00:22 +172 -4: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/calendar_render_check_test.dart: a row carrying no source id is not tappable
+00:22 +173 -4: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/device_detail_render_test.dart: location draws the equipment marker on its floor plan, in place of photos
+00:22 +174 -4: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/home_render_check_test.dart: "Өнөөдрийн хуваарь" is what is left of the day a day worked through says so, not that nothing was booked
+00:22 +175 -4: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/home_render_check_test.dart: "Өнөөдрийн хуваарь" is what is left of the day a day worked through says so, not that nothing was booked
+00:22 +176 -4: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/home_render_check_test.dart: "Өнөөдрийн хуваарь" is what is left of the day a day worked through says so, not that nothing was booked
+00:23 +177 -4: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/home_render_check_test.dart: "Өнөөдрийн хуваарь" is what is left of the day a day worked through says so, not that nothing was booked
+00:23 +178 -4: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/home_render_check_test.dart: "Өнөөдрийн хуваарь" is what is left of the day a day worked through says so, not that nothing was booked
+00:23 +179 -4: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: every segment chip renders its whole label
+00:23 +180 -4: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: every segment chip renders its whole label
+00:23 +181 -4: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/device_detail_render_test.dart: panel contents a panel with nothing in it draws neither heading
+00:23 +182 -4: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/home_render_check_test.dart: every row that names a record opens it an urgent service-request row opens the request
+00:23 +183 -4: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/home_render_check_test.dart: every row that names a record opens it an urgent service-request row opens the request
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following _Exception was thrown running a test:
+Exception: Asset 'shaders/ink_sparkle.frag' manifest could not be decoded: INVALID_ARGUMENT:
+Unsupported runtime stages format version. Expected 2, got 1.
+
+When the exception was thrown, this was the stack:
+#0      new FragmentProgram._fromAsset (dart:ui/painting.dart:5433:7)
+#1      FragmentProgram.fromAsset.<anonymous closure> (dart:ui/painting.dart:5461:39)
+#12     FakeAsync.run.<anonymous closure>.<anonymous closure> (package:fake_async/fake_async.dart:189:18)
+#13     FakeAsync.flushMicrotasks (package:fake_async/fake_async.dart:200:32)
+#14     AutomatedTestWidgetsFlutterBinding.runTest.<anonymous closure> (package:flutter_test/src/binding.dart:2506:17)
+(elided 25 frames from dart:async and package:stack_trace)
+
+The test description was:
+  an urgent service-request row opens the request
+════════════════════════════════════════════════════════════════════════════════════════════════════
+00:23 +183 -5: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: the planned segment renders its board, grouped by status
+00:23 +183 -5: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/home_render_check_test.dart: every row that names a record opens it an urgent service-request row opens the request [E]
+  Test failed. See exception logs above.
+  The test description was: an urgent service-request row opens the request
+  
+00:24 +183 -5: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: the planned segment renders its board, grouped by status
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following _Exception was thrown running a test:
+Exception: Asset 'shaders/ink_sparkle.frag' manifest could not be decoded: INVALID_ARGUMENT:
+Unsupported runtime stages format version. Expected 2, got 1.
+
+When the exception was thrown, this was the stack:
+#0      new FragmentProgram._fromAsset (dart:ui/painting.dart:5433:7)
+#1      FragmentProgram.fromAsset.<anonymous closure> (dart:ui/painting.dart:5461:39)
+#12     FakeAsync.run.<anonymous closure>.<anonymous closure> (package:fake_async/fake_async.dart:189:18)
+#13     FakeAsync.flushMicrotasks (package:fake_async/fake_async.dart:200:32)
+#14     AutomatedTestWidgetsFlutterBinding.runTest.<anonymous closure> (package:flutter_test/src/binding.dart:2506:17)
+(elided 25 frames from dart:async and package:stack_trace)
+
+The test description was:
+  the planned segment renders its board, grouped by status
+════════════════════════════════════════════════════════════════════════════════════════════════════
+00:24 +183 -6: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: the planned segment renders its board, grouped by status [E]
+  Test failed. See exception logs above.
+  The test description was: the planned segment renders its board, grouped by status
+  
+00:24 +183 -6: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/home_render_check_test.dart: every row that names a record opens it an urgent planned-work row opens the planned work
+00:24 +184 -6: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: unavailable scope explains itself
+00:24 +185 -6: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: the detail screen offers the editor and does not embed the form
+00:24 +186 -6: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: the detail screen offers the editor and does not embed the form
+00:24 +187 -6: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: the detail screen offers the editor and does not embed the form
+00:24 +188 -6: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: the detail screen offers the editor and does not embed the form
+00:24 +189 -6: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: the detail screen offers the editor and does not embed the form
+00:24 +190 -6: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: the detail screen offers the editor and does not embed the form
+00:25 +191 -6: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: the detail screen offers the editor and does not embed the form
+00:25 +192 -6: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: the detail screen offers the editor and does not embed the form
+00:25 +193 -6: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: the detail screen offers the editor and does not embed the form
+00:25 +194 -6: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: the detail screen offers the editor and does not embed the form
+00:25 +195 -6: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: the detail screen offers the editor and does not embed the form
+00:25 +196 -6: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: the detail screen offers the editor and does not embed the form
+00:25 +197 -6: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: the detail screen offers the editor and does not embed the form
+00:25 +198 -6: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: the detail screen offers the editor and does not embed the form
+00:25 +199 -6: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: the detail screen offers the editor and does not embed the form
+00:26 +200 -6: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: the detail screen offers the editor and does not embed the form
+00:26 +201 -6: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: an empty segment names the kind of work it has none of
+00:26 +202 -6: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: a read-only account is offered viewing rather than authoring
+00:26 +203 -6: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: a failed request read is named, not swallowed
+00:26 +204 -6: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: opening the editor reads the report exactly once
+00:26 +205 -6: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: opening the editor reads the report exactly once
+00:26 +206 -6: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: detail and progress sheet render
+00:26 +207 -6: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: detail and progress sheet render
+00:26 +208 -6: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: detail and progress sheet render
+00:27 +209 -6: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: selecting a floor lists its equipment and adds the chosen objects
+00:27 +210 -6: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: selecting a floor lists its equipment and adds the chosen objects
+00:27 +211 -6: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: selecting a floor lists its equipment and adds the chosen objects
+00:27 +212 -6: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: selecting a floor lists its equipment and adds the chosen objects
+00:27 +213 -6: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: selecting a floor lists its equipment and adds the chosen objects
+00:27 +214 -6: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: selecting a floor lists its equipment and adds the chosen objects
+00:27 +215 -6: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: selecting a floor lists its equipment and adds the chosen objects
+00:27 +216 -6: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: selecting a floor lists its equipment and adds the chosen objects
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following _Exception was thrown running a test:
+Exception: Asset 'shaders/ink_sparkle.frag' manifest could not be decoded: INVALID_ARGUMENT:
+Unsupported runtime stages format version. Expected 2, got 1.
+
+When the exception was thrown, this was the stack:
+#0      new FragmentProgram._fromAsset (dart:ui/painting.dart:5433:7)
+#1      FragmentProgram.fromAsset.<anonymous closure> (dart:ui/painting.dart:5461:39)
+#12     FakeAsync.run.<anonymous closure>.<anonymous closure> (package:fake_async/fake_async.dart:189:18)
+#13     FakeAsync.flushMicrotasks (package:fake_async/fake_async.dart:200:32)
+#14     AutomatedTestWidgetsFlutterBinding.runTest.<anonymous closure> (package:flutter_test/src/binding.dart:2506:17)
+(elided 25 frames from dart:async and package:stack_trace)
+
+The test description was:
+  selecting a floor lists its equipment and adds the chosen objects
+════════════════════════════════════════════════════════════════════════════════════════════════════
+00:27 +216 -7: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: the progress sheet sends the sub-task Дүгнэлт
+00:27 +216 -7: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: selecting a floor lists its equipment and adds the chosen objects [E]
+  Test failed. See exception logs above.
+  The test description was: selecting a floor lists its equipment and adds the chosen objects
+  
+00:28 +217 -7: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_detail_test.dart: every part of the request is on the screen
+00:28 +218 -7: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_detail_test.dart: every part of the request is on the screen
+00:28 +219 -7: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: each object carries its own score into the payload
+00:29 +220 -7: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: the material sheet sends the typed quantity as the absolute figure
+00:29 +221 -7: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: the material sheet sends the typed quantity as the absolute figure
+00:29 +222 -7: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: the material sheet sends the typed quantity as the absolute figure
+00:29 +223 -7: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: the material sheet sends the typed quantity as the absolute figure
+00:29 +224 -7: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: the material sheet sends the typed quantity as the absolute figure
+00:29 +225 -7: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: values survive collapsing and reopening a card
+00:29 +226 -7: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: values survive collapsing and reopening a card
+00:29 +227 -7: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: a refused material quantity keeps the sheet open and names the limit
+00:29 +228 -7: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: a refused material quantity keeps the sheet open and names the limit
+00:29 +229 -7: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_detail_test.dart: sends the tapped transition to the API
+══╡ EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK ╞════════════════════════════════════════════════════
+The following _Exception was thrown running a test:
+Exception: Asset 'shaders/ink_sparkle.frag' manifest could not be decoded: INVALID_ARGUMENT:
+Unsupported runtime stages format version. Expected 2, got 1.
+
+When the exception was thrown, this was the stack:
+#0      new FragmentProgram._fromAsset (dart:ui/painting.dart:5433:7)
+#1      FragmentProgram.fromAsset.<anonymous closure> (dart:ui/painting.dart:5461:39)
+#12     FakeAsync.run.<anonymous closure>.<anonymous closure> (package:fake_async/fake_async.dart:189:18)
+#13     FakeAsync.flushMicrotasks (package:fake_async/fake_async.dart:200:32)
+#14     AutomatedTestWidgetsFlutterBinding.runTest.<anonymous closure> (package:flutter_test/src/binding.dart:2506:17)
+(elided 25 frames from dart:async and package:stack_trace)
+
+The test description was:
+  sends the tapped transition to the API
+════════════════════════════════════════════════════════════════════════════════════════════════════
+00:29 +229 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: an item for unavailable equipment stays visible and read-only
+00:29 +230 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: the materials card shows registered, used and remaining
+00:29 +230 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_detail_test.dart: sends the tapped transition to the API [E]
+  Test failed. See exception logs above.
+  The test description was: sends the tapped transition to the API
+  
+00:29 +231 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: removing a card with typed data asks first
+00:29 +232 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: removing a card with typed data asks first
+00:30 +233 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_detail_test.dart: a reason-requiring transition prompts before anything is sent
+00:30 +234 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_detail_test.dart: a reason-requiring transition prompts before anything is sent
+00:30 +235 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: an empty card is removed without a warning
+00:30 +236 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: a generated inspection report is readable and authorable
+00:30 +237 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: a generated inspection report is readable and authorable
+00:30 +238 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: an object with no entered data sends no assessment
+00:30 +239 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: an object with no entered data sends no assessment
+00:30 +240 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: an object with no entered data sends no assessment
+00:30 +241 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: the open segment lists the unclaimed pool, read-only
+00:30 +242 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_detail_test.dart: a colleague's request is named as theirs, not as a missing permission
+00:30 +243 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: submitting saves first, then submits
+00:30 +244 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: submitting saves first, then submits
+00:30 +245 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: submitting saves first, then submits
+00:31 +246 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: submitting saves first, then submits
+00:31 +247 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: submitting saves first, then submits
+00:31 +248 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: submitting saves first, then submits
+00:31 +249 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: submitting saves first, then submits
+00:31 +250 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: tapping an open request opens its detail screen
+00:31 +251 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: tapping an open request opens its detail screen
+00:31 +252 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: tapping an open request opens its detail screen
+00:31 +253 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: tapping an open request opens its detail screen
+00:31 +254 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: tapping an open request opens its detail screen
+00:31 +255 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_detail_test.dart: the team's request is the team member's to write up
+00:31 +256 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: a forbidden save is explained as a permission problem
+00:31 +257 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: a forbidden save is explained as a permission problem
+00:31 +258 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: tapping the action claims that request
+00:31 +259 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_detail_test.dart: not even the office keys draw an approve control
+00:31 +260 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: a stale conflict is explained as somebody else having changed it
+00:31 +261 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: a stale conflict is explained as somebody else having changed it
+00:31 +262 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: a stale conflict is explained as somebody else having changed it
+00:31 +263 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: a stale conflict is explained as somebody else having changed it
+00:31 +264 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_detail_test.dart: the notice does not depend on any permission
+00:31 +265 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/service_request_detail_test.dart: the notice does not depend on any permission
+00:31 +266 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: the Дүгнэлт editor survives a typed save and the teardown after it
+00:32 +267 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: the Дүгнэлт editor survives a typed save and the teardown after it
+00:32 +268 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: the Дүгнэлт editor survives a typed save and the teardown after it
+00:32 +269 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: the Дүгнэлт editor survives a typed save and the teardown after it
+00:32 +270 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: changing floor keeps already-selected equipment and its values
+00:32 +271 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: the Дүгнэлт editor survives a typed cancel and the teardown after it
+00:32 +272 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: the Дүгнэлт editor survives a typed cancel and the teardown after it
+00:32 +273 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: a report missing one field names THAT field
+00:32 +274 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: the reason prompt survives a typed dismissal and the teardown after it
+00:32 +275 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: the reason prompt survives a typed dismissal and the teardown after it
+00:32 +276 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: a refused submission repeats the server's field list, not "дутуу"
+00:33 +277 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: the sub-task progress sheet survives a typed cancel and its teardown
+00:33 +278 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: the sub-task progress sheet survives a typed cancel and its teardown
+00:33 +279 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: an equipment card asks its type's questions and sends the answers
+00:34 +280 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: an equipment card asks its type's questions and sends the answers
+00:35 +281 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/work_render_check_test.dart: a save that never answers still leaves a way out of the report sheet
+00:35 +282 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: the visit score is enterable and reaches the payload
+00:35 +283 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: visit photographs are held and sent as the visit's, not an object's
+00:35 +284 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: removing a visit photograph actually removes it from the payload
+00:35 +285 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: saving from the phone relays the office fields rather than erasing them
+00:35 +286 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: a report with no office fields sends a payload the schema accepts
+00:35 +287 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: both visit photo slots are drawn and labelled
+00:35 +288 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: a complete conclusion submits with nothing reported missing
+00:35 +289 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: an equipment card names the risk bands and quotes no score range
+00:36 +290 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: submitting the conclusion re-reads the request it just moved
+00:36 +291 -8: /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: the three visit fields survive leaving the screen and coming back
+00:37 +292 -8: Some tests failed.
+
+Failing tests:
+  /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/calendar_render_check_test.dart: a planned-work row opens the planned work
+  /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/conclusion_editor_test.dart: selecting a floor lists its equipment and adds the chosen objects
+  /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/device_assessment_render_check_test.dart: the sheet refuses to save until evidence has been uploaded
+  /Users/solongooaltankhuyag/Monhorus/apps/mobile-employee/test/employee_shell_smoke_test.dart: Нүүр: the calendar button pushes the schedule
+  ... and 4 more
