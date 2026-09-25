@@ -45,7 +45,7 @@ cat > index.html.new <<HTML
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Монхорус — Android апп</title>
+<title>Agata — Android апп</title>
 <style>
   :root { color-scheme: light dark; }
   * { box-sizing: border-box; }
@@ -81,7 +81,7 @@ cat > index.html.new <<HTML
 </head>
 <body>
 <main>
-  <h1>Монхорус — Android апп</h1>
+  <h1>Agata — Android апп</h1>
   <p class="sub">Цахилгааны үйлчилгээний систем</p>
 
   <div class="updated">Сүүлд шинэчлэгдсэн: ${PAGE_TIME}</div>

@@ -112,7 +112,7 @@ const envSchema = z.object({
     .transform((value) => value === 'true'),
   SMTP_USER: z.string().min(1).optional(),
   SMTP_PASS: z.string().min(1).optional(),
-  MAIL_FROM: z.string().min(1).default('Monhorus <no-reply@monhorus.itsystem.mn>'),
+  MAIL_FROM: z.string().min(1).default('Agata <no-reply@agata.mn>'),
 
   /*
    * Firebase Cloud Messaging, for Android push.

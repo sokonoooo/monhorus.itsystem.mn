@@ -180,7 +180,7 @@ export function AppShell({ children }: { children: ReactNode }): ReactElement {
       >
         <div className="flex h-14 items-center gap-2 border-b border-slate-200 px-4">
           <span className="text-base font-bold tracking-tight text-slate-900">
-            {collapsed ? 'M' : 'Monhorus'}
+            {collapsed ? 'A' : 'Agata'}
           </span>
           {!collapsed && (
             <span className="truncate text-xs text-slate-500">

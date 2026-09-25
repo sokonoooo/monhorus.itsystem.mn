@@ -79,7 +79,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   const _BrandMark(),
                   const SizedBox(height: 18),
                   Text(
-                    'Monhorus',
+                    'Agata',
                     textAlign: TextAlign.center,
                     style: EmployeeTokens.display,
                   ),
