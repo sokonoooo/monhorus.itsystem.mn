@@ -36,14 +36,24 @@ One certificate (`/etc/letsencrypt/live/www.agata.mn/`, expires 2026-12-06) cove
 certificate is untouched. All three serve the same web root and proxy to the same backend;
 `api.agata.mn` is **not** an API-only host, it serves the SPA as well.
 
-**On the two older names, only the browser paths redirect.** `agata.mn` and
-`monhorus.itsystem.mn` answer `/` with `308 https://www.agata.mn$request_uri`, while
-`/api/v1/`, `/health` and `/apk/` on them still proxy to `127.0.0.1:4000` untouched.
-Redirecting `/api` would break every handset that already has the old name compiled in:
-both apps use `dio` with `validateStatus: status < 500`, so a 3xx arrives as a success they
-then fail to parse, and Dart's `HttpClient` does not resend a POST body across a redirect.
-**After any nginx change, `POST https://monhorus.itsystem.mn/api/v1/auth/login` must answer
-400/401 and never a 3xx.** That one call is the regression test.
+**`monhorus.itsystem.mn` redirects the browser paths ONLY.** It answers `/` with
+`308 https://www.agata.mn$request_uri`, while `/api/v1/`, `/health` and `/apk/` on it still
+proxy to `127.0.0.1:4000` untouched. Redirecting `/api` there would break every handset
+that has the old name compiled in: both apps use `dio` with `validateStatus: status < 500`,
+so a 3xx arrives as a success they then fail to parse, and Dart's `HttpClient` does not
+resend a POST body across a redirect. **After any nginx change,
+`POST https://monhorus.itsystem.mn/api/v1/auth/login` must answer 400/401 and never a 3xx.**
+That one call is the regression test.
+
+**The apex `agata.mn` is different: it redirects EVERYTHING, `/api` included.**
+`agata-apex.conf` is a bare `return 308` on both `:80` and `:443`, so
+`POST https://agata.mn/api/v1/auth/login` answers 308 and not 400 — verified 2026-09-25.
+That is currently harmless, because the apex only went live on 2026-09-07 and no build has
+ever pointed at it. It is a loaded gun all the same: `https://agata.mn/api/v1` is the most
+natural origin anybody would type, and an APK built against it would fail in exactly the
+silent way section 8 describes. **Build against `https://www.agata.mn/api/v1`.** If the
+apex ever has to serve the API, give it the same `/api/v1/` proxy block the other names
+have before anything is built against it — do not rely on the redirect.
 
 **The IP-and-port sites are deliberately still running.** Every APK installed on a handset
 before 2026-08-13 has `http://103.87.255.221:3020/api/v1` compiled into it and would lose
