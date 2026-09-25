@@ -3,7 +3,7 @@ import 'dart:io' show Platform;
 /// Build-time configuration.
 ///
 /// Override for a real device or staging with:
-///   flutter run --dart-define=API_BASE_URL=https://api.monhorus.mn/api/v1
+///   flutter run --dart-define=API_BASE_URL=https://api.agata.mn/api/v1
 ///
 /// Without that override the host is resolved per platform at runtime, so a local
 /// backend on port 4000 is reachable out of the box: the Android emulator sees the
