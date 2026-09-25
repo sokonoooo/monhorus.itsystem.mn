@@ -94,6 +94,19 @@ npm-debug.log*
 coverage/
 .nyc_output/
 
+# Captured test console output. `flutter test > test-output.txt` is a normal thing to do
+# while chasing one failure, and the file that lands is a log of someone else's machine --
+# 625 lines of absolute paths from a laptop nobody else has. One got committed on
+# 2026-09-25 by a blanket `git add`; this is what stops the next one.
+test-output.txt
+*-test-output.txt
+
+# Editor scratch. VS Code's "New File" names an unsaved buffer Untitled-1, and a draft
+# saved under that name is by definition not something anybody meant to keep.
+Untitled-*.md
+Untitled-*.txt
+
+
 # -- Runtime upload storage (UPLOAD_DIR) --------------------------------------
 var/
 
