@@ -17,6 +17,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../../lib/api-client';
 import * as fileUrl from '../../lib/file-url';
 import { inspectionReportService } from '../../services/inspection-report.service';
+import {
+  inspectionReportDocxFilename,
+  plannedWorkService,
+} from '../../services/planned-work.service';
 import { renderWithAuth } from '../../test/render';
 import { InspectionReportPage } from './InspectionReportPage';
 
@@ -623,5 +627,70 @@ describe('InspectionReportPage', () => {
     expect(within(signatures).getByText('Цахилгаанчин')).toBeInTheDocument();
     expect(within(signatures).getByText('Дорж Сүх')).toBeInTheDocument();
     expect(within(signatures).getByText('Ерөнхий инженер')).toBeInTheDocument();
+  });
+
+  it('offers a Word download beside the PDF, and each fetches its own file', async () => {
+    const report = makeReport();
+    const pdf = vi.spyOn(plannedWorkService, 'downloadInspectionReportPdf').mockResolvedValue();
+    const docx = vi
+      .spyOn(plannedWorkService, 'downloadInspectionReportDocx')
+      .mockResolvedValue();
+    const user = userEvent.setup();
+
+    await renderWithReport(report, [PERMISSIONS.PLANNED_WORK_VIEW]);
+
+    await user.click(screen.getByRole('button', { name: 'Word (.docx)' }));
+    await waitFor(() => {
+      expect(docx).toHaveBeenCalledWith(WORK_ID, report);
+    });
+    expect(pdf).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'PDF татах' }));
+    await waitFor(() => {
+      expect(pdf).toHaveBeenCalledWith(WORK_ID, report.workNumber);
+    });
+  });
+
+  it('surfaces a failed Word download in the page banner', async () => {
+    vi.spyOn(plannedWorkService, 'downloadInspectionReportDocx').mockRejectedValue(
+      new Error('network'),
+    );
+    const user = userEvent.setup();
+
+    await renderWithReport(makeReport(), [PERMISSIONS.PLANNED_WORK_VIEW]);
+    await user.click(screen.getByRole('button', { name: 'Word (.docx)' }));
+
+    expect(await screen.findByText('Word файл үүсгэхэд алдаа гарлаа.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Word (.docx)' })).toBeEnabled();
+  });
+});
+
+describe('inspectionReportDocxFilename', () => {
+  it('names the file after the customer and the inspection day in Ulaanbaatar', () => {
+    expect(
+      inspectionReportDocxFilename({
+        customerName: 'Central Tower ХХК',
+        // 20:00 UTC on the 10th is already the 11th in Ulaanbaatar.
+        inspectionEnd: '2026-08-10T20:00:00.000Z',
+        createdAt: '2026-08-01T00:00:00.000Z',
+      }),
+    ).toBe('Үзлэгийн_нэгдсэн_тайлан_Central_Tower_ХХК_2026-08-11.docx');
+  });
+
+  it('drops unsafe characters and leaves an absent customer out', () => {
+    expect(
+      inspectionReportDocxFilename({
+        customerName: ' "Сод/Монгол" ХХК ',
+        inspectionEnd: null,
+        createdAt: '2026-08-11T04:00:00.000Z',
+      }),
+    ).toBe('Үзлэгийн_нэгдсэн_тайлан_СодМонгол_ХХК_2026-08-11.docx');
+    expect(
+      inspectionReportDocxFilename({
+        customerName: null,
+        inspectionEnd: null,
+        createdAt: '2026-08-11T04:00:00.000Z',
+      }),
+    ).toBe('Үзлэгийн_нэгдсэн_тайлан_2026-08-11.docx');
   });
 });

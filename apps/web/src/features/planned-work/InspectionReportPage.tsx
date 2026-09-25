@@ -205,6 +205,7 @@ export function InspectionReportPage(): ReactElement {
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [exportingDocx, setExportingDocx] = useState(false);
 
   /**
    * Renders the PDF and hands it to the browser.
@@ -229,6 +230,22 @@ export function InspectionReportPage(): ReactElement {
     }
   }
 
+
+  /** The same report as an editable Word file, with its own busy flag for the same reason. */
+  async function exportDocx(): Promise<void> {
+    if (report === null) return;
+    setExportingDocx(true);
+    setActionError(null);
+    try {
+      await plannedWorkService.downloadInspectionReportDocx(plannedWorkId!, report);
+    } catch (caught) {
+      setActionError(
+        caught instanceof ApiError ? caught.message : 'Word файл үүсгэхэд алдаа гарлаа.',
+      );
+    } finally {
+      setExportingDocx(false);
+    }
+  }
 
   const [inspectedScope, setInspectedScope] = useState('');
   const [issueSummary, setIssueSummary] = useState('');
@@ -674,6 +691,13 @@ export function InspectionReportPage(): ReactElement {
               disabled={exporting}
             >
               {exporting ? 'PDF бэлдэж байна…' : 'PDF татах'}
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => void exportDocx()}
+              disabled={exportingDocx}
+            >
+              {exportingDocx ? 'Word бэлдэж байна…' : 'Word (.docx)'}
             </Button>
             {editable && (
               <Button

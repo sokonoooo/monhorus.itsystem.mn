@@ -13,6 +13,16 @@ import { tokenStorage } from './token-storage';
  * in memory for the life of the tab, and a report is not small.
  */
 export async function downloadPdf(path: string, filename: string): Promise<void> {
+  await downloadFile(path, filename.endsWith('.pdf') ? filename : `${filename}.pdf`);
+}
+
+/**
+ * The same download for any generated file, saved under exactly [filename].
+ *
+ * The name is the caller's rather than read off `Content-Disposition`: the API is served
+ * from another origin and does not expose that header to scripts.
+ */
+export async function downloadFile(path: string, filename: string): Promise<void> {
   const response = await apiClient.get<Blob>(path, {
     responseType: 'blob',
     headers: { Authorization: `Bearer ${tokenStorage.getAccessToken() ?? ''}` },
@@ -22,7 +32,7 @@ export async function downloadPdf(path: string, filename: string): Promise<void>
   try {
     const anchor = document.createElement('a');
     anchor.href = url;
-    anchor.download = filename.endsWith('.pdf') ? filename : `${filename}.pdf`;
+    anchor.download = filename;
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();

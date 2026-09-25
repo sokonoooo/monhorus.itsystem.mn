@@ -132,10 +132,11 @@ async function createStaff(
 const reportUrl = (workId: string, suffix = ''): string =>
   `${API}/planned-work/${workId}/inspection-report${suffix}`;
 
-/** The three GETs under test, in one place so no case can quietly cover only two of them. */
+/** The GETs under test, in one place so no case can quietly cover only some of them. */
 const readPaths = (workId: string): string[] => [
   reportUrl(workId),
   reportUrl(workId, '/pdf'),
+  reportUrl(workId, '/docx'),
   reportUrl(workId, '/readiness'),
 ];
 
@@ -294,7 +295,7 @@ describe('the nested inspection-report reads obey the assignment scope', () => {
     const workId = await reportedWork();
     const invented = '0'.repeat(24);
 
-    for (const suffix of ['', '/pdf', '/readiness']) {
+    for (const suffix of ['', '/pdf', '/docx', '/readiness']) {
       const outOfScope = await request(app)
         .get(reportUrl(workId, suffix))
         .set('Authorization', `Bearer ${strangerToken}`);
@@ -307,7 +308,7 @@ describe('the nested inspection-report reads obey the assignment scope', () => {
     }
   });
 
-  it('serves the assignee all three reads', async () => {
+  it('serves the assignee every read, both downloads included', async () => {
     const workId = await reportedWork();
 
     const json = await request(app)
@@ -333,6 +334,20 @@ describe('the nested inspection-report reads obey the assignment scope', () => {
       });
     expect(pdf.status).toBe(200);
     expect((pdf.body as Buffer).subarray(0, 5).toString('latin1')).toBe('%PDF-');
+
+    const docx = await request(app)
+      .get(reportUrl(workId, '/docx'))
+      .set('Authorization', `Bearer ${assignedToken}`)
+      .buffer(true)
+      .parse((res, callback) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        res.on('end', () => callback(null, Buffer.concat(chunks)));
+      });
+    expect(docx.status).toBe(200);
+    expect(docx.headers['content-type']).toContain('wordprocessingml.document');
+    // A .docx is a zip archive.
+    expect((docx.body as Buffer).subarray(0, 2).toString('latin1')).toBe('PK');
   });
 
   it('serves a team mate on the same team as the work', async () => {

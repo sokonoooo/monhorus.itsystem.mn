@@ -36,3 +36,26 @@ export function sendPdf(res: Response, pdf: Buffer, filename: string): void {
   res.setHeader('Cache-Control', 'private, no-store');
   res.status(200).end(pdf);
 }
+
+/**
+ * Sends a generated Word document as a download.
+ *
+ * Unlike `sendPdf` this names the file in Mongolian — the Word export is titled after the
+ * customer, and a Latin transliteration of a customer's name is not their name. So the
+ * header carries both forms: an ASCII `filename` for any client that ignores RFC 5987, and
+ * the real name in `filename*`, which every current browser prefers.
+ */
+export function sendDocx(res: Response, docx: Buffer, filename: string, asciiFallback: string): void {
+  const safe = asciiFallback.replace(/[^A-Za-z0-9._-]/g, '-');
+  res.setHeader(
+    'Content-Type',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  );
+  res.setHeader('Content-Length', String(docx.byteLength));
+  res.setHeader(
+    'Content-Disposition',
+    `attachment; filename="${safe}.docx"; filename*=UTF-8''${encodeURIComponent(`${filename}.docx`)}`,
+  );
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.status(200).end(docx);
+}

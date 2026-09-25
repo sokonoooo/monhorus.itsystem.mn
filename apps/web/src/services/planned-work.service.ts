@@ -1,5 +1,6 @@
 import type {
   ApiResponse,
+  InspectionReportDto,
   CreatePlannedWorkInput,
   CreatePlannedWorkTaskInput,
   PaginatedData,
@@ -19,7 +20,8 @@ import type {
   UpdatePlannedWorkTaskInput,
 } from '@monhorus/shared';
 
-import { downloadPdf } from '../lib/download-pdf';
+import { businessDateKey } from '../lib/business-day';
+import { downloadFile, downloadPdf } from '../lib/download-pdf';
 import { apiClient, unwrap } from '../lib/api-client';
 
 export interface ReportBundle {
@@ -249,6 +251,17 @@ export const plannedWorkService = {
     );
   },
 
+  /** The consolidated inspection report as an editable Word document. */
+  async downloadInspectionReportDocx(
+    plannedWorkId: string,
+    report: Pick<InspectionReportDto, 'customerName' | 'inspectionEnd' | 'createdAt'>,
+  ): Promise<void> {
+    await downloadFile(
+      `/planned-work/${plannedWorkId}/inspection-report/docx`,
+      inspectionReportDocxFilename(report),
+    );
+  },
+
   async report(plannedWorkId: string): Promise<ReportBundle> {
     return unwrap(
       await apiClient.get<ApiResponse<ReportBundle>>(`/planned-work/${plannedWorkId}/report`),
@@ -295,3 +308,23 @@ export const plannedWorkService = {
     );
   },
 };
+
+/**
+ * `Үзлэгийн_нэгдсэн_тайлан_<Customer>_<2026-08-11>.docx`, the same name the API puts in its
+ * own header (`docxFilename` in the inspection-report controller).
+ *
+ * Dated by the inspection rather than the download, in the business time zone, so one
+ * report always saves under one name. Characters no file system accepts are dropped,
+ * spaces become underscores, and a report with no customer leaves that part out.
+ */
+export function inspectionReportDocxFilename(
+  report: Pick<InspectionReportDto, 'customerName' | 'inspectionEnd' | 'createdAt'>,
+): string {
+  const customer = (report.customerName ?? '')
+    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, '')
+    .trim()
+    .replace(/\s+/g, '_');
+  const when = new Date(report.inspectionEnd ?? report.createdAt);
+  const date = Number.isNaN(when.getTime()) ? '' : businessDateKey(when);
+  return `${['Үзлэгийн_нэгдсэн_тайлан', customer, date].filter((part) => part !== '').join('_')}.docx`;
+}

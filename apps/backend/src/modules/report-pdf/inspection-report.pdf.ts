@@ -17,31 +17,34 @@ import {
   prose,
   sectionHeading,
   signatureBlock,
-  signatureLeader,
   type BrandingImage,
 } from './pdf-template';
 import {
-  formatDate,
-  formatLongDate,
-  formatQuantity,
-  formatScore,
-  formatYear,
-  joinParts,
-} from './report-pdf.format';
-import { riskBandLabelOf } from '../settings/risk-band.label';
+  BODY_HEADING,
+  ISSUE_HEADERS,
+  SUMMARY_HEADERS,
+  TASK_HEADERS,
+  TITLE,
+  contractorOf,
+  coverFields,
+  coverFooter,
+  documentedTasks,
+  floorSections,
+  issueRows,
+  organisationRows,
+  proseBlocks,
+  replacementLists,
+  signatureLines,
+  summaryRows,
+} from './inspection-report.content';
 import type { ReportBranding } from './report-branding';
 
 /**
- * The title the source document carries, verbatim.
+ * The consolidated inspection report as a pdfmake document.
  *
- * This report IS the one «Үзлэгийн тайлан.docx» was written for, so it takes the
- * template's own heading rather than a paraphrase of it.
+ * What it says comes from `inspection-report.content.ts`, which the Word export reads
+ * too; this file owns only how it is laid out on the page.
  */
-const TITLE = 'ЦАХИЛГААНЫ ҮЗЛЭГИЙН ТАЙЛАН';
-
-/** The bold heading the template puts at the top of its first body page. */
-const BODY_HEADING = 'Цахилгааны үзлэгийн тайлан';
-
 export function inspectionReportDocument(
   report: InspectionReportDto,
   branding: ReportBranding,
@@ -54,10 +57,7 @@ export function inspectionReportDocument(
    */
   bands: readonly RiskBand[] | null = null,
 ): TDocumentDefinitions {
-  // The report's own contractor still wins where it has one — it was resolved when the
-  // report was written and is a fact about that inspection — and the configured company
-  // is what stands in when it does not.
-  const contractor = report.contractorName ?? branding.companyName;
+  const contractor = contractorOf(report, branding);
 
   return {
     pageSize: PAGE_SIZE,
@@ -78,26 +78,22 @@ function cover(report: InspectionReportDto, branding: ReportBranding): Content[]
     text: ' ',
     fontSize: FONT_SIZE.coverSpacer,
   }));
+  const [city, year] = coverFooter(report);
 
   return [
     ...spacers,
     coverTitle(TITLE),
     { text: ' ', fontSize: FONT_SIZE.coverSpacer },
-    // The template's own three cover fields, in its order and with its labels.
-    coverField('Объект:', joinParts([report.buildingName, report.locationLabel])),
-    // Who performed the inspection, which is its own setting: an operator may issue a
-    // report under one name and have the work carried out under another.
-    coverField('Үзлэг хийсэн:', branding.inspectionCompany),
-    coverField('Огноо:', formatLongDate(report.inspectionEnd ?? report.createdAt)),
+    ...coverFields(report, branding).map(([label, value]) => coverField(label, value)),
     { text: ' ', fontSize: FONT_SIZE.coverSpacer },
     {
-      text: 'Улаанбаатар',
+      text: city,
       fontSize: FONT_SIZE.body,
       alignment: 'center',
       margin: [0, 0, 0, 2],
     },
     {
-      text: formatYear(report.inspectionEnd ?? report.createdAt),
+      text: year,
       fontSize: FONT_SIZE.body,
       alignment: 'center',
     },
@@ -112,60 +108,21 @@ function body(
 ): Content[] {
   const content: Content[] = [
     sectionHeading(BODY_HEADING, true),
-    // The template's own organisation table, with its exact three labels, plus the
-    // fields this report holds that the blank template left for a pen.
-    organisationTable([
-      ['Төслийн нэр / Project name', report.projectName ?? ''],
-      ['Ерөнхий гүйцэтгэгчийн нэр / Company name', contractor],
-      ['Ил ба далд ажлын актны нэр / ', report.actName ?? 'Цахилгааны үзлэг'],
-      ['Захиалагч / Customer', report.customerName ?? ''],
-      ['Байршил / Location', joinParts([report.buildingName, report.locationLabel])],
-      ['Ажлын дугаар / Work number', report.workNumber],
-      [
-        'Үзлэгийн хугацаа / Period',
-        [formatDate(report.inspectionStart), formatDate(report.inspectionEnd)]
-          .filter((part) => part !== '')
-          .join(' — '),
-      ],
-      [
-        'Хариуцсан / Responsible',
-        joinParts([
-          report.responsibleEmployeeNames.join(', ') || null,
-          report.responsibleTeamNames.join(', ') || null,
-        ]),
-      ],
-      ['Үзлэгээр шалгасан / Scope', report.inspectedScope ?? ''],
-    ]),
+    organisationTable(organisationRows(report, contractor)),
   ];
 
-  // Requirement 8's body: the sub-tasks, grouped by the floor they were done on. Each
-  // floor gets its own heading and table, which is how the source separates its sections.
-  for (const group of report.groups) {
-    if (group.tasks.length === 0) continue;
+  // Each floor gets its own heading and table, which is how the source separates its
+  // sections.
+  for (const section of floorSections(report, bands)) {
     content.push(
-      sectionRule(`Байршил: ${group.floorName}`),
-      dataTable(
-        ['Ажлын нэр', 'Гүйцэтгэл', 'Төлөв', 'Үнэлгээ', 'Тайлбар'],
-        group.tasks.map((task) => [
-          task.title,
-          `${formatQuantity(task.completedQuantity)}/${formatQuantity(task.totalQuantity)} ${task.unit}`,
-          task.skipped ? `${task.statusLabel} (алгассан)` : task.statusLabel,
-          [
-            formatScore(task.score),
-            task.riskLevel === null ? '' : riskBandLabelOf(task.riskLevel, bands),
-          ]
-            .filter((part) => part !== '')
-            .join(' · '),
-          task.note ?? '',
-        ]),
-        [
-          CONTENT_WIDTH * 0.28,
-          CONTENT_WIDTH * 0.15,
-          CONTENT_WIDTH * 0.16,
-          CONTENT_WIDTH * 0.18,
-          CONTENT_WIDTH * 0.23,
-        ],
-      ),
+      sectionRule(section.heading),
+      dataTable(TASK_HEADERS, section.rows, [
+        CONTENT_WIDTH * 0.28,
+        CONTENT_WIDTH * 0.15,
+        CONTENT_WIDTH * 0.16,
+        CONTENT_WIDTH * 0.18,
+        CONTENT_WIDTH * 0.23,
+      ]),
     );
   }
 
@@ -173,101 +130,57 @@ function body(
   //
   // Its own section rather than pictures wedged into the table above, because that is
   // how the source is built: a table of findings to read, and blocks of photographs with
-  // the note beside each one. Only tasks that actually carry a photo appear — a block
-  // with an empty picture area would be a row of borders saying nothing.
-  const documented = report.groups
-    .flatMap((group) =>
-      group.tasks.map((task) => ({ task, floorName: group.floorName })),
-    )
-    .filter((entry) => (photos.get(entry.task.taskId)?.length ?? 0) > 0);
+  // the note beside each one.
+  const documented = documentedTasks(
+    report,
+    (taskId) => (photos.get(taskId)?.length ?? 0) > 0,
+  );
 
   if (documented.length > 0) {
     content.push(sectionRule('Гүйцэтгэлийн зураг'));
     for (const entry of documented) {
       content.push(
         detailBlock({
-          workName: entry.task.title,
-          location: joinParts([entry.floorName, report.buildingName]),
-          note: entry.task.note,
-          photos: photos.get(entry.task.taskId) ?? [],
+          workName: entry.workName,
+          location: entry.location,
+          note: entry.note,
+          photos: photos.get(entry.taskId) ?? [],
         }),
       );
     }
   }
 
-  // "Илэрсэн зөрчил" — the findings list, which is the part of this document a reader
-  // turns to first. Kept as its own table so it is not buried inside a floor section.
+  // "Илэрсэн зөрчил" — the part of this document a reader turns to first. Kept as its
+  // own table so it is not buried inside a floor section.
   if (report.issues.length > 0) {
     content.push(
       sectionRule('Илэрсэн зөрчил'),
-      dataTable(
-        ['№', 'Ажлын нэр', 'Байршил', 'Түвшин', 'Нөхцөл', 'Зөвлөмж'],
-        report.issues.map((issue, index) => [
-          index + 1,
-          issue.title,
-          issue.locationLabel ?? '',
-          riskBandLabelOf(issue.riskLevel, bands),
-          issue.condition ?? '',
-          issue.advice ?? '',
-        ]),
-        [
-          CONTENT_WIDTH * 0.05,
-          CONTENT_WIDTH * 0.2,
-          CONTENT_WIDTH * 0.15,
-          CONTENT_WIDTH * 0.14,
-          CONTENT_WIDTH * 0.23,
-          CONTENT_WIDTH * 0.23,
-        ],
-      ),
+      dataTable(ISSUE_HEADERS, issueRows(report, bands), [
+        CONTENT_WIDTH * 0.05,
+        CONTENT_WIDTH * 0.2,
+        CONTENT_WIDTH * 0.15,
+        CONTENT_WIDTH * 0.14,
+        CONTENT_WIDTH * 0.23,
+        CONTENT_WIDTH * 0.23,
+      ]),
     );
-  }
-
-  // Requirement 9: the conclusion block, in the template's summary-table shape — an
-  // index column, a label, a value — which is how its final page reads.
-  const summaryRows: Array<readonly (string | number)[]> = [
-    ['', 'Цахилгаан үзлэг хийсэн огноо:', formatLongDate(report.inspectionEnd ?? report.createdAt)],
-    [1, 'Байршил:', joinParts([report.buildingName, report.locationLabel])],
-    [2, 'Үзлэгээр шалгасан:', report.inspectedScope ?? ''],
-    [3, 'Ерөнхий түвшин:', report.overallLabel ?? 'Үнэлгээгүй'],
-  ];
-  if (report.issueSummary !== null && report.issueSummary !== '') {
-    summaryRows.push([4, 'Товч дүгнэлт:', report.issueSummary]);
   }
 
   content.push(
     sectionRule('Дүгнэлт'),
-    dataTable(
-      ['№', 'Үзүүлэлт', 'Утга'],
-      summaryRows,
-      [CONTENT_WIDTH * 0.06, CONTENT_WIDTH * 0.32, CONTENT_WIDTH * 0.62],
-    ),
-    ...prose('Дүгнэлт:', report.conclusion),
-    ...prose('Зөвлөмж:', report.recommendation),
-  );
-
-  if (report.replacementPanels.length > 0) {
-    content.push(...list('Шинэчлэх шаардлагатай самбарууд:', report.replacementPanels));
-  }
-  if (report.replacementConnections.length > 0) {
-    content.push(...list('Шинэчлэх шаардлагатай холболт:', report.replacementConnections));
-  }
-
-  // Requirement 11, and the template's own sign-off wording.
-  content.push(
-    ...signatureBlock([
-      { label: 'Тайлан гаргасан:', value: contractor },
-      {
-        label: 'Тайлан гүйцэтгэсэн:',
-        value: signatureLeader(report.createdByName, report.createdByPosition),
-      },
-      {
-        label: 'Хянасан:',
-        value: signatureLeader(report.approvedByName, report.approvedByPosition),
-      },
-      { label: 'Хүлээн авсан:', value: signatureLeader(null, null) },
-      { label: 'Шалгаж хянасан:', value: signatureLeader(null, null) },
+    dataTable(SUMMARY_HEADERS, summaryRows(report), [
+      CONTENT_WIDTH * 0.06,
+      CONTENT_WIDTH * 0.32,
+      CONTENT_WIDTH * 0.62,
     ]),
+    ...proseBlocks(report).flatMap(([label, text]) => prose(label, text)),
   );
+
+  for (const [label, items] of replacementLists(report)) {
+    content.push(...list(label, items));
+  }
+
+  content.push(...signatureBlock(signatureLines(report, contractor)));
 
   return content;
 }
