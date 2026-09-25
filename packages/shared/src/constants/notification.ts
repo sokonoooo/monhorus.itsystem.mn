@@ -3,8 +3,16 @@
  *
  * The event and recipient table in 14.3 is complete, so the events below are transcribed
  * from it rather than invented. What 14.3 never states is the delivery channel, and
- * section 19.2 leaves it open, so this is an in-app centre only: no email, no SMS, no
- * push. Adding a channel later means adding a transport, not rewriting these events.
+ * section 19.2 left it open.
+ *
+ * That gap is now partly closed: Android push was approved on 2026-08-18 and is delivered
+ * alongside the in-app record. iOS push was declined in the same decision — it needs a paid
+ * Apple Developer membership and a bundle identifier the customer app does not yet have —
+ * so an iPhone still sees notifications only inside the app. Email remains reserved for
+ * password reset and is not a notification channel.
+ *
+ * The prediction in the original note held: adding a channel meant adding a transport, and
+ * none of these events changed.
  */
 export const NOTIFICATION_EVENTS = [
   // Төлөвлөгөөт ажил эхлэх/дуусах дөхсөн/хэтэрсэн -> ажилтан, баг, менежер
@@ -34,6 +42,22 @@ export const NOTIFICATION_EVENTS = [
   // Засвар/давтан үзлэг шаардлагатай -> хариуцагч, хэрэглэгч, админ
   'REPAIR_REQUIRED',
   'REVISIT_REQUIRED',
+  /**
+   * A second call at a site that already has unfinished work.
+   *
+   * Addressed to whoever is on the existing job rather than broadcast: the point is that
+   * somebody already standing there can pick it up, which is information only they can act
+   * on. A dispatcher learns the same thing from SERVICE_REQUEST_CREATED.
+   */
+  'SERVICE_REQUEST_SITE_BUSY',
+  // Төлөвлөгөөт ажил хуваарилагдсан/товлогдсон/эхэлсэн -> хариуцагч, хэрэглэгч
+  'PLANNED_WORK_ASSIGNED',
+  'PLANNED_WORK_TASK_ASSIGNED',
+  'PLANNED_WORK_SCHEDULED',
+  'PLANNED_WORK_STARTED',
+  // Ажил дууссаны дараа үнэлгээ өгөх урилга, сануулга -> хэрэглэгч
+  'SURVEY_REQUESTED',
+  'SURVEY_REMINDER',
   // Invoice үүссэн/төлөх хугацаа дөхсөн/overdue -> админ
   'INVOICE_ISSUED',
   'INVOICE_DUE_SOON',
@@ -51,12 +75,19 @@ export const NOTIFICATION_EVENT_LABELS: Record<NotificationEvent, string> = {
   SERVICE_REQUEST_STATUS_CHANGED: 'Дуудлагын төлөв өөрчлөгдсөн',
   SLA_NEAR_BREACH: 'SLA хугацаа ойртсон',
   SLA_BREACHED: 'SLA хугацаа зөрчсөн',
-  REPORT_SUBMITTED: 'Тайлан илгээсэн',
+  REPORT_SUBMITTED: 'Дүгнэлт илгээсэн',
   REPORT_APPROVED: 'Тайлан батлагдсан',
   REPORT_RETURNED: 'Тайлан буцаагдсан',
   RISK_ASSESSMENT_RAISED: 'Эрсдэлтэй үнэлгээ илэрсэн',
   REPAIR_REQUIRED: 'Засвар шаардлагатай',
   REVISIT_REQUIRED: 'Дахин үзлэг шаардлагатай',
+  SERVICE_REQUEST_SITE_BUSY: 'Ажиллаж буй байршилд шинэ дуудлага',
+  PLANNED_WORK_ASSIGNED: 'Төлөвлөгөөт ажил хуваарилагдсан',
+  PLANNED_WORK_TASK_ASSIGNED: 'Дэд ажил хуваарилагдсан',
+  PLANNED_WORK_SCHEDULED: 'Төлөвлөгөөт ажил товлогдсон',
+  PLANNED_WORK_STARTED: 'Төлөвлөгөөт ажил эхэлсэн',
+  SURVEY_REQUESTED: 'Үйлчилгээгээ үнэлнэ үү',
+  SURVEY_REMINDER: 'Үйлчилгээний үнэлгээ хүлээгдэж байна',
   INVOICE_ISSUED: 'Нэхэмжлэл илгээгдсэн',
   INVOICE_DUE_SOON: 'Нэхэмжлэлийн төлөх хугацаа дөхсөн',
   INVOICE_OVERDUE: 'Нэхэмжлэл хугацаа хэтэрсэн',
@@ -65,12 +96,6 @@ export const NOTIFICATION_EVENT_LABELS: Record<NotificationEvent, string> = {
 /** Drives the colour of the row, not a business rule. */
 export const NOTIFICATION_SEVERITIES = ['INFO', 'WARNING', 'CRITICAL'] as const;
 export type NotificationSeverity = (typeof NOTIFICATION_SEVERITIES)[number];
-
-export const NOTIFICATION_SEVERITY_LABELS: Record<NotificationSeverity, string> = {
-  INFO: 'Мэдээлэл',
-  WARNING: 'Анхааруулга',
-  CRITICAL: 'Ноцтой',
-};
 
 export const NOTIFICATION_EVENT_SEVERITIES: Record<NotificationEvent, NotificationSeverity> = {
   PLANNED_WORK_DUE_SOON: 'WARNING',
@@ -88,14 +113,28 @@ export const NOTIFICATION_EVENT_SEVERITIES: Record<NotificationEvent, Notificati
   RISK_ASSESSMENT_RAISED: 'WARNING',
   REPAIR_REQUIRED: 'WARNING',
   REVISIT_REQUIRED: 'WARNING',
+  SERVICE_REQUEST_SITE_BUSY: 'INFO',
+  PLANNED_WORK_ASSIGNED: 'INFO',
+  PLANNED_WORK_TASK_ASSIGNED: 'INFO',
+  PLANNED_WORK_SCHEDULED: 'INFO',
+  PLANNED_WORK_STARTED: 'INFO',
+  SURVEY_REQUESTED: 'INFO',
+  SURVEY_REMINDER: 'INFO',
   INVOICE_ISSUED: 'INFO',
   INVOICE_DUE_SOON: 'WARNING',
   INVOICE_OVERDUE: 'CRITICAL',
 };
 
 /**
- * Section 19.2 leaves the delivery channel open, so nothing is sent outside the system.
- * Shown on the notification screen so the limit is stated rather than assumed.
+ * Platforms a push registration can come from.
+ *
+ * `ios` and `web` are accepted by the API but never dispatched to: only Android push was
+ * approved. They are listed so a device that registers from an unapproved platform is
+ * recorded and ignored, rather than rejected as a validation error the client cannot act
+ * on — and so that enabling iOS later is a dispatch change, not a migration.
  */
-export const NOTIFICATION_CHANNEL_UNAPPROVED_NOTE =
-  'Мэдэгдлийн хүргэх суваг (имэйл, SMS, push) батлагдаагүй тул системд дотооддоо л харагдана.';
+export const DEVICE_PLATFORMS = ['android', 'ios', 'web'] as const;
+export type DevicePlatform = (typeof DEVICE_PLATFORMS)[number];
+
+/** The platforms push is actually delivered to today. */
+export const PUSH_ENABLED_PLATFORMS: readonly DevicePlatform[] = ['android'];

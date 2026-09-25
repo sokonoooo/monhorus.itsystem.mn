@@ -104,9 +104,15 @@ class WorkRemoteDataSource {
   /// urgency ordering is done below, on the `slaState` each row already carries.
   // -- Service-request conclusion --------------------------------------------
   //
-  // The same four routes the web editor uses. There is no mobile-only endpoint and no
-  // second report shape: a conclusion written here and one written on the web are the same
-  // record, and the canonical Report + ReportItem rows are derived from it server-side.
+  // The same routes the web editor uses. There is no mobile-only endpoint and no second
+  // report shape: a conclusion written here and one written on the web are the same record,
+  // and the canonical Report + ReportItem rows are derived from it server-side.
+  //
+  // READ, WRITE, SUBMIT — AND STOP. `POST /service-requests/:id/report/approve` exists on
+  // the backend and the web admin calls it, but this file deliberately has no method for
+  // it. Approval is an office act on somebody else's work, and this app is where the
+  // conclusion is written; a client here would let the author sign off their own report.
+  // The same goes for the return route, for the same reason.
 
   /// GET /service-requests/:id/report — the conclusion, CREATED on first read.
   ///
@@ -229,21 +235,6 @@ class WorkRemoteDataSource {
     );
   }
 
-  /// POST /service-requests/:id/report/approve — settles a submitted conclusion.
-  ///
-  /// There is deliberately no `returnWorkReport` beside this. Returning still requires
-  /// `service_request.change_status`, because it is a judgement passed on somebody else's
-  /// work, and a client method for a route the field tier can never reach would only ever
-  /// produce a 403.
-  Future<WorkReportModel> approveWorkReport(String requestId) {
-    return _client.request<WorkReportModel>(
-      path: '/service-requests/$requestId/report/approve',
-      method: 'POST',
-      data: const <String, dynamic>{},
-      decoder: (Object? json) => WorkReportModel.fromJson(json! as Map<String, dynamic>),
-    );
-  }
-
   /// GET /service-requests/:id — one request in full, or null when the caller may not
   /// see it.
   ///
@@ -293,12 +284,13 @@ class WorkRemoteDataSource {
   /// than here, because this transport must not decide what a list means.
   Future<PaginatedData<ServiceRequestListItemModel>> listAssignedServiceRequests({
     int limit = 100,
+    int page = 1,
   }) {
     return _client.request<PaginatedData<ServiceRequestListItemModel>>(
       path: '/service-requests',
       method: 'GET',
       queryParameters: <String, dynamic>{
-        'page': 1,
+        'page': page,
         'limit': limit,
         // Newest first, so a request assigned a minute ago is on the first page even
         // when the reader carries more than `limit` of them.
@@ -315,6 +307,7 @@ class WorkRemoteDataSource {
 
   Future<PaginatedData<ServiceRequestListItemModel>> listOpenServiceRequests({
     int limit = 100,
+    int page = 1,
   }) async {
     final List<PaginatedData<ServiceRequestListItemModel>> pages =
         await Future.wait<PaginatedData<ServiceRequestListItemModel>>(
@@ -322,6 +315,7 @@ class WorkRemoteDataSource {
         (ServiceRequestStatus status) => _listServiceRequestsByStatus(
           status: status,
           limit: limit,
+          page: page,
         ),
       ),
     );
@@ -341,7 +335,7 @@ class WorkRemoteDataSource {
 
     return PaginatedData<ServiceRequestListItemModel>(
       items: merged,
-      page: 1,
+      page: page,
       limit: limit,
       // The sum of both counters, because the pool IS the two statuses together. A
       // record that moved between the round trips is counted twice here while being
@@ -368,13 +362,14 @@ class WorkRemoteDataSource {
   Future<PaginatedData<ServiceRequestListItemModel>> _listServiceRequestsByStatus({
     required ServiceRequestStatus status,
     required int limit,
+    int page = 1,
   }) {
     return _client.request<PaginatedData<ServiceRequestListItemModel>>(
       path: '/service-requests',
       method: 'GET',
       queryParameters: <String, dynamic>{
         'status': status.wireValue,
-        'page': 1,
+        'page': page,
         'limit': limit,
         'sortBy': 'slaDueAt',
         'sortDir': 'asc',
@@ -464,6 +459,28 @@ class WorkRemoteDataSource {
   }) {
     return _client.request<PlannedWorkModel>(
       path: '/planned-work/$plannedWorkId/tasks/$taskId/progress',
+      method: 'POST',
+      data: request.toJson(),
+      decoder: (Object? json) =>
+          PlannedWorkModel.fromJson(json! as Map<String, dynamic>),
+    );
+  }
+
+  /// POST /planned-work/:id/tasks/:taskId/materials — what one sub-task consumed of
+  /// one material registered on the work.
+  ///
+  /// The quantity is ABSOLUTE for that (sub-task, material) pair, so re-sending the
+  /// same body after a timeout leaves the same figure recorded rather than doubling
+  /// it, and a zero deletes the entry. Answers with the whole re-read
+  /// [PlannedWorkModel], which is what refreshes the work's Зарцуулсан/Үлдсэн totals
+  /// alongside the sub-task's own rows without a second GET.
+  Future<PlannedWorkModel> recordTaskMaterialUsage({
+    required String plannedWorkId,
+    required String taskId,
+    required RecordTaskMaterialUsageRequest request,
+  }) {
+    return _client.request<PlannedWorkModel>(
+      path: '/planned-work/$plannedWorkId/tasks/$taskId/materials',
       method: 'POST',
       data: request.toJson(),
       decoder: (Object? json) =>

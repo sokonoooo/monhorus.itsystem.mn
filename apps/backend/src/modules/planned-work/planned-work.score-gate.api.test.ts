@@ -5,12 +5,15 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   createObjectFixture,
+  createOrgFixture,
   createUserWithPermissions,
   resetDomainCollections,
   startTestApp,
   stopTestApp,
   type ObjectFixture,
+  type OrgFixture,
 } from '../../test/helpers';
+import { Employee } from '../employee/employee.model';
 import { PlannedWorkTask } from './planned-work.models';
 
 /**
@@ -29,11 +32,16 @@ const PERFORMER_PERMISSIONS = [
   PERMISSIONS.PLANNED_WORK_UPDATE,
   PERMISSIONS.PLANNED_WORK_CHANGE_STATUS,
   PERMISSIONS.PLANNED_WORK_RECORD_PROGRESS,
+  // Reaching PLANNED now goes through the approval gate, so the fixture caller has to
+  // hold the approve key as well as the change_status key it drives the rest with.
+  PERMISSIONS.PLANNED_WORK_APPROVE,
 ] as const;
 
 let app: Express;
 let objects: ObjectFixture;
+let org: OrgFixture;
 let token: string;
+let employeeId: string;
 
 async function login(email: string, password: string): Promise<string> {
   const response = await request(app).post(`${API}/auth/login`).send({ email, password });
@@ -73,11 +81,29 @@ async function addTask(workId: string): Promise<string> {
   return tasks[tasks.length - 1]!.id;
 }
 
-async function transition(workId: string, action: string): Promise<request.Response> {
+async function transition(
+  workId: string,
+  action: string,
+  body: Record<string, unknown> = {},
+): Promise<request.Response> {
   return request(app)
     .post(`${API}/planned-work/${workId}/transition`)
     .set('Authorization', `Bearer ${token}`)
-    .send({ action });
+    .send({ action, ...body });
+}
+
+/**
+ * Drives a draft all the way to PLANNED.
+ *
+ * REACHING PLANNED TAKES TWO ACTIONS NOW: PLAN only submits the work for approval
+ * (DRAFT -> PENDING_APPROVAL), and APPROVE is what plans it — and it refuses to run
+ * without at least one employee, so the crew travels with the approval.
+ */
+async function planAndApprove(workId: string): Promise<void> {
+  expect((await transition(workId, 'PLAN')).status).toBe(200);
+  expect(
+    (await transition(workId, 'APPROVE', { assignedEmployeeIds: [employeeId] })).status,
+  ).toBe(200);
 }
 
 async function attachPhotos(workId: string, taskId: string): Promise<void> {
@@ -109,7 +135,7 @@ async function recordProgress(
 async function workReadyExceptScore(): Promise<{ workId: string; taskId: string }> {
   const workId = await createWork();
   const taskId = await addTask(workId);
-  expect((await transition(workId, 'PLAN')).status).toBe(200);
+  await planAndApprove(workId);
   expect((await transition(workId, 'START')).status).toBe(200);
   await attachPhotos(workId, taskId);
 
@@ -133,10 +159,25 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await resetDomainCollections();
+  org = await createOrgFixture();
   objects = await createObjectFixture();
 
   const performer = await createUserWithPermissions('pwscore@test.mn', PERFORMER_PERMISSIONS);
   token = await login(performer.email, performer.password);
+
+  // Approval assigns, so the suite needs a real employee to hand every work to.
+  const employee = await Employee.create({
+    employeeCode: 'E-SCORE-1',
+    firstName: 'Дорж',
+    lastName: 'Бат',
+    company: org.companyId,
+    department: org.departmentId,
+    position: org.positionId,
+    employeeType: 'FULL_TIME',
+    employmentStartDate: new Date('2024-01-01'),
+    status: 'ACTIVE',
+  });
+  employeeId = String(employee._id);
 });
 
 describe('sub-task score gate', () => {

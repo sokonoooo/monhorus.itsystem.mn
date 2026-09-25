@@ -1,8 +1,7 @@
-import { PERMISSIONS, type PaginatedData } from '@monhorus/shared';
+import { type PaginatedData } from '@monhorus/shared';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
-import { Alert } from '../../components/ui/Alert';
 import { Button } from '../../components/ui/Button';
 import { ColumnPicker } from '../../components/ui/ColumnPicker';
 import { DataTable, Pagination, type Column } from '../../components/ui/DataTable';
@@ -16,55 +15,21 @@ import {
   FILTER_LABEL,
   FILTER_SELECT,
 } from '../../components/ui/control-styles';
-import { useAuth } from '../../contexts/auth-context';
 import { useTableColumns } from '../../hooks/use-table-columns';
 import { ApiError } from '../../lib/api-client';
+import { BUSINESS_TIME_ZONE, businessDayEnd, businessDayStart } from '../../lib/business-day';
 import {
   auditService,
   type AuditEntryDto,
   type AuditFacets,
   type AuditQuery,
 } from '../../services/audit.service';
+import { actionLabel, entityLabel } from './audit-vocabulary';
 
-/** Mongolian labels for the audit vocabulary in requirements 14.4. */
-const ACTION_LABELS: Record<string, string> = {
-  Created: 'Үүсгэсэн',
-  Updated: 'Шинэчилсэн',
-  StatusChanged: 'Төлөв өөрчилсөн',
-  Assigned: 'Хуваарилсан',
-  Submitted: 'Илгээсэн',
-  Approved: 'Баталсан',
-  Returned: 'Буцаасан',
-  Closed: 'Хаасан',
-  Cancelled: 'Цуцалсан',
-  PasscodeReset: 'Нууц үг шинэчилсэн',
-  PasswordChanged: 'Нууц үг сольсон',
-  LoginSucceeded: 'Нэвтэрсэн',
-  LoginFailed: 'Нэвтрэх оролдлого',
-  LoggedOut: 'Гарсан',
-  AccountLocked: 'Бүртгэл хаагдсан',
-  TokenReuseDetected: 'Token дахин ашиглалт',
-  PLANNED_WORK_BECAME_OVERDUE: 'Хугацаа хэтэрсэн (систем)',
-  PLANNED_WORK_RESCHEDULED: 'Хугацаа сунгасан',
-  PLANNED_WORK_ARCHIVED: 'Архивласан',
-  REPORT_CREATED: 'Тайлан үүссэн',
-  REPORT_UPDATED: 'Тайлан шинэчилсэн',
-  REPORT_SUBMITTED: 'Тайлан илгээсэн',
-  REPORT_RETURNED: 'Тайлан буцаасан',
-  REPORT_APPROVED: 'Тайлан баталсан',
-};
-
-const ENTITY_LABELS: Record<string, string> = {
-  User: 'Хэрэглэгч',
-  Employee: 'Ажилтан',
-  Customer: 'Харилцагч',
-  Work: 'Ажил/Хүсэлт',
-  Equipment: 'Объект/Төхөөрөмж',
-  Permission: 'Role/Permission',
-  PlannedWork: 'Төлөвлөгөөт ажил',
-  PlannedWorkTask: 'Дэд ажил',
-  PlannedWorkReport: 'Ажлын тайлан',
-};
+/** A timestamp as the business timezone sees it, the way every other screen prints one. */
+function formatDateTime(iso: string): string {
+  return new Date(iso).toLocaleString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
+}
 
 function JsonBlock({ label, value }: { label: string; value: unknown }): ReactElement | null {
   if (value === null || value === undefined) return null;
@@ -87,7 +52,6 @@ function JsonBlock({ label, value }: { label: string; value: unknown }): ReactEl
  * employee.view_salary.
  */
 export function AuditLogPage(): ReactElement {
-  const { can } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
 
   const query = useMemo<AuditQuery>(() => {
@@ -98,8 +62,19 @@ export function AuditLogPage(): ReactElement {
       ...(searchParams.get('entityType') ? { entityType: searchParams.get('entityType')! } : {}),
       ...(searchParams.get('action') ? { action: searchParams.get('action')! } : {}),
       ...(searchParams.get('search') ? { search: searchParams.get('search')! } : {}),
-      ...(searchParams.get('from') ? { from: searchParams.get('from')! } : {}),
-      ...(searchParams.get('to') ? { to: searchParams.get('to')! } : {}),
+      /*
+       * The instants bounding the chosen Ulaanbaatar days.
+       *
+       * The bare `yyyy-mm-dd` an `<input type="date">` holds went through untouched, and the
+       * endpoint reads it with `new Date(...)` — UTC midnight, which is 08:00 here. Each end
+       * therefore fell on the wrong day, and Эхлэх = Дуусах collapsed `$gte` and `$lte` onto a
+       * single instant, so a day full of activity rendered as no activity at all.
+       * `businessDayStart`/`businessDayEnd` mirror the backend's own `dayBounds`, the same way
+       * the reports and inspections screens do, so both ends of the request now mean the day
+       * the reader picked.
+       */
+      ...(searchParams.get('from') ? { from: businessDayStart(searchParams.get('from')!) } : {}),
+      ...(searchParams.get('to') ? { to: businessDayEnd(searchParams.get('to')!) } : {}),
     };
   }, [searchParams]);
 
@@ -158,7 +133,7 @@ export function AuditLogPage(): ReactElement {
       header: 'Хугацаа',
       render: (row) => (
         <span className="whitespace-nowrap text-slate-700">
-          {new Date(row.occurredAt).toLocaleString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' })}
+          {formatDateTime(row.occurredAt)}
         </span>
       ),
     },
@@ -177,7 +152,7 @@ export function AuditLogPage(): ReactElement {
       header: 'Үйлдэл',
       render: (row) => (
         <span className="whitespace-nowrap text-slate-800">
-          {ACTION_LABELS[row.action] ?? row.action}
+          {actionLabel(row.action)}
         </span>
       ),
     },
@@ -186,7 +161,7 @@ export function AuditLogPage(): ReactElement {
       header: 'Обьект',
       render: (row) => (
         <span className="truncate text-slate-800">
-          {ENTITY_LABELS[row.entityType] ?? row.entityType}
+          {entityLabel(row.entityType)}
         </span>
       ),
     },
@@ -234,14 +209,6 @@ export function AuditLogPage(): ReactElement {
         breadcrumbs={[{ label: 'Нүүр', to: '/dashboard' }, { label: 'Audit log' }]}
       />
 
-      {!can(PERMISSIONS.EMPLOYEE_VIEW_SALARY) && (
-        <div className="mb-4">
-          <Alert variant="info">
-            Цалинтай холбоотой бүртгэлийг харахын тулд цалингийн эрх шаардлагатай.
-          </Alert>
-        </div>
-      )}
-
       <div className={FILTER_BAR}>
         <div className="min-w-[200px] flex-1">
           <label htmlFor="audit-search" className={FILTER_LABEL}>
@@ -272,7 +239,7 @@ export function AuditLogPage(): ReactElement {
             <option value="">Бүгд</option>
             {facets.entityTypes.map((entity) => (
               <option key={entity} value={entity}>
-                {ENTITY_LABELS[entity] ?? entity}
+                {entityLabel(entity)}
               </option>
             ))}
           </select>
@@ -291,7 +258,7 @@ export function AuditLogPage(): ReactElement {
             <option value="">Бүгд</option>
             {facets.actions.map((action) => (
               <option key={action} value={action}>
-                {ACTION_LABELS[action] ?? action}
+                {actionLabel(action)}
               </option>
             ))}
           </select>
@@ -339,6 +306,9 @@ export function AuditLogPage(): ReactElement {
           columns={columnState.visibleColumns}
           rows={data?.items ?? []}
           rowKey={(row) => row.id}
+          // Numbered off the response rather than the query, so a request in flight can
+          // never number the rows on screen against the page they did not come from.
+          numbering={{ page: data?.page ?? 1, limit: data?.limit ?? 25 }}
           loading={loading}
           error={error}
           onRetry={() => void load()}
@@ -360,7 +330,7 @@ export function AuditLogPage(): ReactElement {
 
       <Drawer
         open={detail !== null}
-        title={detail ? `${ACTION_LABELS[detail.action] ?? detail.action}` : ''}
+        title={detail ? actionLabel(detail.action) : ''}
         onClose={() => setDetail(null)}
         width="lg"
         footer={
@@ -373,10 +343,10 @@ export function AuditLogPage(): ReactElement {
           <div className="space-y-4 text-sm">
             <dl className="space-y-1.5">
               {[
-                ['Хугацаа', new Date(detail.occurredAt).toLocaleString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' })],
+                ['Хугацаа', formatDateTime(detail.occurredAt)],
                 ['Хэрэглэгч', detail.actorName ?? 'Систем'],
                 ['Эрх', detail.actorRole ?? '-'],
-                ['Обьектын төрөл', ENTITY_LABELS[detail.entityType] ?? detail.entityType],
+                ['Обьектын төрөл', entityLabel(detail.entityType)],
                 ['Обьектын ID', detail.entityId ?? '-'],
                 ['Шалтгаан', detail.reason ?? '-'],
                 ['IP', detail.ip ?? '-'],

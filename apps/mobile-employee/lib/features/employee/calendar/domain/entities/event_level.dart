@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
 import '../../../presentation/theme/employee_tokens.dart';
+import '../../../shared/planned_work_vocabulary.dart';
+import '../../../shared/service_request_vocabulary.dart';
 
 /// The risk colour a calendar entry carries.
 ///
@@ -63,26 +65,50 @@ enum EventLevel {
       };
 }
 
-/// Statuses that mean the record produced its result and is no longer owed.
-///
-/// `ARCHIVED` is a planned work whose report was approved; `COMPLETED` is shared by
-/// both vocabularies (packages/shared/src/constants/planned-work.ts and
-/// .../service-request.ts).
-const Set<String> settledStatuses = <String>{'COMPLETED', 'ARCHIVED'};
-
-/// Statuses that are neither outstanding nor a result.
-const Set<String> dormantStatuses = <String>{'DRAFT', 'CANCELLED', 'RETURNED'};
-
 /// Maps a backend status plus its two flags onto a band.
+///
+/// THE STATUS ARRIVES AS A RAW STRING and it belongs to one of two vocabularies: a
+/// `CalendarEventDto` carries whatever its source record's own status field says, and the
+/// two sources do not share a word list. That is why this took raw strings — and why it
+/// used to compare against hand-written sets, `{'COMPLETED','ARCHIVED'}` and
+/// `{'DRAFT','CANCELLED','RETURNED'}` and a bare `'OVERDUE'`, which is a third
+/// transcription of two vocabularies the app already has enums for. A status added to
+/// either list would have been silently mis-banded here and nowhere else.
+///
+/// So the string is parsed through BOTH enums and the answer is whichever one recognises
+/// it. Nothing is hard-coded that either vocabulary already states.
+///
+/// The order of the tests is load-bearing and unchanged. A missed deadline outranks
+/// everything, including a status that reads calm. A dormant record is checked BEFORE a
+/// settled one, which is what paints a cancelled job grey rather than green: it is not a
+/// result, and green would claim it was one.
 EventLevel levelFor({
   required String status,
   required bool isOverdue,
   required bool isUrgent,
 }) {
-  // A missed deadline outranks everything, including a status that reads calm.
-  if (isOverdue || status == 'OVERDUE') return EventLevel.red;
-  if (dormantStatuses.contains(status)) return EventLevel.neutral;
-  if (settledStatuses.contains(status)) return EventLevel.green;
-  if (isUrgent || status == 'REVISIT_REQUIRED') return EventLevel.red;
+  final PlannedWorkStatus? work = PlannedWorkStatus.fromWire(status);
+  final ServiceRequestStatus? request = ServiceRequestStatus.fromWire(status);
+
+  if (isOverdue || work == PlannedWorkStatus.overdue) return EventLevel.red;
+  if (_isDormant(work, request)) return EventLevel.neutral;
+  if (work?.isFinished ?? false) return EventLevel.green;
+  if (request == ServiceRequestStatus.completed) return EventLevel.green;
+  if (isUrgent || request == ServiceRequestStatus.revisitRequired) {
+    return EventLevel.red;
+  }
   return EventLevel.yellow;
 }
+
+/// Neither outstanding nor a result: nothing is owed and nothing was produced.
+///
+/// A planned work that was never submitted or was called off, and a request that was
+/// called off or handed back to the customer. REJECTED is deliberately NOT here: it is a
+/// work its author has to correct and resubmit, which is owed rather than dormant, and
+/// leaving it to fall through to yellow is what the app did before either status could be
+/// parsed at all.
+bool _isDormant(PlannedWorkStatus? work, ServiceRequestStatus? request) =>
+    work == PlannedWorkStatus.draft ||
+    work == PlannedWorkStatus.cancelled ||
+    request == ServiceRequestStatus.cancelled ||
+    request == ServiceRequestStatus.returned;

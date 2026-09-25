@@ -19,6 +19,14 @@ import { tokenStorage } from '../lib/token-storage';
 export function makeUser(
   permissions: readonly PermissionKey[],
   role: UserRole = 'admin',
+  /**
+   * Anything else about the account.
+   *
+   * Added for the portal: `customerId`/`customerName` were hardcoded null, so a customer
+   * who actually belongs to an organisation — the only kind the server will create, since
+   * `User.customer` is required on the customer tier — could not be expressed here at all.
+   */
+  overrides: Partial<CurrentUserDto> = {},
 ): CurrentUserDto {
   return {
     id: 'u1',
@@ -31,10 +39,12 @@ export function makeUser(
     customerName: null,
     lastLoginAt: null,
     createdBy: null,
+    createdByName: null,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     roleIds: ['r1'],
     permissions: [...permissions],
+    ...overrides,
   };
 }
 
@@ -55,9 +65,11 @@ export function renderWithAuth(
     path?: string;
     /** Coarse role tier of the signed-in user. Defaults to admin. */
     role?: UserRole;
+    /** Anything else about the account — `customerId` for a portal caller, say. */
+    user?: Partial<CurrentUserDto>;
   } = {},
 ): RenderResult {
-  const user = makeUser(options.permissions ?? [], options.role);
+  const user = makeUser(options.permissions ?? [], options.role, options.user);
 
   tokenStorage.setSession(
     { accessToken: 'test-token', refreshToken: 'test-refresh', expiresIn: 900, tokenType: 'Bearer' },

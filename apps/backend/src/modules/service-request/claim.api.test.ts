@@ -12,11 +12,9 @@ import {
 } from '../../test/helpers';
 import { AuditLog } from '../audit/audit-log.model';
 import { Employee } from '../employee/employee.model';
-import { Notification } from '../notification/notification.model';
 import { invalidateRecipientCache } from '../notification/notification.service';
 import { Customer, ObjectNode } from '../objects/object.models';
 import { ServiceRequest } from './service-request.model';
-import { UNCLAIMED_ALERT_AFTER_MS, runUnclaimedSweep } from './unclaimed.service';
 
 const API = '/api/v1';
 
@@ -263,118 +261,7 @@ describe('Open-work self-assignment', () => {
   });
 });
 
-describe('Two-hour unclaimed-work notification', () => {
-  /** A dispatcher, who is who the alert is addressed to. */
-  async function makeDispatcher(email = 'dispatch@test.mn'): Promise<void> {
-    await createUserWithPermissions(email, [
-      PERMISSIONS.DISPATCH_ASSIGN,
-      PERMISSIONS.DISPATCH_VIEW,
-    ]);
-    invalidateRecipientCache();
-  }
-
-  const longAgo = (): Date => new Date(Date.now() - UNCLAIMED_ALERT_AFTER_MS - 60_000);
-
-  it('notifies dispatchers once a request has been open for two hours', async () => {
-    await makeDispatcher();
-    const requestId = await seedOpenRequest(customerId, { openedForClaimAt: longAgo() });
-
-    const result = await runUnclaimedSweep();
-
-    expect(result.notified).toBe(1);
-    const alerts = await Notification.find({
-      event: 'SERVICE_REQUEST_UNCLAIMED',
-      entityId: requestId,
-    });
-    expect(alerts).toHaveLength(1);
-    // The body has to be actionable on its own: the alert is read in a list.
-    expect(alerts[0]?.body).toContain('Харилцагч');
-    expect(alerts[0]?.linkPath).toContain('/dispatch');
-  });
-
-  it('does not notify before two hours have passed', async () => {
-    await makeDispatcher();
-    await seedOpenRequest(customerId, {
-      openedForClaimAt: new Date(Date.now() - 30 * 60 * 1000),
-    });
-
-    const result = await runUnclaimedSweep();
-
-    expect(result.notified).toBe(0);
-    expect(await Notification.countDocuments({ event: 'SERVICE_REQUEST_UNCLAIMED' })).toBe(0);
-  });
-
-  it('does not notify for work claimed inside the two hours', async () => {
-    await makeDispatcher();
-    const tech = await makeTechnician('quick@test.mn');
-    const requestId = await seedOpenRequest(customerId, { openedForClaimAt: longAgo() });
-
-    await request(app)
-      .post(`${API}/service-requests/${String(requestId)}/claim`)
-      .set('Authorization', `Bearer ${tech.token}`)
-      .send({});
-
-    const result = await runUnclaimedSweep();
-
-    expect(result.notified).toBe(0);
-    expect(await Notification.countDocuments({ event: 'SERVICE_REQUEST_UNCLAIMED' })).toBe(0);
-  });
-
-  /** Rerun-safety: the job runs every five minutes and must not re-alert each time. */
-  it('sends only one notification per unclaimed interval however often it runs', async () => {
-    await makeDispatcher();
-    await seedOpenRequest(customerId, { openedForClaimAt: longAgo() });
-
-    await runUnclaimedSweep();
-    await runUnclaimedSweep();
-    const third = await runUnclaimedSweep();
-
-    expect(third.notified).toBe(0);
-    expect(await Notification.countDocuments({ event: 'SERVICE_REQUEST_UNCLAIMED' })).toBe(1);
-  });
-
-  it('starts a new interval, and allows a new alert, when work returns to the open queue', async () => {
-    await makeDispatcher();
-    const requestId = await seedOpenRequest(customerId, { openedForClaimAt: longAgo() });
-
-    await runUnclaimedSweep();
-    expect(await Notification.countDocuments({ event: 'SERVICE_REQUEST_UNCLAIMED' })).toBe(1);
-
-    // Assigned, then returned to the queue: a second spell, which is alertable on its own
-    // merits rather than suppressed because the first one already was.
-    await ServiceRequest.updateOne(
-      { _id: requestId },
-      { $set: { openedForClaimAt: longAgo(), status: 'UNASSIGNED', assignedEmployees: [] } },
-    );
-
-    const second = await runUnclaimedSweep();
-
-    expect(second.notified).toBe(1);
-    expect(await Notification.countDocuments({ event: 'SERVICE_REQUEST_UNCLAIMED' })).toBe(2);
-  });
-
-  it('re-stamps the open interval when a request is returned to the queue by a status change', async () => {
-    const dispatcher = await createUserWithPermissions('restamp@test.mn', [
-      PERMISSIONS.SERVICE_REQUEST_CHANGE_STATUS,
-      PERMISSIONS.SERVICE_REQUEST_VIEW,
-    ]);
-    const dispatcherToken = await login(dispatcher.email, dispatcher.password);
-    const requestId = await seedOpenRequest(customerId, {
-      status: 'ASSIGNED',
-      assignedEmployees: [new Types.ObjectId()],
-      openedForClaimAt: null,
-    });
-
-    const response = await request(app)
-      .post(`${API}/service-requests/${String(requestId)}/status`)
-      .set('Authorization', `Bearer ${dispatcherToken}`)
-      .send({ status: 'UNASSIGNED', reason: 'Ажилтан татгалзсан.' });
-
-    expect(response.status).toBe(200);
-
-    const saved = await ServiceRequest.findById(requestId);
-    expect(saved?.openedForClaimAt).not.toBeNull();
-    expect(saved?.unclaimedNotifiedFor).toBeNull();
-    expect(saved?.assignedEmployees).toHaveLength(0);
-  });
-});
+// The unclaimed-work chase — its thresholds, its repeats, its cap and who it addresses —
+// is covered in `unclaimed.service.test.ts`. It moved out when the single two-hour alert
+// became a repeating one: the sweep tests now drive their own clock and assert per
+// recipient, which has nothing to do with the claim endpoint this file is about.

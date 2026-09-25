@@ -2,18 +2,23 @@ import { logger } from '../config/logger';
 import { runUnclaimedSweep } from '../modules/service-request/unclaimed.service';
 
 /**
- * The two-hour unclaimed-work sweep.
+ * The unclaimed-work sweep.
  *
- * Runs every five minutes rather than every two hours: the threshold is when a request
- * BECOMES due, not when the job happens to look, so a coarse interval would delay an alert
- * by up to its own length. Five minutes bounds the lateness at five minutes while keeping
- * the sweep cheap — it reads only rows that are open and already past the threshold.
+ * Runs every five minutes rather than every thirty: a reminder is due when the request
+ * reaches its threshold, not when the job happens to look, so an interval matching the
+ * reminder gap would delay each one by up to a full gap and let the schedule drift. Five
+ * minutes bounds the lateness at five minutes while keeping the sweep cheap — it reads only
+ * rows that are open, past the first threshold, and not yet capped.
+ *
+ * NOT the thing that decides how often a request is chased. The sweep sends at most one
+ * reminder per request per pass and works out due times from the request's own open stamp,
+ * so this interval can be retuned without changing anyone's notification cadence.
  *
  * Deliberately the same plain-interval mechanism as the overdue reconciliation, for the
  * same reasons: the sweep is idempotent, a missed tick is corrected by the next one, and a
  * scheduler dependency would buy nothing. Rerun-safety lives in the sweep itself, which
- * stakes each alert with an atomic write before sending it, so overlapping ticks — or two
- * server instances — cannot produce a duplicate notification.
+ * stakes each reminder with an atomic write before sending it, so overlapping ticks — or
+ * two server instances — cannot produce a duplicate notification.
  */
 export const UNCLAIMED_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 

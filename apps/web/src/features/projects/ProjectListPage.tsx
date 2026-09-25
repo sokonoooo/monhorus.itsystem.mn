@@ -17,13 +17,14 @@ import { FILTER_BAR, FILTER_LABEL, FILTER_SELECT } from '../../components/ui/con
 import { useAuth } from '../../contexts/auth-context';
 import { useTableColumns } from '../../hooks/use-table-columns';
 import { ApiError } from '../../lib/api-client';
+import { BUSINESS_TIME_ZONE } from '../../lib/business-day';
 import { objectService } from '../../services/object.service';
 import { projectService } from '../../services/project.service';
 import { RiskSummaryCell } from './objects/ObjectBadges';
 
 function formatDate(iso: string | null): string {
   if (!iso) return '-';
-  return new Date(iso).toLocaleDateString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
+  return new Date(iso).toLocaleDateString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
 }
 
 /** Archive state is shown rather than hidden, so an archived project stays findable. */
@@ -166,6 +167,11 @@ export function ProjectListPage(): ReactElement {
       render: (row) => <RiskSummaryCell summary={row.riskSummary} />,
     },
     { key: 'status', header: 'Төлөв', render: (row) => <ActiveBadge isActive={row.isActive} /> },
+    {
+      key: 'createdBy',
+      header: 'Үүсгэсэн',
+      render: (row) => <span className="text-slate-700">{row.createdByName ?? '-'}</span>,
+    },
   ];
 
   const columnState = useTableColumns('projects', columns);
@@ -260,6 +266,9 @@ export function ProjectListPage(): ReactElement {
           columns={columnState.visibleColumns}
           rows={data?.items ?? []}
           rowKey={(row) => row.id}
+          // Numbered off the response rather than the query, so a request in flight can
+          // never number the rows on screen against the page they did not come from.
+          numbering={{ page: data?.page ?? 1, limit: data?.limit ?? 20 }}
           loading={loading}
           error={error}
           onRetry={() => void load()}

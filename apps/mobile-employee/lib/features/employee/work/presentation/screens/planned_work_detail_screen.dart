@@ -12,6 +12,7 @@ import '../providers/work_providers.dart';
 import '../widgets/inspection_report_sheet.dart';
 import '../widgets/report_preview_sheet.dart';
 import '../widgets/task_card.dart';
+import '../widgets/task_material_sheet.dart';
 import '../widgets/task_progress_sheet.dart';
 import '../widgets/work_async_view.dart';
 import '../widgets/work_ui.dart';
@@ -265,6 +266,20 @@ class _DetailBody extends ConsumerWidget {
                 plannedWorkId: work.id,
                 task: task,
               ),
+              // Only a material registered on the work can be drawn, so with none
+              // registered there is nothing to offer and the control is withheld
+              // rather than opening onto an empty list. The same blockers as the
+              // progress button apply: the write is gated on the very same
+              // `planned_work.record_progress` grant and the same assignment scope.
+              onRecordMaterials: work.materials.isEmpty ||
+                      _progressBlockedReason(grants, assignment) != null
+                  ? null
+                  : () => showTaskMaterialSheet(
+                        context,
+                        plannedWorkId: work.id,
+                        task: task,
+                        materials: work.materials,
+                      ),
             ),
 
         if (work.materials.isNotEmpty) ...<Widget>[
@@ -352,8 +367,13 @@ class _OverallCard extends StatelessWidget {
               height: 1.15,
             ),
           ),
-          const SizedBox(height: 8),
-          ProgressRail(percent: work.progressPercent, color: railTone),
+          // No rail when the answer carried no percentage: an empty rail beside a
+          // dash would read as nought per cent, which is the figure the backend
+          // declined to state. The quantity line below still says what is known.
+          if (work.progressPercent case final double percent) ...<Widget>[
+            const SizedBox(height: 8),
+            ProgressRail(percent: percent, color: railTone),
+          ],
           const SizedBox(height: 9),
           Text(
             '${formatQuantity(work.completedQuantity)}/'
@@ -454,13 +474,24 @@ class _LifecycleActionsState extends ConsumerState<_LifecycleActions> {
   Widget build(BuildContext context) {
     if (widget.assignment.blocksWrites) return const SizedBox.shrink();
 
-    final List<PlannedWorkAvailableActionModel> offered = widget
+    // Everything the record allows and the caller may do, INCLUDING the one action this
+    // app cannot carry out. It is split rather than filtered away, because the two halves
+    // get opposite treatments: one is a button, and the other is a sentence.
+    final List<PlannedWorkAvailableActionModel> permitted = widget
         .work.availableActions
         .where((PlannedWorkAvailableActionModel entry) =>
             entry.action != null && widget.grants.allows(entry.action!))
         .toList(growable: false);
 
-    if (offered.isEmpty) return const SizedBox.shrink();
+    final List<PlannedWorkAvailableActionModel> offered = permitted
+        .where((PlannedWorkAvailableActionModel entry) => entry.action!.isOfferable)
+        .toList(growable: false);
+
+    // APPROVE, when the server has offered it and the caller holds the key for it.
+    final bool approvalIsElsewhere = permitted.any(
+        (PlannedWorkAvailableActionModel entry) => entry.action!.assignsCrew);
+
+    if (offered.isEmpty && !approvalIsElsewhere) return const SizedBox.shrink();
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(
@@ -472,6 +503,25 @@ class _LifecycleActionsState extends ConsumerState<_LifecycleActions> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
+          // SAID OUT LOUD RATHER THAN DRAWN AS A BUTTON.
+          //
+          // Approval and crew assignment are one decision server-side — the transition
+          // is refused without at least one employee — and this app has no crew picker,
+          // so an "Батлах" button here could only ever come back with the server's
+          // refusal. Silently dropping the action would be worse still: the reader holds
+          // the permission, the record is waiting on them, and nothing on the screen
+          // would say so. This is the same line the app already takes on approving a
+          // service-request conclusion, which is likewise an office act.
+          if (approvalIsElsewhere)
+            const NoticeBanner(
+              margin: EdgeInsets.only(bottom: 8),
+              tone: EmployeeTokens.yellow,
+              icon: Icons.how_to_reg_outlined,
+              title: 'Батлахдаа гүйцэтгэгчээ сонгоно',
+              text: 'Энэ ажлыг батлахын зэрэгцээ гүйцэтгэх ажилтныг нь заавал '
+                  'зааж өгдөг тул батлах үйлдлийг вэб системээс хийнэ. Буцаах '
+                  'бол доорх товчийг ашиглана уу.',
+            ),
           for (final PlannedWorkAvailableActionModel entry in offered)
             Padding(
               padding: const EdgeInsets.only(bottom: 8),
@@ -499,6 +549,12 @@ class _LifecycleActionsState extends ConsumerState<_LifecycleActions> {
     switch (action) {
       case PlannedWorkAction.plan:
         return Icons.event_outlined;
+      // Never reached — APPROVE is not offerable — but the switch is exhaustive so the
+      // next action added to the enum is a compile error rather than a blank button.
+      case PlannedWorkAction.approve:
+        return Icons.how_to_reg_outlined;
+      case PlannedWorkAction.reject:
+        return Icons.undo;
       case PlannedWorkAction.start:
         return Icons.play_arrow_outlined;
       case PlannedWorkAction.pause:
@@ -694,9 +750,14 @@ class _FloorRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final Color tone = floor.progressPercent >= 100
-        ? EmployeeTokens.green
-        : (floor.progressPercent > 0 ? EmployeeTokens.yellow : EmployeeTokens.line);
+    // A floor the answer gave no percentage for takes the neutral hairline: there is
+    // no reading to colour, and green or yellow would each be a claim of its own.
+    final double? percent = floor.progressPercent;
+    final Color tone = percent == null
+        ? EmployeeTokens.line
+        : (percent >= 100
+            ? EmployeeTokens.green
+            : (percent > 0 ? EmployeeTokens.yellow : EmployeeTokens.line));
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -721,8 +782,10 @@ class _FloorRow extends StatelessWidget {
             ),
           ],
         ),
-        const SizedBox(height: 5),
-        ProgressRail(percent: floor.progressPercent, color: tone),
+        if (percent != null) ...<Widget>[
+          const SizedBox(height: 5),
+          ProgressRail(percent: percent, color: tone),
+        ],
         const SizedBox(height: 5),
         Text(
           '${floor.taskCount} дэд ажил · '
@@ -1355,12 +1418,73 @@ class _MaterialsCard extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: <Widget>[
           for (int i = 0; i < work.materials.length; i++)
-            InfoRow(
-              label: work.materials[i].name,
-              value: '${formatQuantity(work.materials[i].quantity)}'
-                  ' ${work.materials[i].unit.label}',
+            _MaterialRow(
+              material: work.materials[i],
               divider: i < work.materials.length - 1,
             ),
+        ],
+      ),
+    );
+  }
+}
+
+/// One registered material: the name, and the three figures the pool is described by.
+///
+/// Бүртгэсэн is what the plan allows, Зарцуулсан what the sub-tasks have drawn and
+/// Үлдсэн what is left. All three arrive from the server — Үлдсэн in particular is
+/// stored there rather than derived, and is printed rather than subtracted here,
+/// because it is the exact field the over-consumption guard compares a write against.
+class _MaterialRow extends StatelessWidget {
+  const _MaterialRow({required this.material, required this.divider});
+
+  final PlannedWorkMaterialModel material;
+  final bool divider;
+
+  @override
+  Widget build(BuildContext context) {
+    // Blank for a unit the record does not carry, so the three figures below print
+    // as bare numbers rather than borrowing a measure nobody recorded.
+    final String unit = material.unit.label.isEmpty ? '' : ' ${material.unit.label}';
+
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 9),
+      decoration: divider
+          ? const BoxDecoration(
+              border: Border(bottom: BorderSide(color: EmployeeTokens.faint)),
+            )
+          : null,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Expanded(
+                child: Text(
+                  material.name,
+                  style: EmployeeTokens.rowSub
+                      .copyWith(fontWeight: FontWeight.w500),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Text(
+                'Үлдсэн ${formatQuantity(material.remainingQuantity)}$unit',
+                textAlign: TextAlign.right,
+                style: EmployeeTokens.detailValue.copyWith(
+                  color: material.remainingQuantity <= 0
+                      ? EmployeeTokens.muted
+                      : EmployeeTokens.green,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 3),
+          Text(
+            'Бүртгэсэн ${formatQuantity(material.quantity)}$unit · '
+            'Зарцуулсан ${formatQuantity(material.consumedQuantity)}$unit',
+            style: EmployeeTokens.microNote,
+          ),
         ],
       ),
     );

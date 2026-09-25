@@ -14,6 +14,7 @@ import type { AuthContext } from '../../common/types/express';
 import { logger } from '../../config/logger';
 import { Role } from '../rbac/role.model';
 import { User } from '../user/user.model';
+import { dispatchPush } from './device-token.service';
 import { Notification, type INotification } from './notification.model';
 
 type WithId<T> = T & { _id: Types.ObjectId };
@@ -34,6 +35,20 @@ export interface NotifyInput {
   permission?: PermissionKey;
   /** Specific people, for example the employee a job was assigned to. */
   userIds?: readonly (Types.ObjectId | string)[];
+  /**
+   * Everyone holding a portal account for this organisation.
+   *
+   * THE THIRD KIND OF RECIPIENT, and the reason it exists: the other two cannot reach a
+   * customer at all. `permission` resolves to staff keys and `head_admin`, and the CUSTOMER
+   * preset holds not one staff permission; `userIds` is only ever fed employee accounts.
+   * Requirement 14.3 names the customer as a recipient for the work-finished and
+   * conclusion-approved events, and until this existed the implementation simply did not.
+   *
+   * Addressed by organisation rather than by the person who raised the request, because the
+   * request belongs to the organisation: the colleague who reported a fault may be on leave
+   * when it is fixed, and the answer should still reach somebody.
+   */
+  customerId?: Types.ObjectId | string | null;
   /** Never notify the person who caused the event. */
   excludeUserId?: Types.ObjectId | string | null;
 }
@@ -92,6 +107,29 @@ async function recipientsByPermission(permission: PermissionKey): Promise<Types.
 }
 
 /**
+ * The active portal accounts of one organisation.
+ *
+ * Deliberately NOT cached, unlike the permission lookup: that one keys on a permission and
+ * is asked the same question constantly, whereas this is per-organisation and per-event, and
+ * a stale answer here means a customer who was just given access is not told about their own
+ * request. The query is a two-field indexed match on a small collection.
+ *
+ * Bounded to `role: 'customer'` as well as the organisation link, because a staff account
+ * may legitimately carry a customer association without being a portal user.
+ */
+async function recipientsByCustomer(
+  customerId: Types.ObjectId | string | null | undefined,
+): Promise<Types.ObjectId[]> {
+  const id = toObjectId(customerId);
+  if (!id) return [];
+
+  const users = await User.find({ status: 'active', role: 'customer', customer: id })
+    .select('_id')
+    .lean();
+  return users.map((user) => user._id);
+}
+
+/**
  * Writes one notification per recipient.
  *
  * Deliberately swallows its own failures, exactly as the audit writer does: a
@@ -110,6 +148,33 @@ export async function notify(input: NotifyInput): Promise<void> {
     for (const raw of input.userIds ?? []) {
       const id = toObjectId(raw);
       if (id) recipients.set(String(id), id);
+    }
+
+    if (input.customerId) {
+      const forCustomer = await recipientsByCustomer(input.customerId);
+
+      /*
+       * THE SILENT FAILURE, MADE AUDIBLE.
+       *
+       * A customer notification that reaches nobody looks identical to one that was never
+       * written: `notify` swallows its own errors, an empty recipient set is not an error,
+       * and the caller gets no answer either way. That is exactly how "the customer is not
+       * getting their notification" can be true for weeks with nothing in the logs.
+       *
+       * There are only three ways to land here, and all three are somebody's mistake rather
+       * than a normal state: the organisation has no portal account at all, every one of
+       * them is suspended, or an account carries `role: 'customer'` with `customer: null`
+       * and is therefore attached to no organisation — live data has one. None is worth
+       * failing the business operation over, and all three are worth a line in monitoring.
+       */
+      if (forCustomer.length === 0) {
+        logger.warn(
+          { event: input.event, customerId: String(input.customerId) },
+          'Customer notification reached nobody: the organisation has no active portal account',
+        );
+      }
+
+      for (const id of forCustomer) recipients.set(String(id), id);
     }
 
     const excluded = toObjectId(input.excludeUserId);
@@ -131,6 +196,21 @@ export async function notify(input: NotifyInput): Promise<void> {
         readAt: null,
       })),
     );
+
+    /*
+     * Push goes out only after the rows are safely written.
+     *
+     * The in-app notification is the record of the event; the push is a nudge towards it.
+     * Sending first would allow a phone to buzz about something the database never got, and
+     * tapping it would open an empty inbox. dispatchPush never throws, so this cannot
+     * undo the write above.
+     */
+    await dispatchPush([...recipients.values()], {
+      title: input.title,
+      body: input.body ?? null,
+      event: input.event,
+      linkPath: input.linkPath ?? null,
+    });
   } catch (error) {
     logger.error({ err: error, event: input.event }, 'Failed to write notifications');
   }

@@ -2,25 +2,32 @@ import {
   PERMISSIONS,
   SERVICE_REQUEST_STATUS_LABELS,
   SERVICE_REQUEST_TRANSITIONS,
-  SERVICE_REQUEST_TYPE_LABELS,
   isReasonRequired,
   type ServiceRequestDetailDto,
   type ServiceRequestStatus,
 } from '@monhorus/shared';
-import { useEffect, useState, type ReactElement, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, type ReactElement, type ReactNode } from 'react';
 import { useParams } from 'react-router-dom';
 
 import { Button } from '../../components/ui/Button';
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 import { RequestAttachments } from './RequestAttachments';
 import { WorkReportPanel } from './WorkReportPanel';
-import { RequestStatusBadge, SlaBadge, UrgentBadge } from '../../components/ui/DomainBadges';
+import { RequestStatusBadge, SlaBadge } from '../../components/ui/DomainBadges';
 import { PageHeader } from '../../components/ui/PageHeader';
 import { ErrorState, Skeleton } from '../../components/ui/States';
 import { useToast } from '../../components/ui/ToastProvider';
 import { useAuth } from '../../contexts/auth-context';
 import { ApiError } from '../../lib/api-client';
+import { BUSINESS_TIME_ZONE } from '../../lib/business-day';
 import { serviceRequestService } from '../../services/service-request.service';
+import { AssignDrawer, isAssignable } from '../dispatch/AssignDrawer';
+import { FloorPlanPin } from '../projects/FloorPlanPin';
+
+/** A timestamp as the business timezone sees it, the way every other screen prints one. */
+function formatDateTime(iso: string): string {
+  return new Date(iso).toLocaleString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
+}
 
 function Row({ label, value }: { label: string; value: ReactNode }): ReactElement {
   return (
@@ -42,7 +49,7 @@ function Card({ title, children }: { title: string; children: ReactNode }): Reac
 
 export function ServiceRequestDetailPage(): ReactElement {
   const { requestId } = useParams<{ requestId: string }>();
-  const { can } = useAuth();
+  const { can, isAdmin } = useAuth();
   const { notify } = useToast();
 
   const [request, setRequest] = useState<ServiceRequestDetailDto | null>(null);
@@ -50,6 +57,8 @@ export function ServiceRequestDetailPage(): ReactElement {
   const [error, setError] = useState<string | null>(null);
   const [pendingStatus, setPendingStatus] = useState<ServiceRequestStatus | null>(null);
   const [slaDialogOpen, setSlaDialogOpen] = useState(false);
+  const [assignOpen, setAssignOpen] = useState(false);
+  const [claiming, setClaiming] = useState(false);
 
   useEffect(() => {
     if (!requestId) return undefined;
@@ -74,6 +83,34 @@ export function ServiceRequestDetailPage(): ReactElement {
       cancelled = true;
     };
   }, [requestId]);
+
+  /**
+   * Re-reads the request after something OTHER than the status card moved it.
+   *
+   * The conclusion panel is the one such thing: submitting a conclusion advances the
+   * request and approving one completes it, both on the backend and neither reported in
+   * the answer the panel gets. Without this the status card here goes on offering the
+   * transitions the pre-conclusion status allowed — the buttons the reader then presses
+   * are refused, because the request has already moved.
+   *
+   * Read rather than patched from a guess: the panel knows the request moved, not where
+   * to, and inventing a status here would be a second opinion about the same record.
+   */
+  const reloadRequest = useCallback((): void => {
+    if (!requestId) return;
+
+    void serviceRequestService
+      .getById(requestId)
+      .then((result) => setRequest(result))
+      .catch((caught: unknown) => {
+        // The conclusion action itself succeeded, so this must not be reported as its
+        // failure. Say only that the page is behind, which is the actionable half.
+        notify(
+          caught instanceof ApiError ? caught.message : 'Хүсэлтийн төлөвийг шинэчилж чадсангүй.',
+          'error',
+        );
+      });
+  }, [requestId, notify]);
 
   async function applyStatus(status: ServiceRequestStatus, reason: string): Promise<void> {
     if (!requestId) return;
@@ -110,6 +147,34 @@ export function ServiceRequestDetailPage(): ReactElement {
     }
   }
 
+  /**
+   * Takes this request for the caller.
+   *
+   * Offered here as well as on the open queue because the unclaimed notification links
+   * straight to `/service-requests/<id>`: a technician following it lands on this page, and
+   * without the action here their only way to act would be to navigate back out to a list
+   * and find the row again.
+   *
+   * The answer is used rather than re-read. Claiming returns the updated request, so the
+   * assignee card and the status both refresh from the server's own view of the record —
+   * and the button disappears, because the request it applied to is no longer unclaimed.
+   */
+  async function claim(): Promise<void> {
+    if (!requestId || claiming) return;
+
+    setClaiming(true);
+    try {
+      const updated = await serviceRequestService.claim(requestId);
+      setRequest(updated);
+      notify(`${updated.requestNumber} ажлыг өөртөө авлаа.`, 'success');
+    } catch (caught) {
+      // Whether a claim wins is the server's call, and it explains a loss in its own words.
+      notify(caught instanceof ApiError ? caught.message : 'Ажил авч чадсангүй.', 'error');
+    } finally {
+      setClaiming(false);
+    }
+  }
+
   if (loading) {
     return (
       <div className="space-y-3">
@@ -127,11 +192,54 @@ export function ServiceRequestDetailPage(): ReactElement {
   const allowedTransitions = SERVICE_REQUEST_TRANSITIONS[request.status];
   const canChangeStatus = can(PERMISSIONS.SERVICE_REQUEST_CHANGE_STATUS);
 
+  /*
+   * Whether to offer "Өөртөө авах" at all.
+   *
+   * BOTH HALVES OF "UNCLAIMED" ARE TESTED, matching the pair the claim endpoint re-asserts
+   * atomically — `{ assignedEmployees: { $size: 0 }, assignedTeam: null }`. A request that
+   * names only a TEAM already belongs to somebody, so offering the button on it would put a
+   * refusal behind a click. Status is left to the server: it is the authority on what is
+   * still claimable, and a request that moves between this render and the press is refused
+   * there rather than pre-judged here.
+   */
+  const isUnclaimed = request.assignedEmployees.length === 0 && request.assignedTeam === null;
+
+  /*
+   * An administrator is not offered it at all.
+   *
+   * Claiming puts the CALLER on the job, so it only means something for somebody who will
+   * go and do it. An administrator dispatches the work instead, and the endpoint agrees
+   * with that reading already: `resolveClaimant` refuses an account with no employee card
+   * behind it, so on the usual admin login the button was a control that could only ever
+   * answer «Таны бүртгэл ажилтны картад холбогдоогүй». Hiding it removes a refusal from
+   * behind a click, which is the same reason a team-assigned request does not offer it.
+   *
+   * The role rather than the permission, because the ADMIN role legitimately carries
+   * `service_request.claim` — it is what lets an administrator hold the key for the
+   * technicians they manage — and the question here is who the button is FOR.
+   */
+  const canClaim = can(PERMISSIONS.SERVICE_REQUEST_CLAIM) && isUnclaimed && !isAdmin;
+
+  /*
+   * Handing the request to somebody else, without going back to the board.
+   *
+   * The same permission and the same status rule the dispatch board applies — literally
+   * the same `isAssignable`, imported rather than restated, so the two screens cannot
+   * drift apart — and the same drawer, so a reassignment made from here behaves exactly
+   * as one made from a card. Until this existed a dispatcher who had opened a request had
+   * to navigate back to the board to hand it over, which is precisely the moment a
+   * technician calls in sick and the request in front of them is the one to move.
+   *
+   * Reassignment, not just first assignment: the drawer posts to the same validated
+   * transition service, which is the authority on whether the change is allowed.
+   */
+  const canAssign = can(PERMISSIONS.DISPATCH_ASSIGN) && isAssignable(request.status);
+
   return (
     <>
       <PageHeader
         title={request.requestNumber}
-        description={SERVICE_REQUEST_TYPE_LABELS[request.requestType]}
+        description={request.customer?.name ?? undefined}
         backTo={{ to: '/service-requests', label: 'Хүсэлтийн жагсаалт руу буцах' }}
         breadcrumbs={[
           { label: 'Нүүр', to: '/dashboard' },
@@ -139,11 +247,25 @@ export function ServiceRequestDetailPage(): ReactElement {
           { label: request.requestNumber },
         ]}
         actions={
-          can(PERMISSIONS.DISPATCH_EXTEND_SLA) && request.status !== 'COMPLETED' ? (
-            <Button variant="secondary" onClick={() => setSlaDialogOpen(true)}>
-              SLA сунгах
-            </Button>
-          ) : null
+          <>
+            {canClaim && (
+              <Button loading={claiming} onClick={() => void claim()}>
+                Өөртөө авах
+              </Button>
+            )}
+            {canAssign && (
+              <Button variant="secondary" onClick={() => setAssignOpen(true)}>
+                {request.assignedEmployees.length > 0 || request.assignedTeam
+                  ? 'Дахин хуваарилах'
+                  : 'Хуваарилах'}
+              </Button>
+            )}
+            {can(PERMISSIONS.DISPATCH_EXTEND_SLA) && request.status !== 'COMPLETED' && (
+              <Button variant="secondary" onClick={() => setSlaDialogOpen(true)}>
+                SLA сунгах
+              </Button>
+            )}
+          </>
         }
       />
 
@@ -151,18 +273,13 @@ export function ServiceRequestDetailPage(): ReactElement {
         <div className="space-y-4">
           <Card title="Төлөв">
             <div className="mb-3 flex flex-wrap items-center gap-2">
-              <RequestStatusBadge status={request.status} />
-              {request.isUrgent && <UrgentBadge />}
+              <RequestStatusBadge status={request.status} stage={request.stage} />
               <SlaBadge state={request.slaState} remainingMinutes={request.slaRemainingMinutes} />
             </div>
             <Row
               label="SLA дуусах"
               value={
-                request.slaDueAt
-                  ? new Date(request.slaDueAt).toLocaleString('mn-MN', {
-                      timeZone: 'Asia/Ulaanbaatar',
-                    })
-                  : null
+                request.slaDueAt ? formatDateTime(request.slaDueAt) : null
               }
             />
             <Row
@@ -208,7 +325,11 @@ export function ServiceRequestDetailPage(): ReactElement {
         </div>
 
         <div className="space-y-4 lg:col-span-2">
-          <WorkReportPanel requestId={request.id} buildingId={request.building?.id ?? null} />
+          <WorkReportPanel
+            requestId={request.id}
+            buildingId={request.building?.id ?? null}
+            onRequestMoved={reloadRequest}
+          />
 
           <Card title="Байршил">
             <Row label="Харилцагч" value={request.customer?.name} />
@@ -222,11 +343,21 @@ export function ServiceRequestDetailPage(): ReactElement {
             <Row label="Төхөөрөмж" value={request.device?.name} />
           </Card>
 
+          {/*
+            Where on the floor, when the caller pointed at a spot. Read-only: the request is
+            a record of what was reported, and the technician reads it to find the place.
+          */}
+          {request.planPosition && request.floor && (
+            <Card title="План дээрх байрлал">
+              <FloorPlanPin floorId={request.floor.id} value={request.planPosition} />
+            </Card>
+          )}
+
           <Card title="Хүсэлтийн агуулга">
             <Row label="Холбоо барих" value={`${request.contactName} · ${request.contactPhone}`} />
             <Row
               label="Үүсгэсэн"
-              value={`${request.createdByName ?? '-'} · ${new Date(request.createdAt).toLocaleString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' })}`}
+              value={`${request.createdByName ?? '-'} · ${formatDateTime(request.createdAt)}`}
             />
             <div className="pt-2">
               <p className="mb-1 text-xs text-slate-500">Тайлбар</p>
@@ -256,9 +387,7 @@ export function ServiceRequestDetailPage(): ReactElement {
                         {SERVICE_REQUEST_STATUS_LABELS[entry.toStatus]}
                       </p>
                       <p className="text-xs text-slate-500">
-                        {new Date(entry.changedAt).toLocaleString('mn-MN', {
-                          timeZone: 'Asia/Ulaanbaatar',
-                        })}
+                        {formatDateTime(entry.changedAt)}
                         {entry.changedByName ? ` · ${entry.changedByName}` : ''}
                         {entry.reason ? ` · ${entry.reason}` : ''}
                       </p>
@@ -294,6 +423,15 @@ export function ServiceRequestDetailPage(): ReactElement {
         requireReason
         onCancel={() => setSlaDialogOpen(false)}
         onConfirm={extendSla}
+      />
+
+      {/* The board's drawer, not a second one: same candidates, same POST, same refusals.
+          `request` is a ServiceRequestDetailDto, which extends the list item the drawer
+          takes, so it is handed over as it stands. */}
+      <AssignDrawer
+        request={assignOpen ? request : null}
+        onClose={() => setAssignOpen(false)}
+        onAssigned={reloadRequest}
       />
     </>
   );

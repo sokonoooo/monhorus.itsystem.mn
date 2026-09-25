@@ -1,4 +1,6 @@
 import {
+  CUSTOMER_LOGO_MIME_TYPES,
+  MAX_CUSTOMER_LOGO_BYTES,
   createCustomerSchema,
   type CreateCustomerInput,
   type DispatchCandidateDto,
@@ -8,6 +10,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 
 import { Alert } from '../../components/ui/Alert';
 import { Button } from '../../components/ui/Button';
+import { LogoPicker } from '../../components/ui/LogoPicker';
 import { PageHeader } from '../../components/ui/PageHeader';
 import { Skeleton } from '../../components/ui/States';
 import { useToast } from '../../components/ui/ToastProvider';
@@ -28,12 +31,15 @@ interface FormState {
   contactPerson: string;
   responsibleEmployeeId: string;
   notes: string;
+  /** A stored-file id rather than bytes: the picker uploads on choice and hands back an id. */
+  logoFileId: string | null;
   isActive: boolean;
 }
 
 const EMPTY: FormState = {
   code: '', name: '', registrationNumber: '', taxNumber: '', phone: '', email: '',
-  address: '', contactPerson: '', responsibleEmployeeId: '', notes: '', isActive: true,
+  address: '', contactPerson: '', responsibleEmployeeId: '', notes: '', logoFileId: null,
+  isActive: true,
 };
 
 function nullable(value: string): string | null {
@@ -103,6 +109,7 @@ export function CustomerFormPage(): ReactElement {
           contactPerson: customer.contactPerson ?? '',
           responsibleEmployeeId: customer.responsibleEmployeeId ?? '',
           notes: customer.notes ?? '',
+          logoFileId: customer.logoFileId,
           isActive: customer.isActive,
         });
         setDirty(false);
@@ -146,6 +153,7 @@ export function CustomerFormPage(): ReactElement {
       contactPerson: nullable(form.contactPerson),
       responsibleEmployeeId: nullable(form.responsibleEmployeeId),
       notes: nullable(form.notes),
+      logoFileId: form.logoFileId,
     };
 
     // Same schema the API validates with.
@@ -282,6 +290,37 @@ export function CustomerFormPage(): ReactElement {
                 </Field>
               )}
             </Section>
+
+            {/*
+              Outside the two field sections, and labelled by hand rather than wrapped in
+              `Field`: the picker is a preview, an input and two lines of help, which is
+              taller than a field row, and `Field` hands its generated id to a single
+              control through context while this one has its own.
+
+              The letterhead prints on this customer's reports beside the operator's,
+              which is the only thing it is for — a customer without one is not
+              incomplete, their reports simply carry one logo instead of two.
+            */}
+            <div>
+              <label htmlFor="customer-logo" className={FILTER_LABEL}>
+                Лого
+              </label>
+              <LogoPicker
+                inputId="customer-logo"
+                value={form.logoFileId}
+                onChange={(next) => update('logoFileId', next)}
+                upload={objectService.uploadCustomerLogo}
+                accept={CUSTOMER_LOGO_MIME_TYPES}
+                maxBytes={MAX_CUSTOMER_LOGO_BYTES}
+                label="Харилцагчийн лого"
+                emptyLabel="Лого алга"
+                removeLabel="Лого устгах"
+                disabled={submitting}
+              />
+              {fieldErrors.logoFileId && (
+                <p className="mt-1 text-xs text-red-600">{fieldErrors.logoFileId}</p>
+              )}
+            </div>
 
             <div>
               <label htmlFor="customer-notes" className={FILTER_LABEL}>

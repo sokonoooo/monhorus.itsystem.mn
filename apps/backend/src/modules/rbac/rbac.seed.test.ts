@@ -169,6 +169,17 @@ describe('seedRbac', () => {
        * workaround, so the key has no remaining justification here.
        */
       PERMISSIONS.EMPLOYEE_VIEW,
+      /**
+       * The second instance of the same pattern, withdrawn for the same reason.
+       *
+       * `customer.view` opens `GET /objects/customers` — every organisation on the system
+       * with its регистрийн дугаар, tax number, phone, email and address — and it is also
+       * the gate on `GET /service-agreements`, which carries `monthlyFee`. It was granted
+       * so a job card could name the organisation; the card gets that from the `NamedRef`
+       * embedded in the planned-work and service-request payloads, and neither Flutter app
+       * ever called either route.
+       */
+      PERMISSIONS.CUSTOMER_VIEW,
       PERMISSIONS.DISPATCH_ASSIGN,
       PERMISSIONS.DISPATCH_EXTEND_SLA,
       PERMISSIONS.SERVICE_REQUEST_CHANGE_STATUS,

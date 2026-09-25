@@ -205,6 +205,31 @@ function nodeName(value: unknown): string {
  * Returns null when the content cannot be produced, which is treated as a submission
  * blocker rather than an exception: a half-built report must not reach a reviewer.
  */
+/**
+ * The photographs attached to each of a work's sub-tasks, as file ids.
+ *
+ * Separate from `buildReportPreview` on purpose. That builds what the SCREEN needs, and
+ * the screen shows photo counts rather than photographs — putting ids on
+ * `PlannedWorkReportTaskLineDto` would widen a shared type for one consumer that is not
+ * the screen. The PDF asks for this instead, and pays one query for it.
+ *
+ * Before and after are concatenated in that order: a reader looking at a pair wants to
+ * see the state that prompted the work before the state that resulted from it.
+ */
+export async function taskPhotoIdsOf(
+  work: Doc<IPlannedWork>,
+): Promise<Array<{ taskId: string; fileIds: string[] }>> {
+  const tasks = await PlannedWorkTask.find({ plannedWork: work._id })
+    .select('_id beforePhotos afterPhotos')
+    .sort({ plannedStartDate: 1, title: 1 })
+    .lean();
+
+  return tasks.map((task) => ({
+    taskId: String(task._id),
+    fileIds: [...task.beforePhotos, ...task.afterPhotos].map(String),
+  }));
+}
+
 export async function buildReportPreview(
   work: Doc<IPlannedWork>,
   report: Doc<IPlannedWorkReport> | null,

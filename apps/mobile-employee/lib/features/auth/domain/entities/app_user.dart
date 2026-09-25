@@ -20,9 +20,9 @@ enum UserRole {
     );
   }
 
-  bool get isAdmin => this == UserRole.admin || this == UserRole.headAdmin;
-
-  bool get isHeadAdmin => this == UserRole.headAdmin;
+  // No `isAdmin` / `isHeadAdmin`. They were copied from the customer app, which has a
+  // Хэрэглэгчид screen; this build has none, and every control it does gate is gated on
+  // a permission key rather than on a role name.
 }
 
 enum AccountStatus {
@@ -125,6 +125,13 @@ class PermissionKeys {
   static const String plannedWorkUpdate = 'planned_work.update';
   static const String plannedWorkReschedule = 'planned_work.reschedule';
   static const String plannedWorkCancel = 'planned_work.cancel';
+
+  /// Deciding whether a request goes ahead — and, in the same act, who does it.
+  ///
+  /// A key of its own, deliberately not `change_status` (which DISPATCH and TECHNICIAN
+  /// both hold) and not `approve_report` (which means "sign off a finished job's
+  /// write-up"). Committing the company to the work is a third thing.
+  static const String plannedWorkApprove = 'planned_work.approve';
   static const String plannedWorkApproveReport = 'planned_work.approve_report';
   static const String dispatchAssign = 'dispatch.assign';
 
@@ -190,26 +197,9 @@ class AppUser extends Equatable {
 
   bool get mustChangePassword => status == AccountStatus.mustChangePassword;
 
-  /// Mirrors the backend assertCanManageRole rule, so the UI never offers an action
-  /// the API would reject with 403. A plain admin manages customers and technicians;
-  /// acting on another administrator is reserved for the head_admin.
-  bool canManage(AppUser target) {
-    if (target.id == id) return false;
-    if (role == UserRole.headAdmin) return true;
-    if (role == UserRole.admin) {
-      return target.role == UserRole.customer || target.role == UserRole.technician;
-    }
-    return false;
-  }
-
-  /// Whether this actor may create an account with [targetRole].
-  bool canCreateRole(UserRole targetRole) {
-    if (role == UserRole.headAdmin) return true;
-    if (role == UserRole.admin) {
-      return targetRole == UserRole.customer || targetRole == UserRole.technician;
-    }
-    return false;
-  }
+  // No `canManage` / `canCreateRole` either. They transcribed the backend's
+  // assertCanManageRole rule for a user-management UI this app does not ship, so the
+  // rule sat here in a second copy that nothing checked and nothing could keep honest.
 
   @override
   List<Object?> get props => <Object?>[

@@ -14,8 +14,13 @@ import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { ApiError } from '../../lib/api-client';
 import * as fileUrl from '../../lib/file-url';
 import { inspectionReportService } from '../../services/inspection-report.service';
+import {
+  inspectionReportDocxFilename,
+  plannedWorkService,
+} from '../../services/planned-work.service';
 import { renderWithAuth } from '../../test/render';
 import { InspectionReportPage } from './InspectionReportPage';
 
@@ -365,6 +370,99 @@ describe('InspectionReportPage', () => {
     expect(within(overall).queryByText(OVERALL_SAFETY_LABELS.NORMAL)).not.toBeInTheDocument();
   });
 
+  /**
+   * THE NARRATIVE MUST SURVIVE THE TRANSITION.
+   *
+   * «Хянуулахаар илгээх» read nothing from the form. It called `submit`, then reloaded —
+   * which re-seeded the fields from the stored copy — and SUBMITTED locks them. So a
+   * technician who typed the write-up and pressed the button they were told to press lost
+   * it outright, with no way back into the record short of asking for it to be returned.
+   *
+   * Chosen over refusing the transition: the person pressed submit with the text in front
+   * of them, so their intent is not in doubt, and the same PATCH the Хадгалах button uses
+   * carries it. Refusing would leave them staring at an error on a screen where the only
+   * remedy is a second button they did not know they needed.
+   */
+  it('saves an unsaved narrative before it submits the report', async () => {
+    await renderWithReport(makeReport(), [
+      PERMISSIONS.PLANNED_WORK_VIEW,
+      PERMISSIONS.PLANNED_WORK_SUBMIT_REPORT,
+    ]);
+    const order: string[] = [];
+    const update = vi
+      .spyOn(inspectionReportService, 'update')
+      .mockImplementation(async () => {
+        order.push('update');
+        return makeReport();
+      });
+    const submit = vi.spyOn(inspectionReportService, 'submit').mockImplementation(async () => {
+      order.push('submit');
+      return makeReport({ status: 'SUBMITTED' });
+    });
+    const user = userEvent.setup();
+
+    const narrative = screen.getByRole('region', { name: 'Тайлангийн бичвэр' });
+    const conclusion = within(narrative).getByLabelText('Дүгнэлт');
+    await user.clear(conclusion);
+    await user.type(conclusion, 'Гар бичмэл дүгнэлт');
+
+    await user.click(screen.getByRole('button', { name: 'Хянуулахаар илгээх' }));
+    const dialog = await screen.findByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: 'Хянуулахаар илгээх' }));
+
+    await waitFor(() => {
+      expect(submit).toHaveBeenCalled();
+    });
+    // Saved, and saved FIRST — a submit that landed before the PATCH would lock the report
+    // against it.
+    expect(order).toEqual(['update', 'submit']);
+    expect(update.mock.calls[0]![1]).toMatchObject({ conclusion: 'Гар бичмэл дүгнэлт' });
+  });
+
+  it('does not transition when the pre-submit save is refused', async () => {
+    await renderWithReport(makeReport(), [
+      PERMISSIONS.PLANNED_WORK_VIEW,
+      PERMISSIONS.PLANNED_WORK_SUBMIT_REPORT,
+    ]);
+    vi.spyOn(inspectionReportService, 'update').mockRejectedValue(
+      new ApiError('Тайлан хадгалагдсангүй.', 'VALIDATION_ERROR', 400),
+    );
+    const submit = vi.spyOn(inspectionReportService, 'submit');
+    const user = userEvent.setup();
+
+    const narrative = screen.getByRole('region', { name: 'Тайлангийн бичвэр' });
+    await user.type(within(narrative).getByLabelText('Зөвлөмж'), ' нэмэлт');
+
+    await user.click(screen.getByRole('button', { name: 'Хянуулахаар илгээх' }));
+    const dialog = await screen.findByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: 'Хянуулахаар илгээх' }));
+
+    expect(await screen.findByText(/Тайлан хадгалагдсангүй/)).toBeInTheDocument();
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  /** An untouched form must not fire a needless write on its way through the workflow. */
+  it('submits without a PATCH when nothing was typed', async () => {
+    await renderWithReport(makeReport(), [
+      PERMISSIONS.PLANNED_WORK_VIEW,
+      PERMISSIONS.PLANNED_WORK_SUBMIT_REPORT,
+    ]);
+    const update = vi.spyOn(inspectionReportService, 'update');
+    const submit = vi
+      .spyOn(inspectionReportService, 'submit')
+      .mockResolvedValue(makeReport({ status: 'SUBMITTED' }));
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole('button', { name: 'Хянуулахаар илгээх' }));
+    const dialog = await screen.findByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: 'Хянуулахаар илгээх' }));
+
+    await waitFor(() => {
+      expect(submit).toHaveBeenCalled();
+    });
+    expect(update).not.toHaveBeenCalled();
+  });
+
   it('saves the narrative and both replacement lists through PATCH', async () => {
     await renderWithReport(makeReport(), [
       PERMISSIONS.PLANNED_WORK_VIEW,
@@ -495,7 +593,10 @@ describe('InspectionReportPage', () => {
     const narrative = screen.getByRole('region', { name: 'Тайлангийн бичвэр' });
     expect(within(narrative).getByLabelText('Дүгнэлт')).toBeDisabled();
 
-    expect(screen.getByText('Эцэслэгдсэн тайлан. Хувилбар 2')).toBeInTheDocument();
+    // The version counter still names itself in the heading block; the banner that repeated
+    // it, and the version rule it carried, now live in this route's help entry.
+    expect(screen.getByText('Хувилбар 2')).toBeInTheDocument();
+    expect(screen.queryByText('Эцэслэгдсэн тайлан. Хувилбар 2')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Шинэ хувилбар үүсгэх' })).toBeInTheDocument();
   });
 
@@ -526,5 +627,70 @@ describe('InspectionReportPage', () => {
     expect(within(signatures).getByText('Цахилгаанчин')).toBeInTheDocument();
     expect(within(signatures).getByText('Дорж Сүх')).toBeInTheDocument();
     expect(within(signatures).getByText('Ерөнхий инженер')).toBeInTheDocument();
+  });
+
+  it('offers a Word download beside the PDF, and each fetches its own file', async () => {
+    const report = makeReport();
+    const pdf = vi.spyOn(plannedWorkService, 'downloadInspectionReportPdf').mockResolvedValue();
+    const docx = vi
+      .spyOn(plannedWorkService, 'downloadInspectionReportDocx')
+      .mockResolvedValue();
+    const user = userEvent.setup();
+
+    await renderWithReport(report, [PERMISSIONS.PLANNED_WORK_VIEW]);
+
+    await user.click(screen.getByRole('button', { name: 'Word (.docx)' }));
+    await waitFor(() => {
+      expect(docx).toHaveBeenCalledWith(WORK_ID, report);
+    });
+    expect(pdf).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'PDF татах' }));
+    await waitFor(() => {
+      expect(pdf).toHaveBeenCalledWith(WORK_ID, report.workNumber);
+    });
+  });
+
+  it('surfaces a failed Word download in the page banner', async () => {
+    vi.spyOn(plannedWorkService, 'downloadInspectionReportDocx').mockRejectedValue(
+      new Error('network'),
+    );
+    const user = userEvent.setup();
+
+    await renderWithReport(makeReport(), [PERMISSIONS.PLANNED_WORK_VIEW]);
+    await user.click(screen.getByRole('button', { name: 'Word (.docx)' }));
+
+    expect(await screen.findByText('Word файл үүсгэхэд алдаа гарлаа.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Word (.docx)' })).toBeEnabled();
+  });
+});
+
+describe('inspectionReportDocxFilename', () => {
+  it('names the file after the customer and the inspection day in Ulaanbaatar', () => {
+    expect(
+      inspectionReportDocxFilename({
+        customerName: 'Central Tower ХХК',
+        // 20:00 UTC on the 10th is already the 11th in Ulaanbaatar.
+        inspectionEnd: '2026-08-10T20:00:00.000Z',
+        createdAt: '2026-08-01T00:00:00.000Z',
+      }),
+    ).toBe('Үзлэгийн_нэгдсэн_тайлан_Central_Tower_ХХК_2026-08-11.docx');
+  });
+
+  it('drops unsafe characters and leaves an absent customer out', () => {
+    expect(
+      inspectionReportDocxFilename({
+        customerName: ' "Сод/Монгол" ХХК ',
+        inspectionEnd: null,
+        createdAt: '2026-08-11T04:00:00.000Z',
+      }),
+    ).toBe('Үзлэгийн_нэгдсэн_тайлан_СодМонгол_ХХК_2026-08-11.docx');
+    expect(
+      inspectionReportDocxFilename({
+        customerName: null,
+        inspectionEnd: null,
+        createdAt: '2026-08-11T04:00:00.000Z',
+      }),
+    ).toBe('Үзлэгийн_нэгдсэн_тайлан_2026-08-11.docx');
   });
 });

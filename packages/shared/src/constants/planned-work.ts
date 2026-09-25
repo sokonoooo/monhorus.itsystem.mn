@@ -14,6 +14,26 @@ import { PERMISSIONS, type PermissionKey } from './permissions';
  */
 export const PLANNED_WORK_LIFECYCLE_STATUSES = [
   'DRAFT',
+  /**
+   * Submitted by its creator and waiting on an authorised approver.
+   *
+   * EVERY work passes through here now, whoever raised it. There is no longer a path from
+   * DRAFT to PLANNED that skips an approver: PLAN means "submit for approval" for staff and
+   * customers alike, which is what makes the two workflows genuinely the same one rather
+   * than two that happen to look alike.
+   *
+   * Nothing is assigned while a work sits here. The crew is chosen by the approver as part
+   * of APPROVE, so a work reaching PLANNED and a work having a crew are the same event.
+   */
+  'PENDING_APPROVAL',
+  /**
+   * Returned to its creator with a reason, to be corrected and submitted again.
+   *
+   * A real state rather than a bare trip back to DRAFT, because "never submitted" and
+   * "submitted and sent back" are different things to the person looking at the list, and
+   * only the second one owes them an explanation. `cancelReason` carries it.
+   */
+  'REJECTED',
   'PLANNED',
   'STARTED',
   'PAUSED',
@@ -31,6 +51,8 @@ export type PlannedWorkEffectiveStatus = (typeof PLANNED_WORK_EFFECTIVE_STATUSES
 
 export const PLANNED_WORK_STATUS_LABELS: Record<PlannedWorkEffectiveStatus, string> = {
   DRAFT: 'Төсөл',
+  PENDING_APPROVAL: 'Хүлээгдэж буй',
+  REJECTED: 'Буцаагдсан',
   PLANNED: 'Төлөвлөгдсөн',
   STARTED: 'Хэрэгжиж байна',
   PAUSED: 'Түр зогссон',
@@ -240,6 +262,8 @@ export const REPORT_SUBMITTABLE_STATUSES: readonly PlannedWorkReportStatus[] = [
  */
 export const PLANNED_WORK_ACTIONS = [
   'PLAN',
+  'APPROVE',
+  'REJECT',
   'START',
   'PAUSE',
   'RESUME',
@@ -255,15 +279,77 @@ export interface PlannedWorkActionRule {
   to: PlannedWorkLifecycleStatus | null;
   requiresReason: boolean;
   permission: PermissionKey;
+  /**
+   * A second key that also admits the action, for the portal.
+   *
+   * Only PLAN carries one. A customer submitting their own draft is doing the same thing a
+   * planner does, but `planned_work.change_status` is a staff key held by DISPATCH and
+   * TECHNICIAN, so it cannot simply be granted to them. Holding this key is not by itself
+   * enough — `transitionPlannedWork` additionally bounds a customer to their own record.
+   */
+  customerPermission?: PermissionKey;
+  /**
+   * The action assigns the crew and refuses to run without one.
+   *
+   * Only APPROVE. Approval and assignment are one decision here: the approver is agreeing
+   * to do the work AND saying who does it, so a work cannot reach PLANNED unstaffed.
+   */
+  assignsCrew?: boolean;
 }
 
 export const PLANNED_WORK_ACTION_RULES: Record<PlannedWorkAction, PlannedWorkActionRule> = {
+  /**
+   * Submit for approval — the single entry to the approval gate, for everybody.
+   *
+   * THIS USED TO GO STRAIGHT TO PLANNED. It no longer does, and that is the point of the
+   * change: staff and customers now follow one workflow, so a planner's own work is
+   * reviewed on the same terms as a customer's request. REJECTED is in the from-list
+   * because correcting a returned work and sending it back is the same act as sending it
+   * the first time, and giving it a second action would only be a second name for one.
+   */
   PLAN: {
     label: 'Төлөвлөх',
-    from: ['DRAFT'],
-    to: 'PLANNED',
+    from: ['DRAFT', 'REJECTED'],
+    to: 'PENDING_APPROVAL',
     requiresReason: false,
     permission: PERMISSIONS.PLANNED_WORK_CHANGE_STATUS,
+    customerPermission: PERMISSIONS.PORTAL_PLANNED_WORK_CREATE,
+  },
+  /**
+   * Accept the request AND staff it, in one decision.
+   *
+   * The approver names the employees as part of approving, and the action is refused
+   * without at least one. That is why PLANNED and "has a crew" are the same event: there
+   * is no window in which work is approved but nobody is on it, and therefore no approved
+   * work that quietly fails to reach anybody's list.
+   *
+   * `planned_work.approve` is a key of its own, deliberately not `change_status` — which
+   * DISPATCH and TECHNICIAN both hold — and not `approve_report`, which means "sign off a
+   * finished job's write-up". Committing the company to the work is a third thing.
+   */
+  APPROVE: {
+    label: 'Батлах',
+    from: ['PENDING_APPROVAL'],
+    to: 'PLANNED',
+    requiresReason: false,
+    permission: PERMISSIONS.PLANNED_WORK_APPROVE,
+    assignsCrew: true,
+  },
+  /**
+   * Send it back to its creator with a reason, to be corrected and submitted again.
+   *
+   * IT USED TO LAND ON CANCELLED, justified at the time by "a customer cannot edit a
+   * draft". They can now, so the reason that forced a dead end no longer holds and the
+   * work returns to a state its author can actually act on. Refusing something outright is
+   * still possible — CANCEL now reaches PENDING_APPROVAL and REJECTED — so nothing is lost
+   * by making the ordinary case a return rather than a refusal.
+   */
+  REJECT: {
+    label: 'Буцаах',
+    from: ['PENDING_APPROVAL'],
+    to: 'REJECTED',
+    requiresReason: true,
+    permission: PERMISSIONS.PLANNED_WORK_APPROVE,
   },
   START: {
     label: 'Ажил эхлүүлэх',
@@ -296,7 +382,7 @@ export const PLANNED_WORK_ACTION_RULES: Record<PlannedWorkAction, PlannedWorkAct
   },
   CANCEL: {
     label: 'Цуцлах',
-    from: ['DRAFT', 'PLANNED', 'STARTED', 'PAUSED'],
+    from: ['DRAFT', 'PENDING_APPROVAL', 'REJECTED', 'PLANNED', 'STARTED', 'PAUSED'],
     to: 'CANCELLED',
     requiresReason: true,
     permission: PERMISSIONS.PLANNED_WORK_CANCEL,
@@ -311,6 +397,89 @@ export function resumeTargetStatus(hasActualStartDate: boolean): PlannedWorkLife
   return hasActualStartDate ? 'STARTED' : 'PLANNED';
 }
 
+/**
+ * Nothing closes after this: ARCHIVED and CANCELLED.
+ *
+ * Uncalled, and three places restate it by hand instead —
+ * `planned-work.service.ts:1723`, `planned-work.report.service.ts:368` and
+ * `PlannedWorkDetailPage.tsx:198`, each spelling out
+ * `status === 'ARCHIVED' || status === 'CANCELLED'`. Deleting this would make that
+ * duplication permanent, so it stays as the one answer those three should read.
+ *
+ * NOT the same question as the employee app's `PlannedWorkStatus.isFinished`, which also
+ * counts COMPLETED. That one asks "is anything further owed on this record"; this one asks
+ * "is the record closed", and a COMPLETED work is still open to being archived. Do not
+ * reconcile the two.
+ */
 export function isTerminalLifecycleStatus(status: PlannedWorkLifecycleStatus): boolean {
   return status === 'ARCHIVED' || status === 'CANCELLED';
+}
+
+
+/**
+ * «Хийгдсэн» — the numerator of the planned-work completion figure.
+ *
+ * ARCHIVED belongs here, and leaving it out is what made the figure fall every time the
+ * office got BETTER at closing paperwork. Approving a planned-work report archives the
+ * work: `archiveAfterReportApproval` is reachable only from the report-approval flow and
+ * refuses anything whose status is not already COMPLETED, so ARCHIVED means "finished,
+ * written up and signed off" — the most complete state a planned work reaches, not a
+ * hidden one. Counting it as a shortfall printed 15% where the truth was 83%.
+ */
+export const PLANNED_WORK_DELIVERED_STATUSES: readonly PlannedWorkLifecycleStatus[] = [
+  'COMPLETED',
+  'ARCHIVED',
+];
+
+/**
+ * What is NOT in the denominator — the exclusion list.
+ *
+ * The question is «of the work this business committed to, how much is done», so the
+ * denominator is work that was actually committed:
+ *
+ *   - CANCELLED is out. A cancellation is a decision not to do the work, not a failure to
+ *     do it. Leaving it in means every cancellation permanently lowers the score and the
+ *     only way to raise it again is to stop cancelling work that should be cancelled.
+ *   - DRAFT is out. It was never submitted to anybody; it is a scratch pad its author may
+ *     delete, and nothing has been promised.
+ *   - PENDING_APPROVAL and REJECTED are out for the same reason. Both are submitted but
+ *     unapproved, and the label for PLANNED is «Төлөвлөгдсөн» precisely because approval
+ *     is the point at which a work becomes planned. Counting a work an approver has not
+ *     yet seen — or has sent back — as an unmet commitment charges the delivery crew for
+ *     the approver's queue.
+ *
+ * Everything else stays in: PLANNED, STARTED and PAUSED are outstanding commitments,
+ * COMPLETED and ARCHIVED are met ones. OVERDUE never appears because it is derived on read
+ * and never stored, so an overdue work sits in the denominator under its stored
+ * PLANNED/STARTED/PAUSED status — committed and not yet done, which is correct.
+ *
+ * An EXCLUSION list rather than an inclusion one, so a lifecycle status added later lands
+ * in the denominator and is VISIBLE, rather than disappearing from both halves of the
+ * ratio without a sound.
+ *
+ * WHY THIS LIVES IN SHARED. The dashboard tile and the KPI are the same question asked on
+ * two screens, under one heading: `KPI_LABELS.PLANNED_WORK_COMPLETION_RATE` is
+ * «Төлөвлөгөөт ажлын гүйцэтгэл», which is verbatim the title of the dashboard tile in
+ * `DashboardPage.tsx`. They were previously free to disagree, and did — that divergence is
+ * the whole reason this pair was consolidated. Do not restate either list in a module.
+ */
+export const PLANNED_WORK_UNCOMMITTED_STATUSES: readonly PlannedWorkLifecycleStatus[] = [
+  'DRAFT',
+  'PENDING_APPROVAL',
+  'REJECTED',
+  'CANCELLED',
+];
+
+/**
+ * Delivered, asked of an EFFECTIVE status.
+ *
+ * The dashboard classifies by `effectiveStatusOf`, whose union adds OVERDUE, so it cannot
+ * call `.includes` on the lifecycle-typed array above. The widening is sound rather than a
+ * cast: `PLANNED_WORK_EFFECTIVE_STATUSES` is `[...PLANNED_WORK_LIFECYCLE_STATUSES,
+ * 'OVERDUE']`, so every lifecycle status IS an effective one, and readonly arrays are
+ * covariant. OVERDUE is derived from a date and is never delivered.
+ */
+export function isDeliveredPlannedWorkStatus(status: PlannedWorkEffectiveStatus): boolean {
+  const delivered: readonly PlannedWorkEffectiveStatus[] = PLANNED_WORK_DELIVERED_STATUSES;
+  return delivered.includes(status);
 }

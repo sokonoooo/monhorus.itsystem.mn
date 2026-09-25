@@ -15,49 +15,19 @@ library;
 
 import '../../../shared/service_request_vocabulary.dart';
 
+export '../../../shared/planned_work_vocabulary.dart';
 export '../../../shared/service_request_vocabulary.dart';
 
 // -- Planned work ------------------------------------------------------------
-
-/// `PLANNED_WORK_EFFECTIVE_STATUSES`. OVERDUE is derived by the backend on read and
-/// is never persisted, so it appears here but is never sent as an input.
-enum PlannedWorkStatus {
-  draft('DRAFT', 'Төсөл', SeverityBand.neutral),
-  planned('PLANNED', 'Төлөвлөгдсөн', SeverityBand.neutral),
-  started('STARTED', 'Хэрэгжиж байна', SeverityBand.yellow),
-  paused('PAUSED', 'Түр зогссон', SeverityBand.yellow),
-  overdue('OVERDUE', 'Хугацаа хэтэрсэн', SeverityBand.red),
-  completed('COMPLETED', 'Дууссан', SeverityBand.green),
-  archived('ARCHIVED', 'Архивласан', SeverityBand.neutral),
-  cancelled('CANCELLED', 'Цуцлагдсан', SeverityBand.neutral);
-
-  const PlannedWorkStatus(this.wireValue, this.label, this.band);
-
-  final String wireValue;
-  final String label;
-  final SeverityBand band;
-
-  static PlannedWorkStatus? fromWire(String? value) {
-    if (value == null) return null;
-    for (final PlannedWorkStatus status in PlannedWorkStatus.values) {
-      if (status.wireValue == value) return status;
-    }
-    return null;
-  }
-
-  /// Work that is still outstanding, which is what the "Идэвхтэй ажил" figure counts.
-  bool get isOutstanding =>
-      this == PlannedWorkStatus.planned ||
-      this == PlannedWorkStatus.started ||
-      this == PlannedWorkStatus.paused ||
-      this == PlannedWorkStatus.overdue;
-
-  bool get isInProgress =>
-      this == PlannedWorkStatus.started || this == PlannedWorkStatus.paused;
-
-  bool get isFinished =>
-      this == PlannedWorkStatus.completed || this == PlannedWorkStatus.archived;
-}
+//
+// `PlannedWorkStatus` is NOT declared here any more.
+//
+// This file used to carry its own copy with eight of the ten statuses — PENDING_APPROVAL
+// and REJECTED were missing, so a work in either state rendered as null on the home tab —
+// and its `isFinished` excluded CANCELLED while the Ажил tab's copy included it. The same
+// record was therefore finished in one tab and unfinished in the other. There is one enum
+// now, in `shared/planned_work_vocabulary.dart`, and this file re-exports it so every call
+// site that already imported it keeps working.
 
 // -- Notifications -----------------------------------------------------------
 
@@ -81,7 +51,8 @@ enum NotificationSeverity {
   }
 }
 
-/// `NOTIFICATION_EVENTS`, all eighteen.
+/// `NOTIFICATION_EVENTS`, all twenty-five. It read "eighteen" for several releases
+/// after seven events were added.
 ///
 /// The prototype's inbox showed only assignment and re-assignment, on the stated
 /// rule that a technician is not told about invoices. That rule is enforced by the
@@ -99,12 +70,20 @@ enum NotificationEvent {
       'SERVICE_REQUEST_STATUS_CHANGED', 'Дуудлагын төлөв өөрчлөгдсөн'),
   slaNearBreach('SLA_NEAR_BREACH', 'SLA хугацаа ойртсон'),
   slaBreached('SLA_BREACHED', 'SLA хугацаа зөрчсөн'),
-  reportSubmitted('REPORT_SUBMITTED', 'Тайлан илгээсэн'),
+  reportSubmitted('REPORT_SUBMITTED', 'Дүгнэлт илгээсэн'),
   reportApproved('REPORT_APPROVED', 'Тайлан батлагдсан'),
   reportReturned('REPORT_RETURNED', 'Тайлан буцаагдсан'),
   riskAssessmentRaised('RISK_ASSESSMENT_RAISED', 'Эрсдэлтэй үнэлгээ илэрсэн'),
   repairRequired('REPAIR_REQUIRED', 'Засвар шаардлагатай'),
   revisitRequired('REVISIT_REQUIRED', 'Дахин үзлэг шаардлагатай'),
+  serviceRequestUnclaimed('SERVICE_REQUEST_UNCLAIMED', 'Дуудлага эзэнгүй байна'),
+  serviceRequestSiteBusy('SERVICE_REQUEST_SITE_BUSY', 'Ажиллаж буй байршилд шинэ дуудлага'),
+  plannedWorkAssigned('PLANNED_WORK_ASSIGNED', 'Төлөвлөгөөт ажил хуваарилагдсан'),
+  plannedWorkTaskAssigned('PLANNED_WORK_TASK_ASSIGNED', 'Дэд ажил хуваарилагдсан'),
+  plannedWorkScheduled('PLANNED_WORK_SCHEDULED', 'Төлөвлөгөөт ажил товлогдсон'),
+  plannedWorkStarted('PLANNED_WORK_STARTED', 'Төлөвлөгөөт ажил эхэлсэн'),
+  surveyRequested('SURVEY_REQUESTED', 'Үйлчилгээгээ үнэлнэ үү'),
+  surveyReminder('SURVEY_REMINDER', 'Үйлчилгээний үнэлгээ хүлээгдэж байна'),
   invoiceIssued('INVOICE_ISSUED', 'Нэхэмжлэл илгээгдсэн'),
   invoiceDueSoon('INVOICE_DUE_SOON', 'Нэхэмжлэлийн төлөх хугацаа дөхсөн'),
   invoiceOverdue('INVOICE_OVERDUE', 'Нэхэмжлэл хугацаа хэтэрсэн');

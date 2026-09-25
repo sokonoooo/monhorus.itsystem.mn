@@ -27,7 +27,7 @@ export const MATERIAL_UNIT_LABELS: Record<MaterialUnit, string> = {
   METRE: 'Метр',
   KILOGRAM: 'Кг',
   LITRE: 'Литр',
-  SET: 'Хүрээлэн',
+  SET: 'Иж бүрдэл',
   BOX: 'Хайрцаг',
   ROLL: 'Ороомог',
 };

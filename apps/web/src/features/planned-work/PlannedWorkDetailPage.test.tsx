@@ -1,10 +1,15 @@
-import { PERMISSIONS, type PlannedWorkFloorProgressDto } from '@monhorus/shared';
+import {
+  PERMISSIONS,
+  type PlannedWorkFloorProgressDto,
+  type PlannedWorkTaskDto,
+} from '@monhorus/shared';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ApiError } from '../../lib/api-client';
 import * as fileUrl from '../../lib/file-url';
+import { materialService } from '../../services/material.service';
 import { plannedWorkService } from '../../services/planned-work.service';
 import { objectMasterService } from '../../services/object-master.service';
 import { objectService } from '../../services/object.service';
@@ -12,10 +17,13 @@ import { dispatchService } from '../../services/service-request.service';
 import {
   makeObjectListItem,
   makeObjectNode,
+  makeMaterialItem,
   makePage,
   makePlannedWork,
+  makePlannedWorkMaterial,
   makePlannedWorkReport,
   makePlannedWorkTask,
+  makeTaskMaterialUsage,
 } from '../../test/fixtures';
 import { renderWithAuth } from '../../test/render';
 import { PlannedWorkDetailPage } from './PlannedWorkDetailPage';
@@ -79,7 +87,13 @@ describe('PlannedWorkDetailPage', () => {
     vi.spyOn(objectMasterService, 'list').mockResolvedValue(makePage([]));
   });
 
-  it('shows the backend supplied progress and completion blockers', async () => {
+  /**
+   * Progress is the server's number and is still rendered. The list of completion blockers
+   * that used to be printed beside it is not: the reason a work cannot be completed is now
+   * given by the server when Дуусгах is pressed, and the standing rule is written in the
+   * help entry for this route.
+   */
+  it('shows the backend supplied progress without a blocker panel', async () => {
     vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(makePlannedWork());
 
     renderDetail([PERMISSIONS.PLANNED_WORK_VIEW]);
@@ -87,8 +101,12 @@ describe('PlannedWorkDetailPage', () => {
     expect(
       await screen.findByRole('heading', { name: 'Хагас жилийн урьдчилан сэргийлэх үзлэг' }),
     ).toBeInTheDocument();
-    expect(screen.getByText('Дуусгахад дараах нь шаардлагатай')).toBeInTheDocument();
-    expect(screen.getByText('"Самбарын үзлэг" биелэлт 40% байна.')).toBeInTheDocument();
+    expect(screen.getAllByRole('progressbar', { name: 'Биелэлт' })[0]).toHaveAttribute(
+      'aria-valuenow',
+      '45',
+    );
+    expect(screen.queryByText('Дуусгахад дараах нь шаардлагатай')).not.toBeInTheDocument();
+    expect(screen.queryByText('"Самбарын үзлэг" биелэлт 40% байна.')).not.toBeInTheDocument();
   });
 
   it('warns that a paused work still runs against its original deadline', async () => {
@@ -167,7 +185,8 @@ describe('PlannedWorkDetailPage', () => {
     vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(
       makePlannedWork({
         availableActions: [
-          { action: 'PAUSE', label: 'Түр зогсоох', requiresReason: true, targetStatus: 'PAUSED' },
+          { action: 'PAUSE', label: 'Түр зогсоох', requiresReason: true,
+            assignsCrew: false, targetStatus: 'PAUSED' },
         ],
       }),
     );
@@ -184,7 +203,8 @@ describe('PlannedWorkDetailPage', () => {
     vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(
       makePlannedWork({
         availableActions: [
-          { action: 'PAUSE', label: 'Түр зогсоох', requiresReason: true, targetStatus: 'PAUSED' },
+          { action: 'PAUSE', label: 'Түр зогсоох', requiresReason: true,
+            assignsCrew: false, targetStatus: 'PAUSED' },
         ],
       }),
     );
@@ -204,7 +224,8 @@ describe('PlannedWorkDetailPage', () => {
     vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(
       makePlannedWork({
         availableActions: [
-          { action: 'PAUSE', label: 'Түр зогсоох', requiresReason: true, targetStatus: 'PAUSED' },
+          { action: 'PAUSE', label: 'Түр зогсоох', requiresReason: true,
+            assignsCrew: false, targetStatus: 'PAUSED' },
         ],
       }),
     );
@@ -221,7 +242,8 @@ describe('PlannedWorkDetailPage', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Батлах' }));
 
     await waitFor(() => {
-      expect(transition).toHaveBeenCalledWith(WORK_ID, 'PAUSE', 'Материал хүлээгдэж байна');
+      // An empty crew: PAUSE does not assign, and only APPROVE carries one.
+      expect(transition).toHaveBeenCalledWith(WORK_ID, 'PAUSE', 'Материал хүлээгдэж байна', []);
     });
   });
 
@@ -313,18 +335,68 @@ describe('PlannedWorkDetailPage', () => {
     expect(screen.getByRole('button', { name: 'Тайлан' })).toBeInTheDocument();
   });
 
-  it('lists a material as a name, a quantity and a unit', async () => {
+  it('lists a material as registered, used and remaining', async () => {
     vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(
       makePlannedWork({
-        materials: [{ name: 'Кабель 3x2.5', quantity: 100, unit: 'METRE' }],
+        materials: [
+          makePlannedWorkMaterial({ quantity: 100, consumedQuantity: 40, remainingQuantity: 60 }),
+        ],
       }),
     );
 
     renderDetail([PERMISSIONS.PLANNED_WORK_VIEW]);
 
-    expect(await screen.findByText('Кабель 3x2.5')).toBeInTheDocument();
-    expect(screen.getByText('100')).toBeInTheDocument();
-    expect(screen.getByText('Метр')).toBeInTheDocument();
+    const table = await screen.findByRole('table', { name: 'Материал ба зарцуулалт' });
+    expect(within(table).getByText('Кабель 3x2.5')).toBeInTheDocument();
+    for (const header of ['Бүртгэсэн', 'Зарцуулсан', 'Үлдэгдэл']) {
+      expect(within(table).getByRole('columnheader', { name: header })).toBeInTheDocument();
+    }
+    expect(within(table).getByText('100')).toBeInTheDocument();
+    expect(within(table).getByText('40')).toBeInTheDocument();
+    expect(within(table).getByText('60')).toBeInTheDocument();
+    expect(within(table).getByText('Метр')).toBeInTheDocument();
+  });
+
+  /**
+   * The figure is the SERVER'S, not `quantity - consumedQuantity`.
+   *
+   * A screen that subtracts cannot be wrong here only because the invariant holds; it is
+   * wrong the moment the two disagree, and the stored remainder is what the backend's
+   * over-consumption guard actually compares against. Feeding it a remainder that does not
+   * match the subtraction is the only way to tell the two implementations apart.
+   */
+  it('reads the remaining figure rather than subtracting for itself', async () => {
+    vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(
+      makePlannedWork({
+        materials: [
+          makePlannedWorkMaterial({ quantity: 100, consumedQuantity: 40, remainingQuantity: 55 }),
+        ],
+      }),
+    );
+
+    renderDetail([PERMISSIONS.PLANNED_WORK_VIEW]);
+
+    const table = await screen.findByRole('table', { name: 'Материал ба зарцуулалт' });
+    expect(within(table).getByText('55')).toBeInTheDocument();
+    expect(within(table).queryByText('60')).not.toBeInTheDocument();
+  });
+
+  /** Nothing drawn yet is the ordinary state of a work that has just been planned. */
+  it('renders a material nothing has been drawn from without a stray percentage', async () => {
+    vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(
+      makePlannedWork({
+        materials: [
+          makePlannedWorkMaterial({ quantity: 0, consumedQuantity: 0, remainingQuantity: 0 }),
+        ],
+      }),
+    );
+
+    renderDetail([PERMISSIONS.PLANNED_WORK_VIEW]);
+
+    const table = await screen.findByRole('table', { name: 'Материал ба зарцуулалт' });
+    // A registered quantity of zero must not divide its way to NaN%.
+    expect(within(table).getByText('0%')).toBeInTheDocument();
+    expect(within(table).queryByText(/NaN/)).not.toBeInTheDocument();
   });
 
   it('records progress without ever sending a task status', async () => {
@@ -707,7 +779,7 @@ describe('PlannedWorkDetailPage', () => {
       renderDetail([PERMISSIONS.PLANNED_WORK_VIEW]);
 
       const expander = await screen.findByRole('button', {
-        name: 'Самбарын үзлэг — хамрах тоноглол',
+        name: 'Самбарын үзлэг — тоноглол ба материал',
       });
       // Closed until asked for: the row is a summary, the equipment is the detail.
       expect(expander).toHaveAttribute('aria-expanded', 'false');
@@ -729,7 +801,7 @@ describe('PlannedWorkDetailPage', () => {
       renderDetail([PERMISSIONS.PLANNED_WORK_VIEW]);
 
       await user.click(
-        await screen.findByRole('button', { name: 'Самбарын үзлэг — хамрах тоноглол' }),
+        await screen.findByRole('button', { name: 'Самбарын үзлэг — тоноглол ба материал' }),
       );
 
       expect(
@@ -890,6 +962,29 @@ describe('PlannedWorkDetailPage', () => {
     expect(screen.getByRole('button', { name: /^1 давхар/ })).toHaveTextContent('1 дэд ажил');
   });
 
+  /**
+   * Numbered but not paged, and numbered per floor. These sections are separate tables
+   * under separate headings, so a reader asked to check the second task on the second
+   * floor counts down that table — a number running across the whole page would send them
+   * to the wrong row.
+   */
+  it('numbers the sub-tasks from 1 within each floor section', async () => {
+    vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(twoFloorWork());
+
+    renderDetail([PERMISSIONS.PLANNED_WORK_VIEW]);
+
+    const first = await screen.findByRole('table', { name: '1 давхар дэд ажил' });
+    const second = screen.getByRole('table', { name: '2 давхар дэд ажил' });
+
+    for (const table of [first, second]) {
+      expect(within(table).getByRole('columnheader', { name: '№' })).toBeInTheDocument();
+      const rows = within(table).getAllByRole('row');
+      // Row 0 is the header. These rows expand, so the first cell is the expander and the
+      // number sits in the second — the same order the header renders them in.
+      expect(within(rows[1]!).getAllByRole('cell')[1]?.textContent?.trim()).toBe('1');
+    }
+  });
+
   it('collects the floorless sub-tasks into a trailing unassigned section', async () => {
     vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(
       makePlannedWork({
@@ -964,19 +1059,254 @@ describe('PlannedWorkDetailPage', () => {
     expect(screen.queryByRole('table', { name: '1 давхар дэд ажил' })).not.toBeInTheDocument();
   });
 
-  it('labels the material card as the PLAN rather than a bare "Материал"', async () => {
+  it('names the material card for the plan AND the consumption it now carries', async () => {
     vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(
-      makePlannedWork({ materials: [{ name: 'Кабель 3x2.5', quantity: 100, unit: 'METRE' }] }),
+      makePlannedWork({ materials: [makePlannedWorkMaterial()] }),
     );
 
     renderDetail([PERMISSIONS.PLANNED_WORK_VIEW]);
 
-    // What a job is expected to need is not a record of what it was issued, so the heading
-    // says which of the two this is.
+    // The card used to be the plan alone and said so. It now carries what was drawn against
+    // each row as well, so a heading claiming to be only a plan would be false.
     expect(
-      await screen.findByRole('heading', { name: 'Төлөвлөсөн материал' }),
+      await screen.findByRole('heading', { name: 'Материал ба зарцуулалт' }),
     ).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'Материал' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('heading', { name: 'Төлөвлөсөн материал' }),
+    ).not.toBeInTheDocument();
+  });
+
+  /**
+   * The bug `lib/duration.ts` was written to kill: the summary rendered the paused total
+   * as `Math.floor(minutes / 1440) өдөр ...`, so a 45-minute pause printed `0 өдөр 0 цаг`
+   * — a real figure turned into a confident zero.
+   */
+  it('states a sub-day pause in minutes rather than as a zero day count', async () => {
+    vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(
+      makePlannedWork({ totalPausedMinutes: 45 }),
+    );
+
+    renderDetail([PERMISSIONS.PLANNED_WORK_VIEW]);
+
+    expect(await screen.findByText('45 мин')).toBeInTheDocument();
+    expect(screen.queryByText(/0 өдөр/)).not.toBeInTheDocument();
+  });
+
+  /**
+   * Registration: which catalogue item, and how much of it the plan allows.
+   *
+   * The list stopped being free text once sub-tasks began drawing against it — a pool
+   * identified by a typed-in name splits the moment two people spell the cable differently
+   * — so this drawer picks and no longer types, and the unit comes with the item.
+   */
+  describe('material registration drawer', () => {
+    const MATERIAL_ID = '507f1f77bcf86cd799439091';
+
+    async function openDrawer(user: ReturnType<typeof userEvent.setup>): Promise<HTMLElement> {
+      await user.click(await screen.findByRole('button', { name: 'Материал засах' }));
+      return screen.findByRole('dialog');
+    }
+
+    it('picks a material from the catalogue and shows its unit rather than asking for one', async () => {
+      vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(
+        makePlannedWork({ materials: [makePlannedWorkMaterial({ materialItemId: MATERIAL_ID })] }),
+      );
+      const list = vi
+        .spyOn(materialService, 'list')
+        .mockResolvedValue(makePage([makeMaterialItem({ id: MATERIAL_ID })]));
+      const save = vi
+        .spyOn(plannedWorkService, 'setMaterials')
+        .mockResolvedValue(makePlannedWork());
+      const user = userEvent.setup();
+
+      renderDetail([PERMISSIONS.PLANNED_WORK_VIEW, PERMISSIONS.PLANNED_WORK_UPDATE]);
+      const dialog = await openDrawer(user);
+
+      // Retired items are never offered, and the whole catalogue arrives in one page.
+      await waitFor(() =>
+        expect(list).toHaveBeenCalledWith({ isActive: true, limit: 200 }),
+      );
+
+      expect(
+        await within(dialog).findByRole('option', { name: 'CBL-3X2.5 · Кабель 3x2.5' }),
+      ).toBeInTheDocument();
+      // The unit belongs to the catalogue entry, so there is nothing here to choose it with.
+      expect(within(dialog).queryByLabelText('Нэгж')).not.toBeInTheDocument();
+      expect(within(dialog).getByText('Метр')).toBeInTheDocument();
+
+      await user.click(within(dialog).getByRole('button', { name: 'Хадгалах' }));
+
+      // No name and no unit: both are the catalogue's to state.
+      await waitFor(() =>
+        expect(save).toHaveBeenCalledWith(WORK_ID, {
+          materials: [{ materialItemId: MATERIAL_ID, quantity: 100 }],
+        }),
+      );
+    });
+
+    it('paints a rejected quantity on the row the server names', async () => {
+      const second = '507f1f77bcf86cd799439092';
+      vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(
+        makePlannedWork({
+          materials: [
+            makePlannedWorkMaterial({ materialItemId: MATERIAL_ID }),
+            makePlannedWorkMaterial({
+              materialItemId: second,
+              name: 'Автомат таслуур',
+              quantity: 4,
+              consumedQuantity: 3,
+              remainingQuantity: 1,
+            }),
+          ],
+        }),
+      );
+      vi.spyOn(materialService, 'list').mockResolvedValue(
+        makePage([
+          makeMaterialItem({ id: MATERIAL_ID }),
+          makeMaterialItem({
+            id: second,
+            code: 'BRK-16A',
+            name: 'Автомат таслуур',
+            category: 'BREAKER',
+            defaultUnit: 'PIECE',
+          }),
+        ]),
+      );
+      vi.spyOn(plannedWorkService, 'setMaterials').mockRejectedValue(
+        new ApiError('Материал хадгалж чадсангүй.', 'VALIDATION_ERROR', 400, [
+          { field: 'materials.1.quantity', message: 'Аль хэдийн 3 ширхэг зарцуулсан байна.' },
+        ]),
+      );
+      const user = userEvent.setup();
+
+      renderDetail([PERMISSIONS.PLANNED_WORK_VIEW, PERMISSIONS.PLANNED_WORK_UPDATE]);
+      const dialog = await openDrawer(user);
+
+      const quantities = await within(dialog).findAllByLabelText(/^Тоо хэмжээ/);
+      await user.clear(quantities[1]!);
+      await user.type(quantities[1]!, '1');
+      await user.click(within(dialog).getByRole('button', { name: 'Хадгалах' }));
+
+      // Keyed by the schema's own dotted path, so the message lands on the second row
+      // instead of being flattened into one banner that names no row at all.
+      expect(
+        await within(dialog).findByText('Аль хэдийн 3 ширхэг зарцуулсан байна.'),
+      ).toBeInTheDocument();
+    });
+  });
+
+  /**
+   * Consumption, recorded against the sub-task that did the consuming.
+   *
+   * The pool it draws from belongs to the WORK, so nothing here may decide on its own that
+   * a draw is too large: another sub-task can empty the pool between this page loading and
+   * the button being pressed. The screen sends the figure and shows what the server says.
+   */
+  describe('sub-task material usage', () => {
+    const MATERIAL_ID = '507f1f77bcf86cd799439091';
+
+    function workWithMaterial(task: Partial<PlannedWorkTaskDto> = {}) {
+      return makePlannedWork({
+        materials: [makePlannedWorkMaterial({ materialItemId: MATERIAL_ID })],
+        tasks: [makePlannedWorkTask({ id: TASK_ONE, ...task })],
+      });
+    }
+
+    async function openPanel(user: ReturnType<typeof userEvent.setup>): Promise<void> {
+      await user.click(
+        await screen.findByRole('button', { name: 'Самбарын үзлэг — тоноглол ба материал' }),
+      );
+    }
+
+    it('lists what the sub-task drew and sends a correction as an absolute figure', async () => {
+      vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(
+        workWithMaterial({ materialUsage: [makeTaskMaterialUsage({ taskId: TASK_ONE })] }),
+      );
+      const record = vi
+        .spyOn(plannedWorkService, 'recordMaterialUsage')
+        .mockResolvedValue(workWithMaterial());
+      const user = userEvent.setup();
+
+      renderDetail([PERMISSIONS.PLANNED_WORK_VIEW, PERMISSIONS.PLANNED_WORK_RECORD_PROGRESS]);
+      await openPanel(user);
+
+      expect(screen.getByText('Зарцуулсан материал (1)')).toBeInTheDocument();
+      expect(screen.getByText('40 Метр')).toBeInTheDocument();
+
+      // Only what the work registered may be drawn from, and the option says what is left.
+      const picker = screen.getByLabelText('Материал');
+      expect(within(picker).getAllByRole('option')).toHaveLength(2); // placeholder + the one
+      await user.selectOptions(picker, MATERIAL_ID);
+
+      // Selecting fills the box with what is already recorded, because the field is a total
+      // rather than an increment; typing 45 must mean 45 in all, not 85.
+      const quantity = screen.getByLabelText('Зарцуулсан тоо хэмжээ');
+      expect(quantity).toHaveValue(40);
+
+      await user.clear(quantity);
+      await user.type(quantity, '45');
+      await user.click(screen.getByRole('button', { name: 'Бүртгэх' }));
+
+      await waitFor(() =>
+        expect(record).toHaveBeenCalledWith(WORK_ID, TASK_ONE, {
+          materialItemId: MATERIAL_ID,
+          quantity: 45,
+        }),
+      );
+    });
+
+    it('sends an over-draw and shows the refusal against the quantity', async () => {
+      vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(workWithMaterial());
+      const record = vi.spyOn(plannedWorkService, 'recordMaterialUsage').mockRejectedValue(
+        new ApiError('Зарцуулалт бүртгэж чадсангүй.', 'VALIDATION_ERROR', 400, [
+          { field: 'quantity', message: 'Үлдэгдэл ердөө 60 Метр байна.' },
+        ]),
+      );
+      const user = userEvent.setup();
+
+      renderDetail([PERMISSIONS.PLANNED_WORK_VIEW, PERMISSIONS.PLANNED_WORK_RECORD_PROGRESS]);
+      await openPanel(user);
+
+      await user.selectOptions(screen.getByLabelText('Материал'), MATERIAL_ID);
+      await user.type(screen.getByLabelText('Зарцуулсан тоо хэмжээ'), '500');
+      await user.click(screen.getByRole('button', { name: 'Бүртгэх' }));
+
+      // Sent, not pre-empted: 500 against a remainder of 60 is the server's call to make.
+      await waitFor(() =>
+        expect(record).toHaveBeenCalledWith(WORK_ID, TASK_ONE, {
+          materialItemId: MATERIAL_ID,
+          quantity: 500,
+        }),
+      );
+      expect(await screen.findByText('Үлдэгдэл ердөө 60 Метр байна.')).toBeInTheDocument();
+      expect(screen.getByText('Зарцуулалт бүртгэж чадсангүй.')).toBeInTheDocument();
+    });
+
+    it('offers no recording control without planned_work.record_progress', async () => {
+      vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(
+        workWithMaterial({ materialUsage: [makeTaskMaterialUsage({ taskId: TASK_ONE })] }),
+      );
+      const user = userEvent.setup();
+
+      renderDetail([PERMISSIONS.PLANNED_WORK_VIEW]);
+      await openPanel(user);
+
+      // The record stays readable; only the write disappears.
+      expect(screen.getByText('Зарцуулсан материал (1)')).toBeInTheDocument();
+      expect(screen.queryByLabelText('Зарцуулсан тоо хэмжээ')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Бүртгэх' })).not.toBeInTheDocument();
+    });
+
+    it('says so when a sub-task consumed nothing', async () => {
+      vi.spyOn(plannedWorkService, 'getById').mockResolvedValue(workWithMaterial());
+      const user = userEvent.setup();
+
+      renderDetail([PERMISSIONS.PLANNED_WORK_VIEW, PERMISSIONS.PLANNED_WORK_RECORD_PROGRESS]);
+      await openPanel(user);
+
+      expect(screen.getByText('Зарцуулсан материал (0)')).toBeInTheDocument();
+      expect(screen.getByText('Энэ дэд ажилд материал зарцуулаагүй байна.')).toBeInTheDocument();
+    });
   });
 
   it('shows an error state when the work cannot be loaded', async () => {

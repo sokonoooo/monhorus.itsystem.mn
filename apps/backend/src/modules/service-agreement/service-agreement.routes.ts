@@ -16,6 +16,7 @@ import { z } from 'zod';
 import { AppError } from '../../common/errors/app-error';
 import { ERROR_CODES } from '../../common/errors/error-codes';
 import { created, ok } from '../../common/utils/api-response.util';
+import { CREATOR_POPULATE, creatorName } from '../../common/utils/creator.util';
 import { pathParam } from '../../common/utils/path-param.util';
 import { buildRequestMeta as meta } from '../../common/utils/request-meta.util';
 import {
@@ -78,6 +79,7 @@ function toDto(agreement: WithId<IServiceAgreement>): ServiceAgreementDto {
     statusReason: agreement.statusReason,
     attachmentIds: agreement.attachments.map((id) => String(id)),
     notes: agreement.notes,
+    createdByName: creatorName(agreement.createdBy),
     createdAt: agreement.createdAt.toISOString(),
     updatedAt: agreement.updatedAt.toISOString(),
   };
@@ -86,6 +88,7 @@ function toDto(agreement: WithId<IServiceAgreement>): ServiceAgreementDto {
 const POPULATE = [
   { path: 'customer', select: 'name' },
   { path: 'responsibleEmployee', select: 'firstName lastName' },
+  CREATOR_POPULATE,
 ] as const;
 
 export const serviceAgreementRouter = Router();

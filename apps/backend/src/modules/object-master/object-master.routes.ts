@@ -6,6 +6,7 @@ import {
   objectCodeSuggestionQuerySchema,
   objectListQuerySchema,
   objectTypeListQuerySchema,
+  quickPlaceObjectSchema,
   updateObjectPositionSchema,
   updateObjectSchema,
   updateObjectTypeSchema,
@@ -15,6 +16,7 @@ import {
   type ObjectCodeSuggestionQueryInput,
   type ObjectListQueryInput,
   type ObjectTypeListQueryInput,
+  type QuickPlaceObjectInput,
   type UpdateObjectInput,
   type UpdateObjectPositionInput,
   type UpdateObjectTypeInput,
@@ -175,6 +177,38 @@ objectMasterRouter.post(
         meta(req),
       );
       created(res, result, 'Объект үүслээ.');
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+/**
+ * One click on a floor plan, one object.
+ *
+ * REGISTERED BEFORE `/:objectId` FOR THE SAME REASON AS `/code-suggestion` BELOW: Express
+ * matches in declaration order, and although no POST handler currently claims `/:objectId`,
+ * relying on that would make this route's correctness depend on a sibling not being added.
+ *
+ * The same permission as `POST /` because it is the same act — registering a new object —
+ * differing only in that the identity is generated rather than typed.
+ */
+objectMasterRouter.post(
+  '/quick-place',
+  requirePermission(PERMISSIONS.OBJECT_MASTER_MANAGE),
+  validate({ body: quickPlaceObjectSchema }),
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      // `scopeOf(req)` without the body's customer, exactly as `POST /` does: the id in the
+      // payload is checked against the scope by `resolveOwnerCustomerId`, so a customer
+      // sending another organisation's id is refused rather than scoped into it.
+      const result = await objectService.quickPlaceObject(
+        req.body as QuickPlaceObjectInput,
+        scopeOf(req),
+        requireAuth(req),
+        meta(req),
+      );
+      created(res, result, 'Объект байрлууллаа.');
     } catch (error) {
       next(error);
     }

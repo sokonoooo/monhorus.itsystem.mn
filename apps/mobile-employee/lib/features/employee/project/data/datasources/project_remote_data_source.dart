@@ -10,6 +10,7 @@ import '../../domain/entities/risk_level.dart';
 import '../models/inspection_models.dart';
 import '../models/object_models.dart';
 import '../models/project_models.dart';
+import '../models/report_record_models.dart';
 
 /// Transport for the employee project drill-down: project → building → floor →
 /// device. Throws [ServerException] or [NetworkException]; the repository converts
@@ -176,6 +177,39 @@ class ProjectRemoteDataSource {
       method: 'GET',
       decoder: (Object? json) =>
           ObjectHistoryModel.fromJson(json! as Map<String, dynamic>),
+    );
+  }
+
+  /// GET /objects-master/:objectId/reports — every report that recorded a finding on
+  /// this piece of equipment, newest first.
+  ///
+  /// All four kinds in one list: an assessment raised straight against the device, the
+  /// result of a planned work, the conclusion of a service request, and anything the
+  /// office signed off as a consolidated report. The rows carry no findings — those cost
+  /// a floor's worth of narrative to send — so opening one costs [getReport].
+  ///
+  /// Keyed on `object_master.view`, the same permission the device screen already needs
+  /// to exist at all.
+  Future<List<ReportRecordModel>> listObjectReports(String objectId) {
+    return _client.request<List<ReportRecordModel>>(
+      path: '/objects-master/$objectId/reports',
+      method: 'GET',
+      decoder: (Object? json) => json is List
+          ? json
+              .whereType<Map<String, dynamic>>()
+              .map(ReportRecordModel.fromJson)
+              .toList(growable: false)
+          : const <ReportRecordModel>[],
+    );
+  }
+
+  /// GET /reports-registry/:reportId — one report with the findings behind it.
+  Future<ReportRecordDetailModel> getReport(String reportId) {
+    return _client.request<ReportRecordDetailModel>(
+      path: '/reports-registry/$reportId',
+      method: 'GET',
+      decoder: (Object? json) =>
+          ReportRecordDetailModel.fromJson(json! as Map<String, dynamic>),
     );
   }
 

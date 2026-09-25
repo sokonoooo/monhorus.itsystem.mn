@@ -6,6 +6,8 @@ import '../../../../../core/network/api_result.dart';
 import '../../../../../core/network/paginated_data.dart';
 import '../../../../auth/domain/entities/app_user.dart';
 import '../../../../auth/presentation/providers/auth_provider.dart';
+import '../../../home/presentation/providers/home_providers.dart';
+import '../../../project/domain/repositories/project_repository.dart';
 import '../../../project/data/models/object_models.dart';
 import '../../../project/domain/entities/object_enums.dart';
 import '../../../project/data/models/project_models.dart';
@@ -56,10 +58,10 @@ class ConclusionGrants {
   bool get canSelfProgress =>
       _permissions.contains(PermissionKeys.serviceRequestSelfProgress) || canReview;
 
-  /// Settling a submitted conclusion. APPROVE only — returning one is not offered by this
-  /// app at all, and `service_request.approve_report` could not reach it if it were.
-  bool get canApproveConclusion =>
-      _permissions.contains(PermissionKeys.serviceRequestApproveReport) || canReview;
+  // THERE IS NO `canApproveConclusion` HERE, AND ADDING ONE BACK WOULD BE A MISTAKE.
+  // Settling a submitted conclusion — approving it or returning it — happens on the web
+  // admin, so no screen in this app has an approval control for a grant to gate. A getter
+  // reading `service_request.approve_report` would be an invitation to draw one.
 
   /// True once the permission array has actually arrived, so a screen can tell "no
   /// grants" apart from "not asked yet".
@@ -105,6 +107,8 @@ class EquipmentDraft {
     this.observation = '',
     this.conclusion = '',
     this.recommendation = '',
+    this.attributes = const <ObjectTypeAttributeModel>[],
+    this.attributeDrafts = const <String, String>{},
   });
 
   final String objectId;
@@ -128,6 +132,52 @@ class EquipmentDraft {
   final String recommendation;
   final List<String> photoIds;
 
+  // -- The equipment's own standing facts (requirements 4.1) -------------------
+  /// What this equipment's TYPE declares, in display order.
+  ///
+  /// Off the picked list row's type reference, so adding a card costs no round trip. Empty
+  /// for a type that declares none — and for a card whose equipment has gone away, which is
+  /// why an unavailable card asks nothing.
+  final List<ObjectTypeAttributeModel> attributes;
+
+  /// The answers as their controls hold them, keyed by attribute key.
+  ///
+  /// Pre-filled from what the equipment already answered, because these are standing facts
+  /// rather than a fresh reading: the technician corrects what is on record. That also makes
+  /// them safe to send — a declared attribute missing from a saved row is one CLEARED, so a
+  /// blank draft would wipe an earlier visit's work.
+  final Map<String, String> attributeDrafts;
+
+  /// The answers parsed to their declared kinds, with blanks left out.
+  Map<String, Object?> get attributePayload {
+    final Map<String, Object?> payload = <String, Object?>{};
+    for (final ObjectTypeAttributeModel attribute in attributes) {
+      final String raw = (attributeDrafts[attribute.key] ?? '').trim();
+      if (raw.isEmpty) continue;
+      switch (attribute.type) {
+        case ObjectAttributeType.number:
+          final double? parsed = double.tryParse(raw.replaceAll(',', '.'));
+          if (parsed != null) payload[attribute.key] = parsed;
+        case ObjectAttributeType.boolean:
+          payload[attribute.key] = raw == 'true';
+        case ObjectAttributeType.select:
+        case ObjectAttributeType.text:
+          payload[attribute.key] = raw;
+      }
+    }
+    return payload;
+  }
+
+  /// The declared attributes this card has not answered, by label.
+  ///
+  /// Mirrors `validateAttributeValues`, which is what the server enforces with. Only the
+  /// required ones: an optional blank is a complete card.
+  List<String> get missingRequiredAttributes => attributes
+      .where((ObjectTypeAttributeModel attribute) =>
+          attribute.required && (attributeDrafts[attribute.key] ?? '').trim().isEmpty)
+      .map((ObjectTypeAttributeModel attribute) => attribute.label)
+      .toList(growable: false);
+
   String get label => (code ?? '').isEmpty ? (name ?? objectId) : '$code · ${name ?? ''}';
 
   /// True when the technician has actually said something about this object.
@@ -140,7 +190,10 @@ class EquipmentDraft {
       observation.trim().isNotEmpty ||
       conclusion.trim().isNotEmpty ||
       recommendation.trim().isNotEmpty ||
-      photoIds.isNotEmpty;
+      photoIds.isNotEmpty ||
+      // An answered attribute is data too, or a card whose only content is "this breaker is
+      // fused" would never become a ReportItem and the answer would never reach the object.
+      attributePayload.isNotEmpty;
 
   bool get isReadOnly => origin == EquipmentOrigin.unavailable;
 
@@ -151,6 +204,7 @@ class EquipmentDraft {
     String? recommendation,
     List<String>? photoIds,
     EquipmentOrigin? origin,
+    Map<String, String>? attributeDrafts,
   }) {
     return EquipmentDraft(
       objectId: objectId,
@@ -166,6 +220,8 @@ class EquipmentDraft {
       conclusion: conclusion ?? this.conclusion,
       recommendation: recommendation ?? this.recommendation,
       photoIds: photoIds ?? this.photoIds,
+      attributes: attributes,
+      attributeDrafts: attributeDrafts ?? this.attributeDrafts,
     );
   }
 }
@@ -289,6 +345,16 @@ class ConclusionEditorState {
 /// Which request's conclusion, and where its equipment lives.
 typedef ConclusionRef = ({String requestId, String? buildingId});
 
+/// The working copy of one request's conclusion.
+///
+/// Deliberately NOT `autoDispose`: the draft has to survive leaving the screen, which is
+/// what a technician does when the equipment picker sends them to a floor, or when a call
+/// comes in mid-write-up. The state therefore outlives the route — and, before this
+/// watched the session, it outlived the SESSION too. `ProviderScope` is above
+/// `MaterialApp`, so a sign-out unmounts the shell without clearing the container, and the
+/// next person to open the same request was handed the previous technician's unsaved
+/// finding: their words, ready to be submitted under a different name. A shared van
+/// handset is the ordinary case, not an exotic one.
 final AsyncNotifierProviderFamily<ConclusionEditor, ConclusionEditorState, ConclusionRef>
     conclusionEditorProvider = AsyncNotifierProvider.family<ConclusionEditor,
         ConclusionEditorState, ConclusionRef>(ConclusionEditor.new);
@@ -296,6 +362,14 @@ final AsyncNotifierProviderFamily<ConclusionEditor, ConclusionEditorState, Concl
 class ConclusionEditor extends FamilyAsyncNotifier<ConclusionEditorState, ConclusionRef> {
   @override
   Future<ConclusionEditorState> build(ConclusionRef arg) async {
+    // Keyed on WHO is signed in, so a different account rebuilds from the server rather
+    // than inheriting a draft. The id rather than the [AppUser], because `/auth/me` is
+    // re-read on mount and answers with a new object every time: watching the object
+    // would throw away the draft of the technician who is still typing it, which is the
+    // same data loss from the other side. `employeeSelfProvider` watches the user for
+    // this same reason.
+    ref.watch(currentUserProvider.select((AppUser? user) => user?.id));
+
     final WorkReportModel report = _unwrapResult(
       await ref.read(workRepositoryProvider).getWorkReport(arg.requestId),
     );
@@ -330,6 +404,11 @@ class ConclusionEditor extends FamilyAsyncNotifier<ConclusionEditorState, Conclu
           conclusion: item.conclusion ?? '',
           recommendation: item.recommendation ?? '',
           photoIds: List<String>.from(item.photoIds),
+          attributes: item.objectTypeAttributes,
+          attributeDrafts: <String, String>{
+            for (final ObjectTypeAttributeModel attribute in item.objectTypeAttributes)
+              attribute.key: item.attributeValues[attribute.key]?.toString() ?? '',
+          },
         ),
       );
     }
@@ -380,6 +459,27 @@ class ConclusionEditor extends FamilyAsyncNotifier<ConclusionEditorState, Conclu
   /// The list is rebuilt by identity rather than index, so a card keeps its values when
   /// another is added or removed — which is what "preserve entered values when switching
   /// between selected objects" actually requires.
+  /// Answers one of a card's type-declared attributes (requirements 4.1).
+  ///
+  /// Its own method rather than another argument on [patchDraft]: that one is fed by text
+  /// controllers on every keystroke and takes a fixed four fields, while the set of keys
+  /// here is whatever the equipment's type happens to declare.
+  void patchDraftAttribute(String objectId, String key, String value) {
+    _set(
+      _now.copyWith(
+        drafts: _now.drafts
+            .map(
+              (EquipmentDraft draft) => draft.objectId == objectId
+                  ? draft.copyWith(
+                      attributeDrafts: <String, String>{...draft.attributeDrafts, key: value},
+                    )
+                  : draft,
+            )
+            .toList(),
+      ),
+    );
+  }
+
   void patchDraft(
     String objectId, {
     String? score,
@@ -426,6 +526,15 @@ class ConclusionEditor extends FamilyAsyncNotifier<ConclusionEditorState, Conclu
             currentRiskWire: object.latestAssessment?.riskLevel?.wireValue,
             currentScore: object.latestAssessment?.score,
             photoIds: const <String>[],
+            // Both off the picked row: the list carries what the type declares and what this
+            // equipment has already answered, so adding a card costs no round trip — and
+            // starting from the STORED answers is what makes them safe to send back.
+            attributes: object.objectType?.attributes ?? const <ObjectTypeAttributeModel>[],
+            attributeDrafts: <String, String>{
+              for (final ObjectTypeAttributeModel attribute
+                  in object.objectType?.attributes ?? const <ObjectTypeAttributeModel>[])
+                attribute.key: object.attributeValues[attribute.key]?.toString() ?? '',
+            },
           ),
         )
         .toList();
@@ -548,7 +657,14 @@ class ConclusionEditor extends FamilyAsyncNotifier<ConclusionEditorState, Conclu
       conclusion: now.conclusion.trim().isEmpty ? null : now.conclusion.trim(),
       recommendation:
           now.recommendation.trim().isEmpty ? null : now.recommendation.trim(),
-      actionTaken: null,
+      // The five fields this editor draws no control for, echoed back from the loaded
+      // report rather than defaulted. The PUT replaces the record, so `null`/`false`/an
+      // absent key here is not "leave it alone" — it is "delete what the web recorded".
+      actionTaken: now.report.actionTaken,
+      materials: now.report.materials,
+      repairRequired: now.report.repairRequired,
+      revisitRequired: now.report.revisitRequired,
+      revisitDateWire: now.report.revisitDateWire,
       // Membership carries every card, including one not yet written up, so a selection
       // survives a save and can be filled in later.
       objectIds: now.drafts.map((EquipmentDraft draft) => draft.objectId).toList(),
@@ -566,6 +682,12 @@ class ConclusionEditor extends FamilyAsyncNotifier<ConclusionEditorState, Conclu
               recommendation:
                   draft.recommendation.trim().isEmpty ? null : draft.recommendation.trim(),
               photoIds: draft.photoIds,
+              // The type's own answers land on the EQUIPMENT, not on this finding: the score
+              // and the narrative are what the visit observed, while "this breaker is fused"
+              // is true between visits. Omitted for a card whose type declares nothing, so
+              // absent still means "not asked".
+              attributeValues:
+                  draft.attributes.isEmpty ? null : draft.attributePayload,
             ),
           )
           .toList(),
@@ -616,6 +738,17 @@ class ConclusionEditor extends FamilyAsyncNotifier<ConclusionEditorState, Conclu
     return result.when(
       success: (WorkReportModel submitted) {
         _set(_hydrate(submitted).copyWith(message: 'Хянуулахаар илгээлээ.'));
+        // THE REQUEST MOVED TOO. `submitWorkReport` calls `advanceOnConclusion` on the
+        // backend, which advances the request to REPORT_SUBMITTED; the answer here carries
+        // only the conclusion. Left alone, the detail screen keeps the status it read
+        // before — and keeps offering «"Дүгнэлт илгээсэн" болгох» off it, a button whose
+        // only outcome now is the server refusing a move the request has already made.
+        // The reads the status also appears in are refreshed for the same reason
+        // `ServiceRequestActionController` refreshes them.
+        ref
+          ..invalidate(serviceRequestDetailProvider(arg.requestId))
+          ..invalidate(assignedRequestsProvider)
+          ..invalidate(homeOverviewProvider);
         return null;
       },
       failure: (Failure failure) {
@@ -706,21 +839,54 @@ T _unwrapResult<T>(ApiResult<T> result) => result.when(
 /// second definition of "which floors exist".
 final FutureProviderFamily<List<FloorModel>, String> conclusionFloorsProvider =
     FutureProvider.family<List<FloorModel>, String>((Ref ref, String buildingId) async {
+  // Keyed on WHO is signed in, for the reason spelled out on [conclusionEditorProvider]:
+  // not `autoDispose`, keyed only on the building, and the container outlives the
+  // session, so the next technician on the handset was shown the floors the previous one
+  // loaded — a tenant-scoped read answered out of another account's cache.
+  ref.watch(currentUserProvider.select((AppUser? user) => user?.id));
+
   final PaginatedData<FloorModel> page =
       _unwrapResult(await ref.watch(projectRepositoryProvider).listFloors(buildingId));
   return page.items;
 });
 
+/// A ceiling on the paging loop, not on the floor. The same twenty pages of a hundred the
+/// Төсөл tab walks a floor plan under.
+const int _maxEquipmentPages = 20;
+
 /// Equipment on one floor, filtered to what may actually be assessed.
+///
+/// EVERY PAGE, not the first hundred. `/floors/:id/objects` caps a page at 100 and this
+/// read took one, so on a floor with more than that the equipment picker simply did not
+/// offer the devices past the cut — and a picker that is missing the device in front of
+/// the technician is worse than a slow one: there is nothing on screen to suggest the
+/// list is short, so the finding gets recorded against the wrong device or not at all.
+/// The Төсөл tab's floor plan was fixed the same way and against the same cap.
 ///
 /// Decommissioned equipment is excluded: it is not in service, so a fresh finding about it
 /// is not a thing a technician should be recording. Anything the caller may not read never
 /// arrives here at all — the route is tenant-scoped server-side.
 final FutureProviderFamily<List<ObjectListItemModel>, String> conclusionEquipmentProvider =
     FutureProvider.family<List<ObjectListItemModel>, String>((Ref ref, String floorId) async {
-  final PaginatedData<ObjectListItemModel> page =
-      _unwrapResult(await ref.watch(projectRepositoryProvider).listFloorObjects(floorId));
-  return page.items
+  // Keyed on WHO is signed in, like [conclusionFloorsProvider] above and for the same
+  // reason — except that it matters more here. This is the list a finding is recorded
+  // AGAINST, two technicians genuinely share a floorId, and nothing about a picker
+  // answered out of the previous session's cache looks wrong on screen.
+  ref.watch(currentUserProvider.select((AppUser? user) => user?.id));
+
+  final ProjectRepository repository = ref.watch(projectRepositoryProvider);
+  final List<ObjectListItemModel> all = <ObjectListItemModel>[];
+
+  for (int page = 1; page <= _maxEquipmentPages; page++) {
+    final PaginatedData<ObjectListItemModel> slice =
+        _unwrapResult(await repository.listFloorObjects(floorId, page: page));
+    all.addAll(slice.items);
+    // An empty page means there is nothing further to read; carrying on would loop
+    // against a server that disagrees with its own `totalPages`.
+    if (slice.items.isEmpty || page >= slice.totalPages) break;
+  }
+
+  return all
       .where((ObjectListItemModel object) => object.status != ObjectStatus.decommissioned)
       .toList();
 });

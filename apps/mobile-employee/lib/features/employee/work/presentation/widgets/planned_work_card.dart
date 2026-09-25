@@ -118,8 +118,12 @@ class PlannedWorkCard extends StatelessWidget {
               ),
             ],
           ),
-          const SizedBox(height: 6),
-          ProgressRail(percent: work.progressPercent, color: _railTone(tone)),
+          // Omitted when the answer carried no percentage — an empty rail is a 0%
+          // reading, and the figure beside it already shows a dash.
+          if (work.progressPercent case final double percent) ...<Widget>[
+            const SizedBox(height: 6),
+            ProgressRail(percent: percent, color: _railTone(tone)),
+          ],
           if (work.assignedEmployees.isNotEmpty ||
               work.assignedTeam != null) ...<Widget>[
             const SizedBox(height: 11),

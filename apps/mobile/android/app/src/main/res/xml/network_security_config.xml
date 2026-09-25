@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Cleartext HTTP is denied outright.
+
+    Until 2026-08-13 this file carried a domain-config exception permitting cleartext to
+    103.87.255.221, because the deployment had no TLS: monhorus.itsystem.mn resolved to a
+    different host, so certbot could not validate a certificate for it. The A record now
+    points at the deployment and the API is served over HTTPS, so the exception is gone —
+    see docs/DEPLOYMENT_MONHORUS_PROD.md section 7.
+
+    The file is kept rather than deleted, even though an app with targetSdk >= 28 already
+    denies cleartext by default. That default is derived from targetSdk, which this module
+    inherits from the Flutter SDK (`targetSdk = flutter.targetSdkVersion`) rather than
+    pinning — so it is a value that can move without anyone here choosing to move it. An
+    explicit deny states the intent at the only level that cannot be changed by an upgrade,
+    and costs one file.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>

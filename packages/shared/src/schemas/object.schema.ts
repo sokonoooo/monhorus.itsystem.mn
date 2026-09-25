@@ -26,6 +26,15 @@ export const createCustomerSchema = z.object({
   contactPerson: z.string().trim().max(200).nullish(),
   responsibleEmployeeId: objectIdSchema.nullish(),
   notes: z.string().trim().max(2000).nullish(),
+  /**
+   * The customer's own letterhead, as a stored-file id from `POST /files/customer-logo`.
+   *
+   * Null clears it, and null is also what a customer that never had one carries. Reports
+   * for such a customer print under the operator's logo alone — exactly what every report
+   * printed before this field existed — so the absence is a supported state rather than a
+   * half-filled record.
+   */
+  logoFileId: objectIdSchema.nullish(),
 });
 
 export const updateCustomerSchema = createCustomerSchema.partial().extend({

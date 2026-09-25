@@ -7,7 +7,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Monhorus Mobile</string>
+	<string>Agata</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -24,6 +24,10 @@
 	<string>????</string>
 	<key>CFBundleVersion</key>
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
+	<!-- Flutter apps use only exempt encryption (HTTPS), so declaring this here
+	     avoids the export-compliance question on every App Store Connect upload. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>UIApplicationSceneManifest</key>
@@ -59,15 +63,15 @@
 	<!-- Reaching that same backend from a physical device also trips iOS local
 	     network privacy, which prompts once on first connection. -->
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Монхорус нь дотоод сүлжээн дэх серверт холбогдоход энэ зөвшөөрлийг ашиглана.</string>
+	<string>Agata нь дотоод сүлжээн дэх серверт холбогдоход энэ зөвшөөрлийг ашиглана.</string>
 	<!-- Дуудлагын зураг. iOS terminates the process the first time a camera or
 	     photo-library picker is presented without these keys, so they are required
 	     rather than optional: a service request cannot be sent without at least one
 	     picture of the fault. -->
 	<key>NSCameraUsageDescription</key>
-	<string>Монхорус нь засварын дуудлагад хавсаргах зургийг авахад камерыг ашиглана.</string>
+	<string>Agata нь засварын дуудлагад хавсаргах зургийг авахад камерыг ашиглана.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Монхорус нь засварын дуудлагад хавсаргах зургийг таны зургийн сангаас сонгоно.</string>
+	<string>Agata нь засварын дуудлагад хавсаргах зургийг таны зургийн сангаас сонгоно.</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UILaunchStoryboardName</key>

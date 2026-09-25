@@ -16,6 +16,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } 
 import { useSearchParams } from 'react-router-dom';
 
 import { Alert } from '../../components/ui/Alert';
+import { Pagination } from '../../components/ui/DataTable';
 import { Button } from '../../components/ui/Button';
 import { PageHeader } from '../../components/ui/PageHeader';
 import { EmptyState, ErrorState, Skeleton } from '../../components/ui/States';
@@ -28,16 +29,28 @@ import {
 } from '../../components/ui/control-styles';
 import { useAuth } from '../../contexts/auth-context';
 import { ApiError } from '../../lib/api-client';
-import { monthStartDateInput, todayDateInput } from '../../lib/calendar-date';
+import {
+  BUSINESS_TIME_ZONE,
+  businessDayEnd,
+  businessDayStart,
+  currentMonthStartDateKey,
+  todayDateKey,
+} from '../../lib/business-day';
 import { reportService } from '../../services/report.service';
 
-/** First day of the current month, as a `yyyy-mm-dd` value for a date input. */
+/**
+ * First day of the current month, as a `yyyy-mm-dd` value for a date input.
+ *
+ * In Ulaanbaatar, not in the reader's browser. A report is a statement about the business
+ * day, and between 00:00 and 08:00 local a viewer west of UTC+8 would otherwise open the
+ * page defaulted to the previous month.
+ */
 function monthStart(): string {
-  return monthStartDateInput();
+  return currentMonthStartDateKey();
 }
 
 function today(): string {
-  return todayDateInput();
+  return todayDateKey();
 }
 
 /**
@@ -56,9 +69,9 @@ function formatCell(value: ReportCellValue, column: ReportColumnDto): string {
     case 'PERCENT':
       return typeof value === 'number' ? `${value}%` : String(value);
     case 'DATE':
-      return new Date(String(value)).toLocaleDateString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
+      return new Date(String(value)).toLocaleDateString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
     case 'DATETIME':
-      return new Date(String(value)).toLocaleString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
+      return new Date(String(value)).toLocaleString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
     default:
       return String(value);
   }
@@ -100,6 +113,31 @@ function KpiCard({ kpi }: { kpi: KpiValueDto }): ReactElement {
  * to the backend needs no change here. Export is CSV with a UTF-8 BOM, which Excel opens
  * directly, plus the browser print dialog for PDF (rule 17.20).
  */
+/**
+ * Rows per page on screen.
+ *
+ * Twenty-five rather than the endpoint's own default of a thousand: that default belongs
+ * to the CSV export, which has no pager and must carry the whole report in one response.
+ */
+const REPORT_PAGE_SIZE = 25;
+
+/**
+ * What an export asks for: one response, carrying up to this many rows.
+ *
+ * A report longer than this is exported in part, and the reader is told so twice — by the
+ * banner below before they press the button, and by the toast that reports what the file
+ * actually held. The server writes the same fact into the file itself in place of the
+ * whole-set footer, so a partial export cannot be filed as a complete one even once it has
+ * left this screen.
+ *
+ * The cap is self-imposed: `reportQuerySchema` allows five thousand. It is left where it
+ * is deliberately. Raising it does not fix an export that omits rows, it only moves the
+ * row count at which the omission starts, and a five-thousand-row report is a request the
+ * screen's own pager already serves better. This number should change only if somebody
+ * measures the response, not because the schema happens to permit more.
+ */
+const REPORT_EXPORT_LIMIT = 1000;
+
 export function ReportsPage(): ReactElement {
   const { can } = useAuth();
   const { notify } = useToast();
@@ -110,14 +148,30 @@ export function ReportsPage(): ReactElement {
   const reportKey = (searchParams.get('report') as ReportKey | null) ?? 'SLA';
   const dateFrom = searchParams.get('dateFrom') ?? monthStart();
   const dateTo = searchParams.get('dateTo') ?? today();
+  // In the url so a page is linkable and survives a reload, like every filter here.
+  const page = Math.max(1, Number(searchParams.get('page') ?? '1') || 1);
 
   const query = useMemo<ReportQuery>(
     () => ({
-      dateFrom: `${dateFrom}T00:00:00.000Z`,
-      dateTo: `${dateTo}T23:59:59.999Z`,
-      limit: 1000,
+      /*
+       * The instants bounding the chosen Ulaanbaatar days.
+       *
+       * These used to be `${dateFrom}T00:00:00.000Z` and `${dateTo}T23:59:59.999Z`, which
+       * frames the UTC day. Ulaanbaatar runs eight hours ahead of it, so every report
+       * omitted 00:00-08:00 of its first day and included 00:00-08:00 of the day after its
+       * last: a call logged at 07:00 on the 1st was missing from that month and counted in
+       * the previous one. The backend bounds its own days the same way — see
+       * `dayBounds` in `common/utils/day-bounds.util.ts` — so both ends now agree.
+       */
+      dateFrom: businessDayStart(dateFrom),
+      dateTo: businessDayEnd(dateTo),
+      page,
+      // A page-sized window. The endpoint's own default is far higher because that is
+      // what the CSV export wants — an export has no pager and must carry the whole
+      // report — but a screen has one, so it asks for what it can show.
+      limit: REPORT_PAGE_SIZE,
     }),
-    [dateFrom, dateTo],
+    [dateFrom, dateTo, page],
   );
 
   const [report, setReport] = useState<ReportResultDto | null>(null);
@@ -158,14 +212,45 @@ export function ReportsPage(): ReactElement {
     const next = new URLSearchParams(searchParams);
     if (value) next.set(key, value);
     else next.delete(key);
+    // Any filter change puts the reader back on page one. Page four of the old filter is
+    // rarely a page of the new one, and is often past its end — which would answer with an
+    // empty table for a filter that actually matches plenty.
+    if (key !== 'page') next.delete('page');
     setSearchParams(next);
   }
+
+  /**
+   * Whether an export under the current filters would leave rows behind.
+   *
+   * `report.total` counts exactly what an export would ask for: `handleExport` sends this
+   * same query with only `page` removed, so the filtered set is identical and its size is
+   * already on screen. This is the truncation signal the page used to look for in
+   * `report.truncatedAt` — a field the server sets only for a `format=csv` request, which
+   * this screen never makes, so it was always null and the old banner never rendered.
+   *
+   * It is shown only to a reader who can export, because it describes a file nobody else
+   * can ask for.
+   */
+  const exportWillBeCapped = canExport && (report?.total ?? 0) > REPORT_EXPORT_LIMIT;
 
   async function handleExport(): Promise<void> {
     setExporting(true);
     try {
-      await reportService.downloadCsv(reportKey, query);
-      notify('CSV файл татагдлаа.', 'success');
+      // Deliberately NOT `query`: an export has no pager, so it carries as much of the
+      // report as one response is allowed to hold rather than the window the screen
+      // happens to be showing. Only the page is dropped.
+      const { page: _page, ...whole } = query;
+      const total = report?.total ?? 0;
+      await reportService.downloadCsv(reportKey, { ...whole, limit: REPORT_EXPORT_LIMIT });
+      // A partial file and a complete one used to be announced with the same four words.
+      if (total > REPORT_EXPORT_LIMIT) {
+        notify(
+          `CSV файл татагдлаа. Тайлангийн нийт ${total} мөрөөс эхний ${REPORT_EXPORT_LIMIT} мөр багтсан.`,
+          'info',
+        );
+      } else {
+        notify('CSV файл татагдлаа.', 'success');
+      }
     } catch (caught) {
       notify(caught instanceof ApiError ? caught.message : 'Татаж чадсангүй.', 'error');
     } finally {
@@ -254,10 +339,11 @@ export function ReportsPage(): ReactElement {
 
       <p className="mb-3 text-xs text-slate-500">{REPORT_DESCRIPTIONS[reportKey]}</p>
 
-      {report?.truncatedAt !== null && report?.truncatedAt !== undefined && (
+      {exportWillBeCapped && (
         <div className="mb-3">
           <Alert variant="warning">
-            Мөрийн тоо {report.truncatedAt}-аар хязгаарлагдсан. Огнооны хязгаарыг нарийсгана уу.
+            Excel (CSV) татахад эхний {REPORT_EXPORT_LIMIT} мөр л багтана. Тайлан нийт{' '}
+            {report?.total} мөртэй тул огнооны хязгаарыг нарийсгана уу.
           </Alert>
         </div>
       )}
@@ -275,12 +361,15 @@ export function ReportsPage(): ReactElement {
         <div className="overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-slate-200">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-5 py-3">
             <h2 className="text-sm font-semibold text-slate-900">{report.label}</h2>
-            <span className="text-xs text-slate-500">Нийт {report.rows.length} мөр</span>
+            <span className="text-xs text-slate-500">Нийт {report.total} мөр</span>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-slate-50 text-xs text-slate-600">
                 <tr>
+                  <th className="w-12 whitespace-nowrap px-4 py-2 text-right font-medium">
+                    №
+                  </th>
                   {report.columns.map((column) => (
                     <th
                       key={column.key}
@@ -296,6 +385,9 @@ export function ReportsPage(): ReactElement {
               <tbody className="divide-y divide-slate-100">
                 {report.rows.map((row, index) => (
                   <tr key={index} className="hover:bg-slate-50">
+                    <td className="px-4 py-2 text-right tabular-nums text-slate-500">
+                      {(report.page - 1) * report.limit + index + 1}
+                    </td>
                     {report.columns.map((column) => (
                       <td
                         key={column.key}
@@ -314,6 +406,8 @@ export function ReportsPage(): ReactElement {
               {report.totals && (
                 <tfoot className="border-t border-slate-200 bg-slate-50 font-medium">
                   <tr>
+                    {/* Empty cell under №, or every total sits one column to the left. */}
+                    <td className="px-4 py-2" />
                     {report.columns.map((column) => (
                       <td
                         key={column.key}
@@ -334,6 +428,16 @@ export function ReportsPage(): ReactElement {
               )}
             </table>
           </div>
+          {/*
+            The same pager the nine DataTable lists use, so paging behaves identically
+            wherever a reader meets it. It hides itself on a single-page report.
+          */}
+          <Pagination
+            page={report.page}
+            totalPages={report.totalPages}
+            total={report.total}
+            onPageChange={(next) => updateParam('page', String(next))}
+          />
         </div>
       )}
     </>

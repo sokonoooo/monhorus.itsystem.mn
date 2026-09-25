@@ -7,6 +7,7 @@ import '../../../../../core/media/photo_capture.dart';
 import '../../../../../core/network/api_result.dart';
 import '../../../presentation/theme/employee_tokens.dart';
 import '../../domain/entities/object_enums.dart';
+import 'object_attribute_field.dart';
 import '../../domain/entities/risk_level.dart';
 import '../../../presentation/widgets/employee_ui.dart';
 import '../../../presentation/widgets/photo_source_sheet.dart';
@@ -37,6 +38,8 @@ Future<void> showAssessmentSheet(
   required String objectId,
   required String deviceLabel,
   int? currentScore,
+  List<ObjectTypeAttributeModel> attributes = const <ObjectTypeAttributeModel>[],
+  Map<String, Object?> attributeValues = const <String, Object?>{},
 }) {
   // Nothing is returned to the caller: `DeviceAssessmentController.submit` already
   // invalidates the device, its history and the floor list it is sorted into, so the
@@ -54,6 +57,8 @@ Future<void> showAssessmentSheet(
       objectId: objectId,
       deviceLabel: deviceLabel,
       currentScore: currentScore,
+      attributes: attributes,
+      attributeValues: attributeValues,
     ),
   );
 }
@@ -63,11 +68,23 @@ class _AssessmentSheet extends ConsumerStatefulWidget {
     required this.objectId,
     required this.deviceLabel,
     required this.currentScore,
+    required this.attributes,
+    required this.attributeValues,
   });
 
   final String objectId;
   final String deviceLabel;
   final int? currentScore;
+
+  /// What this equipment's TYPE declares, in display order (requirements 4.1).
+  ///
+  /// Administrator-defined in Тоноглолын төрөл, so this sheet renders whatever arrives and
+  /// names no field of its own. Empty for a type that declares none, which is every type
+  /// registered before the feature existed.
+  final List<ObjectTypeAttributeModel> attributes;
+
+  /// The answers already on record, which the fields open pre-filled with.
+  final Map<String, Object?> attributeValues;
 
   @override
   ConsumerState<_AssessmentSheet> createState() => _AssessmentSheetState();
@@ -80,18 +97,27 @@ class _AssessmentSheetState extends ConsumerState<_AssessmentSheet> {
   late final TextEditingController _actionTaken;
   late final TextEditingController _measuredLoad;
 
-  /// The repeatable load readings, in the order they were added.
-  ///
-  /// Each row owns a controller, so adding and removing rows is adding and removing
-  /// controllers — hence the explicit dispose on removal as well as on teardown.
-  final List<_MeasurementRow> _measurements = <_MeasurementRow>[];
-
   /// Files that are already on the server, in upload order.
   final List<ObjectPhotoModel> _photos = <ObjectPhotoModel>[];
 
   /// The bytes of each, kept so the thumbnails render without a round trip back
   /// through `GET /files/:fileId` for a picture this device just took.
   final Map<String, Uint8List> _thumbnails = <String, Uint8List>{};
+
+  /// The answers to the type's own fields, keyed by attribute key.
+  ///
+  /// Strings whatever the declared kind is — a half-typed "23." is a legitimate state of a
+  /// number box, and parsing on every keystroke eats the decimal point. `_attributePayload`
+  /// parses them once, on submit. A SELECT and a BOOLEAN hold the option value they are on,
+  /// `''` meaning unanswered.
+  final Map<String, String> _attributeDrafts = <String, String>{};
+
+  /// The text controllers behind the free-text and number attributes, one per key.
+  ///
+  /// Held apart from the drafts because a controller has to be disposed and a draft does
+  /// not, and because a SELECT has no controller at all.
+  final Map<String, TextEditingController> _attributeControllers =
+      <String, TextEditingController>{};
 
   bool _repairRequired = false;
   bool _uploading = false;
@@ -111,6 +137,21 @@ class _AssessmentSheetState extends ConsumerState<_AssessmentSheet> {
     _recommendation = TextEditingController();
     _actionTaken = TextEditingController();
     _measuredLoad = TextEditingController();
+
+    /// Pre-filled from what the equipment already answered, unlike the score above.
+    ///
+    /// These are standing facts about the kit rather than a fresh reading, so the right
+    /// starting point is what is on record: the technician corrects it rather than
+    /// re-entering it from scratch on every visit.
+    for (final ObjectTypeAttributeModel attribute in widget.attributes) {
+      final Object? value = widget.attributeValues[attribute.key];
+      final String draft = value == null ? '' : value.toString();
+      _attributeDrafts[attribute.key] = draft;
+      if (attribute.type == ObjectAttributeType.text ||
+          attribute.type == ObjectAttributeType.number) {
+        _attributeControllers[attribute.key] = TextEditingController(text: draft);
+      }
+    }
   }
 
   @override
@@ -120,46 +161,93 @@ class _AssessmentSheetState extends ConsumerState<_AssessmentSheet> {
     _recommendation.dispose();
     _actionTaken.dispose();
     _measuredLoad.dispose();
-    for (final _MeasurementRow row in _measurements) {
-      row.value.dispose();
+    for (final TextEditingController controller in _attributeControllers.values) {
+      controller.dispose();
     }
     super.dispose();
   }
 
-  /// `MAX_LOAD_MEASUREMENTS` in packages/shared/src/constants/load-measurement.ts.
-  static const int _maxMeasurements = 12;
-
-  /// Adds a row that does not collide with one already on the form.
-  ///
-  /// The backend refuses two readings of the same kind on the same phase, so a blind
-  /// default would hand the technician a refusal for a button press. Phase-less first
-  /// (the single-phase case), then L1, L2, L3, N — which is what filling in a
-  /// three-phase panel actually looks like.
-  void _addMeasurement() {
-    final Set<String?> taken = _measurements
-        .where((_MeasurementRow row) => row.kind == LoadMeasurementKind.current)
-        .map((_MeasurementRow row) => row.phase?.wireValue)
-        .toSet();
-
-    final LoadMeasurementPhase? free = <LoadMeasurementPhase?>[
-      null,
-      ...LoadMeasurementPhase.values,
-    ].firstWhere(
-      (LoadMeasurementPhase? phase) => !taken.contains(phase?.wireValue),
-      orElse: () => null,
-    );
-
-    setState(() {
-      _measurements.add(
-        _MeasurementRow(kind: LoadMeasurementKind.current, phase: free),
-      );
-    });
+  /// The current text of one attribute, whichever kind of control holds it.
+  String _draftOf(ObjectTypeAttributeModel attribute) {
+    final TextEditingController? controller = _attributeControllers[attribute.key];
+    if (controller != null) return controller.text;
+    return _attributeDrafts[attribute.key] ?? '';
   }
 
-  void _removeMeasurement(int index) {
-    setState(() {
-      _measurements.removeAt(index).value.dispose();
-    });
+  /// The drafts parsed to their declared kinds, with blanks left out.
+  ///
+  /// Mirrors `toAttributePayload` on the web. Returns null when the type declares nothing,
+  /// because null is what leaves the key off the request body — and absent means "not
+  /// asked", which is the reading that stops this sheet clearing values it never showed.
+  Map<String, Object?>? _attributePayload() {
+    if (widget.attributes.isEmpty) return null;
+
+    final Map<String, Object?> payload = <String, Object?>{};
+    for (final ObjectTypeAttributeModel attribute in widget.attributes) {
+      final String raw = _draftOf(attribute).trim();
+      if (raw.isEmpty) continue;
+
+      switch (attribute.type) {
+        case ObjectAttributeType.number:
+          // A comma is what a Mongolian keyboard offers for a decimal point, and the same
+          // normalisation the kW box does two fields up. An unparseable value is caught by
+          // `_attributeIssues` before this is ever sent.
+          final double? parsed = double.tryParse(raw.replaceAll(',', '.'));
+          if (parsed != null) payload[attribute.key] = parsed;
+        case ObjectAttributeType.boolean:
+          payload[attribute.key] = raw == 'true';
+        case ObjectAttributeType.select:
+        case ObjectAttributeType.text:
+          payload[attribute.key] = raw;
+      }
+    }
+    return payload;
+  }
+
+  /// Refusals for the type's own fields, keyed `attributeValues.<key>`.
+  ///
+  /// Mirrors `validateAttributeValues` in the shared package, which is what the server
+  /// enforces with. THIS COPY EXISTS SO A TECHNICIAN IS TOLD WITHOUT A ROUND TRIP — the
+  /// server does not assume it ran, and its refusals arrive under the same keys, so a
+  /// message lands on the same field whichever side raised it.
+  ///
+  /// Dart cannot import the TypeScript rule, so this is a hand-maintained mirror in the
+  /// same way both apps mirror the shared enums. It is deliberately the same three checks
+  /// and nothing cleverer: required, a SELECT value that is one of its options, and a
+  /// NUMBER that parses.
+  Map<String, String> _attributeIssues() {
+    final Map<String, String> issues = <String, String>{};
+
+    for (final ObjectTypeAttributeModel attribute in widget.attributes) {
+      final String raw = _draftOf(attribute).trim();
+      final String field = 'attributeValues.${attribute.key}';
+
+      if (raw.isEmpty) {
+        if (attribute.required) {
+          issues[field] = '"${attribute.label}" заавал бөглөнө.';
+        }
+        continue;
+      }
+
+      switch (attribute.type) {
+        case ObjectAttributeType.select:
+          final bool known = attribute.options
+              .any((ObjectAttributeOptionModel option) => option.value == raw);
+          if (!known) {
+            issues[field] = '"${attribute.label}"-д жагсаалтаас сонгоно уу.';
+          }
+        case ObjectAttributeType.number:
+          final double? parsed = double.tryParse(raw.replaceAll(',', '.'));
+          if (parsed == null) {
+            issues[field] = '"${attribute.label}" тоо байна.';
+          }
+        case ObjectAttributeType.text:
+        case ObjectAttributeType.boolean:
+          break;
+      }
+    }
+
+    return issues;
   }
 
   bool get _busy => _uploading || _saving;
@@ -238,32 +326,12 @@ class _AssessmentSheetState extends ConsumerState<_AssessmentSheet> {
       }
     }
 
-    // Each reading is parsed and reported against its own row, so a bad number names
-    // the line it is on rather than failing the form as a whole.
-    final List<LoadMeasurementModel> measurements = <LoadMeasurementModel>[];
-    for (int index = 0; index < _measurements.length; index++) {
-      final _MeasurementRow row = _measurements[index];
-      final String raw = row.value.text.trim().replaceAll(',', '.');
-      final double? parsed = raw.isEmpty ? null : double.tryParse(raw);
-      if (parsed == null || parsed < 0) {
-        issues['measurements.$index.value'] = 'Хэмжсэн утга эерэг тоо байна.';
-        continue;
-      }
-      measurements.add(
-        LoadMeasurementModel(
-          kind: row.kind,
-          value: parsed,
-          // The unit is never chosen by hand: there is exactly one per kind, and
-          // `toJson` fills it in from the kind so the pair cannot be sent disagreeing.
-          unit: row.kind.unit,
-          phase: row.kind.acceptsPhase ? row.phase : null,
-        ),
-      );
-    }
-
     if (_photos.isEmpty) {
       issues['photoIds'] = 'Дор хаяж нэг нотлох зураг хавсаргана уу.';
     }
+
+    // The type's own fields, checked by the same three rules the server enforces.
+    issues.addAll(_attributeIssues());
 
     if (issues.isNotEmpty) {
       setState(() {
@@ -290,7 +358,11 @@ class _AssessmentSheetState extends ConsumerState<_AssessmentSheet> {
                 recommendation: _recommendation.text.trim(),
                 actionTaken: _actionTaken.text.trim(),
                 measuredLoadKw: measuredLoadKw,
-                measurements: measurements,
+                attributeValues: _attributePayload(),
+                // `measurements` is deliberately not sent: the "Бусад хэмжилт (А, В)"
+                // editor was removed from this sheet and from the web assessment form
+                // together. The request field and the API still accept readings, and
+                // readings already recorded still display — nothing was migrated.
                 repairRequired: _repairRequired,
               ),
             );
@@ -480,20 +552,48 @@ class _AssessmentSheetState extends ConsumerState<_AssessmentSheet> {
                     ),
                   ),
 
-                  // Amps and volts sit beside the kW box, never inside it: only the kW
-                  // figure is summed into a floor total, so a 42 A reading typed into
-                  // that box would become 42 kW of load that was never there.
-                  _MeasurementEditor(
-                    rows: _measurements,
-                    fieldErrors: _fieldErrors,
-                    enabled: !_busy,
-                    onAdd: _measurements.length < _maxMeasurements
-                        ? _addMeasurement
-                        : null,
-                    onRemove: _removeMeasurement,
-                    onChanged: () => setState(() {}),
-                  ),
-                  const SizedBox(height: 14),
+                  /*
+                    What this equipment's TYPE asks about it (requirements 4.1).
+
+                    Rendered entirely from definitions the server supplies, so a field added
+                    to Автомат таслуур in Тоноглолын төрөл is asked here with no change to
+                    this app and no release. Absent for a type that declares nothing, which
+                    is how this sheet looked before the feature existed.
+
+                    These are facts about the kit, not observations of this visit, so they
+                    are saved onto the OBJECT rather than onto the entry — but they are ASKED
+                    here, because a report is written standing in front of the equipment and
+                    that is the one moment somebody can look and answer.
+
+                    This is also where "Бусад хэмжилт (А, В)" used to be.
+                  */
+                  if (widget.attributes.isNotEmpty) ...<Widget>[
+                    for (final ObjectTypeAttributeModel attribute in widget.attributes)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisSize: MainAxisSize.min,
+                          children: <Widget>[
+                            _Label(
+                              attribute.required
+                                  ? '${attribute.label} (заавал)'
+                                  : attribute.label,
+                            ),
+                            ObjectAttributeControl(
+                              attribute: attribute,
+                              controller: _attributeControllers[attribute.key],
+                              value: _attributeDrafts[attribute.key] ?? '',
+                              enabled: !_busy,
+                              error: _fieldErrors['attributeValues.${attribute.key}'],
+                              onChanged: (String next) => setState(() {
+                                _attributeDrafts[attribute.key] = next;
+                              }),
+                            ),
+                          ],
+                        ),
+                      ),
+                  ],
 
                   _RepairToggle(
                     value: _repairRequired,
@@ -532,10 +632,18 @@ class _AssessmentSheetState extends ConsumerState<_AssessmentSheet> {
                 ],
               ),
             ),
+            // THE WAY OUT IS NEVER TAKEN AWAY, for the same reason it is not in
+            // `inspection_report_sheet.dart`: this sheet is opened with
+            // `isDismissible: false` and `enableDrag: false`, so this button is the only
+            // exit on a platform with no hardware back key. `_saving` is cleared on the
+            // failure branch alone and `_uploading` on the upload's own answer, so a
+            // request that hangs — or never returns — used to leave nothing to press.
+            // The SAVE pill is still gated on `canSave`, so this is a way out rather than
+            // a way to submit twice.
             _Footer(
               busy: _saving,
               canSave: _photos.isNotEmpty && !_busy,
-              onCancel: _busy ? null : () => Navigator.of(context).pop(),
+              onCancel: () => Navigator.of(context).pop(),
               onSave: _submit,
             ),
           ],
@@ -545,321 +653,6 @@ class _AssessmentSheetState extends ConsumerState<_AssessmentSheet> {
   }
 }
 
-/// One row of the load reading editor while it is being filled in.
-///
-/// Mutable and controller-owning, unlike the immutable `LoadMeasurementModel` it turns
-/// into on submit: a half-typed "23." is a legitimate state of a number box, and
-/// parsing on every keystroke would eat the decimal point.
-class _MeasurementRow {
-  _MeasurementRow({required this.kind, required this.phase});
-
-  LoadMeasurementKind kind;
-  LoadMeasurementPhase? phase;
-  final TextEditingController value = TextEditingController();
-}
-
-/// The repeatable reading editor — "Multiple Load Units".
-///
-/// One line per reading: what was measured, the number, which conductor, and a way to
-/// take the row back off. Compact because the whole sheet is filled in one-handed on a
-/// phone at a panel.
-///
-/// ACTIVE_POWER is deliberately not offered. kW is entered in "Хэмжсэн ачаалал" above,
-/// which is the authoritative figure the floor totals sum; a second kW box on the same
-/// form could produce two different power figures, which the backend would then have to
-/// refuse. A kW reading recorded through another client still displays here.
-class _MeasurementEditor extends StatelessWidget {
-  const _MeasurementEditor({
-    required this.rows,
-    required this.fieldErrors,
-    required this.enabled,
-    required this.onAdd,
-    required this.onRemove,
-    required this.onChanged,
-  });
-
-  final List<_MeasurementRow> rows;
-  final Map<String, String> fieldErrors;
-  final bool enabled;
-  final VoidCallback? onAdd;
-  final void Function(int index) onRemove;
-  final VoidCallback onChanged;
-
-  static final List<LoadMeasurementKind> _addableKinds = LoadMeasurementKind.values
-      .where((LoadMeasurementKind kind) => kind != LoadMeasurementKind.activePower)
-      .toList(growable: false);
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: <Widget>[
-        Row(
-          children: <Widget>[
-            const Expanded(child: _Label('Бусад хэмжилт (А, В)')),
-            _AddMeasurementButton(onPressed: enabled ? onAdd : null),
-          ],
-        ),
-        if (rows.isEmpty)
-          Text(
-            'Гүйдэл, хүчдэл хэмжсэн бол мөр нэмнэ үү. Гурван фазын самбарт фаз тус '
-            'бүрээр нь тусад нь бүртгэнэ.',
-            style: EmployeeTokens.microNote.copyWith(height: 1.5),
-          ),
-        for (int index = 0; index < rows.length; index++)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 8),
-            child: _MeasurementRowEditor(
-              // Keyed as well as labelled: the semantics label is what a screen reader
-              // reads, the key is what survives the sheet's list rebuilding a row.
-              key: ValueKey<String>('measurement-row-$index'),
-              index: index,
-              row: rows[index],
-              enabled: enabled,
-              error: fieldErrors['measurements.$index.value'] ??
-                  fieldErrors['measurements.$index.unit'] ??
-                  fieldErrors['measurements.$index.phase'],
-              label: '${index + 1}-р хэмжилт',
-              onRemove: () => onRemove(index),
-              onChanged: onChanged,
-            ),
-          ),
-      ],
-    );
-  }
-}
-
-class _AddMeasurementButton extends StatelessWidget {
-  const _AddMeasurementButton({required this.onPressed});
-
-  final VoidCallback? onPressed;
-
-  @override
-  Widget build(BuildContext context) {
-    final bool active = onPressed != null;
-    return Material(
-      color: EmployeeTokens.white,
-      borderRadius: BorderRadius.circular(EmployeeTokens.radiusInput),
-      child: InkWell(
-        onTap: onPressed,
-        borderRadius: BorderRadius.circular(EmployeeTokens.radiusInput),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-          decoration: BoxDecoration(
-            border: Border.all(
-              color: active ? EmployeeTokens.line : EmployeeTokens.faint,
-              width: EmployeeTokens.hairline,
-            ),
-            borderRadius: BorderRadius.circular(EmployeeTokens.radiusInput),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: <Widget>[
-              Icon(
-                Icons.add,
-                size: 14,
-                color: active ? EmployeeTokens.ink : EmployeeTokens.muted,
-              ),
-              const SizedBox(width: 5),
-              Text(
-                'Хэмжилт нэмэх',
-                style: EmployeeTokens.rowSub.copyWith(
-                  fontWeight: FontWeight.w700,
-                  color: active ? EmployeeTokens.ink : EmployeeTokens.muted,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _MeasurementRowEditor extends StatelessWidget {
-  const _MeasurementRowEditor({
-    super.key,
-    required this.index,
-    required this.row,
-    required this.enabled,
-    required this.error,
-    required this.label,
-    required this.onRemove,
-    required this.onChanged,
-  });
-
-  final int index;
-  final _MeasurementRow row;
-  final bool enabled;
-  final String? error;
-
-  /// `2-р хэмжилт` — what a screen reader announces this row as.
-  final String label;
-  final VoidCallback onRemove;
-  final VoidCallback onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: <Widget>[
-        Row(
-          children: <Widget>[
-            Expanded(
-              flex: 5,
-              child: _MeasurementDropdown<LoadMeasurementKind>(
-                label: '$label: төрөл',
-                value: row.kind,
-                enabled: enabled,
-                items: <(LoadMeasurementKind, String)>[
-                  for (final LoadMeasurementKind kind
-                      in _MeasurementEditor._addableKinds)
-                    (kind, '${kind.label} (${kind.unit.label})'),
-                ],
-                onChanged: (LoadMeasurementKind? picked) {
-                  if (picked == null) return;
-                  row.kind = picked;
-                  // A kind that carries no phase must not keep the previous one.
-                  if (!picked.acceptsPhase) row.phase = null;
-                  onChanged();
-                },
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              flex: 3,
-              child: Semantics(
-                label: '$label: утга',
-                child: TextField(
-                  key: ValueKey<String>('measurement-value-$index'),
-                  controller: row.value,
-                  enabled: enabled,
-                  keyboardType:
-                      const TextInputType.numberWithOptions(decimal: true),
-                  style: EmployeeTokens.body.copyWith(color: EmployeeTokens.ink),
-                  decoration: InputDecoration(
-                    hintText: '0.0',
-                    hintStyle:
-                        EmployeeTokens.body.copyWith(color: EmployeeTokens.muted),
-                    filled: true,
-                    fillColor: error == null
-                        ? EmployeeTokens.white
-                        : EmployeeTokens.redBg,
-                    isDense: true,
-                    contentPadding:
-                        const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
-                    border: _measurementBorder(error != null),
-                    enabledBorder: _measurementBorder(error != null),
-                    focusedBorder: _measurementBorder(error != null, focused: true),
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              flex: 4,
-              child: _MeasurementDropdown<LoadMeasurementPhase?>(
-                label: '$label: фаз',
-                value: row.phase,
-                enabled: enabled && row.kind.acceptsPhase,
-                items: <(LoadMeasurementPhase?, String)>[
-                  (null, 'Фазгүй'),
-                  for (final LoadMeasurementPhase phase
-                      in LoadMeasurementPhase.values)
-                    (phase, phase.wireValue),
-                ],
-                onChanged: (LoadMeasurementPhase? picked) {
-                  row.phase = picked;
-                  onChanged();
-                },
-              ),
-            ),
-            Semantics(
-              label: '$label: хасах',
-              button: true,
-              child: IconButton(
-                key: ValueKey<String>('measurement-remove-$index'),
-                onPressed: enabled ? onRemove : null,
-                icon: const Icon(Icons.close, size: 18),
-                color: EmployeeTokens.red,
-                visualDensity: VisualDensity.compact,
-                tooltip: 'Хасах',
-              ),
-            ),
-          ],
-        ),
-        if (error != null) _ErrorLine(error!),
-      ],
-    );
-  }
-}
-
-OutlineInputBorder _measurementBorder(bool hasError, {bool focused = false}) {
-  return OutlineInputBorder(
-    borderRadius: BorderRadius.circular(EmployeeTokens.radiusInput),
-    borderSide: BorderSide(
-      color: hasError
-          ? EmployeeTokens.red
-          : (focused ? EmployeeTokens.ink : EmployeeTokens.line),
-      width: EmployeeTokens.hairline,
-    ),
-  );
-}
-
-/// The sheet's own dropdown, matching `_SheetField`'s box rather than Material's.
-class _MeasurementDropdown<T> extends StatelessWidget {
-  const _MeasurementDropdown({
-    required this.label,
-    required this.value,
-    required this.items,
-    required this.enabled,
-    required this.onChanged,
-  });
-
-  final String label;
-  final T value;
-  final List<(T, String)> items;
-  final bool enabled;
-  final ValueChanged<T?> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    return Semantics(
-      label: label,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8),
-        decoration: BoxDecoration(
-          color: enabled ? EmployeeTokens.white : EmployeeTokens.soft2,
-          border: Border.all(
-            color: EmployeeTokens.line,
-            width: EmployeeTokens.hairline,
-          ),
-          borderRadius: BorderRadius.circular(EmployeeTokens.radiusInput),
-        ),
-        child: DropdownButtonHideUnderline(
-          child: DropdownButton<T>(
-            value: value,
-            isExpanded: true,
-            isDense: true,
-            padding: const EdgeInsets.symmetric(vertical: 8),
-            iconSize: 18,
-            style: EmployeeTokens.body.copyWith(color: EmployeeTokens.ink),
-            items: <DropdownMenuItem<T>>[
-              for (final (T option, String text) in items)
-                DropdownMenuItem<T>(
-                  value: option,
-                  child: Text(text, overflow: TextOverflow.ellipsis),
-                ),
-            ],
-            onChanged: enabled ? onChanged : null,
-          ),
-        ),
-      ),
-    );
-  }
-}
 
 /// The evidence row: what has been uploaded, plus the capture tile.
 ///

@@ -174,4 +174,11 @@ const workReportSchema = new Schema<IWorkReport>(
 // object history page would scan the whole collection.
 workReportSchema.index({ objects: 1 });
 
+// The reverse lookup from an evidence photo to the conclusion that references it.
+// `assertFileInCustomerScope` runs it on every portal download of a conclusion photo,
+// because those files are parked on the uploading technician and never re-owned onto the
+// request — so without these each image on the customer's screen would scan the collection.
+workReportSchema.index({ beforePhotos: 1 });
+workReportSchema.index({ afterPhotos: 1 });
+
 export const WorkReport: Model<IWorkReport> = model<IWorkReport>('WorkReport', workReportSchema);

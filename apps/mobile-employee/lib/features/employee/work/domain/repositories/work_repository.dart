@@ -30,17 +30,24 @@ import '../entities/planned_work_enums.dart';
 /// way to ask for the unassigned ones, so the pool this contract can answer for is
 /// service requests alone.
 abstract class WorkRepository {
+  /// One page of `GET /planned-work`.
+  ///
+  /// [page] is here because a counter over a truncated list is a wrong number rather than
+  /// a partial one: the board's "Идэвхтэй", "Өнөөдөр" and "Хэтэрсэн" figures are counted
+  /// from the rows, and a technician with more than a page of work was told how much of
+  /// it fitted in one response. The caller walks the pages; the transport serves one.
   Future<ApiResult<PaginatedData<PlannedWorkListItemModel>>> listPlannedWork({
     String? employeeId,
     String? teamId,
     PlannedWorkEffectiveStatus? status,
     String? search,
+    int page,
   });
 
   /// The service requests nobody is assigned to — NEW and UNASSIGNED together,
   /// ordered by SLA urgency. Read-only: nothing in this contract can claim one.
   Future<ApiResult<PaginatedData<ServiceRequestListItemModel>>>
-      listOpenServiceRequests();
+      listOpenServiceRequests({int page});
 
   /// `GET /service-requests` with no filter at all, which is the server's answer to
   /// "the work this caller may see": their own, their team's, and the unclaimed pool.
@@ -49,7 +56,7 @@ abstract class WorkRepository {
   /// read includes the open queue by design, so the caller subtracts it with
   /// [ServiceRequestListItemModel.isUnclaimed].
   Future<ApiResult<PaginatedData<ServiceRequestListItemModel>>>
-      listAssignedServiceRequests();
+      listAssignedServiceRequests({int page});
 
   /// Claims one open request for the signed-in employee.
   Future<ApiResult<void>> claimServiceRequest(String requestId);
@@ -88,13 +95,13 @@ abstract class WorkRepository {
     SaveWorkReportRequest request,
   );
 
-  Future<ApiResult<WorkReportModel>> submitWorkReport(String requestId);
-
-  /// Approves a submitted conclusion, on `service_request.approve_report`.
+  /// Hands the conclusion in for review. THE LAST STEP THIS APP TAKES ON ONE.
   ///
-  /// There is no `returnWorkReport`, deliberately: returning stays office-only on
-  /// `service_request.change_status`.
-  Future<ApiResult<WorkReportModel>> approveWorkReport(String requestId);
+  /// There is no `approveWorkReport` beside it and no `returnWorkReport` either. Both are
+  /// the office's acts, performed on the web admin: approving is somebody other than the
+  /// author accepting the work, and returning is a judgement passed on it. A field client
+  /// for either would be this app settling its own conclusion.
+  Future<ApiResult<WorkReportModel>> submitWorkReport(String requestId);
 
   Future<ApiResult<WorkReportPhotoModel>> uploadWorkReportPhoto(CapturedPhoto photo);
 
@@ -114,6 +121,19 @@ abstract class WorkRepository {
     required String plannedWorkId,
     required String taskId,
     required RecordTaskProgressRequest request,
+  });
+
+  /// Records what one sub-task consumed of one material registered on the work, and
+  /// returns the re-read record.
+  ///
+  /// Separate from [recordTaskProgress] because the API is, and because the figures
+  /// are different in kind: progress is how much of the sub-task is done, this is how
+  /// much of the work's material pool it took. The quantity is absolute for the pair,
+  /// so the same call repeated is a correction rather than a second draw.
+  Future<ApiResult<PlannedWorkModel>> recordTaskMaterialUsage({
+    required String plannedWorkId,
+    required String taskId,
+    required RecordTaskMaterialUsageRequest request,
   });
 
   /// Attaches one evidence photo to a sub-task and returns the re-read record.

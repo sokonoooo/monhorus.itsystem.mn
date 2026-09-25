@@ -53,6 +53,14 @@ export interface InvoiceListItemDto {
   effectiveStatus: InvoiceEffectiveStatus;
   /** Days past the due date on an unpaid invoice; null when not overdue. */
   overdueDays: number | null;
+  /**
+   * Who created the record, resolved to a display name.
+   *
+   * Null where it is not known: rows created before the creator was recorded, and
+   * records the system itself made. The screen renders that as a dash rather than
+   * guessing, because an absent creator is a real answer here.
+   */
+  createdByName: string | null;
   createdAt: string;
 }
 

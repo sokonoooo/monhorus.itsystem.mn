@@ -2,6 +2,7 @@ import {
   LOAD_MEASUREMENT_KINDS,
   LOAD_MEASUREMENT_PHASES,
   LOAD_MEASUREMENT_UNITS,
+  OBJECT_ATTRIBUTE_TYPES,
   OBJECT_CATEGORIES,
   OBJECT_ICONS,
   OBJECT_STATUSES,
@@ -9,6 +10,8 @@ import {
   type LoadMeasurementKind,
   type LoadMeasurementPhase,
   type LoadMeasurementUnit,
+  type ObjectAttributeType,
+  type ObjectAttributeValue,
   type ObjectCategory,
   type ObjectIcon,
   type ObjectStatus,
@@ -25,6 +28,32 @@ import { Schema, Types, model, type Model } from 'mongoose';
 
 // -- Section 4.1 type registry ----------------------------------------------
 
+/** One option of a SELECT attribute. The value is stored on the object; the label is read. */
+export interface IObjectAttributeOption {
+  value: string;
+  label: string;
+}
+
+/**
+ * One field this type demands of its objects (requirements 4.1).
+ *
+ * Administrator-defined at runtime, which is the whole point: "Автомат таслуур has a Хайлмал
+ * that is either Хайлмалтай or Хайлмалгүй" is a fact about the type, and the three section 4.2
+ * blocks below are per-CATEGORY and fixed in TypeScript, so there was nowhere to record it.
+ *
+ * NOTHING HERE REACHES A LOAD FIGURE. The section 11.5 walk reads `equipment.ratedPowerKw`,
+ * `equipment.quantity` and `equipment.usageCoefficient` and nothing else, so an administrator
+ * editing this list cannot silently change an estate's arithmetic. That is why these values
+ * live in their own bag instead of being folded into the typed blocks.
+ */
+export interface IObjectTypeAttribute {
+  key: string;
+  label: string;
+  type: ObjectAttributeType;
+  required: boolean;
+  options: IObjectAttributeOption[];
+}
+
 export interface IObjectType {
   code: string;
   name: string;
@@ -38,12 +67,72 @@ export interface IObjectType {
   showOnPlan: boolean;
   insidePanel: boolean;
   generatesConclusion: boolean;
+  /**
+   * The built-in glyph key. Still required, still the fallback: `iconFile` overrides it
+   * when set, and every row registered before custom icons existed keeps rendering exactly
+   * what it always did with no migration.
+   */
   icon: ObjectIcon;
+  /**
+   * A sanitised custom SVG, or null.
+   *
+   * GLOBAL, exactly as the type is. An object type has no `customer` and is shared by every
+   * tenant, so its icon belongs to the catalogue rather than to an organisation. The file is
+   * cleaned once at upload; nothing here is ever trusted to be re-checked at read time.
+   */
+  iconFile: Types.ObjectId | null;
+  /**
+   * The fields objects of this type must carry, IN DISPLAY ORDER.
+   *
+   * The array order is the order, and there is no `sortOrder` field: a second representation
+   * of the same fact is a second thing that can disagree with the first, and mongoose stores
+   * a document array in the order it is given. Reordering is therefore the administrator
+   * sending the array rearranged — which is also why add, edit, delete and reorder all reuse
+   * the one existing PATCH rather than growing four endpoints.
+   */
+  attributes: IObjectTypeAttribute[];
+  /**
+   * Whether a service call may be raised against equipment of this type.
+   *
+   * The catalogue mixes structural types nobody phones about - a circuit, a cable run -
+   * with the ones people do. Which is which is a business decision, not something that can
+   * be read off `category`, so an administrator states it per type.
+   */
+  canCreateCall: boolean;
+  /**
+   * The SLA window in hours for a call of this type, or null when calls are not allowed.
+   *
+   * This replaces the global urgent/standard window for calls that name a type: a light is
+   * given a day, an automatic socket six hours, and the urgency flag no longer moves the
+   * deadline. Enforced non-null whenever `canCreateCall` is true - see
+   * `assertCallSettingsCoherent` in object-type.service.ts, which checks the MERGED result
+   * so a patch cannot switch calls on while leaving the hours behind.
+   */
+  callSlaHours: number | null;
   isActive: boolean;
   createdBy: Types.ObjectId | null;
   createdAt: Date;
   updatedAt: Date;
 }
+
+const objectAttributeOptionSchema = new Schema<IObjectAttributeOption>(
+  {
+    value: { type: String, required: true, trim: true, maxlength: 60 },
+    label: { type: String, required: true, trim: true, maxlength: 120 },
+  },
+  { _id: false },
+);
+
+const objectTypeAttributeSchema = new Schema<IObjectTypeAttribute>(
+  {
+    key: { type: String, required: true, trim: true, maxlength: 40 },
+    label: { type: String, required: true, trim: true, maxlength: 120 },
+    type: { type: String, enum: OBJECT_ATTRIBUTE_TYPES, required: true },
+    required: { type: Boolean, default: false },
+    options: { type: [objectAttributeOptionSchema], default: [] },
+  },
+  { _id: false },
+);
 
 const objectTypeSchema = new Schema<IObjectType>(
   {
@@ -55,6 +144,21 @@ const objectTypeSchema = new Schema<IObjectType>(
     insidePanel: { type: Boolean, default: false },
     generatesConclusion: { type: Boolean, default: true },
     icon: { type: String, enum: OBJECT_ICONS, default: 'OTHER' },
+    // Defaulted to null so an existing document reads as "no custom icon" without being
+    // rewritten: the field is absent on every row registered before now, and an absent
+    // path with a default reads back as the default.
+    iconFile: { type: Schema.Types.ObjectId, ref: 'StoredFile', default: null },
+    // Defaulted to an empty list for exactly the reason `iconFile` is defaulted to null: the
+    // path is absent on every type registered before attributes existed, and an absent path
+    // with a default reads back as the default. No migration, and no row is rewritten.
+    attributes: { type: [objectTypeAttributeSchema], default: [] },
+    /*
+     * Defaults to false: a catalogue written before calls had types should not silently
+     * become callable, and an administrator turning it on is also the moment they are made
+     * to supply the hours.
+     */
+    canCreateCall: { type: Boolean, default: false, index: true },
+    callSlaHours: { type: Number, default: null, min: 1, max: 720 },
     isActive: { type: Boolean, default: true, index: true },
     createdBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
   },
@@ -166,6 +270,26 @@ export interface IObject {
   circuit: ICircuitAttributes | null;
   equipment: IEquipmentAttributes | null;
 
+  /**
+   * What this object answered for the attributes its TYPE declares (requirements 4.1).
+   *
+   * Beside the three category blocks above, never inside them: those three are per-category
+   * and fixed, this is per-type and administrator-defined, and the section 11.5 walk reads
+   * only the former. Keeping them apart is what stops a configuration change from moving a
+   * load figure.
+   *
+   * WRITTEN BY THE REGISTRATION FORM AND BY THE Үнэлгээ бүртгэх FORM ALIKE — the answers are
+   * facts about the equipment, true between visits, so there is one set of them here rather
+   * than a copy on every assessment.
+   *
+   * MAY HOLD KEYS THE TYPE NO LONGER DECLARES. Removing an attribute from a type does not
+   * erase what was recorded against it on the objects: somebody stood in front of the
+   * equipment and entered that, the definition may well come back, and an unrelated edit must
+   * not be what quietly destroys it. `mergeAttributeValues` in the shared package is the rule;
+   * nothing else writes this field.
+   */
+  attributeValues: Record<string, ObjectAttributeValue>;
+
   latestAssessment: ILatestAssessment | null;
   /** Most recent measured reading, kept separate from the calculation (rule 17.16). */
   measuredLoadKw: number | null;
@@ -256,6 +380,15 @@ const objectSchema = new Schema<IObject>(
     panel: { type: panelAttributesSchema, default: null },
     circuit: { type: circuitAttributesSchema, default: null },
     equipment: { type: equipmentAttributesSchema, default: null },
+
+    // `Mixed` because the keys are defined by an administrator at runtime, so there is no
+    // schema to declare — the same reason `Setting.value` and `AuditLog.newValue` are Mixed.
+    // What the keys may be, and what each may hold, is enforced against the type's own
+    // definitions on the write path; nothing is trusted at read time.
+    //
+    // The default is a factory, not a literal: a shared `{}` would be one object handed to
+    // every document, and writing to one would write to all of them.
+    attributeValues: { type: Schema.Types.Mixed, default: () => ({}) },
 
     latestAssessment: { type: latestAssessmentSchema, default: null },
     measuredLoadKw: { type: Number, default: null, min: 0 },
@@ -359,6 +492,21 @@ export interface IObjectAssessment {
   measuredLoadKw: number | null;
   /** Amps, volts and kW as read on site. Empty when only the kW box was filled in. */
   measurements: ILoadMeasurement[];
+  /**
+   * The equipment type's own attributes, FROZEN as this assessment recorded them (4.1).
+   *
+   * This collection is append-only and every entry is a dated finding, so it is exactly the
+   * right home for a snapshot: the answers themselves live on the object and move as it is
+   * corrected, and an entry that read them live would silently rewrite its own history.
+   *
+   * The LABEL and the DISPLAYED text are frozen alongside the raw value, so an entry can
+   * print itself with no lookup — an administrator may rename or delete the attribute
+   * afterwards and this row must still be able to say what it recorded.
+   *
+   * Empty for every entry written before this existed. Nothing is back-filled: nothing was
+   * captured at the time, and inventing it would put words in a signed record.
+   */
+  attributes: IReportedAttribute[];
   repairRequired: boolean;
   revisitRequired: boolean;
   revisitDate: Date | null;
@@ -370,16 +518,44 @@ export interface IObjectAssessment {
    * The report finding this row was raised from, when it did not come from the manual
    * assessment screen.
    *
-   * `sourceReportItem` is the idempotency key of the whole history write: `syncItems`
-   * upserts one item per (report, object), so the item's id survives every re-approval and
-   * re-publish of the same report and identifies the finding rather than the attempt to
-   * apply it. Null for a manual assessment, which is an event with no correctable record
+   * `(object, sourceReport, newScore)` is the idempotency key of the whole history write,
+   * enforced by the unique index below. It identifies the FINDING rather than the attempt
+   * to apply it, so re-approving and re-publishing the same report add nothing.
+   *
+   * `sourceReportItem` used to be that key and could not be. `syncItems` upserts one item
+   * per (report, object) but hard-deletes any object the source no longer names, so an
+   * object withdrawn from a planned work and added back came through with a NEW item id
+   * for the same finding — and the guard missed. The pair above is the natural key of the
+   * same row (`ReportItem` declares `{ report, object }` unique) and does not move when the
+   * item is re-minted. The field stays as the provenance link the backfills follow.
+   *
+   * Both are null for a manual assessment, which is an event with no correctable record
    * behind it and so deduplicates against nothing.
    */
   sourceReport: Types.ObjectId | null;
   sourceReportItem: Types.ObjectId | null;
   createdAt: Date;
 }
+
+/** One frozen attribute answer on a dated finding. See `IObjectAssessment.attributes`. */
+export interface IReportedAttribute {
+  key: string;
+  label: string;
+  value: ObjectAttributeValue;
+  display: string;
+}
+
+const reportedAttributeSchema = new Schema<IReportedAttribute>(
+  {
+    key: { type: String, required: true },
+    label: { type: String, required: true },
+    // `Mixed`: an attribute holds a string, a number or a boolean, and the type that decided
+    // which is itself editable afterwards.
+    value: { type: Schema.Types.Mixed, required: true },
+    display: { type: String, required: true },
+  },
+  { _id: false },
+);
 
 const objectAssessmentSchema = new Schema<IObjectAssessment>(
   {
@@ -398,6 +574,7 @@ const objectAssessmentSchema = new Schema<IObjectAssessment>(
     actionTaken: { type: String, default: null, maxlength: 2000 },
     measuredLoadKw: { type: Number, default: null, min: 0 },
     measurements: { type: [loadMeasurementSubSchema], default: [] },
+    attributes: { type: [reportedAttributeSchema], default: [] },
     repairRequired: { type: Boolean, default: false },
     revisitRequired: { type: Boolean, default: false },
     revisitDate: { type: Date, default: null },
@@ -411,9 +588,40 @@ const objectAssessmentSchema = new Schema<IObjectAssessment>(
 );
 
 objectAssessmentSchema.index({ object: 1, assessedAt: -1 });
+
 /**
- * The lookup behind the idempotency guard, sparse because only report-raised rows carry
- * the key and a manual assessment must not collide with the many other manual ones.
+ * ONE history row per finding — the no-duplicate guarantee for a collection that cannot be
+ * corrected afterwards.
+ *
+ * `appendAssessmentHistory` looks the row up before it writes, but a lookup is
+ * check-then-write and loses the race between two concurrent applies of the same report.
+ * This collection blocks every update and delete hook, so a duplicate that gets in is
+ * permanent: the equipment's Үнэлгээний түүх shows the same finding twice, for good. That
+ * makes it exactly the collection where the rule has to live in the database.
+ *
+ * Keyed on `(object, sourceReport, newScore)` rather than on the report item's id, because
+ * `syncItems` legitimately deletes and re-creates an item when its source stops and starts
+ * naming the object, minting a new id for the same finding. `ReportItem` already declares
+ * `{ report, object }` unique, so this triple names the same thing and survives that.
+ *
+ * Partial, because the key is only meaningful for a report-raised row: a manual assessment
+ * carries no source report, is an event rather than a correctable record, and several of
+ * them reaching the same score on the same equipment are several real findings that must
+ * all be kept. `$type: 'objectId'` rather than `sparse`, so a row storing an explicit null
+ * is excluded too — the field is declared `default: null`, so every manual row has one.
+ *
+ * Production connects with `autoIndex: false`, so shipping this is not enough on its own:
+ * `migrate-assessment-source-report-index.ts` is the deploy step, and it also clears the
+ * duplicates already written before the index can build over them.
+ */
+objectAssessmentSchema.index(
+  { object: 1, sourceReport: 1, newScore: 1 },
+  { unique: true, partialFilterExpression: { sourceReport: { $type: 'objectId' } } },
+);
+
+/**
+ * The legacy lookup, kept behind the natural key above. Sparse because only report-raised
+ * rows carry it and a manual assessment must not collide with the many other manual ones.
  */
 objectAssessmentSchema.index({ sourceReportItem: 1, newScore: 1 }, { sparse: true });
 

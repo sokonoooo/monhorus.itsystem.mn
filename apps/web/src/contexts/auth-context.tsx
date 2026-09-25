@@ -3,7 +3,6 @@ import {
   type LoginRequest,
   type PermissionKey,
   type UserDto,
-  type UserRole,
 } from '@monhorus/shared';
 import {
   createContext,
@@ -44,7 +43,6 @@ interface AuthContextValue {
   login: (credentials: LoginRequest) => Promise<UserDto>;
   logout: () => Promise<void>;
   changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
-  hasRole: (...roles: UserRole[]) => boolean;
   can: (permission: PermissionKey) => boolean;
   canAny: (...permissions: PermissionKey[]) => boolean;
 }
@@ -161,11 +159,6 @@ export function AuthProvider({ children }: { children: ReactNode }): ReactElemen
     [clearSession],
   );
 
-  const hasRole = useCallback(
-    (...roles: UserRole[]): boolean => (user ? roles.includes(user.role) : false),
-    [user],
-  );
-
   const can = useCallback(
     (permission: PermissionKey): boolean => permissions.includes(permission),
     [permissions],
@@ -190,7 +183,6 @@ export function AuthProvider({ children }: { children: ReactNode }): ReactElemen
       login,
       logout,
       changePassword,
-      hasRole,
       can,
       canAny,
     }),
@@ -203,7 +195,6 @@ export function AuthProvider({ children }: { children: ReactNode }): ReactElemen
       login,
       logout,
       changePassword,
-      hasRole,
       can,
       canAny,
     ],

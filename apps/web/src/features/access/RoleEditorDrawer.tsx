@@ -157,8 +157,6 @@ export function RoleEditorDrawer({
           </Alert>
         )}
 
-        {readOnly && <Alert variant="info">Танд зөвхөн харах эрх байна.</Alert>}
-
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field label="Key" required={isNew} error={fieldErrors.key} hint="Том үсэг, тоо, доогуур зураас">
             <TextInput

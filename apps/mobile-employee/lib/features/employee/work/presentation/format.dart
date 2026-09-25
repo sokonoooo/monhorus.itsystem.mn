@@ -7,6 +7,7 @@
 library;
 
 import '../../../../core/util/format.dart';
+import '../domain/entities/planned_work_enums.dart';
 
 export '../../../../core/util/format.dart';
 
@@ -71,6 +72,16 @@ String formatQuantity(double value) {
       .toStringAsFixed(2)
       .replaceAll(RegExp(r'0+$'), '')
       .replaceAll(RegExp(r'\.$'), '');
+}
+
+/// `40 метр` — a quantity and the unit it was recorded in.
+///
+/// A unit this build does not know prints as the server sent it (`40 TONNE`), and a
+/// record with no unit at all prints the bare number. Neither case substitutes a real
+/// unit: the number would then describe a measure nobody entered.
+String formatQuantityWithUnit(double value, MaterialUnitValue unit) {
+  final String quantity = formatQuantity(value);
+  return unit.label.isEmpty ? quantity : '$quantity ${unit.label}';
 }
 
 /// `2 цаг 30 мин`, for a paused duration.

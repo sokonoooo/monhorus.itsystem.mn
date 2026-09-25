@@ -22,6 +22,7 @@ import { FIELD_TEXTAREA, FILTER_LABEL } from '../../components/ui/control-styles
 import { useAuth } from '../../contexts/auth-context';
 import { useTableColumns } from '../../hooks/use-table-columns';
 import { ApiError } from '../../lib/api-client';
+import { BUSINESS_TIME_ZONE } from '../../lib/business-day';
 import { formatMinutes } from '../../lib/duration';
 import { plannedWorkService } from '../../services/planned-work.service';
 import { ScoreBar } from '../projects/objects/ObjectBadges';
@@ -29,7 +30,7 @@ import { ProgressBar, ReportStatusBadge, TaskStatusBadge } from './PlannedWorkBa
 
 function formatDateTime(iso: string | null): string {
   if (!iso) return '-';
-  return new Date(iso).toLocaleString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
+  return new Date(iso).toLocaleString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
 }
 
 /**
@@ -53,11 +54,64 @@ export function PlannedWorkReportPage(): ReactElement {
   const [preview, setPreview] = useState<PlannedWorkReportPreviewDto | null>(null);
   const [conclusion, setConclusion] = useState('');
   const [recommendation, setRecommendation] = useState('');
+  /**
+   * The write-up as the server last gave it, so "changed" is a comparison of like with
+   * like: the report holds `string | null`, these two fields hold `string`.
+   */
+  const [savedWriteUp, setSavedWriteUp] = useState({ conclusion: '', recommendation: '' });
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const [exportingPhotos, setExportingPhotos] = useState(false);
+
+  /**
+   * Renders the PDF and hands it to the browser.
+   *
+   * Its own busy flag rather than `busy`: that one gates the write buttons, and a
+   * download in flight is no reason a report cannot also be saved. Failures land in the
+   * page's existing error banner, because a download that silently does nothing is the
+   * worst outcome here — the user is left staring at a button that appears to work.
+   */
+  async function exportPdf(): Promise<void> {
+    if (preview === null) return;
+    setExporting(true);
+    setActionError(null);
+    try {
+      await plannedWorkService.downloadReportPdf(plannedWorkId!, preview.workNumber);
+    } catch (caught) {
+      setActionError(
+        caught instanceof ApiError ? caught.message : 'PDF үүсгэхэд алдаа гарлаа.',
+      );
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  /**
+   * The photographic report, which is a second document about this same work.
+   *
+   * Its own busy flag rather than sharing `exporting`: the two are different documents and
+   * a user who wants both should not have to wait for the first to finish before asking
+   * for the second.
+   */
+  async function exportPhotoPdf(): Promise<void> {
+    if (preview === null) return;
+    setExportingPhotos(true);
+    setActionError(null);
+    try {
+      await plannedWorkService.downloadPhotoReportPdf(plannedWorkId!, preview.workNumber);
+    } catch (caught) {
+      setActionError(
+        caught instanceof ApiError ? caught.message : 'PDF үүсгэхэд алдаа гарлаа.',
+      );
+    } finally {
+      setExportingPhotos(false);
+    }
+  }
+
   const [returnOpen, setReturnOpen] = useState(false);
   const [approveOpen, setApproveOpen] = useState(false);
 
@@ -69,8 +123,13 @@ export function PlannedWorkReportPage(): ReactElement {
       const bundle = await plannedWorkService.report(plannedWorkId);
       setReport(bundle.report);
       setPreview(bundle.preview);
-      setConclusion(bundle.report?.conclusion ?? '');
-      setRecommendation(bundle.report?.recommendation ?? '');
+      const seeded = {
+        conclusion: bundle.report?.conclusion ?? '',
+        recommendation: bundle.report?.recommendation ?? '',
+      };
+      setConclusion(seeded.conclusion);
+      setRecommendation(seeded.recommendation);
+      setSavedWriteUp(seeded);
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : 'Тайлан ачаалж чадсангүй.');
     } finally {
@@ -106,6 +165,18 @@ export function PlannedWorkReportPage(): ReactElement {
     } finally {
       setBusy(false);
     }
+  }
+
+  /** Something is typed into the write-up that the server has not been told about. */
+  const writeUpDirty =
+    conclusion !== savedWriteUp.conclusion || recommendation !== savedWriteUp.recommendation;
+
+  /** The PATCH body, from whatever the two fields currently hold. */
+  function writeUpPayload() {
+    return {
+      conclusion: conclusion.trim() || null,
+      recommendation: recommendation.trim() || null,
+    };
   }
 
   const taskColumns: ReadonlyArray<Column<PlannedWorkReportTaskLineDto>> = [
@@ -169,6 +240,14 @@ export function PlannedWorkReportPage(): ReactElement {
     },
   ];
 
+  /**
+   * Registered, used and left — the same three figures the work itself shows.
+   *
+   * The report is what gets signed off and exported, so it may not quietly print only what
+   * was planned: a plan of 100 metres against 12 metres drawn is a different report from a
+   * plan of 100 metres against 98. Үлдэгдэл is the server's stored figure, never a
+   * subtraction done here.
+   */
   const materialColumns: ReadonlyArray<Column<PlannedWorkMaterialDto>> = [
     {
       key: 'material',
@@ -177,11 +256,31 @@ export function PlannedWorkReportPage(): ReactElement {
     },
     {
       key: 'quantity',
-      header: 'Тоо',
+      header: 'Бүртгэсэн',
       align: 'right',
       render: (row) => (
         <span className="whitespace-nowrap font-medium text-slate-900">
           {row.quantity.toLocaleString('mn-MN')}
+        </span>
+      ),
+    },
+    {
+      key: 'consumed',
+      header: 'Зарцуулсан',
+      align: 'right',
+      render: (row) => (
+        <span className="whitespace-nowrap text-slate-700">
+          {row.consumedQuantity.toLocaleString('mn-MN')}
+        </span>
+      ),
+    },
+    {
+      key: 'remaining',
+      header: 'Үлдэгдэл',
+      align: 'right',
+      render: (row) => (
+        <span className="whitespace-nowrap text-slate-700">
+          {row.remainingQuantity.toLocaleString('mn-MN')}
         </span>
       ),
     },
@@ -248,16 +347,36 @@ export function PlannedWorkReportPage(): ReactElement {
         ]}
         actions={
           <>
+            {/*
+              Always offered, and deliberately not gated on the review state: a PDF is a
+              copy of what is already on the screen, so anyone who may read the report may
+              take it away. Gating it on APPROVED would stop a performer printing the draft
+              they are about to walk into a meeting with.
+            */}
+            <Button
+              variant="secondary"
+              onClick={() => void exportPdf()}
+              disabled={exporting}
+            >
+              {exporting ? 'PDF бэлдэж байна…' : 'PDF татах'}
+            </Button>
+            {/*
+              The photographic report, offered on the same terms as the one above and for
+              the same reason: it copies what this screen already shows.
+            */}
+            <Button
+              variant="secondary"
+              onClick={() => void exportPhotoPdf()}
+              disabled={exportingPhotos}
+            >
+              {exportingPhotos ? 'PDF бэлдэж байна…' : 'Фото тайлан PDF'}
+            </Button>
             {editable && (
               <Button
                 variant="secondary"
                 onClick={() =>
                   void run(
-                    () =>
-                      plannedWorkService.updateReport(plannedWorkId!, {
-                        conclusion: conclusion.trim() || null,
-                        recommendation: recommendation.trim() || null,
-                      }),
+                    () => plannedWorkService.updateReport(plannedWorkId!, writeUpPayload()),
                     'Тайлан хадгалагдлаа.',
                   )
                 }
@@ -269,10 +388,27 @@ export function PlannedWorkReportPage(): ReactElement {
             {editable && (
               <Button
                 onClick={() =>
-                  void run(
-                    () => plannedWorkService.submitReport(plannedWorkId!),
-                    'Тайлан хянуулахаар илгээгдлээ.',
-                  )
+                  /*
+                    SAVE FIRST, THEN SUBMIT.
+
+                    This posted the submit alone, and `run` reloads on success — re-seeding
+                    both fields from the stored copy — while SUBMITTED drops out of
+                    `REPORT_SUBMITTABLE_STATUSES` and locks them. So a performer who typed
+                    the Дүгнэлт and pressed this without pressing «Хадгалах» first lost it,
+                    with no way back into the record short of a reviewer returning it.
+
+                    Saved rather than refused: the text is on the screen in front of the
+                    person pressing the button, and this is the same PATCH the save button
+                    issues. A refused save aborts the submit — the throw leaves `run` to
+                    report it — because a report locked against text it never received is
+                    the failure this exists to prevent.
+                  */
+                  void run(async () => {
+                    if (writeUpDirty) {
+                      await plannedWorkService.updateReport(plannedWorkId!, writeUpPayload());
+                    }
+                    return plannedWorkService.submitReport(plannedWorkId!);
+                  }, 'Тайлан хянуулахаар илгээгдлээ.')
                 }
                 disabled={busy || report.submissionBlockers.length > 0}
               >
@@ -362,18 +498,18 @@ export function PlannedWorkReportPage(): ReactElement {
           </Alert>
         )}
 
-        {canReview && report.status === 'SUBMITTED' && report.approvalBlockers.length > 0 && (
-          <Alert variant="info" title="Батлах боломжгүй">
-            <ul className="ml-4 list-disc space-y-0.5">
-              {report.approvalBlockers.map((blocker) => (
-                <li key={blocker}>{blocker}</li>
-              ))}
-            </ul>
-          </Alert>
-        )}
-
         <div className="rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
           <h2 className="mb-3 text-sm font-semibold text-slate-900">Нэгдсэн дүгнэлт ба зөвлөмж</h2>
+
+          {/*
+            Said out loud, so the state is visible before the submit button is pressed
+            rather than only implied by what happens afterwards.
+          */}
+          {editable && writeUpDirty && (
+            <p className="mb-3 text-xs text-amber-700">
+              Хадгалагдаагүй өөрчлөлт байна. Хянуулахаар илгээхэд хамт хадгалагдана.
+            </p>
+          )}
 
           <div className="space-y-3">
             <div>
@@ -445,6 +581,10 @@ export function PlannedWorkReportPage(): ReactElement {
             columns={taskColumnState.visibleColumns}
             rows={preview.tasks}
             rowKey={(row) => row.id}
+            // NUMBERED BUT NOT PAGED, here and in the materials table below. This screen is
+            // the preview of a report that is exported whole; splitting it into pages would
+            // put rows behind a control that the exported PDF does not have.
+            numbering
             emptyTitle="Дэд ажил байхгүй"
           />
         </div>
@@ -457,7 +597,8 @@ export function PlannedWorkReportPage(): ReactElement {
           <DataTable
             columns={materialColumnState.visibleColumns}
             rows={preview.materials}
-            rowKey={(row) => row.name}
+            rowKey={(row) => row.materialItemId}
+            numbering
             emptyTitle="Материал бүртгэгдээгүй"
           />
         </div>

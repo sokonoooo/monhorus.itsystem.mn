@@ -30,6 +30,19 @@ export const SERVICE_AGREEMENT_STATUS_LABELS: Record<ServiceAgreementStatus, str
 /**
  * Requirements 6.3: only an ACTIVE agreement permits calendar generation and
  * invoicing. Requirements 5.1 step 5 repeats this rule.
+ *
+ * NECESSARY, NOT SUFFICIENT — do not use this on its own as the billing gate. Nothing in
+ * the backend ever writes `EXPIRED`, so an agreement whose term ended years ago is still
+ * sitting at ACTIVE and this returns true for it. `billableAgreementFilter` in
+ * `apps/backend/src/modules/invoice/invoice.service.ts` is the real predicate: ACTIVE
+ * **and** a term that overlaps the billing period. Filtering on status alone is the bug it
+ * was written to close — a customer receiving a monthly bill for a finished contract.
+ *
+ * The calendar half of 6.3 is not enforced anywhere, because nothing generates a schedule
+ * from an agreement yet: `frequency` is stored and echoed back and read by nobody.
+ *
+ * Kept as the statement of the rule the requirement makes. Any caller wiring it up owes
+ * the term check beside it.
  */
 export function permitsBilling(status: ServiceAgreementStatus): boolean {
   return status === 'ACTIVE';

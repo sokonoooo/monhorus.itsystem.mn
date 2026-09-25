@@ -238,10 +238,23 @@ class _CalendarBody extends ConsumerWidget {
   /// the pair already sitting on the model; it is deliberately not parsed at all.
   ///
   /// Null when the entry names no record, so the card is drawn untappable.
+  ///
+  /// THE ROUTE IS BUILT PER TAP, NEVER HERE. A Route is a single-use object: it carries
+  /// its own lifecycle and the navigator it was installed in, and completes when the
+  /// screen is popped. Building one in `build` and closing over it means the second tap
+  /// on a row hands the Navigator a route it has already finished with, which asserts
+  /// `!_debugLocked` — and a row rebuilds rarely enough that the spent instance is still
+  /// there when the user comes back and taps again. Whether the entry can be opened at
+  /// all is answered from `sourceId` alone, so the card still draws untappable without
+  /// anything being constructed.
   VoidCallback? _openRecord(BuildContext context, CalendarEventModel event) {
     if (event.sourceId.isEmpty) return null;
 
-    final Route<void> route = switch (event.source) {
+    return () => Navigator.of(context).push(_recordRoute(event));
+  }
+
+  Route<void> _recordRoute(CalendarEventModel event) {
+    return switch (event.source) {
       CalendarSource.plannedWork => PlannedWorkDetailScreen.route(
           plannedWorkId: event.sourceId,
           workNumber: event.reference,
@@ -258,8 +271,6 @@ class _CalendarBody extends ConsumerWidget {
           statusLabel: event.statusLabel,
         ),
     };
-
-    return () => Navigator.of(context).push(route);
   }
 }
 

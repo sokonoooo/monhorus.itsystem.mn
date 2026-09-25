@@ -188,6 +188,10 @@ class _PlanTab extends ConsumerWidget {
                 children: <Widget>[
                   AuthenticatedImage.sizedToImage(
                     fileId: data.fileId,
+                    // A floor's worth of markers on a phone-width drawing overlap until
+                    // the reader can magnify it. Read-only in both senses: nothing here
+                    // can be moved, and the zoom is not persisted.
+                    zoomable: true,
                     overlay: FloorPlanMarkerLayer(
                       objects: onPlan,
                       onTap: (ObjectListItemModel object) =>
@@ -210,6 +214,16 @@ class _PlanTab extends ConsumerWidget {
                             if (data.uploadedByName != null) data.uploadedByName!,
                             formatDate(data.uploadedAt),
                           ].join(' · '),
+                          style: CustomerTokens.rowSub,
+                        ),
+                        const SizedBox(height: 4),
+                        // Said out loud, because neither channel is self-evident: the
+                        // colour is a band a reader has no reason to guess at, and the
+                        // pinch is invisible until someone tries it.
+                        Text(
+                          'Тэмдэглэгээний өнгө нь эрсдэлийн түвшин, дүрс тэмдэг нь '
+                          'объектын төрлийг илэрхийлнэ. Хоёр хуруугаар томруулж '
+                          'харна.',
                           style: CustomerTokens.rowSub,
                         ),
                         if (unplaced > 0) ...<Widget>[
@@ -235,12 +249,15 @@ class _PlanTab extends ConsumerWidget {
           value: objects,
           onRetry: () => ref.invalidate(floorObjectsProvider(floor.id)),
           builder: (BuildContext ctx, List<ObjectListItemModel> items) {
-            // Anything the backend banded below NORMAL. An unassessed object is
-            // deliberately not swept in here: it is an unknown, not a fault.
+            // Anything the backend banded below the healthiest band this installation
+            // configures — named as a position on that ladder rather than as the NORMAL
+            // key, which stopped being the healthy band the moment an administrator
+            // renamed or replaced it. An unassessed object is deliberately not swept in
+            // here: it is an unknown, not a fault.
             final List<ObjectListItemModel> needsAttention = items
                 .where((ObjectListItemModel object) =>
                     object.riskLevel != null &&
-                    object.riskLevel != RiskLevel.normal)
+                    riskNeedsAttention(object.riskLevel!))
                 .toList(growable: false);
 
             if (needsAttention.isEmpty) {
@@ -307,6 +324,12 @@ class _DevicesTab extends ConsumerWidget {
 /// building filter but not a floor one, so this fetches the building's requests and
 /// narrows them to this floor using the floor reference each row already carries.
 /// The heading says as much rather than implying a complete floor audit trail.
+///
+/// The provider walks the building's pages under a ceiling and reports whether it
+/// reached the end. That flag decides which sentence an empty result gets: a walk that
+/// finished may say this floor has no requests, and one cut short by the ceiling may
+/// only say none turned up in what it read. The two must not be printed as the same
+/// thing — the first is a fact about the floor, the second is a fact about the read.
 class _HistoryTab extends ConsumerWidget {
   const _HistoryTab({required this.buildingId, required this.floorId});
 
@@ -319,19 +342,23 @@ class _HistoryTab extends ConsumerWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
         const SectionCaption('Энэ давхрын хүсэлтүүд', topPadding: 0),
-        CustomerAsyncView<List<ServiceRequestListItemModel>>(
+        CustomerAsyncView<BuildingServiceHistory>(
           value: ref.watch(buildingServiceRequestsProvider(buildingId)),
           onRetry: () =>
               ref.invalidate(buildingServiceRequestsProvider(buildingId)),
-          builder: (BuildContext ctx, List<ServiceRequestListItemModel> items) {
-            final List<ServiceRequestListItemModel> onThisFloor = items
+          builder: (BuildContext ctx, BuildingServiceHistory history) {
+            final List<ServiceRequestListItemModel> onThisFloor = history.requests
                 .where((ServiceRequestListItemModel r) => r.floor?.id == floorId)
                 .toList(growable: false);
 
             if (onThisFloor.isEmpty) {
-              return const CustomerEmptyState(
+              return CustomerEmptyState(
                 icon: Icons.history_outlined,
-                message: 'Энэ давхарт бүртгэгдсэн үйлчилгээний хүсэлт алга байна.',
+                message: history.complete
+                    ? 'Энэ давхарт бүртгэгдсэн үйлчилгээний хүсэлт алга байна.'
+                    : 'Барилгын сүүлийн ${history.requests.length} хүсэлтээс энэ '
+                        'давхарт хамаарах нь олдсонгүй. Үүнээс өмнөх хүсэлт '
+                        'бүртгэгдсэн байж болзошгүй.',
               );
             }
 
@@ -343,10 +370,13 @@ class _HistoryTab extends ConsumerWidget {
                       onThisFloor[i].requestNumber,
                       if (onThisFloor[i].device != null)
                         onThisFloor[i].device!.name,
-                      onThisFloor[i].status?.label ?? '',
+                      // The stage the server groups the request under, when it sent
+                      // one: this row reports where the work has got to, and that is
+                      // the word the office uses for it. Falls back to the status.
+                      onThisFloor[i].stepLabel ?? '',
                     ].where((String part) => part.isNotEmpty).join(' · '),
                     meta: formatEventStamp(onThisFloor[i].createdAt),
-                    tone: onThisFloor[i].status?.tone ?? AccentTone.neutral,
+                    tone: onThisFloor[i].stepTone,
                     icon: onThisFloor[i].isUrgent
                         ? Icons.priority_high
                         : Icons.assignment_outlined,
@@ -364,7 +394,16 @@ class _HistoryTab extends ConsumerWidget {
             0,
           ),
           child: Text(
-            'Тухайн объектын бүрэн түүхийг объектын дэлгэрэнгүй хуудаснаас харна.',
+            <String>[
+              'Тухайн объектын бүрэн түүхийг объектын дэлгэрэнгүй хуудаснаас харна.',
+              // Printed whenever the walk stopped at its ceiling, list or no list: a
+              // timeline read from a truncated set is as incomplete as an empty one.
+              if (ref.watch(buildingServiceRequestsProvider(buildingId)).valueOrNull
+                      ?.complete ==
+                  false)
+                'Барилгын хүсэлтийн жагсаалт хэт урт тул зөвхөн сүүлийн үеийнхийг '
+                    'уншсан болно.',
+            ].join(' '),
             style: CustomerTokens.rowSub,
           ),
         ),

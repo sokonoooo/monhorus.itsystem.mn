@@ -58,6 +58,7 @@ class WorkRepositoryImpl implements WorkRepository {
     String? teamId,
     PlannedWorkEffectiveStatus? status,
     String? search,
+    int page = 1,
   }) {
     return _guard(
       () => _remote.listPlannedWork(
@@ -65,6 +66,7 @@ class WorkRepositoryImpl implements WorkRepository {
         teamId: teamId,
         status: status,
         search: search,
+        page: page,
       ),
     );
   }
@@ -73,14 +75,14 @@ class WorkRepositoryImpl implements WorkRepository {
   /// once instead of the segment rendering half a pool beside an error.
   @override
   Future<ApiResult<PaginatedData<ServiceRequestListItemModel>>>
-      listOpenServiceRequests() {
-    return _guard(() => _remote.listOpenServiceRequests());
+      listOpenServiceRequests({int page = 1}) {
+    return _guard(() => _remote.listOpenServiceRequests(page: page));
   }
 
   @override
   Future<ApiResult<PaginatedData<ServiceRequestListItemModel>>>
-      listAssignedServiceRequests() {
-    return _guard(() => _remote.listAssignedServiceRequests());
+      listAssignedServiceRequests({int page = 1}) {
+    return _guard(() => _remote.listAssignedServiceRequests(page: page));
   }
 
   @override
@@ -129,11 +131,6 @@ class WorkRepositoryImpl implements WorkRepository {
   }
 
   @override
-  Future<ApiResult<WorkReportModel>> approveWorkReport(String requestId) {
-    return _guard(() => _remote.approveWorkReport(requestId));
-  }
-
-  @override
   Future<ApiResult<WorkReportPhotoModel>> uploadWorkReportPhoto(CapturedPhoto photo) {
     return _guard(() => _remote.uploadWorkReportPhoto(photo));
   }
@@ -171,6 +168,21 @@ class WorkRepositoryImpl implements WorkRepository {
   }) {
     return _guard(
       () => _remote.recordTaskProgress(
+        plannedWorkId: plannedWorkId,
+        taskId: taskId,
+        request: request,
+      ),
+    );
+  }
+
+  @override
+  Future<ApiResult<PlannedWorkModel>> recordTaskMaterialUsage({
+    required String plannedWorkId,
+    required String taskId,
+    required RecordTaskMaterialUsageRequest request,
+  }) {
+    return _guard(
+      () => _remote.recordTaskMaterialUsage(
         plannedWorkId: plannedWorkId,
         taskId: taskId,
         request: request,

@@ -1,8 +1,13 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/error/failure.dart';
 import '../../../../core/network/api_result.dart';
 import '../../../../core/network/dio_client.dart';
+import '../../../../core/push/push_messaging.dart';
+import '../../../../core/push/push_registration.dart';
 import '../../../../core/storage/secure_token_storage.dart';
 import '../../data/datasources/auth_local_data_source.dart';
 import '../../data/datasources/auth_remote_data_source.dart';
@@ -95,6 +100,50 @@ class AuthController extends Notifier<AuthState> {
   AuthStatus _statusFor(AppUser user) =>
       user.mustChangePassword ? AuthStatus.mustChangePassword : AuthStatus.authenticated;
 
+  /*
+   * Push registration hangs off the authenticated transition, not off login().
+   *
+   * A returning user never calls login() — restoreSession() authenticates them from stored
+   * credentials at launch — so hooking only the sign-in form would leave every warm start
+   * unregistered, which is the overwhelming majority of launches. Both paths funnel through
+   * here instead.
+   *
+   * Never awaited by the caller and never allowed to throw: a device that cannot register
+   * still has a working app, and a push failure must not hold up the first frame.
+   */
+  void _registerForPush() {
+    final PushRegistration registration = PushRegistration(ref.read(dioClientProvider));
+    unawaited(
+      PushMessaging.start(
+        onToken: (String token) => registration.register(token: token),
+        onOpen: (String? _) {
+          // Routing to the linked entity needs a router this app does not have; the
+          // notification list is the reliable destination until it does.
+        },
+      ).then((bool registered) {
+        // Said out loud, because it was not. A registration that never happens looks
+        // exactly like one that failed — no request, no row, no log — and that is how a
+        // fleet of handsets came to hold no registration at all without anybody noticing.
+        // The notification list still works either way, so there is nothing to show the
+        // reader and nothing for them to do.
+        if (!registered) {
+          debugPrint(
+            'Push: this install is NOT registered for notifications. '
+            'They will only appear in the in-app list.',
+          );
+        }
+      }),
+    );
+  }
+
+  Future<void> _unregisterFromPush() async {
+    final String? token = await PushMessaging.currentToken();
+    if (token != null) {
+      await PushRegistration(ref.read(dioClientProvider)).unregister(token: token);
+    }
+    await PushMessaging.stop();
+  }
+
   Future<void> restoreSession() async {
     final ApiResult<AppUser> result = await _repository.restoreSession();
 
@@ -102,6 +151,8 @@ class AuthController extends Notifier<AuthState> {
       success: (AppUser user) => AuthState(status: _statusFor(user), user: user),
       failure: (Failure _) => const AuthState(status: AuthStatus.unauthenticated),
     );
+
+    if (state.status == AuthStatus.authenticated) _registerForPush();
   }
 
   Future<bool> login({required String email, required String password}) async {
@@ -113,6 +164,7 @@ class AuthController extends Notifier<AuthState> {
     return result.when(
       success: (AppUser user) {
         state = AuthState(status: _statusFor(user), user: user);
+        if (state.status == AuthStatus.authenticated) _registerForPush();
         return true;
       },
       failure: (Failure failure) {
@@ -171,6 +223,8 @@ class AuthController extends Notifier<AuthState> {
 
   Future<void> logout() async {
     state = state.copyWith(busy: true);
+    // Before the session is torn down, while the token still authenticates the call.
+    await _unregisterFromPush();
     await _repository.logout();
     state = const AuthState(status: AuthStatus.unauthenticated);
   }

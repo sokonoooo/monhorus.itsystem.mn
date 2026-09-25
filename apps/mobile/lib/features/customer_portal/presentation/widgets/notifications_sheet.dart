@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../../core/error/failure.dart';
+import '../../../../core/network/api_result.dart';
 import '../../data/models/notification_model.dart';
 import '../format.dart';
 import '../providers/customer_portal_providers.dart';
@@ -110,7 +112,7 @@ class NotificationsSheet extends ConsumerWidget {
                 children: <Widget>[
                   Expanded(
                     child: OutlinedButton(
-                      onPressed: () => _markAllRead(ref),
+                      onPressed: () => _markAllRead(context, ref),
                       child: const Text('Бүгдийг уншсан'),
                     ),
                   ),
@@ -130,11 +132,33 @@ class NotificationsSheet extends ConsumerWidget {
     );
   }
 
-  Future<void> _markAllRead(WidgetRef ref) async {
-    await ref.read(customerPortalRepositoryProvider).markAllNotificationsRead();
+  /*
+   * The result is checked, not discarded.
+   *
+   * Both of these used to `await` the call and ignore what came back, then invalidate
+   * regardless. A refused mark-read was therefore indistinguishable from a successful one:
+   * the refetch put the row back exactly as it was, unread, with nothing said. The reader
+   * is left believing they cleared something they did not.
+   */
+  Future<void> _markAllRead(BuildContext context, WidgetRef ref) async {
+    final ApiResult<void> result = await ref
+        .read(customerPortalRepositoryProvider)
+        .markAllNotificationsRead();
+
+    final Failure? failure = result.failureOrNull;
+    if (failure != null) {
+      if (context.mounted) _sayItFailed(context, failure);
+      return;
+    }
     ref
       ..invalidate(customerNotificationsProvider)
       ..invalidate(unreadNotificationCountProvider);
+  }
+
+  static void _sayItFailed(BuildContext context, Failure failure) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(failure.message)),
+    );
   }
 
   Future<void> _open(
@@ -143,12 +167,19 @@ class NotificationsSheet extends ConsumerWidget {
     NotificationModel notification,
   ) async {
     if (notification.isUnread) {
-      await ref
+      final ApiResult<NotificationModel> result = await ref
           .read(customerPortalRepositoryProvider)
           .markNotificationRead(notification.id);
-      ref
-        ..invalidate(customerNotificationsProvider)
-        ..invalidate(unreadNotificationCountProvider);
+
+      final Failure? failure = result.failureOrNull;
+      if (failure != null) {
+        // Said out loud, but not fatal: the row still opens.
+        if (context.mounted) _sayItFailed(context, failure);
+      } else {
+        ref
+          ..invalidate(customerNotificationsProvider)
+          ..invalidate(unreadNotificationCountProvider);
+      }
     }
 
     final String? requestId = notification.serviceRequestId;

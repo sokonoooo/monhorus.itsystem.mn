@@ -13,6 +13,7 @@ import '../theme/customer_tokens.dart';
 import '../widgets/create_request_sheet.dart';
 import '../widgets/customer_async_view.dart';
 import '../widgets/customer_ui.dart';
+import '../widgets/photo_source_sheet.dart';
 import '../widgets/risk_widgets.dart';
 import 'customer_shell_screen.dart';
 import 'service_request_detail_screen.dart';
@@ -24,9 +25,19 @@ import 'service_request_detail_screen.dart';
 /// score, and nothing electrical beyond that - so the grid renders the load values
 /// the contract does define rather than four invented readings.
 class DeviceDetailScreen extends ConsumerWidget {
-  const DeviceDetailScreen({super.key, required this.objectId});
+  const DeviceDetailScreen({
+    super.key,
+    required this.objectId,
+    this.pickPhoto = pickServiceRequestPhoto,
+  });
 
   final String objectId;
+
+  /// Forwarded to the request sheet this screen opens. Overridden in tests only, for
+  /// the reason [CreateRequestSheet.pickPhoto] states: `image_picker` has no test
+  /// binding, so without an injected picker the submit path behind this screen's
+  /// sticky action is unreachable and what it puts on the wire cannot be asserted.
+  final PortalPhotoPicker pickPhoto;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -57,7 +68,9 @@ class DeviceDetailScreen extends ConsumerWidget {
               _Body(object: data),
         ),
       ),
-      bottomAction: loaded == null ? null : _RequestAction(object: loaded),
+      bottomAction: loaded == null
+          ? null
+          : _RequestAction(object: loaded, pickPhoto: pickPhoto),
     );
   }
 }
@@ -71,8 +84,7 @@ class _Body extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final LatestAssessmentModel? assessment = object.latestAssessment;
     final RiskLevel? level = assessment?.riskLevel;
-    final bool severe =
-        level == RiskLevel.critical || level == RiskLevel.outOfService;
+    final bool severe = level != null && riskIsSevere(level);
 
     return ListView(
       padding: const EdgeInsets.only(top: 8, bottom: 24),
@@ -158,7 +170,8 @@ class _Body extends ConsumerWidget {
           ],
         ),
 
-        ..._attributeSection(object),
+        ..._categoryAttributeSection(object),
+        ..._typeAttributeSection(object),
 
         if (assessment != null) ...<Widget>[
           const SectionCaption('Дүгнэлт ба зөвлөмж'),
@@ -229,7 +242,47 @@ class _Body extends ConsumerWidget {
     );
   }
 
-  List<Widget> _attributeSection(ObjectDetailModel object) {
+  /// The fields the object's TYPE declares, and what this object answered for them.
+  ///
+  /// Rendered from the definitions the server sends — key, label, kind and, for a
+  /// SELECT, its options — so an attribute an administrator adds in Тоноглолын төрөл
+  /// appears here with no release. Before this the customer app had no dynamic renderer
+  /// at all: every per-type answer a technician recorded was on the wire and invisible.
+  ///
+  /// All four declared kinds render; a kind this build has never heard of falls back to
+  /// its raw value rather than being dropped, because silently omitting an attribute is
+  /// the bug being fixed. A declared attribute nobody has answered shows «Бөглөөгүй» —
+  /// the type asks for it and it is missing, which is information, and hiding it would
+  /// make an unanswered field indistinguishable from one that does not exist.
+  ///
+  /// Separate from [_categoryAttributeSection] on purpose: those are the fixed section
+  /// 4.2 blocks, typed in the shared package and the same on every installation.
+  List<Widget> _typeAttributeSection(ObjectDetailModel object) {
+    final List<({ObjectTypeAttributeModel attribute, String? display})> rows =
+        object.typeAttributes;
+    if (rows.isEmpty) return const <Widget>[];
+
+    return <Widget>[
+      SectionCaption(
+        object.objectType?.name == null
+            ? 'Төрлийн үзүүлэлт'
+            : '${object.objectType!.name} үзүүлэлт',
+      ),
+      PanelCard(
+        padding: EdgeInsets.zero,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            for (final ({ObjectTypeAttributeModel attribute, String? display}) row
+                in rows)
+              _AttrRow(row.attribute.label, row.display ?? 'Бөглөөгүй'),
+          ],
+        ),
+      ),
+    ];
+  }
+
+  List<Widget> _categoryAttributeSection(ObjectDetailModel object) {
     final PanelAttributesModel? panel = object.panel;
     final CircuitAttributesModel? circuit = object.circuit;
     final EquipmentAttributesModel? equipment = object.equipment;
@@ -292,11 +345,14 @@ class _Body extends ConsumerWidget {
     return CustomerTokens.ink;
   }
 
+  /// See [loadOverCapacityPercent] and [loadNearCapacityPercent], which is where these
+  /// two figures live and where the note about the employee app disagreeing about the
+  /// amber band is.
   static Color _percentTone(LoadValueModel value) {
     if (!value.hasValue) return CustomerTokens.ink;
     final double percent = value.valueKw!;
-    if (percent > 100) return CustomerTokens.red;
-    if (percent >= 90) return CustomerTokens.yellow;
+    if (percent > loadOverCapacityPercent) return CustomerTokens.red;
+    if (percent >= loadNearCapacityPercent) return CustomerTokens.yellow;
     return CustomerTokens.green;
   }
 }
@@ -414,9 +470,10 @@ class _HistorySection extends ConsumerWidget {
 /// permission: the endpoint would answer 403 and a permanently dead button is worse
 /// than none.
 class _RequestAction extends ConsumerWidget {
-  const _RequestAction({required this.object});
+  const _RequestAction({required this.object, required this.pickPhoto});
 
   final ObjectDetailModel object;
+  final PortalPhotoPicker pickPhoto;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -428,16 +485,13 @@ class _RequestAction extends ConsumerWidget {
     }
 
     final bool decommissioned = object.status == ObjectStatus.decommissioned;
-    final RiskLevel? level = object.latestAssessment?.riskLevel;
-    final bool severe =
-        level == RiskLevel.critical || level == RiskLevel.outOfService;
 
     return StickyAction(
       label: decommissioned
           ? 'Ашиглалтаас гарсан'
           : 'Засварын хүсэлт илгээх',
       icon: decommissioned ? Icons.block : Icons.build_outlined,
-      danger: severe,
+      danger: _isSevere(object),
       onPressed: decommissioned ? null : () => _open(context, ref, scope),
     );
   }
@@ -465,11 +519,35 @@ class _RequestAction extends ConsumerWidget {
       scope: scope,
       initialBuildingId: buildingId,
       initialFloorId: buildingId == null ? null : floorId,
-      deviceId: object.id,
+      // The equipment's own spot on the floor plan, COPIED onto the request rather than
+      // referenced. A customer standing at a device should not be asked to point at a
+      // drawing to say where it is — the register already knows — but what the request
+      // stores is where the fault was reported, so it stays true if the object is later
+      // moved or re-placed, and the customer can still move or clear the pin because
+      // they can see the fault and the register cannot.
+      //
+      // Null for the objects nobody has placed, which is most of them; the sheet then
+      // says so and asks for a pin instead of showing a bare plan.
+      initialPlanPosition: object.planPosition,
+      // No id travels with the device, only its name and its identity in the text.
+      //
+      // `deviceId` names an `ObjectNode` of kind DEVICE and the server resolves it with
+      // `ObjectNode.findById`. `object` is an `ObjectDetailModel` — a row of the object
+      // MASTER register, a different collection — so its id resolved to nothing and
+      // every request raised from this screen came back 400 `Төхөөрөмж олдсонгүй.`
+      // There is no node id available here to send instead: this app has no screen
+      // built on the node hierarchy below a floor. So the link is carried where it is
+      // actually read — the subtitle names the device, and the description opens with
+      // its code and name so the dispatcher who receives the request knows what it is
+      // about even after the customer edits the rest.
       deviceName: object.name,
-      initialUrgent: object.latestAssessment?.riskLevel == RiskLevel.critical ||
-          object.latestAssessment?.riskLevel == RiskLevel.outOfService,
-      initialDescription: object.latestAssessment?.recommendation,
+      // Sent to the server, where it sets the SLA window and how the request is
+      // dispatched — so the two band keys this used to name were a dispatch rule
+      // written in Dart. `riskIsSevere` reads it off the ladder the administrator
+      // configured instead; see its note on what the server does not publish.
+      initialUrgent: _isSevere(object),
+      initialDescription: _describe(object),
+      pickPhoto: pickPhoto,
     );
 
     if (createdId == null || !context.mounted) return;
@@ -478,6 +556,37 @@ class _RequestAction extends ConsumerWidget {
         builder: (_) => ServiceRequestDetailScreen(requestId: createdId),
       ),
     );
+  }
+
+  /// Whether the register has this object in a band severe enough to raise the call as
+  /// urgent. Null - never assessed - is not severe: an object nobody has looked at is
+  /// an unknown, not a fault.
+  static bool _isSevere(ObjectDetailModel object) {
+    final RiskLevel? band = object.latestAssessment?.riskLevel;
+    return band != null && riskIsSevere(band);
+  }
+
+  /// The description the sheet opens with.
+  ///
+  /// The first line names the device, because with no resolvable `deviceId` to send
+  /// this text is the only place the record says which piece of equipment the customer
+  /// was standing in front of. The assessor's own recommendation follows it when there
+  /// is one, so the dispatcher reads what the platform already concluded rather than
+  /// only what the customer typed.
+  ///
+  /// The code is dropped when the register holds none, so an unnamed identifier never
+  /// renders as a dangling separator.
+  static String _describe(ObjectDetailModel object) {
+    final String identity = object.code.isEmpty
+        ? object.name
+        : '${object.name} (${object.code})';
+    final String? recommendation = object.latestAssessment?.recommendation;
+
+    return <String>[
+      '$identity төхөөрөмж дээр асуудал гарлаа.',
+      if (recommendation != null && recommendation.trim().isNotEmpty)
+        recommendation.trim(),
+    ].join('\n');
   }
 }
 

@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../../../core/push/push_messaging.dart';
 import '../../../auth/presentation/providers/auth_provider.dart';
 import '../../domain/entities/customer_scope.dart';
+import '../../domain/entities/server_vocabulary.dart';
 import '../providers/customer_portal_providers.dart';
 import '../theme/customer_tokens.dart';
 import '../widgets/create_request_sheet.dart';
@@ -29,12 +31,25 @@ class CustomerShellScreen extends ConsumerStatefulWidget {
   ConsumerState<CustomerShellScreen> createState() => _CustomerShellScreenState();
 }
 
-class _CustomerShellScreenState extends ConsumerState<CustomerShellScreen> {
+class _CustomerShellScreenState extends ConsumerState<CustomerShellScreen>
+    with WidgetsBindingObserver {
   late int _index = widget.initialIndex;
 
+  VoidCallback? _stopListeningForPush;
+
+  /*
+   * The badge is fetched once and never again on its own: there is no polling here and no
+   * socket. That leaves it stale in the two cases a user actually notices - coming back to
+   * the app after a while, and a push landing while the app is open, which is precisely
+   * when the count just changed.
+   *
+   * Both are handled by re-asking the server rather than adjusting a local number.
+   */
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _stopListeningForPush = PushMessaging.onPushArrived(_refreshNotifications);
     // The login response carries no permission list, so the effective set is only
     // known after an /auth/me. Asking once here keeps the create control honest.
     Future<void>.microtask(
@@ -43,14 +58,45 @@ class _CustomerShellScreenState extends ConsumerState<CustomerShellScreen> {
   }
 
   @override
+  void dispose() {
+    _stopListeningForPush?.call();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _refreshNotifications();
+  }
+
+  void _refreshNotifications() {
+    if (!mounted) return;
+    ref
+      ..invalidate(unreadNotificationCountProvider)
+      ..invalidate(customerNotificationsProvider);
+  }
+
+  @override
   Widget build(BuildContext context) {
     final bool canCreate = ref.watch(canCreateServiceRequestProvider);
     final CustomerScope scope = ref.watch(customerScopeProvider);
     final bool fabVisible = canCreate && scope is ResolvedCustomerScope;
 
+    // Reading it here is what starts it: one small GET, shared by all four tabs, that
+    // replaces the compiled-in stage and risk-band words with whatever this
+    // installation calls them. It cannot fail in a way the reader sees — see
+    // `serverVocabularyProvider` — so there is no state to render off it here.
+    ref.watch(serverVocabularyProvider);
+
     return Scaffold(
       backgroundColor: CustomerTokens.bg,
       body: IndexedStack(
+        // Keyed on the vocabulary, so the answer landing rebuilds the tabs the once.
+        // Three of the four bodies are const widgets and a const widget is
+        // canonicalised, so this frame's rebuild would otherwise stop at the stack and
+        // leave those elements painting the words they were first built with. The key
+        // changes at most once a session, and never at all when the read failed.
+        key: ValueKey<int>(serverVocabularyRevision),
         index: _index,
         children: <Widget>[
           CustomerHomeScreen(onOpenTab: _select),

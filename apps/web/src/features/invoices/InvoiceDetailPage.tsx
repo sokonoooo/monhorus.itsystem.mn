@@ -24,19 +24,19 @@ import { useToast } from '../../components/ui/ToastProvider';
 import { FIELD_TEXTAREA, FILTER_LABEL } from '../../components/ui/control-styles';
 import { useAuth } from '../../contexts/auth-context';
 import { ApiError } from '../../lib/api-client';
-import { todayDateInput } from '../../lib/calendar-date';
+import { BUSINESS_TIME_ZONE, todayDateKey } from '../../lib/business-day';
 import { invoiceService } from '../../services/invoice.service';
 import { Field, SelectInput, TextInput } from '../employees/FormControls';
 import { BillingTypeBadge, InvoiceStatusBadge, Money } from './InvoiceBadges';
 
 function formatDate(iso: string | null): string {
   if (!iso) return '-';
-  return new Date(iso).toLocaleDateString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
+  return new Date(iso).toLocaleDateString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
 }
 
 function formatDateTime(iso: string | null): string {
   if (!iso) return '-';
-  return new Date(iso).toLocaleString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
+  return new Date(iso).toLocaleString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
 }
 
 function Row({ label, children }: { label: string; children: ReactNode }): ReactElement {
@@ -66,7 +66,7 @@ function PaymentDrawer({
   onSaved: () => void;
 }): ReactElement {
   const { notify } = useToast();
-  const [paidAt, setPaidAt] = useState(() => todayDateInput());
+  const [paidAt, setPaidAt] = useState(() => todayDateKey());
   const [method, setMethod] = useState<PaymentMethod>('BANK_TRANSFER');
   const [reference, setReference] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -75,7 +75,7 @@ function PaymentDrawer({
 
   useEffect(() => {
     if (!open) return;
-    setPaidAt(todayDateInput());
+    setPaidAt(todayDateKey());
     setMethod('BANK_TRANSFER');
     setReference('');
     setFormError(null);
@@ -139,10 +139,6 @@ function PaymentDrawer({
     >
       <div className="space-y-4">
         {formError && <Alert variant="error">{formError}</Alert>}
-        <Alert variant="info">
-          Төлбөр нэхэмжлэлийг бүрэн хаана. Хэсэгчлэн төлөлт V1-д байхгүй.
-        </Alert>
-
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field label="Төлсөн огноо" required error={fieldErrors.paidAt}>
             <TextInput type="date" value={paidAt} onChange={setPaidAt} disabled={submitting} />
@@ -355,17 +351,6 @@ export function InvoiceDetailPage(): ReactElement {
           </Alert>
         )}
 
-        {invoice.replacesInvoiceNumber && (
-          <Alert variant="info">
-            Энэ нэхэмжлэл {invoice.replacesInvoiceNumber} нэхэмжлэлийг орлуулж үүссэн.
-          </Alert>
-        )}
-        {invoice.replacedByInvoiceNumber && (
-          <Alert variant="info">
-            Энэ нэхэмжлэлийг {invoice.replacedByInvoiceNumber} нэхэмжлэл орлуулсан.
-          </Alert>
-        )}
-
         <div className="rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
           <div className="mb-4 flex flex-wrap items-center gap-2">
             <InvoiceStatusBadge status={invoice.effectiveStatus} overdueDays={invoice.overdueDays} />
@@ -397,6 +382,10 @@ export function InvoiceDetailPage(): ReactElement {
             <table className="w-full text-sm">
               <thead className="bg-slate-50 text-xs text-slate-600">
                 <tr>
+                  {/* Numbered but not paged: the lines travel inside the invoice's own
+                      payload, and an invoice is read and signed as one document. The
+                      numbers give a caller on the phone a way to say which line. */}
+                  <th className="w-12 whitespace-nowrap px-5 py-2 text-right font-medium">№</th>
                   <th className="px-5 py-2 text-left font-medium">Тайлбар</th>
                   <th className="px-5 py-2 text-left font-medium">Эх үүсвэр</th>
                   <th className="px-5 py-2 text-right font-medium">Тоо</th>
@@ -405,8 +394,11 @@ export function InvoiceDetailPage(): ReactElement {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {invoice.lines.map((line) => (
+                {invoice.lines.map((line, index) => (
                   <tr key={line.id}>
+                    <td className="px-5 py-2.5 text-right tabular-nums text-slate-500">
+                      {index + 1}
+                    </td>
                     <td className="px-5 py-2.5 text-slate-900">{line.description}</td>
                     <td className="px-5 py-2.5 text-xs text-slate-500">
                       {INVOICE_LINE_SOURCE_LABELS[line.source]}
@@ -425,7 +417,7 @@ export function InvoiceDetailPage(): ReactElement {
               </tbody>
               <tfoot className="border-t border-slate-200 bg-slate-50">
                 <tr>
-                  <td colSpan={4} className="px-5 py-2 text-right text-xs text-slate-600">
+                  <td colSpan={5} className="px-5 py-2 text-right text-xs text-slate-600">
                     Дүн
                   </td>
                   <td className="px-5 py-2 text-right tabular-nums text-slate-900">
@@ -433,7 +425,7 @@ export function InvoiceDetailPage(): ReactElement {
                   </td>
                 </tr>
                 <tr>
-                  <td colSpan={4} className="px-5 py-2 text-right text-xs text-slate-600">
+                  <td colSpan={5} className="px-5 py-2 text-right text-xs text-slate-600">
                     Татвар ({invoice.taxPercent}%)
                   </td>
                   <td className="px-5 py-2 text-right tabular-nums text-slate-900">
@@ -441,7 +433,7 @@ export function InvoiceDetailPage(): ReactElement {
                   </td>
                 </tr>
                 <tr>
-                  <td colSpan={4} className="px-5 py-2 text-right text-sm font-semibold text-slate-900">
+                  <td colSpan={5} className="px-5 py-2 text-right text-sm font-semibold text-slate-900">
                     Нийт
                   </td>
                   <td className="px-5 py-2 text-right text-sm font-semibold">

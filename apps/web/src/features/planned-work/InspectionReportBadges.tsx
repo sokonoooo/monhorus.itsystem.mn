@@ -6,6 +6,9 @@ import {
 } from '@monhorus/shared';
 import type { ReactElement } from 'react';
 
+import { riskPaletteOf } from '../../components/ui/risk-palette';
+import { useRiskBands } from '../../hooks/use-risk-bands';
+
 /**
  * Badges for the consolidated inspection report.
  *
@@ -19,11 +22,9 @@ const BASE =
 
 const GREEN = 'bg-green-50 text-green-700 ring-green-200';
 const YELLOW = 'bg-amber-50 text-amber-700 ring-amber-200';
-const ORANGE = 'bg-orange-50 text-orange-700 ring-orange-200';
 const RED = 'bg-red-50 text-red-700 ring-red-200';
 const GREY = 'bg-slate-100 text-slate-600 ring-slate-200';
 const VIOLET = 'bg-violet-50 text-violet-700 ring-violet-200';
-const BLACK = 'bg-stone-800 text-stone-50 ring-stone-700';
 
 const STATUS_STYLES: Record<InspectionReportStatus, string> = {
   DRAFT: GREY,
@@ -45,13 +46,12 @@ export function InspectionReportStatusBadge({
   );
 }
 
-const LEVEL_STYLES: Record<RiskLevel, string> = {
-  NORMAL: GREEN,
-  ATTENTION: YELLOW,
-  SCHEDULE_REPAIR: ORANGE,
-  CRITICAL: RED,
-  OUT_OF_SERVICE: BLACK,
-};
+/*
+ * The verdict WORDING is report-specific — `OVERALL_SAFETY_LABELS`, not the band's own name —
+ * but the COLOUR is not: it is the same ladder, so it resolves through `risk-palette.ts`
+ * like every other risk mark. This module used to keep its own level-to-colour table, which
+ * meant a band recoloured in Тохиргоо changed everywhere except here.
+ */
 
 /**
  * The whole inspection's verdict, requirement 9.
@@ -67,12 +67,14 @@ export function OverallSafetyBadge({
   level: RiskLevel | null;
   label: string | null;
 }): ReactElement {
+  const bands = useRiskBands();
+
   if (level === null) {
     return <span className={`${BASE} ${GREY} px-3 py-1 text-sm`}>Үнэлгээгүй</span>;
   }
 
   return (
-    <span className={`${BASE} ${LEVEL_STYLES[level]} px-3 py-1 text-sm`}>
+    <span className={`${BASE} ${riskPaletteOf(level, bands).badge} px-3 py-1 text-sm`}>
       {label ?? OVERALL_SAFETY_LABELS[level]}
     </span>
   );
@@ -80,5 +82,11 @@ export function OverallSafetyBadge({
 
 /** Level pill used inside the зөрчил list, worded as the overall verdict is. */
 export function SafetyLevelPill({ level }: { level: RiskLevel }): ReactElement {
-  return <span className={`${BASE} ${LEVEL_STYLES[level]}`}>{OVERALL_SAFETY_LABELS[level]}</span>;
+  const bands = useRiskBands();
+
+  return (
+    <span className={`${BASE} ${riskPaletteOf(level, bands).badge}`}>
+      {OVERALL_SAFETY_LABELS[level]}
+    </span>
+  );
 }

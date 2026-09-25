@@ -83,10 +83,6 @@ export const PHASED_LOAD_MEASUREMENT_KINDS: readonly LoadMeasurementKind[] = [
   'VOLTAGE',
 ];
 
-export function unitForLoadMeasurementKind(kind: LoadMeasurementKind): LoadMeasurementUnit {
-  return LOAD_MEASUREMENT_KIND_UNIT[kind];
-}
-
 export function acceptsPhase(kind: LoadMeasurementKind): boolean {
   return PHASED_LOAD_MEASUREMENT_KINDS.includes(kind);
 }

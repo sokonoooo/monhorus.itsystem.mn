@@ -1,4 +1,4 @@
-import { PERMISSIONS } from '@monhorus/shared';
+import { PERMISSIONS, progressPercentOf } from '@monhorus/shared';
 import type { Express } from 'express';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -20,7 +20,9 @@ import { Invoice } from '../invoice/invoice.model';
 import { ObjectAssessment, ObjectRecord, ObjectType } from '../object-master/object-master.models';
 import { Customer, ObjectNode } from '../objects/object.models';
 import { writeReport } from '../report-record/report-record.service';
+import { PlannedWork } from '../planned-work/planned-work.models';
 import { ServiceRequest, nextRequestNumber } from '../service-request/service-request.model';
+import { truncationNotice } from './report.service';
 
 const API = '/api/v1';
 
@@ -231,19 +233,119 @@ async function seedClosedRequest(
   await ServiceRequest.collection.updateOne({ _id: created._id }, { $set: { createdAt, completedAt } });
 }
 
-/** One invoice of the given status and amount, issued now so both money windows see it. */
+/**
+ * One planned work in a known lifecycle state, dated inside the KPI window.
+ *
+ * `plannedStartDate` is what both the PLANNED_WORK report and the KPI range on, so it is
+ * the only date these cases need to control.
+ */
+async function seedPlannedWork(
+  hierarchy: Hierarchy,
+  workNumber: string,
+  status: string,
+  plannedStartDate: Date,
+  quantity: { totalQuantity: number; completedQuantity: number } = {
+    totalQuantity: 0,
+    completedQuantity: 0,
+  },
+): Promise<void> {
+  await PlannedWork.create({
+    workNumber,
+    project: hierarchy.projectId,
+    building: hierarchy.buildingId,
+    customer: hierarchy.customerId,
+    title: `Төлөвлөгөөт ажил ${workNumber}`,
+    plannedStartDate,
+    plannedEndDate: new Date(plannedStartDate.getTime() + 86_400_000),
+    originalPlannedEndDate: new Date(plannedStartDate.getTime() + 86_400_000),
+    status,
+    ...quantity,
+    taskCount: quantity.totalQuantity,
+    // Written the way the progress service writes it, so the stored percent and the
+    // quantities a roll-up weighs by cannot disagree inside one seeded work.
+    progressPercent: progressPercentOf(quantity.totalQuantity, quantity.completedQuantity),
+  });
+}
+
+/**
+ * An open request whose deadline has already passed — a breach under the one definition in
+ * `sla.service`, without depending on any particular status label.
+ */
+async function seedBreachedRequest(hierarchy: Hierarchy, slaDueAt: Date): Promise<void> {
+  await ServiceRequest.create({
+    requestNumber: await nextRequestNumber(),
+    customer: hierarchy.customerId,
+    building: hierarchy.buildingId,
+    floor: hierarchy.floorId,
+    requestType: 'STANDARD_CALL',
+    isUrgent: false,
+    description: 'Гэрэл асахгүй байна.',
+    contactName: 'Бат',
+    contactPhone: '99112233',
+    status: 'NEW',
+    slaStartedAt: new Date(slaDueAt.getTime() - 4 * 3_600_000),
+    slaDueAt,
+  });
+}
+
+/**
+ * One assessed object belonging to a named customer, assessed at a chosen instant.
+ *
+ * `seedAssessedObject` above pins every assessment to one date and one customer, which
+ * cannot express "whose row is this" or "which page does it land on".
+ */
+async function seedAssessmentFor(
+  hierarchy: Hierarchy,
+  customerId: string,
+  code: string,
+  assessedAt: Date,
+): Promise<void> {
+  const object = await ObjectRecord.create({
+    code,
+    name: `Самбар ${code}`,
+    category: 'PANEL',
+    objectType: hierarchy.objectTypeId,
+    customer: customerId,
+    floor: hierarchy.floorId,
+    status: 'ACTIVE',
+    panel: { capacityKw: 25, location: null, protection: null },
+    latestAssessment: null,
+  });
+
+  await ObjectAssessment.create({
+    object: object._id,
+    previousScore: null,
+    newScore: 55,
+    riskLevel: 'CRITICAL',
+    assessedByName: 'Б. Энхтөр',
+    assessedAt,
+    conclusion: 'Кабелийн тусгаарлагчид хэт халалт илэрсэн.',
+    recommendation: 'Ачааллыг тэнцвэржүүлэх.',
+    repairRequired: true,
+    revisitRequired: false,
+  });
+}
+
+/**
+ * One invoice of the given status and amount.
+ *
+ * Issued now by default, so both money windows see it. `issueDate` is passed explicitly by
+ * the cases that need an invoice OUTSIDE the reported window — the receivable is a balance
+ * and has to keep counting one, while revenue is a flow and must not.
+ */
 async function seedInvoice(
   customerId: string,
   status: string,
   total: number,
   billingPeriod: string,
+  issueDate: Date = new Date(),
 ): Promise<void> {
   await Invoice.create({
     invoiceNumber: `INV-TEST-${billingPeriod}-${status}`,
     customer: customerId,
     billingType: 'MONTHLY_SERVICE',
     billingPeriod,
-    issueDate: new Date(),
+    issueDate,
     dueDate: new Date(Date.now() + 7 * 86_400_000),
     lines: [],
     subtotal: total,
@@ -292,6 +394,92 @@ describe('Report and inspection API', () => {
     expect(Array.isArray(response.body.data.columns)).toBe(true);
     expect(response.body.data.columns[0]).toHaveProperty('format');
     expect(response.body.data.key).toBe('RISK_ASSESSMENT');
+  });
+
+  /**
+   * The catalogue used to answer with up to a thousand rows and a `truncatedAt` flag, so a
+   * report longer than that silently lost its tail and a screen had to render every row it
+   * did get. These pin the window, the real total, and the footer that describes the whole
+   * filtered set rather than the page.
+   */
+  it('windows the rows and states the real total', async () => {
+    const hierarchy = await seedHierarchy();
+    for (let index = 0; index < 5; index += 1) {
+      await seedObject(hierarchy, `PAGE-${index}`);
+    }
+
+    const first = await request(app)
+      .get(`${API}/reports/RISK_ASSESSMENT?page=1&limit=2`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(first.status).toBe(200);
+    expect(first.body.data.page).toBe(1);
+    expect(first.body.data.limit).toBe(2);
+    // The count is of everything the filter matches, not of what came back.
+    expect(first.body.data.total).toBeGreaterThanOrEqual(first.body.data.rows.length);
+    expect(first.body.data.totalPages).toBe(
+      Math.ceil(first.body.data.total / 2),
+    );
+    expect(first.body.data.rows.length).toBeLessThanOrEqual(2);
+  });
+
+  it('returns a different window for a later page', async () => {
+    const hierarchy = await seedHierarchy();
+    for (let index = 0; index < 4; index += 1) {
+      await seedAssessedObject(hierarchy, `WIN-${index}`, 40 + index, 'CRITICAL');
+    }
+
+    const [first, second] = await Promise.all([
+      request(app)
+        .get(`${API}/reports/RISK_ASSESSMENT?page=1&limit=2`)
+        .set('Authorization', `Bearer ${token}`),
+      request(app)
+        .get(`${API}/reports/RISK_ASSESSMENT?page=2&limit=2`)
+        .set('Authorization', `Bearer ${token}`),
+    ]);
+
+    expect(second.body.data.page).toBe(2);
+    // Both pages report the SAME total — it describes the filter, not the window.
+    expect(second.body.data.total).toBe(first.body.data.total);
+    // And they are genuinely different rows, which a skip that was never applied would
+    // fail: page two would simply repeat page one.
+    const firstKeys = JSON.stringify(first.body.data.rows);
+    const secondKeys = JSON.stringify(second.body.data.rows);
+    if (first.body.data.total > 2) expect(secondKeys).not.toBe(firstKeys);
+  });
+
+  it('counts the whole filtered set in the footer, not the page', async () => {
+    const hierarchy = await seedHierarchy();
+    for (let index = 0; index < 5; index += 1) {
+      await seedObject(hierarchy, `FOOT-${index}`);
+    }
+
+    const response = await request(app)
+      .get(`${API}/reports/RISK_ASSESSMENT?page=1&limit=2`)
+      .set('Authorization', `Bearer ${token}`);
+
+    const total = response.body.data.total as number;
+    if (total > 0) {
+      // "Нийт N" must be the report's N. Summing the page would say 2.
+      expect(String(response.body.data.totals.objectCode)).toBe(`Нийт ${total}`);
+    }
+  });
+
+  /**
+   * The CSV export has no pager, so a capped export still says so. A paged screen does
+   * not, because it can reach every row.
+   */
+  it('flags truncation only for the export, never for a paged screen', async () => {
+    const hierarchy = await seedHierarchy();
+    for (let index = 0; index < 3; index += 1) {
+      await seedObject(hierarchy, `TRUNC-${index}`);
+    }
+
+    const screen = await request(app)
+      .get(`${API}/reports/RISK_ASSESSMENT?page=1&limit=1`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(screen.body.data.truncatedAt).toBeNull();
   });
 
   it('rejects an unknown report key rather than returning an empty table', async () => {
@@ -463,6 +651,33 @@ describe('Report and inspection API', () => {
     expect(response.body.data).not.toHaveProperty('overallScore');
   });
 
+  /**
+   * The coverage counters answer "how much of this building has been looked at". Equipment
+   * that has been taken out of service is not part of the building any more, and it was
+   * taken out of service for scoring worst — so leaving it in held the header at that band
+   * forever. Same predicate as the roll-up, the dashboard and the project summary; see
+   * `object-master/risk-scope.ts`.
+   */
+  it('leaves decommissioned equipment out of the coverage counters', async () => {
+    const hierarchy = await seedHierarchy();
+    await seedAssessedObject(hierarchy, 'DB-01', 92, 'NORMAL');
+    const retired = await seedAssessedObject(hierarchy, 'DB-02', 5, 'OUT_OF_SERVICE');
+    await ObjectRecord.updateOne(
+      { _id: new Types.ObjectId(retired) },
+      { $set: { status: 'DECOMMISSIONED' } },
+    );
+
+    const response = await request(app)
+      .get(`${API}/inspections/summary`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.totalObjects).toBe(1);
+    expect(response.body.data.assessedObjects).toBe(1);
+    expect(response.body.data.unassessedObjects).toBe(0);
+    expect(response.body.data.counts).toEqual([{ level: 'NORMAL', count: 1 }]);
+  });
+
   it('counts a device once no matter how many times it was assessed', async () => {
     const hierarchy = await seedHierarchy();
     const objectId = await seedAssessedObject(hierarchy, 'DB-01', 38, 'CRITICAL');
@@ -614,6 +829,302 @@ describe('Report and inspection API', () => {
 
     expect(dashboard.body.data.finance.monthRevenue).toBe(reported);
     expect(reported).toBe(500_000);
+  });
+
+  /**
+   * P0-8. APPROVING THE REPORT ARCHIVES THE WORK, SO ARCHIVED IS A COMPLETION.
+   *
+   * `archiveAfterReportApproval` refuses anything but a COMPLETED work, so ARCHIVED is
+   * reachable only through "finished, reported and approved" — the most complete state a
+   * planned work has. Counting only COMPLETED put those twelve works in the denominator
+   * and in neither numerator, so the KPI fell every time the office closed paperwork:
+   * this exact set printed 15% where the truth is 83%.
+   */
+  it('counts an archived work as completed and leaves a cancelled one out entirely', async () => {
+    const hierarchy = await seedHierarchy();
+    const planned = new Date('2026-07-10T00:00:00.000Z');
+
+    // 12 completed and report-approved, 3 completed awaiting approval, 3 running, 2 dropped.
+    for (let index = 0; index < 12; index += 1) {
+      await seedPlannedWork(hierarchy, `PW-ARC-${index}`, 'ARCHIVED', planned);
+    }
+    for (let index = 0; index < 3; index += 1) {
+      await seedPlannedWork(hierarchy, `PW-CMP-${index}`, 'COMPLETED', planned);
+    }
+    for (let index = 0; index < 3; index += 1) {
+      await seedPlannedWork(hierarchy, `PW-RUN-${index}`, 'STARTED', planned);
+    }
+    for (let index = 0; index < 2; index += 1) {
+      await seedPlannedWork(hierarchy, `PW-CAN-${index}`, 'CANCELLED', planned);
+    }
+
+    const response = await request(app)
+      .get(`${API}/reports/kpi?dateFrom=2026-07-01T00:00:00.000Z&dateTo=2026-07-31T00:00:00.000Z`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(response.status).toBe(200);
+    const completion = response.body.data.values.find(
+      (value: { key: string }) => value.key === 'PLANNED_WORK_COMPLETION_RATE',
+    );
+
+    // 15 delivered of 18 committed. Twenty works exist; the two cancellations are not a
+    // failure to deliver and are outside both halves of the ratio.
+    expect(completion.numerator).toBe(15);
+    expect(completion.denominator).toBe(18);
+    expect(completion.value).toBe(83);
+  });
+
+  /** A work nobody ever submitted is not yet a commitment, so it cannot be a shortfall. */
+  it('leaves unsubmitted and unapproved work out of the completion denominator', async () => {
+    const hierarchy = await seedHierarchy();
+    const planned = new Date('2026-07-10T00:00:00.000Z');
+
+    await seedPlannedWork(hierarchy, 'PW-DONE', 'ARCHIVED', planned);
+    await seedPlannedWork(hierarchy, 'PW-DRAFT', 'DRAFT', planned);
+    await seedPlannedWork(hierarchy, 'PW-PENDING', 'PENDING_APPROVAL', planned);
+    await seedPlannedWork(hierarchy, 'PW-REJECTED', 'REJECTED', planned);
+
+    const response = await request(app)
+      .get(`${API}/reports/kpi?dateFrom=2026-07-01T00:00:00.000Z&dateTo=2026-07-31T00:00:00.000Z`)
+      .set('Authorization', `Bearer ${token}`);
+
+    const completion = response.body.data.values.find(
+      (value: { key: string }) => value.key === 'PLANNED_WORK_COMPLETION_RATE',
+    );
+
+    expect(completion.denominator).toBe(1);
+    expect(completion.numerator).toBe(1);
+    expect(completion.value).toBe(100);
+  });
+
+  /**
+   * P0-15. A CAPPED EXPORT MUST NOT CARRY A FOOTER DESCRIBING THE ROWS IT DROPPED.
+   *
+   * The footer is aggregated over the whole filtered set — that is what makes it right on
+   * a paged screen — so on a capped export it described 1,200 rows in a 1,000-row file.
+   * The file itself now says how much of the report it holds instead.
+   */
+  it('does not let a capped CSV export claim a total it did not export', async () => {
+    const hierarchy = await seedHierarchy();
+    const planned = new Date('2026-07-10T00:00:00.000Z');
+    for (let index = 0; index < 3; index += 1) {
+      await seedPlannedWork(hierarchy, `PW-CSV-${index}`, 'COMPLETED', planned);
+    }
+
+    const response = await request(app)
+      .get(`${API}/reports/PLANNED_WORK?dateFrom=2026-07-01&dateTo=2026-07-31&limit=2&format=csv`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(response.status).toBe(200);
+    const lines = response.text.replace('\ufeff', '').split('\r\n').filter(Boolean);
+
+    // Header plus the two rows the cap allowed, plus the notice — and no more.
+    expect(lines).toHaveLength(4);
+    // The whole-set footer describes three works; only two are in the file.
+    expect(response.text).not.toContain('Нийт 3');
+    // And the file states what it is, so it cannot be filed as a complete report. The
+    // notice names both figures, so the two rows present can be reconciled against three.
+    expect(response.text).toContain(truncationNotice(2, 3));
+  });
+
+  /** An export that fits keeps its footer: nothing was dropped, so nothing is disclaimed. */
+  it('keeps the whole-set footer on an export that was not capped', async () => {
+    const hierarchy = await seedHierarchy();
+    const planned = new Date('2026-07-10T00:00:00.000Z');
+    for (let index = 0; index < 3; index += 1) {
+      await seedPlannedWork(hierarchy, `PW-FULL-${index}`, 'COMPLETED', planned);
+    }
+
+    const response = await request(app)
+      .get(`${API}/reports/PLANNED_WORK?dateFrom=2026-07-01&dateTo=2026-07-31&limit=50&format=csv`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(response.status).toBe(200);
+    expect(response.text).toContain('Нийт 3');
+    expect(response.text).not.toContain('Анхааруулга');
+  });
+
+  /**
+   * 4A. THE RECEIVABLE IS A BALANCE, SO IT IS NOT WINDOWED.
+   *
+   * `summariseInvoices` and the dashboard both report it over every invoice, and the
+   * published formula («Илгээсэн боловч төлөгдөөгүй нэхэмжлэл») names no period. Windowing
+   * it made a customer's unpaid year-old invoice vanish from the figure that exists to say
+   * what is owed. Revenue beside it stays windowed, because revenue really is a flow.
+   */
+  it('reports the receivable as the standing balance while revenue stays inside the window', async () => {
+    const hierarchy = await seedHierarchy();
+    const now = new Date();
+    const longAgo = new Date(now.getTime() - 400 * 86_400_000);
+
+    // Unpaid and old: owed today, issued long before the window.
+    await seedInvoice(hierarchy.customerId, 'SENT', 700_000, '2025-01', longAgo);
+    // Unpaid and current: owed today, and revenue for this window.
+    await seedInvoice(hierarchy.customerId, 'SENT', 200_000, '2026-02');
+    // Settled: revenue for this window, and owed by nobody.
+    await seedInvoice(hierarchy.customerId, 'PAID', 300_000, '2026-03');
+
+    const dateFrom = new Date(now.getTime() - 86_400_000).toISOString();
+    const dateTo = new Date(now.getTime() + 86_400_000).toISOString();
+
+    const [response, dashboard] = await Promise.all([
+      request(app)
+        .get(`${API}/reports/kpi?dateFrom=${dateFrom}&dateTo=${dateTo}`)
+        .set('Authorization', `Bearer ${token}`),
+      request(app).get(`${API}/dashboard/summary`).set('Authorization', `Bearer ${token}`),
+    ]);
+
+    expect(response.status).toBe(200);
+    const valueOf = (key: string): number =>
+      response.body.data.values.find((value: { key: string }) => value.key === key).value;
+
+    // Everything sent and still unpaid, whenever it was issued.
+    expect(valueOf('RECEIVABLE_TOTAL')).toBe(900_000);
+    // Sent plus paid, inside the window only: the old invoice is not this window's revenue.
+    expect(valueOf('MONTHLY_REVENUE')).toBe(500_000);
+    // And the tile that has always been all-time agrees, rather than quietly differing.
+    expect(dashboard.body.data.finance.receivableTotal).toBe(valueOf('RECEIVABLE_TOTAL'));
+  });
+
+  /**
+   * 4B. THE CUSTOMER REPORT MUST NOT MIX WINDOWS SILENTLY.
+   *
+   * Under a header reading one month, the invoiced column was all-time: a customer billed
+   * for a year showed that year's total beside March's request count. The flow column is
+   * now windowed at the query; the balance columns stay all-time and say so in their label.
+   */
+  it('windows the invoiced column of the customer report and leaves the balance all-time', async () => {
+    const hierarchy = await seedHierarchy();
+
+    await seedInvoice(hierarchy.customerId, 'SENT', 100_000, '2026-02', new Date('2026-02-10T00:00:00.000Z'));
+    await seedInvoice(hierarchy.customerId, 'SENT', 200_000, '2026-03', new Date('2026-03-10T00:00:00.000Z'));
+    await seedInvoice(hierarchy.customerId, 'SENT', 400_000, '2026-04', new Date('2026-04-10T00:00:00.000Z'));
+
+    const response = await request(app)
+      .get(`${API}/reports/CUSTOMER?dateFrom=2026-03-01&dateTo=2026-03-31`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(response.status).toBe(200);
+    const row = response.body.data.rows.find(
+      (candidate: { customer: string }) => candidate.customer === 'Central Tower ХХК',
+    );
+
+    // Billed IN March. February and April are other months' revenue.
+    expect(row.invoicedTotal).toBe(200_000);
+    // Owed TODAY, which is every unpaid invoice regardless of the window.
+    expect(row.receivableTotal).toBe(700_000);
+    expect(response.body.data.totals.invoicedTotal).toBe(200_000);
+    expect(response.body.data.totals.receivableTotal).toBe(700_000);
+
+    // The header says March, so the column that is not March has to say so itself.
+    const labelOfColumn = (key: string): string =>
+      response.body.data.columns.find((column: { key: string }) => column.key === key).label;
+    expect(labelOfColumn('receivableTotal')).toContain('нийт');
+  });
+
+  /**
+   * 4C. THE SLA FOOTER DESCRIBES THE REPORT, NOT THE PAGE.
+   *
+   * «Нийт 137 · Зөрчсөн 25» came from two different sets: the total counted the filter, the
+   * breach count reduced the twenty rows on screen. Page six of the same report said
+   * «Зөрчсөн 0» while nothing about the report had changed.
+   */
+  it('counts SLA breaches over the whole filtered set, not the page on screen', async () => {
+    const hierarchy = await seedHierarchy();
+    const overdue = new Date(Date.now() - 10 * 3_600_000);
+    for (let index = 0; index < 3; index += 1) {
+      await seedBreachedRequest(hierarchy, new Date(overdue.getTime() + index * 60_000));
+    }
+
+    const [first, last] = await Promise.all([
+      request(app)
+        .get(`${API}/reports/SLA?page=1&limit=2`)
+        .set('Authorization', `Bearer ${token}`),
+      request(app)
+        .get(`${API}/reports/SLA?page=2&limit=2`)
+        .set('Authorization', `Bearer ${token}`),
+    ]);
+
+    expect(first.status).toBe(200);
+    expect(first.body.data.rows).toHaveLength(2);
+    expect(last.body.data.rows).toHaveLength(1);
+
+    // Both footers describe the same three-request report, as «Нийт» already did.
+    expect(first.body.data.totals).toMatchObject({ requestNumber: 'Нийт 3', slaResult: 'Зөрчсөн 3' });
+    expect(last.body.data.totals).toMatchObject({ requestNumber: 'Нийт 3', slaResult: 'Зөрчсөн 3' });
+  });
+
+  /**
+   * 4D. FILTERING AFTER PAGINATION IS NOT FILTERING.
+   *
+   * The customer filter was applied to the already-truncated page, so a customer-scoped
+   * report showed a handful of rows under a total counting every customer's assessments,
+   * and the pager offered pages that were empty on arrival.
+   */
+  it('applies the risk report customer filter before paginating, not after', async () => {
+    const hierarchy = await seedHierarchy();
+    const other = await Customer.create({ code: 'C-RPT-B', name: 'Өөр харилцагч ХХК' });
+    const base = new Date('2026-07-01T00:00:00.000Z');
+
+    // Interleaved in time, so a filter applied after the sort-and-slice cannot get lucky.
+    for (let index = 0; index < 3; index += 1) {
+      await seedAssessmentFor(hierarchy, hierarchy.customerId, `MINE-${index}`, new Date(base.getTime() + index * 2 * 86_400_000));
+      await seedAssessmentFor(hierarchy, String(other._id), `THEIRS-${index}`, new Date(base.getTime() + (index * 2 + 1) * 86_400_000));
+    }
+
+    const [first, second] = await Promise.all([
+      request(app)
+        .get(`${API}/reports/RISK_ASSESSMENT?customerId=${hierarchy.customerId}&page=1&limit=2`)
+        .set('Authorization', `Bearer ${token}`),
+      request(app)
+        .get(`${API}/reports/RISK_ASSESSMENT?customerId=${hierarchy.customerId}&page=2&limit=2`)
+        .set('Authorization', `Bearer ${token}`),
+    ]);
+
+    expect(first.status).toBe(200);
+    // Three of the six assessments belong to this customer, and the pager must say three.
+    expect(first.body.data.total).toBe(3);
+    expect(first.body.data.totalPages).toBe(2);
+    expect(String(first.body.data.totals.objectCode)).toBe('Нийт 3');
+
+    const codes = [...first.body.data.rows, ...second.body.data.rows].map(
+      (row: { objectCode: string }) => row.objectCode,
+    );
+    // Newest first, and nobody else's equipment on any page.
+    expect(codes).toEqual(['MINE-2', 'MINE-1', 'MINE-0']);
+  });
+
+  /**
+   * 4E. THE FOOTER PROGRESS IS QUANTITY-WEIGHTED, AS EVERY OTHER ROLL-UP IN THE CODEBASE IS.
+   *
+   * `$avg` over the per-work percentages let a one-task job outweigh a five-hundred-task
+   * one. `aggregateProgress` on the dashboard names that mean as the wrong answer for this
+   * metric, and the stored per-work percent is itself a quantity-weighted ratio, so the mean
+   * of the ratios was never the ratio of the set.
+   */
+  it('weights the planned-work footer progress by quantity, not by work item', async () => {
+    const hierarchy = await seedHierarchy();
+    const planned = new Date('2026-07-10T00:00:00.000Z');
+
+    // One task, finished. The mean of percentages hands this the same weight as the next.
+    await seedPlannedWork(hierarchy, 'PW-SMALL', 'COMPLETED', planned, {
+      totalQuantity: 1,
+      completedQuantity: 1,
+    });
+    // Five hundred tasks, none of them done.
+    await seedPlannedWork(hierarchy, 'PW-LARGE', 'STARTED', planned, {
+      totalQuantity: 500,
+      completedQuantity: 0,
+    });
+
+    const response = await request(app)
+      .get(`${API}/reports/PLANNED_WORK?dateFrom=2026-07-01&dateTo=2026-07-31`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(response.status).toBe(200);
+    // 1 of 501 units is 0.2%. The unweighted mean of 100% and 0% would print 50%.
+    expect(response.body.data.totals.progressPercent).toBe(0.2);
+    expect(response.body.data.totals.progressPercent).not.toBe(50);
   });
 
   it('hides the conclusion report from a caller without object_master.view', async () => {

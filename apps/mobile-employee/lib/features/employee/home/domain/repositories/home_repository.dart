@@ -11,10 +11,16 @@ abstract class HomeRepository {
   /// The reader's own work. Takes no employee id: the server scopes a non-oversight
   /// caller to work assigned to them or to their team, and narrowing further here
   /// would hide team-assigned work.
-  Future<ApiResult<PaginatedData<PlannedWorkListItemModel>>> listPlannedWork();
+  ///
+  /// [page] is here for the same reason it is on the Ажил tab's contract: the hero
+  /// figures are counted from the rows, and a counter over one page of a hundred reports
+  /// the size of the page.
+  Future<ApiResult<PaginatedData<PlannedWorkListItemModel>>> listPlannedWork({
+    int page,
+  });
 
   Future<ApiResult<PaginatedData<ServiceRequestListItemModel>>>
-      listServiceRequests();
+      listServiceRequests({int page});
 
   Future<ApiResult<CalendarResultModel>> getDayAgenda({
     required DateTime day,

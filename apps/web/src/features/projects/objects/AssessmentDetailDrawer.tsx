@@ -5,6 +5,7 @@ import { Button } from '../../../components/ui/Button';
 import { Drawer } from '../../../components/ui/Drawer';
 import { LoadMeasurementList } from './LoadMeasurements';
 import { ScoreBar } from './ObjectBadges';
+import { BUSINESS_TIME_ZONE } from '../../../lib/business-day';
 
 interface AssessmentDetailDrawerProps {
   assessment: ObjectAssessmentDto | null;
@@ -22,7 +23,7 @@ interface AssessmentDetailDrawerProps {
 
 function formatDateTime(iso: string | null): string {
   if (!iso) return '-';
-  return new Date(iso).toLocaleString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
+  return new Date(iso).toLocaleString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
 }
 
 function DetailRow({ label, children }: { label: string; children: ReactNode }): ReactElement {
@@ -91,6 +92,25 @@ export function AssessmentDetailDrawer({
               <DetailRow label="Үнэлсэн огноо">{formatDateTime(assessment.assessedAt)}</DetailRow>
             </dl>
           </div>
+
+          {/*
+            The equipment type's own attributes, as this finding recorded them (4.1).
+
+            Above the narrative on purpose: these are the facts the judgement was made about,
+            and a reader should have them before the conclusion drawn from them. Frozen when
+            the finding was written, so an older entry keeps saying what was true then even
+            after the equipment is corrected or the attribute renamed — which is the whole
+            point of a dated record.
+          */}
+          {assessment.attributes.length > 0 && (
+            <dl className="grid grid-cols-2 gap-3 border-b border-slate-200 pb-4">
+              {assessment.attributes.map((attribute) => (
+                <DetailRow key={attribute.key} label={attribute.label}>
+                  {attribute.display}
+                </DetailRow>
+              ))}
+            </dl>
+          )}
 
           <dl className="space-y-3">
             <DetailRow label="Тайлбар">{assessment.conclusion ?? '-'}</DetailRow>

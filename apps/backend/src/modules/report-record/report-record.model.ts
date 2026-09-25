@@ -7,6 +7,7 @@ import {
   type ReportStatus,
   type ReportType,
   type RiskLevel,
+  type ObjectAttributeValue,
 } from '@monhorus/shared';
 import { Schema, Types, model, type Model } from 'mongoose';
 
@@ -163,6 +164,14 @@ export const Report: Model<IReport> = model<IReport>('Report', reportSchema);
  * per-object report list both query items directly — `{ object }` has to be an index, not
  * a scan through every report's array.
  */
+/** One of the equipment type's attributes, as a report recorded it. */
+export interface IReportItemAttribute {
+  key: string;
+  label: string;
+  value: ObjectAttributeValue;
+  display: string;
+}
+
 export interface IReportItem {
   report: Types.ObjectId;
   /** Denormalised from the report so an item query can be tenant-scoped on its own. */
@@ -177,6 +186,19 @@ export interface IReportItem {
   recommendation: string | null;
   /** Measured load for this piece of equipment, when the visit took one. */
   measuredLoadKw: number | null;
+  /**
+   * The equipment type's own attributes, FROZEN as this report recorded them (4.1).
+   *
+   * A report is a dated record. The answers live on the equipment and move as it is
+   * corrected, so reading them live would let an approved document silently rewrite its own
+   * history — two printouts of the same report could disagree. Captured when the item is
+   * written, alongside the score and the narrative, and rewritten only when they are.
+   *
+   * THE LABEL IS FROZEN TOO. An administrator may rename or delete an attribute afterwards;
+   * without it this row would hold the key `fuse` and nothing able to render it. A snapshot
+   * must be able to print itself with no lookup.
+   */
+  attributes: IReportItemAttribute[];
   evidenceAttachments: Types.ObjectId[];
 
   /**
@@ -200,6 +222,23 @@ export interface IReportItem {
   updatedAt: Date;
 }
 
+/**
+ * One frozen attribute answer on a report item.
+ *
+ * `_id: false` because nothing addresses a single row; `Mixed` for the value because an
+ * attribute may hold a string, a number or a boolean and the type that decided which is
+ * itself editable.
+ */
+const reportItemAttributeSchema = new Schema<IReportItemAttribute>(
+  {
+    key: { type: String, required: true },
+    label: { type: String, required: true },
+    value: { type: Schema.Types.Mixed, required: true },
+    display: { type: String, required: true },
+  },
+  { _id: false },
+);
+
 const reportItemSchema = new Schema<IReportItem>(
   {
     report: { type: Schema.Types.ObjectId, ref: 'Report', required: true, index: true },
@@ -213,6 +252,10 @@ const reportItemSchema = new Schema<IReportItem>(
     conclusion: { type: String, default: null, maxlength: 8000 },
     recommendation: { type: String, default: null, maxlength: 8000 },
     measuredLoadKw: { type: Number, default: null, min: 0 },
+    // Defaulted to empty: absent on every item written before this existed, and an absent
+    // path with a default reads back as the default. Nothing is back-filled — see the note
+    // on the interface.
+    attributes: { type: [reportItemAttributeSchema], default: [] },
     evidenceAttachments: {
       type: [{ type: Schema.Types.ObjectId, ref: 'StoredFile' }],
       default: [],

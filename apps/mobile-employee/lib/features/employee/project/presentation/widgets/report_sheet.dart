@@ -27,6 +27,7 @@ class ReportView {
     required this.actionTaken,
     required this.measuredLoadKw,
     this.measurements = const <LoadMeasurementModel>[],
+    this.attributes = const <ReportedAttributeModel>[],
     required this.repairRequired,
     required this.revisitRequired,
     required this.revisitDate,
@@ -56,6 +57,13 @@ class ReportView {
   /// merged into it — only the kW figure is what any total adds up.
   final List<LoadMeasurementModel> measurements;
 
+  /// The equipment type's own attributes as this report recorded them (4.1).
+  ///
+  /// Frozen at the time, so an older report keeps printing what was true then even after the
+  /// equipment is corrected or the attribute renamed. Empty for reports written before the
+  /// feature existed — nothing is back-filled.
+  final List<ReportedAttributeModel> attributes;
+
   final bool repairRequired;
   final bool revisitRequired;
   final DateTime? revisitDate;
@@ -77,6 +85,7 @@ class ReportView {
       reference: deviceLabel,
       subject: assessment.sourceLabel ?? deviceLabel,
       score: assessment.newScore,
+      attributes: assessment.attributes,
       previousScore: assessment.previousScore,
       riskLevel: assessment.riskLevel,
       conclusion: assessment.conclusion,
@@ -304,6 +313,30 @@ class ReportSheet extends StatelessWidget {
                     ],
                   ),
                 ),
+
+                /*
+                  The equipment type's own attributes, as this report recorded them (4.1).
+
+                  Above Дүгнэлт on purpose: these are the facts the judgement was made about,
+                  and a reader should have them before the conclusion drawn from them. Frozen
+                  when the report was written, so an older one keeps saying what was true then.
+                */
+                if (report.attributes.any(
+                  (ReportedAttributeModel a) => a.hasContent,
+                )) ...<Widget>[
+                  const SectionHeading('Тоноглолын үзүүлэлт', topPadding: 4),
+                  ProjectCard(
+                    padding: const EdgeInsets.symmetric(horizontal: 14),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: <Widget>[
+                        for (final ReportedAttributeModel attribute in report.attributes)
+                          if (attribute.hasContent)
+                            DetailRow(label: attribute.label, value: attribute.display),
+                      ],
+                    ),
+                  ),
+                ],
 
                 if (report.conclusion != null && report.conclusion!.isNotEmpty) ...<Widget>[
                   const SectionHeading('Дүгнэлт', topPadding: 4),

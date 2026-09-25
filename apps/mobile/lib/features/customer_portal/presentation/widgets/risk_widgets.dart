@@ -29,7 +29,7 @@ class RiskSummaryStrip extends StatelessWidget {
       spacing: 5,
       runSpacing: 5,
       children: <Widget>[
-        for (final RiskLevel level in RiskLevel.values)
+        for (final RiskLevel level in riskBandsInUse())
           if (summary.countOf(level) > 0)
             _CountChip(
               level: level,
@@ -186,7 +186,10 @@ class RiskLegend extends StatelessWidget {
         spacing: 12,
         runSpacing: 5,
         children: <Widget>[
-          for (final RiskLevel level in RiskLevel.values) _LegendItem(level: level),
+          // The bands actually in use, never `RiskLevel.values`: three of those eight
+          // are reserved storage keys, and listing them would name bands nobody
+          // configured and no device can be in.
+          for (final RiskLevel level in riskBandsInUse()) _LegendItem(level: level),
           const _LegendItem(level: null),
         ],
       ),

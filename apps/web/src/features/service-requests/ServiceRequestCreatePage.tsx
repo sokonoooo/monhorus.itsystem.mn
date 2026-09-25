@@ -1,13 +1,12 @@
 import {
   OBJECT_NODE_KIND_LABELS,
-  SERVICE_REQUEST_TYPES,
-  SERVICE_REQUEST_TYPE_LABELS,
   createServiceRequestSchema,
+  type CallableObjectTypeDto,
   type CreateServiceRequestInput,
+  type PlanPositionDto,
   type ServiceRequestAttachmentDto,
-  type ServiceRequestType,
 } from '@monhorus/shared';
-import { useRef, useState, type FormEvent, type ReactElement } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type ReactElement } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { Alert } from '../../components/ui/Alert';
@@ -15,10 +14,10 @@ import { Button } from '../../components/ui/Button';
 import { PageHeader } from '../../components/ui/PageHeader';
 import { useToast } from '../../components/ui/ToastProvider';
 import { FILTER_INPUT, FILTER_LABEL } from '../../components/ui/control-styles';
-import { useSlaHours } from '../../hooks/use-sla-hours';
 import { ApiError } from '../../lib/api-client';
 import { serviceRequestService } from '../../services/service-request.service';
 import { Field, Section, SelectInput, TextInput } from '../employees/FormControls';
+import { FloorPlanPin } from '../projects/FloorPlanPin';
 import { RequestAttachments } from './RequestAttachments';
 import { LOCATION_LEVELS, useLocationChain } from './useLocationChain';
 
@@ -33,15 +32,21 @@ export function ServiceRequestCreatePage(): ReactElement {
   const navigate = useNavigate();
   const { notify } = useToast();
   const chain = useLocationChain();
-  const slaHours = useSlaHours();
-
-  const [requestType, setRequestType] = useState<ServiceRequestType | ''>('');
-  const [isUrgent, setIsUrgent] = useState(false);
+  /*
+   * The global SLA settings are no longer read here.
+   *
+   * They no longer decide anything on this form: a call takes its window from the equipment
+   * type it names. Reading them anyway would mean fetching settings to display a number that
+   * nothing uses - and doing so behind a `settings.view` check that several request-creating
+   * roles do not hold.
+   */
   const [branch, setBranch] = useState('');
   const [description, setDescription] = useState('');
   const [contactName, setContactName] = useState('');
   const [contactPhone, setContactPhone] = useState('');
 
+  const [objectTypeId, setObjectTypeId] = useState('');
+  const [objectTypes, setObjectTypes] = useState<CallableObjectTypeDto[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -49,6 +54,21 @@ export function ServiceRequestCreatePage(): ReactElement {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [attachments, setAttachments] = useState<readonly ServiceRequestAttachmentDto[]>([]);
   const [uploading, setUploading] = useState(false);
+
+  /**
+   * Optional pin on the chosen floor's plan.
+   *
+   * Tied to the floor rather than to the zone: the API rejects a position without a floor
+   * and takes one without a zone, which matches how the plan is read — somebody points at
+   * the spot whether or not the zone it falls in has been drawn up yet.
+   */
+  const floorId = chain.selection.FLOOR ?? '';
+  const [planPosition, setPlanPosition] = useState<PlanPositionDto | null>(null);
+
+  // A coordinate is meaningless against a different drawing, so changing the floor drops it.
+  useEffect(() => {
+    setPlanPosition(null);
+  }, [floorId]);
 
   /**
    * Uploads immediately and holds the stored file until the form is submitted.
@@ -73,6 +93,21 @@ export function ServiceRequestCreatePage(): ReactElement {
     }
   }
 
+  useEffect(() => {
+    let cancelled = false;
+    void serviceRequestService
+      .callableObjectTypes()
+      .then((types) => {
+        if (!cancelled) setObjectTypes(types);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const selectedObjectType = objectTypes.find((type) => type.id === objectTypeId) ?? null;
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
     setFormError(null);
@@ -84,12 +119,12 @@ export function ServiceRequestCreatePage(): ReactElement {
       projectId: chain.selection.PROJECT ?? null,
       buildingId: chain.selection.BUILDING ?? '',
       floorId: chain.selection.FLOOR ?? null,
-      roomId: chain.selection.ROOM ?? null,
-      panelId: chain.selection.PANEL ?? null,
-      circuitId: chain.selection.CIRCUIT ?? null,
-      deviceId: chain.selection.DEVICE ?? null,
-      requestType: requestType as ServiceRequestType,
-      isUrgent,
+      // No roomId/panelId/circuitId/deviceId: the form stops at the floor, and the schema
+      // takes those as nullish, so leaving them out is the same as sending null.
+      // Omitted rather than sent as null when nothing was pinned, so an untouched form
+      // submits exactly the payload it always did.
+      ...(planPosition ? { planPosition } : {}),
+      objectTypeId,
       description: description.trim(),
       contactName: contactName.trim(),
       contactPhone: contactPhone.trim(),
@@ -194,41 +229,52 @@ export function ServiceRequestCreatePage(): ReactElement {
               })}
             </Section>
 
+            {/*
+              The pin sits outside the location grid on purpose: it is a picture, and the
+              three-column field grid would squeeze it. Optional throughout — a request with
+              no floor, or a floor with no drawing, says so in a line instead of leaving a
+              dead area where a control would be.
+            */}
+            <div>
+              <span className={FILTER_LABEL}>План дээрх байрлал</span>
+              {floorId ? (
+                <FloorPlanPin
+                  floorId={floorId}
+                  value={planPosition}
+                  onChange={setPlanPosition}
+                  disabled={submitting}
+                />
+              ) : (
+                <p className="text-xs text-slate-500">
+                  Давхар сонгосны дараа план зураг дээр байрлал тэмдэглэх боломжтой.
+                </p>
+              )}
+              {fieldErrors.planPosition && (
+                <p className="mt-1 text-xs text-red-600">{fieldErrors.planPosition}</p>
+              )}
+            </div>
+
             <Section title="Хүсэлтийн мэдээлэл">
-              <Field label="Хүсэлтийн төрөл" required error={fieldErrors.requestType}>
+              <Field
+                label="Тоног төхөөрөмжийн төрөл"
+                required
+                error={fieldErrors.objectTypeId}
+                hint={
+                  selectedObjectType
+                    ? `Энэ дуудлагын SLA хугацаа ${selectedObjectType.callSlaHours} цаг.`
+                    : 'Сонгосон төрлөөс SLA хугацаа тодорхойлогдоно.'
+                }
+              >
                 <SelectInput
-                  value={requestType}
-                  onChange={(value) => setRequestType(value as ServiceRequestType)}
-                  placeholder="Төрөл сонгох"
-                  options={SERVICE_REQUEST_TYPES.map((type) => ({
-                    value: type,
-                    label: SERVICE_REQUEST_TYPE_LABELS[type],
+                  value={objectTypeId}
+                  onChange={setObjectTypeId}
+                  placeholder="Төхөөрөмж сонгох"
+                  options={objectTypes.map((type) => ({
+                    value: type.id,
+                    label: `${type.name} (${type.callSlaHours} цаг)`,
                   }))}
                   disabled={submitting}
                 />
-              </Field>
-
-              <Field
-                label="Яаралтай эсэх"
-                // Silence rather than a guess: the deadline is computed server-side from
-                // the Тохиргоо values, and a caller who cannot read them (DISPATCH and
-                // SALES hold no `settings.view`) must not state a number for them.
-                hint={
-                  slaHours
-                    ? `SLA ${isUrgent ? slaHours.urgent : slaHours.standard} цаг`
-                    : undefined
-                }
-              >
-                <label className="flex items-center gap-2 py-1.5 text-sm text-slate-700">
-                  <input
-                    type="checkbox"
-                    checked={isUrgent}
-                    onChange={(event) => setIsUrgent(event.target.checked)}
-                    disabled={submitting}
-                    className="h-4 w-4 rounded border-slate-300"
-                  />
-                  Яаралтай дуудлага
-                </label>
               </Field>
 
               <Field label="Холбоо барих хүн" required error={fieldErrors.contactName}>

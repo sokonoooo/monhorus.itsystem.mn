@@ -21,8 +21,10 @@ import { ApiError } from '../../lib/api-client';
 import { objectMasterService } from '../../services/object-master.service';
 import { objectService } from '../../services/object.service';
 import { plannedWorkService } from '../../services/planned-work.service';
+import { portalService } from '../../services/portal.service';
 import { dispatchService } from '../../services/service-request.service';
 import { Field, SelectInput, TextInput } from '../employees/FormControls';
+import type { PlannedWorkFormVariant } from './PlannedWorkFormPage';
 
 interface TaskFormDrawerProps {
   work: PlannedWorkDto;
@@ -30,6 +32,14 @@ interface TaskFormDrawerProps {
   target: PlannedWorkTaskDto | null | 'new';
   onClose: () => void;
   onSaved: (work: PlannedWorkDto) => void;
+  /**
+   * Which console the drawer is open in. Same reasoning as the planned-work form: it picks
+   * the endpoints the floor list comes from, because `/objects/nodes` is behind the staff
+   * `object.view` key and a customer must use `/floors` instead. It also drops the assignee
+   * control, whose roster is behind `dispatch.view` — and which the server refuses on an
+   * unapproved work anyway, the only state a customer can edit one in.
+   */
+  variant?: PlannedWorkFormVariant;
 }
 
 function toDateInput(iso: string): string {
@@ -228,12 +238,15 @@ export function TaskFormDrawer({
   target,
   onClose,
   onSaved,
+  variant = 'staff',
 }: TaskFormDrawerProps): ReactElement {
+  const isPortal = variant === 'portal';
+  const api = isPortal ? portalService : plannedWorkService;
   const { notify } = useToast();
   const isNew = target === 'new';
   const existing = target !== null && target !== 'new' ? target : null;
 
-  const [floors, setFloors] = useState<ObjectNodeDto[]>([]);
+  const [floors, setFloors] = useState<{ id: string; name: string }[]>([]);
   const [employees, setEmployees] = useState<DispatchCandidateDto[]>([]);
 
   const [floorId, setFloorId] = useState('');
@@ -286,19 +299,36 @@ export function TaskFormDrawer({
     }
 
     let cancelled = false;
-    void Promise.all([
-      objectService.children(work.building.id).catch(() => [] as ObjectNodeDto[]),
-      dispatchService.employeeCandidates({}).catch(() => [] as DispatchCandidateDto[]),
-    ]).then(([children, candidates]) => {
-      if (cancelled) return;
-      setFloors(children.filter((node) => node.kind === 'FLOOR'));
-      setEmployees(candidates);
-    });
+    if (isPortal) {
+      // `/floors` bounds the answer to the caller's own organisation; the roster is not
+      // fetched at all, because there is no control that would show it.
+      void portalService
+        .listFloors(work.building.id)
+        .then((page) => {
+          if (!cancelled) {
+            setFloors(page.items.map((floor) => ({ id: floor.id, name: floor.name })));
+          }
+        })
+        .catch(() => undefined);
+    } else {
+      void Promise.all([
+        objectService.children(work.building.id).catch(() => [] as ObjectNodeDto[]),
+        dispatchService.employeeCandidates({}).catch(() => [] as DispatchCandidateDto[]),
+      ]).then(([children, candidates]) => {
+        if (cancelled) return;
+        setFloors(
+          children
+            .filter((node) => node.kind === 'FLOOR')
+            .map((node) => ({ id: node.id, name: node.name })),
+        );
+        setEmployees(candidates);
+      });
+    }
 
     return () => {
       cancelled = true;
     };
-  }, [target, existing, work.building.id, work.plannedStartDate, work.plannedEndDate]);
+  }, [target, existing, isPortal, work.building.id, work.plannedStartDate, work.plannedEndDate]);
 
   /**
    * Moves the sub-task to another floor, dropping equipment the move would invalidate.
@@ -359,14 +389,14 @@ export function TaskFormDrawer({
     setSubmitting(true);
     try {
       const updated = isNew
-        ? await plannedWorkService.createTask(
+        ? await api.createTask(
             work.id,
-            parsed.data as Parameters<typeof plannedWorkService.createTask>[1],
+            parsed.data as Parameters<typeof api.createTask>[1],
           )
-        : await plannedWorkService.updateTask(
+        : await api.updateTask(
             work.id,
             existing!.id,
-            parsed.data as Parameters<typeof plannedWorkService.updateTask>[2],
+            parsed.data as Parameters<typeof api.updateTask>[2],
           );
       notify(isNew ? 'Дэд ажил нэмэгдлээ.' : 'Дэд ажил шинэчлэгдлээ.', 'success');
       onSaved(updated);
@@ -400,11 +430,6 @@ export function TaskFormDrawer({
     >
       <div className="space-y-4">
         {formError && <Alert variant="error">{formError}</Alert>}
-
-        <Alert variant="info">
-          Дэд ажлын хугацаа эцэг ажлын хугацаанд байх ёстой. Төлөв нь биелэлт, баримтаас
-          автоматаар тодорхойлогдох тул гараар сонгохгүй.
-        </Alert>
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field label="Дэд ажлын нэр" required error={fieldErrors.title}>
@@ -460,18 +485,21 @@ export function TaskFormDrawer({
             />
           </Field>
 
-          <Field label="Хариуцах ажилтан" error={fieldErrors.assignedEmployeeId}>
-            <SelectInput
-              value={assignedEmployeeId}
-              onChange={setAssignedEmployeeId}
-              placeholder="Ажилтан сонгох"
-              options={employees.map((employee) => ({
-                value: employee.id,
-                label: `${employee.lastName} ${employee.firstName}`,
-              }))}
-              disabled={submitting}
-            />
-          </Field>
+          {/* Staff only — see the note on `variant`. */}
+          {!isPortal && (
+            <Field label="Хариуцах ажилтан" error={fieldErrors.assignedEmployeeId}>
+              <SelectInput
+                value={assignedEmployeeId}
+                onChange={setAssignedEmployeeId}
+                placeholder="Ажилтан сонгох"
+                options={employees.map((employee) => ({
+                  value: employee.id,
+                  label: `${employee.lastName} ${employee.firstName}`,
+                }))}
+                disabled={submitting}
+              />
+            </Field>
+          )}
         </div>
 
         {equipmentCleared && (

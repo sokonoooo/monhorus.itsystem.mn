@@ -1,7 +1,7 @@
 import { PERMISSIONS } from '@monhorus/shared';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ApiError } from '../../lib/api-client';
 import { calendarService } from '../../services/calendar.service';
@@ -231,6 +231,93 @@ describe('CalendarPage', () => {
     await waitFor(() => {
       const last = range.mock.calls[range.mock.calls.length - 1]![0];
       expect(last.employeeId).toBe('e1');
+    });
+  });
+  /**
+   * THE GRID IS AN ULAANBAATAR CALENDAR, FOR EVERY VIEWER.
+   *
+   * The page labelled every date with `timeZone: 'Asia/Ulaanbaatar'` while bucketing events
+   * and building the fetch window from browser-local midnights. For anyone outside UTC+8
+   * the two disagreed: an event whose own label read 7 July was drawn in the 6 July cell,
+   * and `windowFor` asked the API for a window shifted by the viewer's offset, so the events
+   * at either edge were never fetched at all. The mobile client already converts before
+   * sending; this pins the web to the same convention.
+   *
+   * `America/New_York` is deliberately neither UTC nor UTC+8, so a page that merely stopped
+   * being UTC-centric would still fail.
+   */
+  describe('viewed from another timezone', () => {
+    beforeEach(() => {
+      vi.stubEnv('TZ', 'America/New_York');
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('draws an event in the Ulaanbaatar day its own label names', async () => {
+      vi.spyOn(calendarService, 'range').mockResolvedValue(
+        makeCalendarResult([
+          makeCalendarEvent({
+            // 09:00 on 7 July in Ulaanbaatar, which is 21:00 on 6 July in New York.
+            start: '2026-07-07T01:00:00.000Z',
+            end: '2026-07-07T02:00:00.000Z',
+            title: 'Өглөөний үзлэг',
+          }),
+        ]),
+      );
+
+      renderWithAuth(<CalendarPage />, {
+        permissions: [PERMISSIONS.PLANNED_WORK_VIEW],
+        route: JULY,
+      });
+
+      const chip = await screen.findByRole('button', { name: 'Өглөөний үзлэг' });
+      const cell = chip.closest('[data-date]');
+      expect(cell?.getAttribute('data-date')).toBe('2026-07-07');
+    });
+
+    it('asks the API for the Ulaanbaatar window the grid actually shows', async () => {
+      const range = vi
+        .spyOn(calendarService, 'range')
+        .mockResolvedValue(makeCalendarResult([]));
+
+      renderWithAuth(<CalendarPage />, {
+        permissions: [PERMISSIONS.PLANNED_WORK_VIEW],
+        route: JULY,
+      });
+
+      await waitFor(() => expect(range).toHaveBeenCalled());
+      // The July 2026 month grid runs Monday 29 June to Sunday 2 August, so the half-open
+      // window is midnight on 29 June to midnight on 3 August, both in Ulaanbaatar.
+      expect(range).toHaveBeenCalledWith(
+        expect.objectContaining({
+          from: '2026-06-28T16:00:00.000Z',
+          to: '2026-08-02T16:00:00.000Z',
+        }),
+      );
+    });
+
+    it('marks the cell that is today in Ulaanbaatar', async () => {
+      vi.spyOn(calendarService, 'range').mockResolvedValue(makeCalendarResult([]));
+      // 23:30 UTC on 6 July is 07:30 on the 7th in Ulaanbaatar and 19:30 on the 6th in
+      // New York — the eight hours in which the two calendars name different days.
+      vi.setSystemTime(new Date('2026-07-06T23:30:00.000Z'));
+
+      renderWithAuth(<CalendarPage />, {
+        permissions: [PERMISSIONS.PLANNED_WORK_VIEW],
+        route: JULY,
+      });
+
+      await waitFor(() =>
+        expect(document.querySelector('[data-date="2026-07-07"]')).toBeInTheDocument(),
+      );
+      const todayCell = document.querySelector('[data-date="2026-07-07"]');
+      expect(todayCell?.querySelector('.bg-blue-600')).not.toBeNull();
+      expect(
+        document.querySelector('[data-date="2026-07-06"]')?.querySelector('.bg-blue-600'),
+      ).toBeNull();
+      vi.useRealTimers();
     });
   });
 });

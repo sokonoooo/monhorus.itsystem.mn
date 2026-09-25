@@ -10,8 +10,12 @@ import { Button } from '../../components/ui/Button';
 import { Drawer } from '../../components/ui/Drawer';
 import { Skeleton } from '../../components/ui/States';
 import { useToast } from '../../components/ui/ToastProvider';
+import {
+  INVOICE_FINANCE_UNAVAILABLE_NOTE,
+  useInvoiceFinance,
+} from '../../hooks/use-invoice-finance';
 import { ApiError } from '../../lib/api-client';
-import { addDaysToToday, currentMonthInput, todayDateInput } from '../../lib/calendar-date';
+import { addDays, currentMonthKey, todayDateKey } from '../../lib/business-day';
 import { invoiceService } from '../../services/invoice.service';
 import { Field, TextInput } from '../employees/FormControls';
 
@@ -21,6 +25,16 @@ import { Field, TextInput } from '../employees/FormControls';
  * The preview shows exactly what would be produced before anything is written, including
  * the customers that are already invoiced for the period. Requirements 12.3 forbids a
  * duplicate, so those are shown as blocked rather than being silently dropped.
+ *
+ * The due date defaults to `finance.invoice_due_days`, the same setting the single-invoice
+ * drawer reads. This drawer used to hardcode 30, so a tenant with a 14-day term got 14 on
+ * a one-off invoice and 30 on the whole monthly run — the two paths disagreed on the term
+ * for the same customer. It then kept that 30 as a silent fallback when the read failed,
+ * which is the same bug wearing a different hat, so a failed read now states no term at all.
+ *
+ * The tax rate is taken from the preview rather than from the settings, because the preview
+ * is computed by the very call that will produce the invoices: it is the rate the server
+ * will apply, not this screen's reading of the rate the server will apply.
  */
 export function GenerateInvoicesDrawer({
   open,
@@ -33,29 +47,46 @@ export function GenerateInvoicesDrawer({
 }): ReactElement {
   const { notify } = useToast();
 
-  const [billingPeriod, setBillingPeriod] = useState(() => currentMonthInput());
-  const [issueDate, setIssueDate] = useState(() => todayDateInput());
-  const [dueDate, setDueDate] = useState(() => addDaysToToday(30));
+  const [billingPeriod, setBillingPeriod] = useState(() => currentMonthKey());
+  const [issueDate, setIssueDate] = useState(() => todayDateKey());
+  // Empty until `finance.invoice_due_days` is known — never a term nobody configured.
+  const [dueDate, setDueDate] = useState('');
 
   const [candidates, setCandidates] = useState<InvoiceGenerationCandidateDto[]>([]);
-  const [taxPercent, setTaxPercent] = useState(0);
+  /** The run's rate, straight from the preview. Null while unknown — never assumed to be 0. */
+  const [taxPercent, setTaxPercent] = useState<number | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // The due-day default comes from the finance settings, exactly as `InvoiceFormDrawer`
+  // reads it, so neither path hardcodes the term and neither invents one on failure.
+  const finance = useInvoiceFinance(open);
+
+  useEffect(() => {
+    if (!open) return;
+    setDueDate('');
+  }, [open]);
+
+  useEffect(() => {
+    if (finance.status !== 'ready') return;
+    setDueDate(addDays(todayDateKey(), finance.dueDays));
+  }, [finance]);
 
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
     setLoading(true);
     setError(null);
+    setTaxPercent(null);
 
     invoiceService
       .generationPreview(billingPeriod)
       .then((preview) => {
         if (cancelled) return;
         setCandidates(preview.candidates as InvoiceGenerationCandidateDto[]);
-        setTaxPercent(preview.taxPercent);
+        setTaxPercent(Number.isFinite(preview.taxPercent) ? preview.taxPercent : null);
         // Anything already invoiced starts unselected: it cannot be created again.
         setSelected(
           new Set(
@@ -67,6 +98,8 @@ export function GenerateInvoicesDrawer({
       })
       .catch((caught: unknown) => {
         if (!cancelled) {
+          setCandidates([]);
+          setSelected(new Set());
           setError(caught instanceof ApiError ? caught.message : 'Урьдчилан харах боломжгүй.');
         }
       })
@@ -89,6 +122,9 @@ export function GenerateInvoicesDrawer({
   }
 
   async function handleSubmit(): Promise<void> {
+    // The button is already disabled; this is the guard that does not depend on the button.
+    if (finance.status !== 'ready') return;
+
     setError(null);
     const parsed = generateMonthlyInvoicesSchema.safeParse({
       billingPeriod,
@@ -134,7 +170,7 @@ export function GenerateInvoicesDrawer({
           <Button
             onClick={() => void handleSubmit()}
             loading={submitting}
-            disabled={selected.size === 0}
+            disabled={selected.size === 0 || finance.status !== 'ready'}
           >
             {selected.size} нэхэмжлэл үүсгэх
           </Button>
@@ -143,13 +179,9 @@ export function GenerateInvoicesDrawer({
     >
       <div className="space-y-4">
         {error && <Alert variant="error">{error}</Alert>}
-        {taxPercent === 0 && <Alert variant="info">{TAX_UNSET_NOTE}</Alert>}
-
-        <Alert variant="info">
-          Идэвхтэй үйлчилгээний нөхцөлтэй харилцагч бүрд сарын тогтмол төлбөрөөр нэхэмжлэл
-          үүснэ.
-        </Alert>
-
+        {finance.status === 'unavailable' && (
+          <Alert variant="warning">{INVOICE_FINANCE_UNAVAILABLE_NOTE}</Alert>
+        )}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <Field label="Тайлант үе" required>
             <TextInput type="month" value={billingPeriod} onChange={setBillingPeriod} disabled={submitting} />
@@ -161,6 +193,15 @@ export function GenerateInvoicesDrawer({
             <TextInput type="date" value={dueDate} onChange={setDueDate} disabled={submitting} />
           </Field>
         </div>
+
+        {/*
+          A zero rate is legal and the run still goes ahead; it is only made visible here,
+          where the invoices are created, rather than in a help panel. Not an
+          `Alert variant="info"` — every blue info notice was withdrawn from this app.
+        */}
+        {taxPercent === 0 && (
+          <p className="text-xs font-medium text-amber-700">{TAX_UNSET_NOTE}</p>
+        )}
 
         {loading ? (
           <Skeleton className="h-40 w-full" />

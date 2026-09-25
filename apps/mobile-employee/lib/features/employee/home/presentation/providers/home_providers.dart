@@ -11,6 +11,7 @@ import '../../data/models/employee_model.dart';
 import '../../data/models/notification_model.dart';
 import '../../data/models/work_models.dart';
 import '../../../identity/employee_self.dart';
+import '../../../shared/server_day.dart';
 import '../../../identity/employee_self_provider.dart';
 import '../../data/repositories/home_repository_impl.dart';
 import '../../domain/entities/employee_identity.dart';
@@ -75,6 +76,9 @@ class HomeOverview {
     required this.agendaScoped,
     required this.notices,
     required this.failure,
+    this.isComplete = true,
+    this.plannedWorkTotal,
+    this.requestsTotal,
   });
 
   final EmployeeIdentity identity;
@@ -106,6 +110,33 @@ class HomeOverview {
 
   /// Set only when every block failed, so the async view can offer a retry.
   final Failure? failure;
+
+  /// Whether [plannedWork] and [requests] are the whole answer.
+  ///
+  /// False only when a paging loop hit its guard. EVERY FIGURE BELOW IS COUNTED FROM THE
+  /// ROWS — no endpoint publishes "how many of my jobs are overdue" — so a partial read
+  /// turns each of them into a floor, and the hero sentence «N ажил хугацаа хэтэрсэн»
+  /// stops being a fact. The screen says «Дор хаяж N» instead of quietly rounding the
+  /// truth down to whatever fitted in one response.
+  ///
+  /// `EmployeeWorkloadModel.activeAssignments` is NOT the answer here, and it looks as
+  /// though it should be. It is the server's own count and it is already fetched, but it
+  /// counts a different population: `loadWorkloadCounts` aggregates SERVICE REQUESTS
+  /// only, naming the employee INDIVIDUALLY (`assignedEmployees: {$in: [id]}`, no team
+  /// arm), in eight active statuses. [activeCount] is planned work PLUS requests,
+  /// own-or-team, over the twelve statuses `ServiceRequestStatus.isOutstanding` admits.
+  /// Substituting it would replace a figure that is occasionally truncated with one that
+  /// is reliably about something else — and it would disagree with the list rendered
+  /// directly underneath it, which is the exact failure every counter on this screen has
+  /// already been fixed for once.
+  final bool isComplete;
+
+  /// The server's own totals for the two list reads, when they were reported.
+  ///
+  /// `PaginatedData.total` was parsed by the transport and dropped here. It is the only
+  /// figure in a truncated answer that is not a floor.
+  final int? plannedWorkTotal;
+  final int? requestsTotal;
 
   bool get isScoped => identity is ResolvedEmployeeIdentity;
 
@@ -179,12 +210,6 @@ class HomeOverview {
               request.slaState == SlaState.breached ||
               request.slaState == SlaState.late)
           .length;
-
-  /// `REVISIT_REQUIRED` — the prototype's "Дахин очих".
-  int get revisitCount => assignedRequests
-      .where((ServiceRequestListItemModel request) =>
-          request.status == ServiceRequestStatus.revisitRequired)
-      .length;
 
   /// Lifetime completions, as counted by the backend on the employee record. Null
   /// when the account is not linked, and rendered as a dash rather than a zero.
@@ -305,8 +330,13 @@ class HomeUrgentItem {
       band: work.effectiveStatus?.band ?? SeverityBand.neutral,
       dueAt: work.plannedEndDate,
       isOverdue: work.effectiveStatus == PlannedWorkStatus.overdue,
-      detail: 'Явц ${formatPercent(work.progressPercent)} · '
-          '${work.taskCount} task',
+      // The "Явц …" half is dropped rather than printed as 0% when the answer
+      // carried no figure, leaving the sub-task count, which is a fact either way.
+      detail: <String>[
+        if (work.progressPercent != null)
+          'Явц ${formatPercent(work.progressPercent)}',
+        '${work.taskCount} task',
+      ].join(' · '),
       // Empty when a newer API version answered without one, which leaves the row
       // untappable rather than pushing a detail screen onto a blank id.
       plannedWorkId: work.id.isEmpty ? null : work.id,
@@ -367,22 +397,51 @@ final FutureProvider<HomeOverview> homeOverviewProvider =
     return result.dataOrNull;
   }
 
-  // The three reads are independent, so they go out together rather than in series.
+  /// One list read, walked to its end rather than sampled at a hundred rows.
+  ///
+  /// The hero sentence and the four-figure stair are counted from these rows, so reading
+  /// one page meant «N ажил хугацаа хэтэрсэн» was a statement about a page. A failure at
+  /// any page is reported by [block] and leaves the whole read null, exactly as a failure
+  /// on the single request used to.
+  Future<_HomePage<T>?> walk<T>(
+    Future<ApiResult<PaginatedData<T>>> Function(int page) read,
+  ) async {
+    final List<T> items = <T>[];
+    int? total;
+    bool complete = false;
+
+    for (int page = 1; page <= _maxHomePages; page++) {
+      final PaginatedData<T>? slice = await block(() => read(page));
+      if (slice == null) return null;
+      total ??= slice.total;
+      items.addAll(slice.items);
+      if (slice.items.isEmpty || page >= slice.totalPages) {
+        complete = true;
+        break;
+      }
+    }
+
+    return _HomePage<T>(items, isComplete: complete, total: total ?? items.length);
+  }
+
+  // The four reads are independent, so they go out together rather than in series.
   final (
     DashboardSummaryModel? dashboard,
-    PaginatedData<PlannedWorkListItemModel>? plannedWork,
-    PaginatedData<ServiceRequestListItemModel>? requests,
+    _HomePage<PlannedWorkListItemModel>? plannedWork,
+    _HomePage<ServiceRequestListItemModel>? requests,
     CalendarResultModel? agenda,
   ) results = await (
     canReadDashboard
         ? block(repository.getDashboardSummary)
         : Future<DashboardSummaryModel?>.value(),
     employeeId != null && canReadPlannedWork
-        ? block(repository.listPlannedWork)
-        : Future<PaginatedData<PlannedWorkListItemModel>?>.value(),
+        ? walk<PlannedWorkListItemModel>(
+            (int page) => repository.listPlannedWork(page: page))
+        : Future<_HomePage<PlannedWorkListItemModel>?>.value(),
     employeeId != null && canReadRequests
-        ? block(repository.listServiceRequests)
-        : Future<PaginatedData<ServiceRequestListItemModel>?>.value(),
+        ? walk<ServiceRequestListItemModel>(
+            (int page) => repository.listServiceRequests(page: page))
+        : Future<_HomePage<ServiceRequestListItemModel>?>.value(),
     canReadPlannedWork || canReadRequests
         ? block(() => repository.getDayAgenda(
               day: DateTime.now(),
@@ -390,6 +449,23 @@ final FutureProvider<HomeOverview> homeOverviewProvider =
             ))
         : Future<CalendarResultModel?>.value(),
   ).wait;
+
+  /*
+   * WHERE THE SERVER'S TIMEZONE ENTERS THE APP.
+   *
+   * `env.APP_TIMEZONE` decides what the backend counts as due today, and it is published
+   * twice on this screen's own reads — on the dashboard's `today` block and on every
+   * calendar result — and was read by nothing. Installing it here is what lets
+   * `PlannedWorkBoard.dueTodayCount` and `AssignedRequests.dueTodayCount` stop asking the
+   * handset where midnight is.
+   *
+   * The dashboard is preferred because `today.timezone` sits beside the very counts the
+   * Нүүр stair prints, so the two cannot describe different days. The calendar is the
+   * fallback for a caller without `dashboard.view`, which a technician may well be.
+   * Neither is required: `installServerTimezone` ignores an empty or unknown name and
+   * everything downstream falls back to the device, as it did before.
+   */
+  installServerTimezone(results.$1?.today?.timezone ?? results.$4?.timezone);
 
   return HomeOverview(
     identity: identity,
@@ -399,10 +475,30 @@ final FutureProvider<HomeOverview> homeOverviewProvider =
     agenda: results.$4?.events ?? const <CalendarEventModel>[],
     agendaScoped: employeeId != null,
     notices: notices,
+    isComplete: (results.$2?.isComplete ?? true) && (results.$3?.isComplete ?? true),
+    plannedWorkTotal: results.$2?.total,
+    requestsTotal: results.$3?.total,
     // Only a total loss becomes an error state; a partial one is reported in place.
     failure: attempted > 0 && failures.length == attempted ? failures.first : null,
   );
 });
+
+/// A ceiling on the home tab's paging loops, not on a technician's caseload.
+///
+/// Lower than the Ажил tab's twenty because this screen is a summary rather than a list:
+/// ten pages of a hundred is a thousand live records on one person, well past the point
+/// where a four-figure stair is the right way to read them, and the screen says the
+/// figures are floors rather than pretending otherwise.
+const int _maxHomePages = 10;
+
+/// One walked list read: the rows, whether they are all of them, and the server's count.
+class _HomePage<T> {
+  const _HomePage(this.items, {required this.isComplete, required this.total});
+
+  final List<T> items;
+  final bool isComplete;
+  final int total;
+}
 
 // -- Notifications -----------------------------------------------------------
 

@@ -1346,6 +1346,54 @@ describe('user reads carry the organisation', () => {
   });
 });
 
+/**
+ * The role ids ride on the account row.
+ *
+ * `POST /rbac/users/:userId/roles` REPLACES an account's whole role set, so a screen that
+ * offers that action has to be able to show what is held before it asks for what should
+ * be. The web role drawer had no source for it and opened every box unticked, which made
+ * the first save a silent strip. The ids are stored on the user document itself, so the
+ * list carries them without a second read per row.
+ */
+describe('user reads carry the dynamic roles', () => {
+  it('returns the assigned role ids on the list and on the detail', async () => {
+    const token = await login((await headAdmin()).email);
+    const financeId = await systemRoleId(SYSTEM_ROLE_KEYS.FINANCE);
+    const dispatchId = await systemRoleId(SYSTEM_ROLE_KEYS.DISPATCH);
+    const targetId = await createAccount({
+      email: 'holder@test.mn',
+      role: 'technician',
+      roles: [financeId, dispatchId],
+    });
+
+    const list = await request(app)
+      .get(`${API}/users`)
+      .set('Authorization', `Bearer ${token}`)
+      .query({ search: 'holder@test.mn' });
+    expect(list.status).toBe(200);
+    expect(list.body.data.items[0].roleIds).toEqual([financeId, dispatchId]);
+
+    const detail = await request(app)
+      .get(`${API}/users/${targetId}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body.data.roleIds).toEqual([financeId, dispatchId]);
+  });
+
+  /** An account with no dynamic roles reports an empty list, never a missing field. */
+  it('returns an empty list rather than nothing for an account holding no roles', async () => {
+    const token = await login((await headAdmin()).email);
+    await createAccount({ email: 'bare@test.mn', role: 'technician', roles: [] });
+
+    const list = await request(app)
+      .get(`${API}/users`)
+      .set('Authorization', `Bearer ${token}`)
+      .query({ search: 'bare@test.mn' });
+    expect(list.status).toBe(200);
+    expect(list.body.data.items[0].roleIds).toEqual([]);
+  });
+});
+
 describe('GET /auth/me - the caller sees their own organisation', () => {
   it('returns the linked organisation for a customer account', async () => {
     await createAccount({ email: 'portal@test.mn', role: 'customer', customer: customerId });

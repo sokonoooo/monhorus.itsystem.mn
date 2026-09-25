@@ -12,11 +12,13 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { Alert } from '../../components/ui/Alert';
 import { Button } from '../../components/ui/Button';
+import { Pagination } from '../../components/ui/DataTable';
 import { RequestStatusBadge, SlaBadge } from '../../components/ui/DomainBadges';
 import { PageHeader } from '../../components/ui/PageHeader';
 import { EmptyState, ErrorState, Skeleton } from '../../components/ui/States';
 import { useAuth } from '../../contexts/auth-context';
 import { ApiError } from '../../lib/api-client';
+import { PAGE_SIZE } from '../../lib/pagination';
 import { CustomerInvoicesTab } from './CustomerInvoicesTab';
 import { CustomerPortalAccessTab } from './CustomerPortalAccessTab';
 import { CustomerObjectsTab } from './CustomerObjectsTab';
@@ -75,6 +77,9 @@ export function CustomerDetailPage(): ReactElement {
 
   const [agreements, setAgreements] = useState<ServiceAgreementDto[] | null>(null);
   const [requests, setRequests] = useState<ServiceRequestListItemDto[] | null>(null);
+  const [requestPage, setRequestPage] = useState(1);
+  const [requestTotal, setRequestTotal] = useState(0);
+  const [requestTotalPages, setRequestTotalPages] = useState(1);
   const [tabError, setTabError] = useState<string | null>(null);
   const [agreementDrawerOpen, setAgreementDrawerOpen] = useState(false);
 
@@ -108,17 +113,39 @@ export function CustomerDetailPage(): ReactElement {
   // Each tab loads on first open rather than all at once on mount.
   useEffect(() => {
     if (activeTab === 'agreements' && agreements === null) void loadAgreements();
+  }, [activeTab, agreements, loadAgreements]);
 
-    if (activeTab === 'requests' && requests === null && customerId) {
-      setTabError(null);
-      serviceRequestService
-        .list({ customerId, limit: 20 })
-        .then((page) => setRequests(page.items))
-        .catch((caught: unknown) =>
-          setTabError(caught instanceof ApiError ? caught.message : 'Хүсэлт ачаалж чадсангүй.'),
-        );
-    }
-  }, [activeTab, agreements, requests, customerId, loadAgreements]);
+  /**
+   * The request history, a page at a time.
+   *
+   * It used to ask for twenty and draw them with no pager, so a customer with a longer
+   * history had the rest of it silently unreachable from their own record — and nothing
+   * on screen distinguished "twenty requests" from "the twenty most recent". Paging is
+   * driven by `requestPage`, which is why this is its own effect: the tab-open load and
+   * a page change are the same fetch.
+   */
+  useEffect(() => {
+    if (activeTab !== 'requests' || !customerId) return undefined;
+
+    let cancelled = false;
+    setTabError(null);
+    serviceRequestService
+      .list({ customerId, page: requestPage, limit: PAGE_SIZE })
+      .then((page) => {
+        if (cancelled) return;
+        setRequests(page.items);
+        setRequestTotal(page.total);
+        setRequestTotalPages(page.totalPages);
+      })
+      .catch((caught: unknown) => {
+        if (cancelled) return;
+        setTabError(caught instanceof ApiError ? caught.message : 'Хүсэлт ачаалж чадсангүй.');
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, customerId, requestPage]);
 
   if (loading) {
     return (
@@ -233,6 +260,11 @@ export function CustomerDetailPage(): ReactElement {
                   <table className="min-w-full divide-y divide-slate-200 text-sm">
                     <thead className="bg-slate-50">
                       <tr>
+                        {/* Numbered but not paged: the agreements arrive with the customer
+                            and a customer holds a handful of them. */}
+                        <th className="w-12 whitespace-nowrap px-3 py-2 text-right font-semibold text-slate-700">
+                          №
+                        </th>
                         <th className="px-3 py-2 text-left font-semibold text-slate-700">Дугаар</th>
                         <th className="px-3 py-2 text-left font-semibold text-slate-700">Хугацаа</th>
                         <th className="px-3 py-2 text-left font-semibold text-slate-700">Төрөл</th>
@@ -242,11 +274,17 @@ export function CustomerDetailPage(): ReactElement {
                           Сарын төлбөр
                         </th>
                         <th className="px-3 py-2 text-left font-semibold text-slate-700">Төлөв</th>
+                        <th className="px-3 py-2 text-left font-semibold text-slate-700">
+                          Үүсгэсэн
+                        </th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {agreements.map((agreement) => (
+                      {agreements.map((agreement, index) => (
                         <tr key={agreement.id}>
+                          <td className="px-3 py-2 text-right tabular-nums text-slate-500">
+                            {index + 1}
+                          </td>
                           <td className="px-3 py-2 font-medium">{agreement.agreementNumber}</td>
                           <td className="whitespace-nowrap px-3 py-2">
                             {agreement.startDate.slice(0, 10)} - {agreement.endDate.slice(0, 10)}
@@ -278,6 +316,9 @@ export function CustomerDetailPage(): ReactElement {
                               {SERVICE_AGREEMENT_STATUS_LABELS[agreement.status]}
                             </span>
                           </td>
+                          <td className="px-3 py-2">
+                            <span className="text-slate-700">{agreement.createdByName ?? '-'}</span>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -297,33 +338,41 @@ export function CustomerDetailPage(): ReactElement {
                   description="Энэ харилцагчид бүртгэгдсэн үйлчилгээний хүсэлт алга."
                 />
               ) : (
-                <ul className="divide-y divide-slate-100 rounded-lg ring-1 ring-slate-200">
-                  {requests.map((entry) => (
-                    <li key={entry.id}>
-                      <Link
-                        to={`/service-requests/${entry.id}`}
-                        className="flex items-center justify-between gap-3 px-3 py-2.5 hover:bg-slate-50"
-                      >
-                        <div className="min-w-0">
-                          <p className="truncate text-sm font-medium text-slate-900">
-                            {entry.requestNumber}
-                          </p>
-                          <p className="truncate text-xs text-slate-500">
-                            {[entry.building?.name, entry.floor?.name].filter(Boolean).join(' · ') ||
-                              '-'}
-                          </p>
-                        </div>
-                        <div className="flex shrink-0 items-center gap-2">
-                          <RequestStatusBadge status={entry.status} />
-                          <SlaBadge
-                            state={entry.slaState}
-                            remainingMinutes={entry.slaRemainingMinutes}
-                          />
-                        </div>
-                      </Link>
-                    </li>
-                  ))}
-                </ul>
+                <div className="overflow-hidden rounded-lg ring-1 ring-slate-200">
+                  <ul className="divide-y divide-slate-100">
+                    {requests.map((entry) => (
+                      <li key={entry.id}>
+                        <Link
+                          to={`/service-requests/${entry.id}`}
+                          className="flex items-center justify-between gap-3 px-3 py-2.5 hover:bg-slate-50"
+                        >
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium text-slate-900">
+                              {entry.requestNumber}
+                            </p>
+                            <p className="truncate text-xs text-slate-500">
+                              {[entry.building?.name, entry.floor?.name].filter(Boolean).join(' · ') ||
+                                '-'}
+                            </p>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-2">
+                            <RequestStatusBadge status={entry.status} stage={entry.stage} />
+                            <SlaBadge
+                              state={entry.slaState}
+                              remainingMinutes={entry.slaRemainingMinutes}
+                            />
+                          </div>
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                  <Pagination
+                    page={requestPage}
+                    totalPages={requestTotalPages}
+                    total={requestTotal}
+                    onPageChange={setRequestPage}
+                  />
+                </div>
               )}
             </div>
           )}

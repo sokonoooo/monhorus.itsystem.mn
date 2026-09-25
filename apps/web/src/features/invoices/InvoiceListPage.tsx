@@ -27,6 +27,7 @@ import {
 import { useAuth } from '../../contexts/auth-context';
 import { useTableColumns } from '../../hooks/use-table-columns';
 import { ApiError } from '../../lib/api-client';
+import { BUSINESS_TIME_ZONE } from '../../lib/business-day';
 import { invoiceService, type InvoicePage } from '../../services/invoice.service';
 import { objectService } from '../../services/object.service';
 import { GenerateInvoicesDrawer } from './GenerateInvoicesDrawer';
@@ -35,7 +36,7 @@ import { BillingTypeBadge, InvoiceStatusBadge, Money } from './InvoiceBadges';
 
 function formatDate(iso: string | null): string {
   if (!iso) return '-';
-  return new Date(iso).toLocaleDateString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
+  return new Date(iso).toLocaleDateString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
 }
 
 function SummaryCard({
@@ -198,6 +199,11 @@ export function InvoiceListPage(): ReactElement {
         <InvoiceStatusBadge status={row.effectiveStatus} overdueDays={row.overdueDays} />
       ),
     },
+    {
+      key: 'createdBy',
+      header: 'Үүсгэсэн',
+      render: (row) => <span className="text-slate-700">{row.createdByName ?? '-'}</span>,
+    },
   ];
 
   const columnState = useTableColumns('invoices', columns);
@@ -345,6 +351,9 @@ export function InvoiceListPage(): ReactElement {
           columns={columnState.visibleColumns}
           rows={data?.items ?? []}
           rowKey={(row) => row.id}
+          // Numbered off the response rather than the query, so a request in flight can
+          // never number the rows on screen against the page they did not come from.
+          numbering={{ page: data?.page ?? 1, limit: data?.limit ?? 20 }}
           loading={loading}
           error={error}
           onRowClick={(row) => navigate(`/invoices/${row.id}`)}

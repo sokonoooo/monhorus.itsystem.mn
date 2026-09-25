@@ -45,6 +45,30 @@ interface DataTableProps<T> {
   onToggleExpand?: (key: string, row: T) => void;
   /** Accessible name for a row's expander, so a screen reader hears which row it opens. */
   expandLabel?: (row: T) => string;
+  /**
+   * A leading № column counting the rows.
+   *
+   * `true` numbers the rows on screen from 1, which is what an unpaginated table wants.
+   * Passing the page and the page size instead numbers them CONTINUOUSLY across pages —
+   * page 2 of 20 starts at 21 — which is the only numbering that means anything on a
+   * paginated list: a reader asked to "check row 34" must be able to find row 34.
+   *
+   * The arithmetic lives here rather than in each caller's column array on purpose. It is
+   * one off-by-one repeated thirteen times otherwise, and the copies drift: a page that
+   * forgets `- 1` numbers its first page from 21.
+   */
+  numbering?: true | { page: number; limit: number };
+}
+
+/** The number to print against the first row on screen. */
+function firstNumber(numbering: true | { page: number; limit: number }): number {
+  if (numbering === true) return 1;
+  // Defensive rather than trusting: a page of 0 or a negative limit would otherwise
+  // produce negative row numbers, and a list is more useful mis-numbered from 1 than
+  // numbered from -19.
+  const page = Math.max(1, Math.floor(numbering.page));
+  const limit = Math.max(0, Math.floor(numbering.limit));
+  return (page - 1) * limit + 1;
 }
 
 /**
@@ -67,14 +91,21 @@ export function DataTable<T>({
   expandedKeys,
   onToggleExpand,
   expandLabel,
+  numbering,
 }: DataTableProps<T>): ReactElement {
   // Hooks run before the early returns below, which is why this is not inside the branch.
   const panelIdPrefix = useId();
   const expandable = renderExpanded !== undefined;
+  const numbered = numbering !== undefined;
+  const startNumber = numbering === undefined ? 1 : firstNumber(numbering);
   const openKeys = new Set(expandedKeys ?? []);
 
   if (loading) {
-    return <TableSkeleton columns={columns.length + (expandable ? 1 : 0)} />;
+    return (
+      <TableSkeleton
+        columns={columns.length + (expandable ? 1 : 0) + (numbered ? 1 : 0)}
+      />
+    );
   }
 
   if (error) {
@@ -115,6 +146,16 @@ export function DataTable<T>({
                 <span className="sr-only">Дэлгэх</span>
               </th>
             )}
+            {numbered && (
+              // Narrow and right-aligned, as a column of figures reads best, and never
+              // wrapping — a four-digit row number on page 50 must stay on one line.
+              <th
+                scope="col"
+                className="w-12 whitespace-nowrap px-4 py-2.5 text-right font-semibold text-slate-700"
+              >
+                №
+              </th>
+            )}
             {columns.map((column) => (
               <th
                 key={column.key}
@@ -134,7 +175,7 @@ export function DataTable<T>({
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-100">
-          {rows.map((row) => {
+          {rows.map((row, index) => {
             const key = rowKey(row);
             const open = expandable && openKeys.has(key);
             const panelId = `${panelIdPrefix}-${key}`;
@@ -192,6 +233,11 @@ export function DataTable<T>({
                     </button>
                   </td>
                 )}
+                {numbered && (
+                  <td className="px-4 py-2.5 text-right align-top tabular-nums text-slate-500">
+                    {startNumber + index}
+                  </td>
+                )}
                 {columns.map((column) => (
                   <td
                     key={column.key}
@@ -218,7 +264,9 @@ export function DataTable<T>({
                   <tr>
                     <td
                       id={panelId}
-                      colSpan={columns.length + 1}
+                      // The data columns, plus the expander, plus № when it is on.
+                      // A short colSpan leaves the panel not reaching the table's edge.
+                      colSpan={columns.length + 1 + (numbered ? 1 : 0)}
                       className="bg-slate-50/70 px-4 py-3"
                     >
                       {renderExpanded(row)}

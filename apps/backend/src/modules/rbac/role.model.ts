@@ -1,5 +1,5 @@
 import type { PermissionKey } from '@monhorus/shared';
-import { Schema, model, type HydratedDocument, type Model } from 'mongoose';
+import { Schema, Types, model, type HydratedDocument, type Model } from 'mongoose';
 
 /**
  * Dynamic role. Permissions are stored as the shared catalogue's string keys rather
@@ -15,6 +15,11 @@ export interface IRole {
   description: string | null;
   permissions: PermissionKey[];
   isSystem: boolean;
+  /**
+   * Who defined this role. Null for the seeded system roles, which nobody created — the
+   * web app renders those as "Систем" rather than as an unknown.
+   */
+  createdBy: Types.ObjectId | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -35,6 +40,7 @@ const roleSchema = new Schema<IRole>(
     description: { type: String, default: null, trim: true, maxlength: 500 },
     permissions: { type: [String], default: [] },
     isSystem: { type: Boolean, default: false, index: true },
+    createdBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
   },
   { timestamps: true, versionKey: false },
 );

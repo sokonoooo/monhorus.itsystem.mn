@@ -39,6 +39,16 @@ export const logger = pino({
       'temporaryPassword',
       'refreshToken',
       'accessToken',
+      /*
+       * A rendered message body.
+       *
+       * The mail transport logs `{ to, subject, body }` when SMTP is unconfigured, and a
+       * password-reset body carries a live single-use token in its link. That path now
+       * refuses to run in production at all, but the redaction stays: it is the backstop
+       * for any future log line that carries a body, and it costs nothing.
+       */
+      'body',
+      '*.body',
       '*.password',
       '*.newPassword',
       '*.currentPassword',

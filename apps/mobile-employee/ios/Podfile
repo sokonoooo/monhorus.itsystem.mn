@@ -1,5 +1,5 @@
 # Uncomment this line to define a global platform for your project
-# platform :ios, '13.0'
+# platform :ios, '15.0'
 
 # CocoaPods analytics sends network stats synchronously affecting flutter build latency.
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'
@@ -40,20 +40,28 @@ post_install do |installer|
   installer.pods_project.targets.each do |target|
     flutter_additional_ios_build_settings(target)
 
-    # Raise every pod to the same iOS floor the Runner target already uses (13.0).
+    # Raise every pod to the same iOS floor the Runner target uses (15.0).
     #
     # flutter_additional_ios_build_settings only *deletes* an IPHONEOS_DEPLOYMENT_TARGET
-    # below 13 so the pod inherits the project's, and that reaches the pod's own targets
-    # but not the resource-bundle targets CocoaPods synthesises for `s.resource_bundles`.
-    # flutter_secure_storage declares `s.ios.deployment_target = '9.0'` and ships a
-    # PrivacyInfo.xcprivacy bundle, so its bundle target stayed at 9.0 and Xcode warned
-    # on every build — 9.0 is below the 12.0 minimum current Xcode will accept.
+    # below the Flutter minimum so the pod inherits the project's, and that reaches the
+    # pod's own targets but not the resource-bundle targets CocoaPods synthesises for
+    # `s.resource_bundles`. flutter_secure_storage declares `s.ios.deployment_target =
+    # '9.0'` and ships a PrivacyInfo.xcprivacy bundle, so its bundle target stayed at 9.0
+    # and Xcode warned on every build — below the minimum current Xcode will accept.
     #
     # Setting it explicitly on all build configurations covers the bundle targets too.
-    # 13.0 rather than 12.0 because that is Flutter 3.41's own minimum and what
-    # Runner.xcodeproj is already set to; a lower floor here would be dead configuration.
+    # The floor is 15.0 because firebase_core and firebase_messaging require it; the
+    # Runner target was raised to match, and a pod below the app it links into will not
+    # build at all.
+    #
+    # Raise-only rather than assign: a pod that already asks for more than 15 needs that
+    # number kept, and an unconditional write would silently pull it down to a version it
+    # does not support.
     target.build_configurations.each do |config|
-      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '13.0'
+      current = config.build_settings['IPHONEOS_DEPLOYMENT_TARGET']
+      if current.nil? || current.to_f < 15.0
+        config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
+      end
     end
   end
 end

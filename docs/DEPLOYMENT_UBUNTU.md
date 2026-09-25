@@ -290,6 +290,29 @@ sudo -u monhorus tar czf /var/backups/monhorus/uploads-$(date +%F).tar.gz -C /va
 Restore is `mongorestore --archive=... --gzip --drop` and untarring the uploads back to the
 path named by `UPLOAD_DIR`.
 
+**This is the ad-hoc form, and it is not a point-in-time snapshot.** The URI names a
+database, so it is a `--db` dump; mongod is a replica set and the application keeps writing
+while collections are read one after another, which makes the archive a smear across the
+dump rather than a picture of one instant. Adding `--oplog` here does not work —
+`mongodump` answers `--oplog mode only supported on full dumps`, and `monhorusApp` cannot
+read `local.oplog.rs` in any case. The scripted backup handles this properly: see
+**`DEPLOYMENT_MONHORUS_PROD.md` section 9**, which supersedes this snippet, and use
+`scripts/backup-monhorus.sh` rather than the command above for anything scheduled.
+
+**The ad-hoc form also has no safety net**, which matters if you run it by hand and rely on
+the result. It never checks that the archive it wrote is complete — a dump truncated by a
+full disk is non-empty and looks exactly like a good one. At minimum, check it afterwards:
+
+```bash
+gzip -t /var/backups/monhorus/monhorus-$(date +%F).archive   # must exit 0
+```
+
+The scheduled path does this for you, and also notifies on failure, pings a dead-man switch
+on success, and keeps a floor of recent archives that a long failure streak cannot prune
+away. None of that exists in the snippet above. Section 12 of
+`DEPLOYMENT_MONHORUS_PROD.md` has the install and the `/etc/monhorus/backup.env` settings —
+`ALERT_WEBHOOK_URL` in particular, without which no failure reaches anyone.
+
 ---
 
 ## 5. Backend environment

@@ -137,7 +137,6 @@ async function seedTwoTenants(): Promise<void> {
       requestNumber: number,
       customer: customerId,
       building: buildingId,
-      requestType: 'URGENT_CALL',
       description,
       contactName: 'Батаа',
       contactPhone: '9911-0000',
@@ -229,6 +228,69 @@ describe('a customer holding staff permissions is still confined to its own orga
       .set('Authorization', `Bearer ${token}`);
     expect(own.status).toBe(200);
     expect(own.body.data.id).toBe(ownRequestId);
+  });
+
+  /**
+   * Its OWN record, narrowed.
+   *
+   * Tenancy was never the gap here — a customer is entitled to this request. One DTO served
+   * staff and customers alike, so the reply also carried the internal operating record: who
+   * made each status change and the free-text reason for it, the SLA-extension
+   * justification, the revisit reason, the creator, the team leader and each technician's
+   * internal employee code. The web portal knew and declined to render it, calling itself
+   * "a presentation choice, not a boundary"; the customer mobile app rendered it, and
+   * `curl` was never bound by either.
+   */
+  it('does not receive the internal workflow trail on its own request', async () => {
+    const token = await createCustomerHoldingStaffKeys('sec-scope-narrow@test.mn', ownCustomerId);
+
+    await ServiceRequest.updateOne(
+      { _id: new Types.ObjectId(ownRequestId) },
+      {
+        $set: {
+          slaExtensionReason: 'ДОТООД: ажилтан өвчтэй тул сунгав',
+          revisitReason: 'ДОТООД: багаж дутуу байсан',
+          createdByName: 'Диспетчер Болд',
+          teamLeaderEmployee: new Types.ObjectId(),
+          statusHistory: [
+            {
+              fromStatus: 'NEW',
+              toStatus: 'ASSIGNED',
+              reason: 'ДОТООД: буцаасан шалтгаан',
+              changedByName: 'Менежер Ганаа',
+              changedAt: new Date(),
+            },
+          ],
+        },
+      },
+    );
+
+    const response = await request(app)
+      .get(`${API}/service-requests/${ownRequestId}`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.id).toBe(ownRequestId);
+
+    // Nothing marked ДОТООД may appear anywhere in the payload.
+    expect(JSON.stringify(response.body)).not.toContain('ДОТООД');
+    expect(JSON.stringify(response.body)).not.toContain('Менежер Ганаа');
+    expect(JSON.stringify(response.body)).not.toContain('Диспетчер Болд');
+
+    expect(response.body.data.slaExtensionReason).toBeNull();
+    expect(response.body.data.revisitReason).toBeNull();
+    expect(response.body.data.createdByName).toBeNull();
+    expect(response.body.data.teamLeaderEmployeeId).toBeNull();
+
+    // The progress timeline itself survives — that is the point of the screen — with only
+    // the internal who and why removed.
+    expect(response.body.data.statusHistory).toHaveLength(1);
+    expect(response.body.data.statusHistory[0]).toMatchObject({
+      fromStatus: 'NEW',
+      toStatus: 'ASSIGNED',
+      reason: null,
+      changedByName: null,
+    });
   });
 
   it('sees only its own projects through the staff object hierarchy', async () => {

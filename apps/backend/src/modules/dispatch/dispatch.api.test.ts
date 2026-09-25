@@ -11,6 +11,7 @@ import {
   startTestApp,
   stopTestApp,
   type OrgFixture,
+  createCallableObjectType,
 } from '../../test/helpers';
 import { Employee } from '../employee/employee.model';
 import { Customer, ObjectNode } from '../objects/object.models';
@@ -20,6 +21,7 @@ const API = '/api/v1';
 let app: Express;
 let org: OrgFixture;
 let token: string;
+let callableTypeId: string;
 let customerId: string;
 let buildingId: string;
 
@@ -61,6 +63,8 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await resetDomainCollections();
+  // After the reset: object types are domain data and are wiped with everything else.
+  callableTypeId = await createCallableObjectType();
   org = await createOrgFixture();
 
   const customer = await Customer.create({ code: 'CT', name: 'Central Tower ХХК' });
@@ -114,6 +118,7 @@ describe('dispatch employee candidates', () => {
         customerId,
         buildingId,
         requestType: 'URGENT_CALL',
+        objectTypeId: callableTypeId,
         isUrgent: true,
         description: 'Богино холболт илэрсэн',
         contactName: 'Б. Болд',
@@ -147,6 +152,7 @@ describe('dispatch employee candidates', () => {
         customerId,
         buildingId,
         requestType: 'STANDARD_CALL',
+        objectTypeId: callableTypeId,
         isUrgent: false,
         description: 'Гэрэл асахгүй байна',
         contactName: 'Б. Болд',
@@ -226,6 +232,7 @@ describe('dispatch board', () => {
         customerId,
         buildingId,
         requestType: 'STANDARD_CALL',
+        objectTypeId: callableTypeId,
         isUrgent: false,
         description,
         contactName: 'Б. Болд',
@@ -311,6 +318,7 @@ describe('employee workload on the detail page', () => {
         customerId,
         buildingId,
         requestType: 'REPAIR',
+        objectTypeId: callableTypeId,
         isUrgent: false,
         description: 'Розетка солих',
         contactName: 'Б. Болд',

@@ -10,6 +10,10 @@ import {
 import { Types, type FilterQuery } from 'mongoose';
 
 import type { AuthContext } from '../../common/types/express';
+import {
+  CALENDAR_EVENTS_PER_SOURCE_LIMIT,
+  noteTruncation,
+} from '../../common/utils/read-limit.util';
 import { env } from '../../config/env';
 import { hasPermission } from '../../middlewares/authorize.middleware';
 import {
@@ -22,6 +26,7 @@ import {
 } from '../planned-work/planned-work.overdue.service';
 import { resolveAssignedWorkFilter } from '../planned-work/planned-work.scope';
 import { ServiceRequest, type IServiceRequest } from '../service-request/service-request.model';
+import { isTerminalServiceRequestStatus } from '../service-request/service-request.terminality';
 
 /**
  * Calendar projection.
@@ -87,7 +92,11 @@ async function plannedWorkEvents(
       { path: 'assignedEmployees', select: 'firstName lastName' },
     ])
     .sort({ plannedStartDate: 1 })
-    .limit(500);
+    .limit(CALENDAR_EVENTS_PER_SOURCE_LIMIT);
+  noteTruncation('calendar.plannedWork', rows.length, CALENDAR_EVENTS_PER_SOURCE_LIMIT, {
+    from: from.toISOString(),
+    to: to.toISOString(),
+  });
 
   // Fallback overdue reconciliation, so the calendar cannot show a stale state.
   await reconcileOverdueForWorks(rows, now);
@@ -157,12 +166,16 @@ async function serviceRequestEvents(
       { path: 'assignedEmployees', select: 'firstName lastName' },
     ])
     .sort({ slaDueAt: 1 })
-    .limit(500);
+    .limit(CALENDAR_EVENTS_PER_SOURCE_LIMIT);
+  noteTruncation('calendar.serviceRequest', rows.length, CALENDAR_EVENTS_PER_SOURCE_LIMIT, {
+    from: from.toISOString(),
+    to: to.toISOString(),
+  });
 
   return rows.map((row) => {
     const dueAt = row.slaDueAt ?? row.createdAt;
     // A settled request is no longer chasing its deadline, so it never reads as overdue.
-    const settled = row.status === 'COMPLETED' || row.status === 'CANCELLED';
+    const settled = isTerminalServiceRequestStatus(row.status);
 
     return {
       id: `SERVICE_REQUEST:${String(row._id)}`,

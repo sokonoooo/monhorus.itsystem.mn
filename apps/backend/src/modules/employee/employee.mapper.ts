@@ -15,6 +15,7 @@ import type {
 } from '@monhorus/shared';
 import type { Types } from 'mongoose';
 
+import { creatorName } from '../../common/utils/creator.util';
 import type { IEmployeeDocument } from './employee-document.model';
 import type { IEmployeeSalary } from './employee-salary.model';
 import type { IEmployeeStatusHistory } from './employee-status-history.model';
@@ -66,6 +67,7 @@ export function toEmployeeListItemDto(
     status: employee.status,
     employmentStartDate: iso(employee.employmentStartDate),
     hasSystemAccess: employee.systemUser !== null,
+    createdByName: creatorName(employee.createdBy),
     isActive: employee.status === 'ACTIVE',
   };
 }

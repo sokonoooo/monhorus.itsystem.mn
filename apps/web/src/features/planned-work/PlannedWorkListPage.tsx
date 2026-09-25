@@ -27,6 +27,7 @@ import {
 import { useAuth } from '../../contexts/auth-context';
 import { useTableColumns } from '../../hooks/use-table-columns';
 import { ApiError } from '../../lib/api-client';
+import { BUSINESS_TIME_ZONE } from '../../lib/business-day';
 import { plannedWorkService } from '../../services/planned-work.service';
 import {
   LateBadge,
@@ -37,7 +38,7 @@ import {
 
 /** Asia/Ulaanbaatar display of a UTC timestamp. */
 function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
+  return new Date(iso).toLocaleDateString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
 }
 
 export function PlannedWorkListPage(): ReactElement {
@@ -203,6 +204,11 @@ export function PlannedWorkListPage(): ReactElement {
       header: 'Баг',
       render: (row) => <span className="text-slate-700">{row.assignedTeam?.name ?? '-'}</span>,
     },
+    {
+      key: 'createdBy',
+      header: 'Үүсгэсэн',
+      render: (row) => <span className="text-slate-700">{row.createdByName ?? '-'}</span>,
+    },
   ];
 
   const columnState = useTableColumns('planned-work', columns);
@@ -333,6 +339,9 @@ export function PlannedWorkListPage(): ReactElement {
           columns={columnState.visibleColumns}
           rows={data?.items ?? []}
           rowKey={(row) => row.id}
+          // Numbered off the response rather than the query, so a request in flight can
+          // never number the rows on screen against the page they did not come from.
+          numbering={{ page: data?.page ?? 1, limit: data?.limit ?? 20 }}
           loading={loading}
           error={error}
           onRetry={() => void load()}

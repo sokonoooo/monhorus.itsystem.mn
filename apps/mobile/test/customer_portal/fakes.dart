@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -14,7 +15,9 @@ import 'package:monhorus_mobile/features/customer_portal/data/models/notificatio
 import 'package:monhorus_mobile/features/customer_portal/data/models/object_master_model.dart';
 import 'package:monhorus_mobile/features/customer_portal/data/models/project_model.dart';
 import 'package:monhorus_mobile/features/customer_portal/data/models/service_request_model.dart';
+import 'package:monhorus_mobile/features/customer_portal/data/models/survey_model.dart';
 import 'package:monhorus_mobile/features/customer_portal/domain/entities/customer_scope.dart';
+import 'package:monhorus_mobile/features/customer_portal/domain/entities/server_vocabulary.dart';
 import 'package:monhorus_mobile/features/customer_portal/domain/entities/service_request_enums.dart';
 import 'package:monhorus_mobile/features/customer_portal/domain/repositories/customer_portal_repository.dart';
 import 'package:monhorus_mobile/features/customer_portal/presentation/providers/customer_portal_providers.dart';
@@ -72,6 +75,24 @@ AppUser customerWithCreateRight() => AppUser(
       customerId: testCustomer.customerId,
       customerName: testCustomer.customerName,
       permissions: const <String>{PermissionKeys.portalServiceRequestCreate},
+    );
+
+/// The default customer role also grants `portal.survey.submit`, which is the one key
+/// that opens the satisfaction survey — the two staff survey keys configure and read
+/// it rather than answer it, so neither appears here.
+AppUser customerWithSurveyRight() => AppUser(
+      id: testCustomer.id,
+      fullName: testCustomer.fullName,
+      email: testCustomer.email,
+      phone: testCustomer.phone,
+      role: testCustomer.role,
+      status: testCustomer.status,
+      customerId: testCustomer.customerId,
+      customerName: testCustomer.customerName,
+      permissions: const <String>{
+        PermissionKeys.portalServiceRequestCreate,
+        PermissionKeys.portalSurveySubmit,
+      },
     );
 
 /// A customer account that also holds the staff `object_master.view`, which is what
@@ -194,11 +215,55 @@ FloorModel floorFixture({
   });
 }
 
+/// A floor plan, as `GET /floors/:floorId/plan` returns it.
+FloorPlanModel floorPlanFixture({
+  String fileId = '7b0000000000000000000031',
+  String mimeType = 'image/png',
+}) {
+  return FloorPlanModel.fromJson(<String, dynamic>{
+    'id': '7b0000000000000000000030',
+    'floorId': '6d0000000000000000000002',
+    'fileId': fileId,
+    'fileName': 'plan-2f.png',
+    'downloadUrl': '/api/v1/files/$fileId',
+    'mimeType': mimeType,
+    'sizeBytes': 4096,
+    'title': '2-р давхрын план',
+    'description': null,
+    'uploadedById': '5f1b0c2a11b34f68bfc40003',
+    'uploadedByName': 'Б. Энхтөр',
+    'uploadedAt': '2026-07-01T00:00:00.000Z',
+    'updatedAt': '2026-07-01T00:00:00.000Z',
+  });
+}
+
+/// A real 40x20 PNG, so `AuthenticatedImage.sizedToImage` decodes it, learns its
+/// aspect ratio and gives the overlay the drawing's own rectangle. An invented byte
+/// array would fail to decode and the layer under test would never be laid out.
+final Uint8List planPngBytes = base64Decode(
+  'iVBORw0KGgoAAAANSUhEUgAAACgAAAAUCAIAAABwJOjsAAAAJElEQVR42mM4cfbSgCCGUY'
+  'tHLR61eNTiUYtHLR61eNTikWMxANtHgkoTkECiAAAAAElFTkSuQmCC',
+);
+
+/// An object as the register holds it.
+///
+/// [planPosition] defaults to null because that is the ordinary case in the running
+/// database — only two of thirty-five objects have ever been placed on a drawing — so
+/// a test that wants a placed device must say so.
+/// [scoreMissing] keeps the assessment and drops only its `score`, which is the state
+/// `?? 0` used to render as the worst band on an inverted scale.
+///
+/// [withTypeAttributes] gives the object TYPE the fields an administrator declared on it
+/// at runtime, and the object the answers a technician recorded — one of each of the four
+/// kinds, plus a declared attribute nobody has answered.
 ObjectDetailModel objectFixture({
   String id = '6e0000000000000000000003',
   String name = 'LDB-2F-02',
   int? score = 38,
   String? riskLevel = 'CRITICAL',
+  PlanPositionModel? planPosition,
+  bool scoreMissing = false,
+  bool withTypeAttributes = false,
 }) {
   return ObjectDetailModel.fromJson(<String, dynamic>{
     'id': id,
@@ -210,18 +275,28 @@ ObjectDetailModel objectFixture({
       'code': 'SUBPANEL',
       'name': 'Дэд самбар',
       'icon': 'PANEL',
+      if (withTypeAttributes) 'attributes': typeAttributesJson(),
     },
+    if (withTypeAttributes)
+      'attributeValues': <String, dynamic>{
+        'fuse': 'FUSED',
+        'mandatoryInspection': false,
+        'manufacturedYear': 2019,
+        'serialNumber': 'SN-44120',
+        // `ingressRating` is declared and deliberately unanswered.
+      },
     'customerId': testScope.customerId,
     'customerName': 'Central Tower ХХК',
     'floorId': '6d0000000000000000000002',
     'floorName': '2-р давхар',
     'buildingName': 'Төв цамхаг',
+    'planPosition': planPosition?.toJson(),
     'status': 'ACTIVE',
     'latestAssessment': score == null
         ? null
         : <String, dynamic>{
             'id': '700000000000000000000005',
-            'score': score,
+            if (!scoreMissing) 'score': score,
             'riskLevel': riskLevel,
             'assessedAt': '2026-07-20T04:12:00.000Z',
             'assessedByName': 'Б. Энхтөр',
@@ -271,6 +346,85 @@ ObjectDetailModel objectFixture({
   });
 }
 
+/// `ObjectTypeAttributeDto[]`, one row of each declared kind.
+///
+/// Administrator-defined at runtime, so nothing about these keys, labels or options is
+/// known to either app at build time — which is the whole point of rendering them from
+/// the definition rather than from a hardcoded list.
+List<Map<String, dynamic>> typeAttributesJson() => <Map<String, dynamic>>[
+      <String, dynamic>{
+        'key': 'fuse',
+        'label': 'Хайлмал',
+        'type': 'SELECT',
+        'required': true,
+        'options': <Map<String, dynamic>>[
+          <String, dynamic>{'value': 'FUSED', 'label': 'Хайлмалтай'},
+          <String, dynamic>{'value': 'UNFUSED', 'label': 'Хайлмалгүй'},
+        ],
+      },
+      <String, dynamic>{
+        'key': 'mandatoryInspection',
+        'label': 'Заавал үзлэгтэй',
+        'type': 'BOOLEAN',
+        'required': false,
+        'options': <Map<String, dynamic>>[],
+      },
+      <String, dynamic>{
+        'key': 'manufacturedYear',
+        'label': 'Үйлдвэрлэсэн он',
+        'type': 'NUMBER',
+        'required': false,
+        'options': <Map<String, dynamic>>[],
+      },
+      <String, dynamic>{
+        'key': 'serialNumber',
+        'label': 'Сериал дугаар',
+        'type': 'TEXT',
+        'required': false,
+        'options': <Map<String, dynamic>>[],
+      },
+      <String, dynamic>{
+        'key': 'ingressRating',
+        'label': 'Хамгаалалтын зэрэглэл',
+        'type': 'TEXT',
+        'required': false,
+        'options': <Map<String, dynamic>>[],
+      },
+    ];
+
+/// A building whose `riskSummary` carries exactly the per-band counts given, keyed by
+/// the wire value — so a test can put a CONFIGURED SPARE band in the summary, which the
+/// keyword-argument fixture cannot express.
+BuildingModel buildingWithBands(Map<String, int> counts) {
+  return BuildingModel.fromJson(<String, dynamic>{
+    'id': '6b0000000000000000000009',
+    'code': 'BANDS',
+    'name': 'Түвшин туршилтын байр',
+    'projectId': '6c0000000000000000000001',
+    'projectName': null,
+    'customerId': testScope.customerId,
+    'address': null,
+    'gpsLatitude': null,
+    'gpsLongitude': null,
+    'description': null,
+    'isActive': true,
+    'floorCount': 1,
+    'objectCount': counts.values.fold(0, (int sum, int n) => sum + n),
+    'riskSummary': <String, dynamic>{
+      'counts': <Map<String, dynamic>>[
+        for (final MapEntry<String, int> entry in counts.entries)
+          <String, dynamic>{'level': entry.key, 'count': entry.value},
+      ],
+      'unassessedCount': 0,
+      'hasCritical': false,
+      'lastAssessedAt': '2026-07-20T04:12:00.000Z',
+    },
+    'createdAt': '2026-01-04T00:00:00.000Z',
+    'updatedAt': '2026-07-20T04:12:00.000Z',
+    'deleteBlockers': <String>[],
+  });
+}
+
 ObjectHistoryModel objectHistoryFixture() {
   return ObjectHistoryModel.fromJson(<String, dynamic>{
     'assessments': <Map<String, dynamic>>[],
@@ -296,6 +450,9 @@ ServiceRequestDetailModel serviceRequestFixture({
   String requestNumber = 'SR-202607-0012',
   String status = 'ASSIGNED',
   bool isUrgent = true,
+  bool hasApprovedReport = false,
+  String floorId = '6d0000000000000000000002',
+  String floorName = '2-р давхар',
 }) {
   return ServiceRequestDetailModel.fromJson(<String, dynamic>{
     'id': id,
@@ -313,15 +470,14 @@ ServiceRequestDetailModel serviceRequestFixture({
       'name': 'Төв цамхаг',
     },
     'floor': <String, dynamic>{
-      'id': '6d0000000000000000000002',
-      'name': '2-р давхар',
+      'id': floorId,
+      'name': floorName,
     },
     'room': null,
     'device': <String, dynamic>{
       'id': '6e0000000000000000000003',
       'name': 'LDB-2F-02',
     },
-    'requestType': 'URGENT_CALL',
     'isUrgent': isUrgent,
     'status': status,
     'assignedEmployees': <Map<String, dynamic>>[
@@ -384,6 +540,60 @@ ServiceRequestDetailModel serviceRequestFixture({
     'parentRequestId': null,
     'createdByName': 'Д. Оюунчимэг',
     'updatedAt': '2026-07-27T02:10:00.000Z',
+    'hasApprovedReport': hasApprovedReport,
+  });
+}
+
+/// The customer projection of a technician's conclusion, as
+/// `GET /service-requests/:requestId/report/customer` returns it — the eleven fields
+/// `CustomerWorkReportDto` declares and nothing else.
+CustomerWorkReportModel customerWorkReportFixture({
+  String? conclusion = 'Таслуурын холбогч халалттай байсныг сольж, ачааллыг тэнцүүлэв.',
+  String? recommendation = 'Гурван сарын дараа дахин хэмжилт хийлгэнэ үү.',
+  int? score = 38,
+  String? riskLevel = 'CRITICAL',
+  bool repairRequired = true,
+  bool revisitRequired = true,
+  // Noon UTC, so the local date the screen prints is 2026.08.20 whatever zone the
+  // suite runs in.
+  String? revisitDate = '2026-08-20T12:00:00.000Z',
+  int beforePhotoCount = 1,
+  int afterPhotoCount = 1,
+}) {
+  return CustomerWorkReportModel.fromJson(<String, dynamic>{
+    'conclusion': conclusion,
+    'recommendation': recommendation,
+    'score': score,
+    'riskLevel': riskLevel,
+    'repairRequired': repairRequired,
+    'revisitRequired': revisitRequired,
+    'revisitDate': revisitDate,
+    'beforePhotos': <Map<String, dynamic>>[
+      for (int i = 0; i < beforePhotoCount; i++)
+        <String, dynamic>{
+          'id': 'bb0000000000000000000b0$i',
+          'name': 'omnoh-$i.png',
+          'downloadUrl': '/api/v1/files/bb0000000000000000000b0$i',
+          'mimeType': 'image/png',
+          'sizeBytes': 2048,
+          'uploadedByName': 'Б. Энхтөр',
+          'uploadedAt': '2026-07-27T05:00:00.000Z',
+        },
+    ],
+    'afterPhotos': <Map<String, dynamic>>[
+      for (int i = 0; i < afterPhotoCount; i++)
+        <String, dynamic>{
+          'id': 'cc0000000000000000000c0$i',
+          'name': 'daraah-$i.png',
+          'downloadUrl': '/api/v1/files/cc0000000000000000000c0$i',
+          'mimeType': 'image/png',
+          'sizeBytes': 3072,
+          'uploadedByName': 'Б. Энхтөр',
+          'uploadedAt': '2026-07-27T07:30:00.000Z',
+        },
+    ],
+    'approvedAt': '2026-07-28T02:15:00.000Z',
+    'approvedByName': 'Ц. Ганбаатар',
   });
 }
 
@@ -429,8 +639,138 @@ ServiceRequestAttachmentModel attachmentFixture({
 ///
 /// Failures are opt-in per method so a test can assert the error branch without a
 /// second fake.
+/// One callable equipment type, matching the worked example the rule was written with.
+///
+/// A single entry on purpose: the sheet preselects a lone option, so the cases that were
+/// written before this field existed keep submitting without choosing anything. A case
+/// about the picker itself passes its own list.
+CallableObjectTypeModel callableObjectTypeFixture({
+  String id = '760000000000000000000001',
+  String name = 'Гэрэл',
+  int callSlaHours = 24,
+}) {
+  return CallableObjectTypeModel(id: id, name: name, callSlaHours: callSlaHours);
+}
+
+// -- Survey fixtures ---------------------------------------------------------
+
+/// The two technicians the survey fixtures ask about. The first is the one the
+/// service-request fixture already assigns, so a survey and its request agree.
+const String surveyEmployeeId = '720000000000000000000007';
+const String surveySecondEmployeeId = '720000000000000000000008';
+
+const String surveyRatingQuestionId = '750000000000000000000001';
+const String surveyTextQuestionId = '750000000000000000000002';
+const String surveyChoiceQuestionId = '750000000000000000000003';
+
+/// One entry of `employees`, shaped as `SurveyPendingEmployeeDto` sends it.
+Map<String, dynamic> surveyEmployeeJson({
+  String id = surveyEmployeeId,
+  String employeeCode = 'EMP-014',
+  String firstName = 'Энхтөр',
+  String lastName = 'Батбаяр',
+  bool isRated = false,
+  bool isSkipped = false,
+}) {
+  return <String, dynamic>{
+    'employee': <String, dynamic>{
+      'id': id,
+      'employeeCode': employeeCode,
+      'firstName': firstName,
+      'lastName': lastName,
+      'photoUrl': null,
+    },
+    'isRated': isRated,
+    'isSkipped': isSkipped,
+  };
+}
+
+/// One question, shaped as `SurveyQuestionDto` sends it.
+///
+/// `sortOrder` is nullable here on purpose: the DTO declares it, but a fixture can
+/// omit it to prove a missing number stays null rather than becoming a zero that would
+/// silently sort the question to the top.
+Map<String, dynamic> surveyQuestionJson({
+  String id = surveyRatingQuestionId,
+  String text = 'Ажилтны ур чадварыг үнэлнэ үү',
+  String? helpText,
+  String type = 'RATING_1_5',
+  List<Map<String, dynamic>> options = const <Map<String, dynamic>>[],
+  bool isRequired = true,
+  bool isOverallScore = true,
+  bool isActive = true,
+  int? sortOrder = 1,
+  bool hasAnswers = false,
+}) {
+  return <String, dynamic>{
+    'id': id,
+    'text': text,
+    'helpText': helpText,
+    'type': type,
+    'options': options,
+    'isRequired': isRequired,
+    'isOverallScore': isOverallScore,
+    'isActive': isActive,
+    'sortOrder': sortOrder,
+    'hasAnswers': hasAnswers,
+  };
+}
+
+/// One outstanding survey, as `GET /surveys/pending` lists it.
+SurveyPendingItemModel surveyPendingFixture({
+  String serviceRequestId = '710000000000000000000006',
+  String requestNumber = 'SR-202607-0012',
+  String? buildingName = 'Төв цамхаг',
+  List<Map<String, dynamic>>? employees,
+}) {
+  return SurveyPendingItemModel.fromJson(<String, dynamic>{
+    'serviceRequestId': serviceRequestId,
+    'requestNumber': requestNumber,
+    'buildingName': buildingName,
+    'completedAt': '2026-07-28T02:15:00.000Z',
+    'employees': employees ?? <Map<String, dynamic>>[surveyEmployeeJson()],
+  });
+}
+
+/// The form for one request, as `GET /surveys/requests/:id/form` returns it.
+///
+/// One required rating and one optional free-text question by default — the smallest
+/// catalogue that still exercises a required answer, an optional one and two different
+/// value fields on the wire.
+SurveyFormModel surveyFormFixture({
+  String serviceRequestId = '710000000000000000000006',
+  String requestNumber = 'SR-202607-0012',
+  List<Map<String, dynamic>>? questions,
+  List<Map<String, dynamic>>? employees,
+}) {
+  return SurveyFormModel.fromJson(<String, dynamic>{
+    'serviceRequestId': serviceRequestId,
+    'requestNumber': requestNumber,
+    'questions': questions ??
+        <Map<String, dynamic>>[
+          surveyQuestionJson(),
+          surveyQuestionJson(
+            id: surveyTextQuestionId,
+            text: 'Нэмэлт сэтгэгдэл',
+            type: 'TEXT',
+            isRequired: false,
+            isOverallScore: false,
+            sortOrder: 2,
+          ),
+        ],
+    'employees': employees ?? <Map<String, dynamic>>[surveyEmployeeJson()],
+  });
+}
+
+/// One recorded call to `POST /surveys/requests/:id/responses`.
+typedef RecordedSurveyResponse = ({
+  String requestId,
+  SubmitSurveyResponseRequest request,
+});
+
 class FakeCustomerPortalRepository implements CustomerPortalRepository {
   FakeCustomerPortalRepository({
+    List<CallableObjectTypeModel>? callableObjectTypes,
     List<BuildingModel>? buildings,
     List<FloorModel>? floors,
     List<ObjectListItemModel>? objects,
@@ -438,11 +778,25 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
     List<NotificationModel>? notifications,
     ObjectDetailModel? objectDetail,
     ServiceRequestDetailModel? requestDetail,
+    Uint8List? fileBytes,
+    List<SurveyPendingItemModel>? pendingSurveys,
     this.floorPlan,
     this.objectHistory,
+    this.workReport,
+    this.surveyForm,
     this.failure,
     this.uploadFailure,
-  })  : buildings = buildings ?? <BuildingModel>[buildingFixture()],
+    this.surveySubmitFailure,
+    this.vocabulary = ServerVocabulary.empty,
+    this.vocabularyFailure,
+    this.buildingPageSize = 100,
+    this.objectPageSize = 100,
+    this.requestPageSize = 100,
+  })  : fileBytes = fileBytes ?? Uint8List(0),
+        pendingSurveys = pendingSurveys ?? const <SurveyPendingItemModel>[],
+        callableObjectTypes =
+            callableObjectTypes ?? <CallableObjectTypeModel>[callableObjectTypeFixture()],
+        buildings = buildings ?? <BuildingModel>[buildingFixture()],
         floors = floors ?? <FloorModel>[floorFixture()],
         objects = objects ?? <ObjectListItemModel>[objectFixture()],
         requests =
@@ -452,13 +806,61 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
         requestDetail = requestDetail ?? serviceRequestFixture();
 
   final List<BuildingModel> buildings;
+
+  /// What `GET /vocabulary` answers with.
+  ///
+  /// Empty by default, and deliberately so: that is the state every screen has to keep
+  /// working in, and it is what the compiled-in labels and colours are for. A test that
+  /// cares about an administrator's renaming passes one in.
+  final ServerVocabulary vocabulary;
+
+  /// Makes the vocabulary read fail on its own, without failing everything else.
+  ///
+  /// Separate from [failure] because the interesting case is the asymmetric one: a
+  /// portal whose data loads perfectly and whose vocabulary call did not, which must
+  /// look exactly like a portal that never had one.
+  final Failure? vocabularyFailure;
+
+  /// How many times the vocabulary was asked for. It should be once a session.
+  int vocabularyReads = 0;
+
+  /// How many buildings one page of `GET /buildings` returns. Defaults to the
+  /// schema's own cap, so the ordinary test sees a single page.
+  final int buildingPageSize;
+
+  /// Page numbers `listBuildings` was called with, so a test can assert the caller
+  /// read past the first one instead of summing a truncated list.
+  final List<int> buildingPagesRequested = <int>[];
+
+  /// How many objects one page of `GET /objects-master` returns. Defaults to the
+  /// schema's own cap, so the ordinary test sees a single page.
+  final int objectPageSize;
+
+  /// The page numbers `listObjects` was called with. A floor bigger than one page is
+  /// the case the plan's markers and its unplaced count were both silently wrong for.
+  final List<int> objectPagesRequested = <int>[];
+
+  /// How many requests one page of `GET /service-requests` returns.
+  final int requestPageSize;
+
+  /// The page numbers `listServiceRequests` was called with.
+  final List<int> requestPagesRequested = <int>[];
+
   final List<FloorModel> floors;
   final List<ObjectListItemModel> objects;
   final List<ServiceRequestListItemModel> requests;
   final List<NotificationModel> notifications;
+
+  /// What the picker will offer. One entry by default.
+  final List<CallableObjectTypeModel> callableObjectTypes;
   final ObjectDetailModel objectDetail;
   final ServiceRequestDetailModel requestDetail;
   final FloorPlanModel? floorPlan;
+
+  /// What `GET /files/:fileId` returns. Empty by default, which every screen renders as
+  /// "could not read the picture"; a test that needs a plan to actually decode — the
+  /// pin tests — passes real PNG bytes.
+  final Uint8List fileBytes;
 
   /// The object timeline, for the accounts that are entitled to one.
   ///
@@ -468,6 +870,47 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
   /// screen that rendered the timeline for every account looked healthy in the suite and
   /// 403'd on every device page in the running app.
   final ObjectHistoryModel? objectHistory;
+
+  /// The approved conclusion `GET /:requestId/report/customer` answers with.
+  ///
+  /// Null - the default - stands for the endpoint's 404, which the repository turns
+  /// into a null rather than a failure. It covers every state that is not an approved
+  /// report: none written, still a draft, submitted, returned, or somebody else's
+  /// request.
+  final CustomerWorkReportModel? workReport;
+
+  /// Request ids the report endpoint was called for. A test asserts this stays EMPTY
+  /// when `hasApprovedReport` is false — not firing that request is the entire reason
+  /// the flag is on the detail response.
+  final List<String> workReportRequestedFor = <String>[];
+
+  /// What `GET /surveys/pending` answers with.
+  ///
+  /// EMPTY by default, which is the ordinary state: almost no request is waiting on a
+  /// rating at any moment, and a fake that offered one unconditionally would grow a
+  /// survey tab on every request-detail test that was written before the survey
+  /// existed.
+  final List<SurveyPendingItemModel> pendingSurveys;
+
+  /// The form `GET /surveys/requests/:id/form` answers with.
+  ///
+  /// Null — the default — stands for the endpoint's 404, which the repository turns
+  /// into a null rather than a failure: no survey was raised, it is already finished,
+  /// or the request belongs to somebody else.
+  final SurveyFormModel? surveyForm;
+
+  /// Request ids the form endpoint was asked for. A test asserts this stays EMPTY when
+  /// nothing is pending — not firing a request known to 404 is the whole reason the
+  /// tab reads the pending list first.
+  final List<String> surveyFormRequestedFor = <String>[];
+
+  /// Every response posted, in order, with the request it was posted against. One
+  /// entry per technician, because that is what the endpoint takes.
+  final List<RecordedSurveyResponse> submittedSurveys = <RecordedSurveyResponse>[];
+
+  /// When set, submitting a survey response fails with it while every read still
+  /// succeeds, so a test can exercise the server-refusal path on its own.
+  final Failure? surveySubmitFailure;
 
   /// When set, every read fails with it.
   final Failure? failure;
@@ -506,6 +949,23 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
         totalPages: 1,
       );
 
+  /// One page of [items], the way a capped `limit` makes the real endpoints answer.
+  ///
+  /// `total` is always the whole set, which is exactly the figure a caller must not
+  /// confuse with the number of records it received.
+  PaginatedData<T> _slice<T>(List<T> items, int page, int pageSize) {
+    final int start = (page - 1) * pageSize;
+    return PaginatedData<T>(
+      items: start >= items.length
+          ? const <Never>[]
+          : items.skip(start).take(pageSize).toList(growable: false),
+      page: page,
+      limit: pageSize,
+      total: items.length,
+      totalPages: (items.length / pageSize).ceil().clamp(1, 1 << 30),
+    );
+  }
+
   @override
   Future<ApiResult<PaginatedData<ProjectModel>>> listProjects(
     ResolvedCustomerScope scope,
@@ -519,9 +979,29 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
     ResolvedCustomerScope scope, {
     String? projectId,
     String? search,
+    int page = 1,
   }) async {
     requestedCustomerIds.add(scope.customerId);
-    return _result(_page(buildings));
+    buildingPagesRequested.add(page);
+
+    // Served in pages of [buildingPageSize] so a test can put more buildings behind
+    // the API than one page holds, the way `buildingListQuerySchema`'s `limit` cap
+    // means the real one does. `total` is always the whole set, which is the figure
+    // a caller must not confuse with the number of records it received.
+    final int start = (page - 1) * buildingPageSize;
+    final List<BuildingModel> slice = start >= buildings.length
+        ? const <BuildingModel>[]
+        : buildings.skip(start).take(buildingPageSize).toList(growable: false);
+
+    return _result(
+      PaginatedData<BuildingModel>(
+        items: slice,
+        page: page,
+        limit: buildingPageSize,
+        total: buildings.length,
+        totalPages: (buildings.length / buildingPageSize).ceil().clamp(1, 1 << 30),
+      ),
+    );
   }
 
   @override
@@ -546,9 +1026,11 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
     ResolvedCustomerScope scope, {
     String? floorId,
     String? buildingId,
+    int page = 1,
   }) async {
     requestedCustomerIds.add(scope.customerId);
-    return _result(_page(objects));
+    objectPagesRequested.add(page);
+    return _result(_slice(objects, page, objectPageSize));
   }
 
   @override
@@ -575,13 +1057,22 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
     int limit = 20,
   }) async {
     requestedCustomerIds.add(scope.customerId);
-    return _result(_page(requests));
+    requestPagesRequested.add(page);
+    return _result(_slice(requests, page, requestPageSize));
   }
 
   @override
   Future<ApiResult<ServiceRequestDetailModel>> getServiceRequest(
           String requestId) async =>
       _result(requestDetail);
+
+  @override
+  Future<ApiResult<CustomerWorkReportModel?>> getCustomerWorkReport(
+    String requestId,
+  ) async {
+    workReportRequestedFor.add(requestId);
+    return _result<CustomerWorkReportModel?>(workReport);
+  }
 
   @override
   Future<ApiResult<ServiceRequestAttachmentModel>> uploadServiceRequestAttachment(
@@ -596,11 +1087,44 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
   }
 
   @override
+  Future<ApiResult<List<CallableObjectTypeModel>>> listCallableObjectTypes() async =>
+      _result(callableObjectTypes);
+
+  @override
+  Future<ApiResult<ServerVocabulary>> getVocabulary() async {
+    vocabularyReads++;
+    final Failure? refusal = vocabularyFailure;
+    if (refusal != null) return FailureResult<ServerVocabulary>(refusal);
+    return _result(vocabulary);
+  }
+
+  @override
   Future<ApiResult<ServiceRequestDetailModel>> createServiceRequest(
     CreateServiceRequestRequestModel request,
   ) async {
     created.add(request);
     return _result(requestDetail);
+  }
+
+  @override
+  Future<ApiResult<List<SurveyPendingItemModel>>> listPendingSurveys() async =>
+      _result(pendingSurveys);
+
+  @override
+  Future<ApiResult<SurveyFormModel?>> getSurveyForm(String requestId) async {
+    surveyFormRequestedFor.add(requestId);
+    return _result<SurveyFormModel?>(surveyForm);
+  }
+
+  @override
+  Future<ApiResult<void>> submitSurveyResponse(
+    String requestId,
+    SubmitSurveyResponseRequest request,
+  ) async {
+    submittedSurveys.add((requestId: requestId, request: request));
+    final Failure? error = surveySubmitFailure;
+    if (error != null) return FailureResult<void>(error);
+    return _result<void>(null);
   }
 
   @override
@@ -626,7 +1150,7 @@ class FakeCustomerPortalRepository implements CustomerPortalRepository {
 
   @override
   Future<ApiResult<Uint8List>> downloadFile(String fileId) async =>
-      _result(Uint8List(0));
+      _result(fileBytes);
 }
 
 /// Keeps [AuthController] off the secure-storage plugin, which has no

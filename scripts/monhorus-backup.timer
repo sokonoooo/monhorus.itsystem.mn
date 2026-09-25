@@ -1,0 +1,24 @@
+[Unit]
+Description=Daily Monhorus database and uploads backup
+Documentation=file:///srv/clients/monhorus/docs/DEPLOYMENT_MONHORUS_PROD.md
+
+[Timer]
+Unit=monhorus-backup.service
+
+# 02:30 local time. The host's TZ is what the backend echoes on /health -- check it
+# rather than assuming UTC.
+OnCalendar=*-*-* 02:30:00
+
+# Four sites share this box and several have their own nightly jobs. Spreading the start
+# over half an hour keeps the dump off the same minute as everyone else's cron.
+RandomizedDelaySec=30m
+
+# The single most important line here. Without it a host that is down or rebooting at
+# 02:30 simply skips that night and nobody finds out until the restore. With it, systemd
+# records the last run and fires as soon as it can once the machine is back.
+Persistent=true
+
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

@@ -27,6 +27,7 @@ import { useToast } from '../../components/ui/ToastProvider';
 import { useAuth } from '../../contexts/auth-context';
 import { useTableColumns } from '../../hooks/use-table-columns';
 import { ApiError } from '../../lib/api-client';
+import { BUSINESS_TIME_ZONE } from '../../lib/business-day';
 import { formatMinutes } from '../../lib/duration';
 import { plannedWorkService } from '../../services/planned-work.service';
 import { ScoreBar } from '../projects/objects/ObjectBadges';
@@ -38,21 +39,26 @@ import {
   ReportStatusBadge,
   TaskStatusBadge,
 } from './PlannedWorkBadges';
-import { FloorTaskSection, groupTasksByFloor } from './PlannedWorkFloorSections';
+import {
+  FloorTaskSection,
+  TaskEquipmentPanel,
+  groupTasksByFloor,
+} from './PlannedWorkFloorSections';
 import { RescheduleDrawer } from './RescheduleDrawer';
 import { TaskDetailDrawer } from './TaskDetailDrawer';
 import { TaskFormDrawer } from './TaskFormDrawer';
+import { TaskMaterialUsagePanel } from './TaskMaterialUsagePanel';
 import { TaskProgressDrawer } from './TaskProgressDrawer';
 import { TransitionActions } from './TransitionActions';
 
 function formatDate(iso: string | null): string {
   if (!iso) return '-';
-  return new Date(iso).toLocaleDateString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
+  return new Date(iso).toLocaleDateString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
 }
 
 function formatDateTime(iso: string | null): string {
   if (!iso) return '-';
-  return new Date(iso).toLocaleString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
+  return new Date(iso).toLocaleString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
 }
 
 /**
@@ -126,9 +132,10 @@ export function PlannedWorkDetailPage(): ReactElement {
   const [deleteTarget, setDeleteTarget] = useState<PlannedWorkTaskDto | null>(null);
 
   /**
-   * Sub-tasks whose equipment panel is open. Held here rather than per floor section so a
-   * row stays open when its floor group re-renders, and deliberately NOT persisted: unlike
-   * the collapsed-floor preference this is a glance at one row, not a layout choice.
+   * Sub-tasks whose detail panel — the equipment it covers and the material it drew — is
+   * open. Held here rather than per floor section so a row stays open when its floor group
+   * re-renders, and deliberately NOT persisted: unlike the collapsed-floor preference this
+   * is a glance at one row, not a layout choice.
    */
   const [expandedTaskIds, setExpandedTaskIds] = useState<readonly string[]>([]);
 
@@ -254,6 +261,11 @@ export function PlannedWorkDetailPage(): ReactElement {
       ),
     },
     {
+      key: 'createdBy',
+      header: 'Үүсгэсэн',
+      render: (row) => <span className="text-slate-700">{row.createdByName ?? '-'}</span>,
+    },
+    {
       key: 'actions',
       header: 'Үйлдэл',
       align: 'right',
@@ -283,12 +295,54 @@ export function PlannedWorkDetailPage(): ReactElement {
       render: (row) => <span className="truncate text-slate-900">{row.name}</span>,
     },
     {
+      key: 'usage',
+      header: 'Зарцуулалт',
+      render: (row) => (
+        <ProgressBar
+          // The one figure on this row with no server field behind it, because there is no
+          // percentage in the contract — it is the fill of the bar and nothing else. The
+          // NUMBERS beside and after it are the server's own, and Үлдэгдэл in particular is
+          // read rather than subtracted: the guard the backend enforces acts on the stored
+          // remainder, so a client that recomputed it could disagree with the thing that
+          // decides whether the next draw is allowed.
+          percent={row.quantity > 0 ? Math.round((row.consumedQuantity / row.quantity) * 100) : 0}
+          completedQuantity={row.consumedQuantity}
+          totalQuantity={row.quantity}
+          unitLabel={MATERIAL_UNIT_LABELS[row.unit]}
+        />
+      ),
+    },
+    {
       key: 'quantity',
-      header: 'Тоо',
+      header: 'Бүртгэсэн',
       align: 'right',
       render: (row) => (
         <span className="whitespace-nowrap font-medium text-slate-900">
           {row.quantity.toLocaleString('mn-MN')}
+        </span>
+      ),
+    },
+    {
+      key: 'consumed',
+      header: 'Зарцуулсан',
+      align: 'right',
+      render: (row) => (
+        <span className="whitespace-nowrap text-slate-700">
+          {row.consumedQuantity.toLocaleString('mn-MN')}
+        </span>
+      ),
+    },
+    {
+      key: 'remaining',
+      header: 'Үлдэгдэл',
+      align: 'right',
+      render: (row) => (
+        <span
+          className={`whitespace-nowrap font-medium ${
+            row.remainingQuantity === 0 ? 'text-amber-700' : 'text-slate-900'
+          }`}
+        >
+          {row.remainingQuantity.toLocaleString('mn-MN')}
         </span>
       ),
     },
@@ -376,16 +430,6 @@ export function PlannedWorkDetailPage(): ReactElement {
           </Alert>
         )}
 
-        {work.completionBlockers.length > 0 && !isClosed && (
-          <Alert variant="info" title="Дуусгахад дараах нь шаардлагатай">
-            <ul className="ml-4 list-disc space-y-0.5">
-              {work.completionBlockers.map((blocker) => (
-                <li key={blocker}>{blocker}</li>
-              ))}
-            </ul>
-          </Alert>
-        )}
-
         <div className="rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200">
           <div className="mb-4 flex flex-wrap items-center gap-2">
             <PlannedWorkStatusBadge status={work.effectiveStatus} />
@@ -411,9 +455,7 @@ export function PlannedWorkDetailPage(): ReactElement {
             <SummaryRow label="Бодит дууссан" value={formatDate(work.actualEndDate)} />
             <SummaryRow
               label="Түр зогссон хугацаа"
-              value={`${Math.floor(work.totalPausedMinutes / 1440)} өдөр ${Math.floor(
-                (work.totalPausedMinutes % 1440) / 60,
-              )} цаг`}
+              value={formatMinutes(work.totalPausedMinutes)}
             />
             <SummaryRow label="Дэд ажлын тоо" value={String(work.taskCount)} />
           </dl>
@@ -469,6 +511,18 @@ export function PlannedWorkDetailPage(): ReactElement {
                 onToggle={() => toggleFloor(group.key)}
                 expandedTaskIds={expandedTaskIds}
                 onToggleTask={toggleTask}
+                renderTaskPanel={(task) => (
+                  <div className="space-y-3">
+                    <TaskEquipmentPanel task={task} />
+                    <TaskMaterialUsagePanel
+                      work={work}
+                      task={task}
+                      canRecord={canRecord}
+                      isClosed={isClosed}
+                      onSaved={setWork}
+                    />
+                  </div>
+                )}
               />
             ))
           )}
@@ -476,10 +530,11 @@ export function PlannedWorkDetailPage(): ReactElement {
 
         <div className="overflow-hidden rounded-xl bg-white shadow-sm ring-1 ring-slate-200">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-5 py-3">
-            {/* The work's PLAN — what the job is expected to need, typed as name and
-                quantity. Named for the plan rather than just "Материал" so it is never
-                read as a record of what was actually issued. */}
-            <h2 className="text-sm font-semibold text-slate-900">Төлөвлөсөн материал</h2>
+            {/* The plan AND the actuals, in one place. It used to be the plan alone, and the
+                heading said so; now every row carries what was registered, what the
+                sub-tasks have drawn against it and what the server says is left, so the
+                heading names both halves rather than denying one of them. */}
+            <h2 className="text-sm font-semibold text-slate-900">Материал ба зарцуулалт</h2>
             <div className="flex items-center gap-2">
               <ColumnPicker controller={materialColumnState} />
               {canUpdate && !isClosed && (
@@ -492,9 +547,15 @@ export function PlannedWorkDetailPage(): ReactElement {
           <DataTable
             columns={materialColumnState.visibleColumns}
             rows={work.materials}
-            rowKey={(row) => row.name}
+            // The catalogue reference, not the name: a material appears at most once per
+            // work, and the name is a frozen copy that two catalogue rows could share.
+            rowKey={(row) => row.materialItemId}
+            // NUMBERED BUT NOT PAGED: the materials travel inside the work's own detail
+            // payload, so there is no endpoint to ask for a second page of.
+            numbering
+            ariaLabel="Материал ба зарцуулалт"
             emptyTitle="Материал бүртгэгдээгүй"
-            emptyDescription="Ажилд шаардагдах материалын нэр, тоо энд харагдана."
+            emptyDescription="Ажилд бүртгэсэн материал, түүний зарцуулалт ба үлдэгдэл энд харагдана."
           />
         </div>
 

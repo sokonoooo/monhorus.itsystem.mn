@@ -5,8 +5,6 @@ import {
   REPORT_STATUS_LABELS,
   REPORT_TYPES,
   REPORT_TYPE_LABELS,
-  RISK_LEVELS,
-  RISK_LEVEL_LABELS,
   type CustomerDto,
   type InspectionListItemDto,
   type InspectionListQuery,
@@ -29,26 +27,27 @@ import {
   FILTER_LABEL,
   FILTER_SELECT,
 } from '../../components/ui/control-styles';
+import {
+  riskLabelOf,
+  riskLevelsInOrder,
+  riskPaletteOf,
+} from '../../components/ui/risk-palette';
 import { useTableColumns } from '../../hooks/use-table-columns';
 import { ApiError } from '../../lib/api-client';
+import { BUSINESS_TIME_ZONE, businessDayEnd, businessDayStart } from '../../lib/business-day';
 import { objectService } from '../../services/object.service';
 import { projectService } from '../../services/project.service';
 import { useRiskBands } from '../../hooks/use-risk-bands';
 import { inspectionService } from '../../services/report.service';
 import { RiskLegend, ScoreBar } from '../projects/objects/ObjectBadges';
 
+/** The largest page the project list schema will accept. Asking for more is a 400. */
+const PROJECT_PAGE_LIMIT = 100;
+
 function formatDate(iso: string | null): string {
   if (!iso) return '-';
-  return new Date(iso).toLocaleDateString('mn-MN', { timeZone: 'Asia/Ulaanbaatar' });
+  return new Date(iso).toLocaleDateString('mn-MN', { timeZone: BUSINESS_TIME_ZONE });
 }
-
-const BAND_TONES: Record<RiskLevel, string> = {
-  NORMAL: 'text-green-700',
-  ATTENTION: 'text-amber-700',
-  SCHEDULE_REPAIR: 'text-orange-700',
-  CRITICAL: 'text-red-700',
-  OUT_OF_SERVICE: 'text-stone-800',
-};
 
 function CountCard({
   label,
@@ -98,8 +97,21 @@ export function InspectionListPage(): ReactElement {
       ...(searchParams.get('riskLevel')
         ? { riskLevel: searchParams.get('riskLevel') as RiskLevel }
         : {}),
-      ...(searchParams.get('dateFrom') ? { dateFrom: `${searchParams.get('dateFrom')}T00:00:00.000Z` } : {}),
-      ...(searchParams.get('dateTo') ? { dateTo: `${searchParams.get('dateTo')}T23:59:59.999Z` } : {}),
+      /*
+       * The instants bounding the chosen Ulaanbaatar days.
+       *
+       * `${date}T00:00:00.000Z` framed the UTC day, which begins eight hours after the one
+       * every date on this page is written in. Each end therefore fell on the wrong day: a
+       * report signed at 07:00 on the 21st was missing from a range ending on the 21st and
+       * counted in one ending on the 20th. `businessDayStart`/`businessDayEnd` mirror the
+       * backend's own `dayBounds`, so both ends of the request now mean the same day.
+       */
+      ...(searchParams.get('dateFrom')
+        ? { dateFrom: businessDayStart(searchParams.get('dateFrom')!) }
+        : {}),
+      ...(searchParams.get('dateTo')
+        ? { dateTo: businessDayEnd(searchParams.get('dateTo')!) }
+        : {}),
     };
   }, [searchParams]);
 
@@ -107,6 +119,8 @@ export function InspectionListPage(): ReactElement {
   const [summary, setSummary] = useState<InspectionSummaryDto | null>(null);
   const [customers, setCustomers] = useState<CustomerDto[]>([]);
   const [projects, setProjects] = useState<ProjectDto[]>([]);
+  /** What the server says exists, so a capped page of projects can be stated as capped. */
+  const [projectsTotal, setProjectsTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchDraft, setSearchDraft] = useState(() => searchParams.get('search') ?? '');
@@ -143,12 +157,16 @@ export function InspectionListPage(): ReactElement {
     let cancelled = false;
     void Promise.all([
       objectService.customers(),
-      projectService.listProjects({ limit: 100, isActive: true }),
+      // 100 is the cap the list schema enforces; more is a 400, not a bigger page.
+      projectService.listProjects({ limit: PROJECT_PAGE_LIMIT, isActive: true }),
     ])
       .then(([customerList, projectPage]) => {
         if (cancelled) return;
         setCustomers(customerList);
         setProjects(projectPage.items as ProjectDto[]);
+        // A filter that quietly omits projects reads as "this project has no inspections",
+        // which is a different and much more misleading statement.
+        setProjectsTotal(projectPage.total);
       })
       .catch(() => undefined);
     return () => {
@@ -266,8 +284,10 @@ export function InspectionListPage(): ReactElement {
             {REPORT_STATUS_LABELS[row.status]}
           </span>
           {row.riskLevel ? (
-            <span className={`whitespace-nowrap text-xs ${BAND_TONES[row.riskLevel]}`}>
-              {RISK_LEVEL_LABELS[row.riskLevel]}
+            <span
+              className={`whitespace-nowrap text-xs ${riskPaletteOf(row.riskLevel, bands).text}`}
+            >
+              {riskLabelOf(row.riskLevel, bands)}
             </span>
           ) : (
             // A report that recorded a visit without scoring has no band to show.
@@ -421,6 +441,11 @@ export function InspectionListPage(): ReactElement {
               </option>
             ))}
           </select>
+          {projectsTotal > projects.length && (
+            <p className="mt-1 text-xs text-slate-500">
+              Нийт {projectsTotal} төслөөс эхний {projects.length} нь жагсав.
+            </p>
+          )}
         </div>
 
         <div>
@@ -434,9 +459,12 @@ export function InspectionListPage(): ReactElement {
             className={FILTER_SELECT}
           >
             <option value="">Бүгд</option>
-            {RISK_LEVELS.map((level) => (
+            {/* The CONFIGURED bands, not `RISK_LEVELS`: that list carries three reserved
+                spare keys, and offering «Түвшин 7» as a filter would promise a band no
+                assessment has ever been stored as. */}
+            {riskLevelsInOrder(bands).map((level) => (
               <option key={level} value={level}>
-                {RISK_LEVEL_LABELS[level]}
+                {riskLabelOf(level, bands)}
               </option>
             ))}
           </select>
@@ -470,7 +498,9 @@ export function InspectionListPage(): ReactElement {
       </div>
 
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <RiskLegend bands={bands} />
+        {/* Null means the thresholds could not be read. The legend then says nothing
+            rather than printing the shipped defaults as though they were in force. */}
+        {bands === null ? <span /> : <RiskLegend bands={bands} />}
         <ColumnPicker controller={columnState} />
       </div>
 
@@ -479,6 +509,9 @@ export function InspectionListPage(): ReactElement {
           columns={columnState.visibleColumns}
           rows={data?.items ?? []}
           rowKey={(row) => row.id}
+          // Numbered off the response rather than the query, so a request in flight can
+          // never number the rows on screen against the page they did not come from.
+          numbering={{ page: data?.page ?? 1, limit: data?.limit ?? 25 }}
           loading={loading}
           error={error}
           onRowClick={(row) =>

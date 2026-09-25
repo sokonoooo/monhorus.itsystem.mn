@@ -26,7 +26,7 @@ class MonhorusApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Monhorus',
+      title: 'Agata',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light,
       home: const AuthGate(),
@@ -78,7 +78,7 @@ class _SplashScreen extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: <Widget>[
-            Text('Monhorus', style: CustomerTokens.display),
+            Text('Agata', style: CustomerTokens.display),
             const SizedBox(height: 20),
             const CircularProgressIndicator(),
           ],

@@ -1,22 +1,29 @@
-import {
-  RISK_LEVELS,
-  RISK_LEVEL_LABELS,
-  type BuildingDto,
-  type RiskLevel,
-} from '@monhorus/shared';
+import type { BuildingDto } from '@monhorus/shared';
 import type { ReactElement } from 'react';
 import { Link } from 'react-router-dom';
 
-/** Section 10 assigns each band its colour; nothing here invents one. */
-const BAND_COLOURS: Record<RiskLevel, string> = {
-  NORMAL: '#4a9a5e',
-  ATTENTION: '#d9a441',
-  SCHEDULE_REPAIR: '#e08542',
-  CRITICAL: '#cf5a52',
-  OUT_OF_SERVICE: '#3f3a36',
-};
+import {
+  riskLabelOf,
+  riskLevelsInOrder,
+  riskPaletteOf,
+  type RiskBandView,
+} from '../../components/ui/risk-palette';
+import { useRiskBands } from '../../hooks/use-risk-bands';
 
-/** Nothing assessed yet is its own case, not a band. */
+/*
+ * Segment colour comes from the band's configured colour via `risk-palette.ts` — the
+ * `.chartMuted` step, which is the softened ramp this chart has always used: bars sit edge
+ * to edge with no gap between segments, so the badge hues at full strength vibrate against
+ * each other here.
+ */
+
+/**
+ * Nothing assessed yet is its own case, not a band.
+ *
+ * Kept a local constant rather than taken from the palette's grey: this chart states
+ * "unassessed" in blue and always has, and it is the only segment that is not a band at
+ * all — borrowing a band colour for it would make an absence look like a verdict.
+ */
 const UNASSESSED_COLOUR = '#5b8dd9';
 
 const MIN_BAR_HEIGHT = 44;
@@ -30,16 +37,23 @@ interface BuildingBar {
   hasCritical: boolean;
 }
 
-function toBars(buildings: readonly BuildingDto[]): BuildingBar[] {
+function toBars(
+  buildings: readonly BuildingDto[],
+  bands: readonly RiskBandView[] | null,
+): BuildingBar[] {
+  const levels = riskLevelsInOrder(bands);
+
   return buildings.map((building, index) => {
     const counts = new Map(building.riskSummary.counts.map((entry) => [entry.level, entry.count]));
 
-    const segments: BuildingBar['segments'] = RISK_LEVELS.map((level) => ({
-      key: level as string,
-      label: RISK_LEVEL_LABELS[level],
-      count: counts.get(level) ?? 0,
-      colour: BAND_COLOURS[level],
-    })).filter((segment) => segment.count > 0);
+    const segments: BuildingBar['segments'] = levels
+      .map((level) => ({
+        key: level as string,
+        label: riskLabelOf(level, bands),
+        count: counts.get(level) ?? 0,
+        colour: riskPaletteOf(level, bands).chartMuted,
+      }))
+      .filter((segment) => segment.count > 0);
 
     if (building.riskSummary.unassessedCount > 0) {
       segments.push({
@@ -76,7 +90,8 @@ export function BuildingRiskChart({
 }: {
   buildings: readonly BuildingDto[];
 }): ReactElement {
-  const bars = toBars(buildings);
+  const bands = useRiskBands();
+  const bars = toBars(buildings, bands);
   const maxTotal = bars.reduce((highest, bar) => Math.max(highest, bar.total), 0);
 
   return (
@@ -152,14 +167,16 @@ export function BuildingRiskChart({
       </div>
 
       <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 border-t border-slate-100 pt-2">
-        {RISK_LEVELS.map((level) => (
+        {/* Only the configured bands. `RISK_LEVELS` carries three reserved spares, and a
+            legend built from it would name bands nothing can be scored as. */}
+        {riskLevelsInOrder(bands).map((level) => (
           <span key={level} className="flex items-center gap-1.5 text-[11px] text-slate-600">
             <span
               className="h-2.5 w-2.5 rounded-sm"
-              style={{ backgroundColor: BAND_COLOURS[level] }}
+              style={{ backgroundColor: riskPaletteOf(level, bands).chartMuted }}
               aria-hidden="true"
             />
-            {RISK_LEVEL_LABELS[level]}
+            {riskLabelOf(level, bands)}
           </span>
         ))}
         <span className="flex items-center gap-1.5 text-[11px] text-slate-600">

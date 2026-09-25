@@ -1,4 +1,4 @@
-import { PERMISSIONS, SETTING_KEYS } from '@monhorus/shared';
+import { DEFAULT_RISK_BANDS, PERMISSIONS, SETTING_KEYS, type RiskBandConfig } from '@monhorus/shared';
 import type { Express } from 'express';
 import request from 'supertest';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -18,6 +18,8 @@ import { AuditLog } from '../audit/audit-log.model';
 import { Employee } from '../employee/employee.model';
 import { ObjectNode } from '../objects/object.models';
 import { PlannedWorkTask } from '../planned-work/planned-work.models';
+import { Setting } from '../settings/setting.model';
+import { invalidateSettingsCache } from '../settings/settings.service';
 import { InspectionReport } from './inspection-report.model';
 
 /**
@@ -38,6 +40,9 @@ const AUTHOR_PERMISSIONS = [
   PERMISSIONS.PLANNED_WORK_CHANGE_STATUS,
   PERMISSIONS.PLANNED_WORK_RECORD_PROGRESS,
   PERMISSIONS.PLANNED_WORK_SUBMIT_REPORT,
+  // Reaching PLANNED now passes through the approval gate, so the fixture author needs
+  // the approve key on top of the change_status key it drives the rest of the run with.
+  PERMISSIONS.PLANNED_WORK_APPROVE,
 ] as const;
 
 /** The administrator side: reviews the report, cannot author it. */
@@ -56,16 +61,41 @@ let authorId: string;
 let authorToken: string;
 let reviewerToken: string;
 let secondFloorId: string;
+/** The employee every approval hands its work to, unless a case names its own. */
+let crewEmployeeId: string;
 
 /**
  * The read-only caller is created on demand.
  *
  * Logins are rate limited per process, so a third fixture user in every `beforeEach`
  * would exhaust the window long before the suite finished.
+ *
+ * IT CARRIES AN EMPLOYEE CARD, and that is not decoration. `planned_work.view` is not on
+ * its own a licence to read a job any more: the loader intersects the id with
+ * `resolveAssignedWorkFilter`, and an account with no `Employee.systemUser` link matches no
+ * assignment at all. The card is what lets the cases below hand this caller the work and
+ * then test the PERMISSION gate in isolation from the data scope, which is what they are
+ * about. The scope itself is covered in `inspection-report.scope.api.test.ts`.
  */
-async function viewerLogin(): Promise<string> {
+async function viewerStaff(): Promise<{ token: string; employeeId: string }> {
   const viewer = await createUserWithPermissions('irviewer@test.mn', VIEWER_PERMISSIONS);
-  return login(viewer.email, viewer.password);
+  const employee = await Employee.create({
+    employeeCode: 'EMP-IR-VIEW',
+    firstName: 'Нарантуяа',
+    lastName: 'Болд',
+    company: org.companyId,
+    department: org.departmentId,
+    position: org.positionId,
+    employeeType: 'FULL_TIME',
+    employmentStartDate: new Date('2024-01-01'),
+    status: 'ACTIVE',
+    systemUser: viewer.userId,
+  });
+
+  return {
+    token: await login(viewer.email, viewer.password),
+    employeeId: String(employee._id),
+  };
 }
 
 async function login(email: string, password: string): Promise<string> {
@@ -113,11 +143,28 @@ async function addTask(workId: string, options: TaskOptions = {}): Promise<strin
   return tasks.find((task) => task.title === (options.title ?? 'Самбарын үзлэг'))!.id;
 }
 
-async function transition(workId: string, action: string): Promise<request.Response> {
+async function transition(
+  workId: string,
+  action: string,
+  body: Record<string, unknown> = {},
+): Promise<request.Response> {
   return request(app)
     .post(`${API}/planned-work/${workId}/transition`)
     .set('Authorization', `Bearer ${authorToken}`)
-    .send({ action });
+    .send({ action, ...body });
+}
+
+/**
+ * Drives a draft all the way to PLANNED.
+ *
+ * REACHING PLANNED TAKES TWO ACTIONS NOW: PLAN only submits the work for approval
+ * (DRAFT -> PENDING_APPROVAL), and APPROVE is what plans it — and APPROVE refuses to run
+ * without at least one employee, so the crew travels with the approval. `crew` is
+ * overridable for the cases that assert on the responsible employees by name.
+ */
+async function planAndApprove(workId: string, crew: string[] = [crewEmployeeId]): Promise<void> {
+  expect((await transition(workId, 'PLAN')).status).toBe(200);
+  expect((await transition(workId, 'APPROVE', { assignedEmployeeIds: crew })).status).toBe(200);
 }
 
 interface CompletionOptions {
@@ -156,11 +203,16 @@ async function completeTask(
   expect(progress.status).toBe(200);
 }
 
-/** A started work whose single sub-task is finished with the given score. */
-async function scoredWork(score = 88): Promise<string> {
+/**
+ * A started work whose single sub-task is finished with the given score.
+ *
+ * `crew` is overridable so a case can put a specific caller on the job. The author drives
+ * the run either way: it holds the oversight keys and is never bounded by the crew.
+ */
+async function scoredWork(score = 88, crew: string[] = [crewEmployeeId]): Promise<string> {
   const workId = await createWork();
   const taskId = await addTask(workId);
-  expect((await transition(workId, 'PLAN')).status).toBe(200);
+  await planAndApprove(workId, crew);
   expect((await transition(workId, 'START')).status).toBe(200);
   await completeTask(workId, taskId, { score });
   return workId;
@@ -195,8 +247,8 @@ async function act(
 }
 
 /** A generated report sitting in DRAFT. */
-async function generatedWork(score = 88): Promise<string> {
-  const workId = await scoredWork(score);
+async function generatedWork(score = 88, crew: string[] = [crewEmployeeId]): Promise<string> {
+  const workId = await scoredWork(score, crew);
   expect((await generate(workId)).status).toBe(201);
   return workId;
 }
@@ -211,6 +263,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await resetDomainCollections();
+  // The resolved settings map is cached in process for 15 s. `resetDomainCollections`
+  // empties the collection behind it, so without this a case that configures a ladder
+  // leaks it into whichever case runs next.
+  invalidateSettingsCache();
   org = await createOrgFixture();
   objects = await createObjectFixture();
 
@@ -230,6 +286,21 @@ beforeEach(async () => {
 
   const reviewer = await createUserWithPermissions('irreviewer@test.mn', REVIEWER_PERMISSIONS);
   reviewerToken = await login(reviewer.email, reviewer.password);
+
+  // Approval assigns, so every run needs a real employee to hand the work to. Deliberately
+  // NOT linked to a system user: the author must keep resolving its own Employee card.
+  const crew = await Employee.create({
+    employeeCode: 'EMP-IR-CREW',
+    firstName: 'Сүх',
+    lastName: 'Ганбат',
+    company: org.companyId,
+    department: org.departmentId,
+    position: org.positionId,
+    employeeType: 'FULL_TIME',
+    employmentStartDate: new Date('2024-01-01'),
+    status: 'ACTIVE',
+  });
+  crewEmployeeId = String(crew._id);
 });
 
 describe('readiness', () => {
@@ -248,7 +319,7 @@ describe('readiness', () => {
     const workId = await createWork();
     await addTask(workId, { title: 'Дууссан ажил' });
     await addTask(workId, { title: 'Дуусаагүй ажил' });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
 
     const response = await readiness(workId);
@@ -274,7 +345,7 @@ describe('readiness', () => {
     const workId = await createWork();
     const done = await addTask(workId, { title: 'Хийсэн' });
     const skipped = await addTask(workId, { title: 'Хийхгүй' });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
     await completeTask(workId, done, { score: 90 });
 
@@ -323,7 +394,7 @@ describe('generation', () => {
   it('refuses generation while a sub-task is unfinished and names it', async () => {
     const workId = await createWork();
     await addTask(workId, { title: 'Дуусаагүй ажил' });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
 
     const response = await generate(workId);
@@ -371,7 +442,9 @@ describe('generation', () => {
       assignedTeamId: org.teamId,
     });
     const taskId = await addTask(workId);
-    await transition(workId, 'PLAN');
+    // Approval is what sets the crew, so this case's own employee has to be named there
+    // rather than only on the draft — the signature block is read from that crew.
+    await planAndApprove(workId, [String(employee._id)]);
     await transition(workId, 'START');
     await completeTask(workId, taskId, { score: 90 });
     expect((await generate(workId)).status).toBe(201);
@@ -403,7 +476,7 @@ describe('generation', () => {
     const first = await addTask(workId, { title: 'Нэгдүгээр давхрын самбар' });
     const second = await addTask(workId, { title: 'Хоёрдугаар давхрын самбар', floorId: secondFloorId });
     const nowhere = await addTask(workId, { title: 'Давхаргүй ажил', floorId: null });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
     await completeTask(workId, first, { score: 90 });
     await completeTask(workId, second, { score: 85 });
@@ -452,7 +525,7 @@ describe('findings and the overall safety level', () => {
     const workId = await createWork();
     const healthy = await addTask(workId, { title: 'Хэвийн самбар' });
     const faulty = await addTask(workId, { title: 'Гэмтэлтэй самбар', floorId: secondFloorId });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
     await completeTask(workId, healthy, { score: 95 });
     await completeTask(workId, faulty, {
@@ -478,7 +551,7 @@ describe('findings and the overall safety level', () => {
     const good = await addTask(workId, { title: 'Сайн' });
     const middling = await addTask(workId, { title: 'Дунд', floorId: secondFloorId });
     const bad = await addTask(workId, { title: 'Муу', floorId: null });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
     await completeTask(workId, good, { score: 95 });
     await completeTask(workId, middling, { score: 50 });
@@ -497,7 +570,7 @@ describe('findings and the overall safety level', () => {
   it('reports no overall level when nothing was scored', async () => {
     const workId = await createWork();
     const skipped = await addTask(workId, { title: 'Хийгдээгүй' });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
     const skip = await request(app)
       .post(`${API}/planned-work/${workId}/tasks/${skipped}/progress`)
@@ -516,7 +589,7 @@ describe('findings and the overall safety level', () => {
   it('recomputes the overall level from the sub-tasks rather than storing it', async () => {
     const workId = await createWork();
     const taskId = await addTask(workId);
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
     await completeTask(workId, taskId, { score: 95 });
     expect((await generate(workId)).status).toBe(201);
@@ -536,10 +609,10 @@ describe('findings and the overall safety level', () => {
 });
 
 describe('auto-composed draft', () => {
-  it('composes the narrative and seeds the replacement lists from the worst findings', async () => {
+  it('composes the narrative and seeds the panel list from the worst findings', async () => {
     const workId = await createWork();
     const taskId = await addTask(workId, { title: 'Гол самбар' });
-    await transition(workId, 'PLAN');
+    await planAndApprove(workId);
     await transition(workId, 'START');
     await completeTask(workId, taskId, {
       score: 25,
@@ -556,7 +629,29 @@ describe('auto-composed draft', () => {
     expect(report.conclusion).toContain('Ноцтой эрсдэлтэй');
     expect(report.recommendation).toContain('Автомат таслуурыг солих.');
     expect(report.replacementPanels).toEqual(['1 давхар - Гол самбар']);
-    expect(report.replacementConnections).toEqual(['1 давхар - Гол самбар']);
+  });
+
+  /**
+   * The connection list used to arrive as a verbatim copy of the panel list. Nothing in
+   * the sub-task data distinguishes a самбар from a холболт, so that put an unsupported
+   * claim into a printed official act. It arrives empty and a human writes it.
+   */
+  it('never pre-fills the connection list from the panel findings', async () => {
+    const workId = await createWork();
+    const taskId = await addTask(workId, { title: 'Гол самбар' });
+    await planAndApprove(workId);
+    await transition(workId, 'START');
+    await completeTask(workId, taskId, {
+      score: 25,
+      note: 'Автомат таслуур ажиллахгүй.',
+      recommendation: 'Автомат таслуурыг солих.',
+    });
+    expect((await generate(workId)).status).toBe(201);
+
+    const report = (await fetchReport(workId)).body.data;
+    expect(report.replacementConnections).toEqual([]);
+    // The panel list is unaffected: it is derived from findings about panels.
+    expect(report.replacementPanels).toEqual(['1 давхар - Гол самбар']);
   });
 
   it('clears isAutoDraft the moment an administrator edits the text', async () => {
@@ -750,16 +845,21 @@ describe('review workflow', () => {
 
 describe('permissions', () => {
   it('lets planned_work.view read the report and its readiness', async () => {
-    const workId = await generatedWork();
-    const viewerToken = await viewerLogin();
+    // On the crew, so what is under test is the permission and not the assignment scope.
+    const viewer = await viewerStaff();
+    const workId = await generatedWork(88, [viewer.employeeId]);
 
-    expect((await fetchReport(workId, viewerToken)).status).toBe(200);
-    expect((await readiness(workId, viewerToken)).status).toBe(200);
+    expect((await fetchReport(workId, viewer.token)).status).toBe(200);
+    expect((await readiness(workId, viewer.token)).status).toBe(200);
   });
 
   it('refuses authoring without planned_work.submit_report', async () => {
-    const workId = await scoredWork();
-    const viewerToken = await viewerLogin();
+    // Also on the crew: a caller outside the scope is refused by the guard above the
+    // router and would answer 403 without the permission gate ever being consulted, which
+    // would make this case pass for the wrong reason.
+    const viewer = await viewerStaff();
+    const workId = await scoredWork(88, [viewer.employeeId]);
+    const viewerToken = viewer.token;
 
     expect((await generate(workId, viewerToken)).status).toBe(403);
     expect((await generate(workId, reviewerToken)).status).toBe(403);
@@ -849,5 +949,148 @@ describe('audit trail', () => {
     const reopened = await AuditLog.findOne({ action: 'INSPECTION_REPORT_REOPENED' });
     expect((reopened?.oldValue as { version: number }).version).toBe(1);
     expect((reopened?.newValue as { version: number }).version).toBe(2);
+  });
+});
+
+/**
+ * A ladder with a sixth band, which the product advertises as a settings change.
+ *
+ * `RISK_LEVELS` reserves `BAND_6/7/8` so the band count can change without a migration,
+ * and the verdict used to be ranked by position in that list — reversed, which put the
+ * unnamed spares ABOVE `OUT_OF_SERVICE`. The first administrator to name a MILD sixth band
+ * therefore had every inspection containing one reported to the customer at that band, and
+ * every healthy sub-task in it filed as a зөрчил, on a printed safety document.
+ */
+describe('a configured sixth band', () => {
+  /** Written straight into the collection: the settings API is exercised in its own suite. */
+  async function storeBands(bands: readonly RiskBandConfig[]): Promise<void> {
+    await Setting.updateOne(
+      { key: SETTING_KEYS.EVAL_RISK_BANDS },
+      { $set: { value: bands, updatedBy: null, updatedByName: 'test' } },
+      { upsert: true },
+    );
+    invalidateSettingsCache();
+  }
+
+  /** Хэвийн keeps 81..90; 91..100 becomes a milder band above it. */
+  const MILD_SIXTH: readonly RiskBandConfig[] = [
+    ...DEFAULT_RISK_BANDS,
+    {
+      key: 'BAND_6',
+      label: 'Шинэ, гэмтэлгүй',
+      colour: 'blue',
+      minScore: 91,
+      requiresConclusion: false,
+      requiresRecommendation: false,
+      decommissions: false,
+      notifies: false,
+    },
+  ];
+
+  it('is not reported as the verdict, and its sub-tasks are not filed as зөрчил', async () => {
+    await storeBands(MILD_SIXTH);
+
+    const workId = await createWork();
+    const excellent = await addTask(workId, { title: 'Шинэ самбар' });
+    const watchful = await addTask(workId, { title: 'Анхаарах самбар', floorId: secondFloorId });
+    await planAndApprove(workId);
+    expect((await transition(workId, 'START')).status).toBe(200);
+    await completeTask(workId, excellent, { score: 97 });
+    await completeTask(workId, watchful, { score: 70 });
+    expect((await generate(workId)).status).toBe(201);
+
+    const report = (await fetchReport(workId)).body.data;
+
+    // The sub-task really was banded into the sixth band.
+    const rows = (report.groups as { tasks: { title: string; riskLevel: string }[] }[]).flatMap(
+      (group) => group.tasks,
+    );
+    expect(rows.find((task) => task.title === 'Шинэ самбар')?.riskLevel).toBe('BAND_6');
+
+    // The verdict is the worst band actually present, which is the ATTENTION sub-task.
+    expect(report.overallLevel).toBe('ATTENTION');
+    expect(report.overallLabel).toBe('Анхаарах шаардлагатай');
+
+    // And only that one is a зөрчил. The healthy panel is not a finding.
+    expect((report.issues as { title: string }[]).map((issue) => issue.title)).toEqual([
+      'Анхаарах самбар',
+    ]);
+    expect(report.conclusion).toContain('Илэрсэн зөрчил: 1.');
+  });
+
+  it('prints the administrator name for a band they named, not «Түвшин 6»', async () => {
+    await storeBands(MILD_SIXTH);
+
+    const workId = await createWork();
+    const taskId = await addTask(workId, { title: 'Шинэ самбар' });
+    await planAndApprove(workId);
+    expect((await transition(workId, 'START')).status).toBe(200);
+    await completeTask(workId, taskId, { score: 97 });
+    expect((await generate(workId)).status).toBe(201);
+
+    const report = (await fetchReport(workId)).body.data;
+
+    expect(report.overallLevel).toBe('BAND_6');
+    expect(report.overallLabel).toBe('Шинэ, гэмтэлгүй');
+    expect(report.issues).toEqual([]);
+    // Nothing was found, so nothing is seeded onto the replacement list.
+    expect(report.replacementPanels).toEqual([]);
+  });
+
+  /**
+   * The verdict WORDING and the ladder's band name are two vocabularies. The
+   * administrator's wins where they actually changed it; a band still carrying its shipped
+   * label keeps the report's own phrasing, which is what leaves an unconfigured install
+   * unchanged.
+   */
+  it('uses the administrator wording for a band they renamed', async () => {
+    await storeBands(
+      DEFAULT_RISK_BANDS.map((band) =>
+        band.key === 'CRITICAL' ? { ...band, label: 'Аюултай' } : band,
+      ),
+    );
+
+    const workId = await createWork();
+    const taskId = await addTask(workId, { title: 'Гэмтэлтэй самбар' });
+    await planAndApprove(workId);
+    expect((await transition(workId, 'START')).status).toBe(200);
+    await completeTask(workId, taskId, { score: 30 });
+    expect((await generate(workId)).status).toBe(201);
+
+    const report = (await fetchReport(workId)).body.data;
+
+    expect(report.overallLevel).toBe('CRITICAL');
+    expect(report.overallLabel).toBe('Аюултай');
+    expect(report.conclusion).toContain('Ерөнхий түвшин: Аюултай.');
+  });
+
+  /** The acceptance test for the whole change: configure nothing, change nothing. */
+  it('leaves the shipped wording alone when the ladder is untouched', async () => {
+    const workId = await createWork();
+    const taskId = await addTask(workId, { title: 'Гэмтэлтэй самбар' });
+    await planAndApprove(workId);
+    expect((await transition(workId, 'START')).status).toBe(200);
+    await completeTask(workId, taskId, { score: 30 });
+    expect((await generate(workId)).status).toBe(201);
+
+    const report = (await fetchReport(workId)).body.data;
+
+    expect(report.overallLevel).toBe('CRITICAL');
+    // «Ноцтой эрсдэлтэй», the REPORT's verdict wording — not the band name «Ноцтой
+    // эрсдэлтэй» happening to match, and not «Ойрын хугацаанд засварлах» for a repair
+    // verdict, which is where the two vocabularies visibly differ.
+    expect(report.overallLabel).toBe('Ноцтой эрсдэлтэй');
+    expect(report.conclusion).toContain('Ерөнхий түвшин: Ноцтой эрсдэлтэй.');
+
+    const repair = await createWork();
+    const repairTask = await addTask(repair, { title: 'Засвартай самбар' });
+    await planAndApprove(repair);
+    expect((await transition(repair, 'START')).status).toBe(200);
+    await completeTask(repair, repairTask, { score: 50 });
+    expect((await generate(repair)).status).toBe(201);
+
+    const repairReport = (await fetchReport(repair)).body.data;
+    expect(repairReport.overallLevel).toBe('SCHEDULE_REPAIR');
+    expect(repairReport.overallLabel).toBe('Засвар шаардлагатай');
   });
 });

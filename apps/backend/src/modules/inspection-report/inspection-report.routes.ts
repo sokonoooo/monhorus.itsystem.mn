@@ -15,6 +15,8 @@ import {
   generateReportHandler,
   getReadinessHandler,
   getReportHandler,
+  getReportDocxHandler,
+  getReportPdfHandler,
   reopenReportHandler,
   returnReportHandler,
   submitReportHandler,
@@ -37,6 +39,20 @@ inspectionReportRouter.get(
   requirePermission(PERMISSIONS.PLANNED_WORK_VIEW),
   validate(params),
   getReportHandler,
+);
+
+inspectionReportRouter.get(
+  '/pdf',
+  requirePermission(PERMISSIONS.PLANNED_WORK_VIEW),
+  validate(params),
+  getReportPdfHandler,
+);
+
+inspectionReportRouter.get(
+  '/docx',
+  requirePermission(PERMISSIONS.PLANNED_WORK_VIEW),
+  validate(params),
+  getReportDocxHandler,
 );
 
 inspectionReportRouter.get(

@@ -5,6 +5,7 @@ import 'package:monhorus_mobile/features/auth/domain/entities/app_user.dart';
 import 'package:monhorus_mobile/features/customer_portal/data/models/project_model.dart';
 import 'package:monhorus_mobile/features/customer_portal/data/models/service_request_model.dart';
 import 'package:monhorus_mobile/features/customer_portal/domain/entities/customer_scope.dart';
+import 'package:monhorus_mobile/features/customer_portal/domain/entities/risk_level.dart';
 import 'package:monhorus_mobile/features/customer_portal/presentation/screens/building_detail_screen.dart';
 import 'package:monhorus_mobile/features/customer_portal/presentation/screens/building_list_screen.dart';
 import 'package:monhorus_mobile/features/customer_portal/presentation/screens/customer_home_screen.dart';
@@ -14,6 +15,7 @@ import 'package:monhorus_mobile/features/customer_portal/presentation/screens/de
 import 'package:monhorus_mobile/features/customer_portal/presentation/screens/floor_detail_screen.dart';
 import 'package:monhorus_mobile/features/customer_portal/presentation/screens/service_request_detail_screen.dart';
 import 'package:monhorus_mobile/features/customer_portal/presentation/screens/service_request_list_screen.dart';
+import 'package:monhorus_mobile/features/customer_portal/presentation/widgets/authenticated_image.dart';
 import 'package:monhorus_mobile/features/customer_portal/presentation/widgets/risk_glyph.dart';
 import 'package:monhorus_mobile/features/customer_portal/presentation/widgets/risk_widgets.dart';
 
@@ -60,7 +62,11 @@ void main() {
       // The steel hero replaced the greeting nav bar, the KPI strip and the
       // roll-up card: the wordmark, the building count, the one sentence that
       // says how bad things are, and the five bands as five columns.
-      expect(find.text('soko'), findsOneWidget);
+      // The organisation, not a brand. This asserted the literal `soko` - the
+      // wordmark from the design mock - which every customer saw regardless of
+      // who they were. It reads `UserDto.customerName` now.
+      expect(find.text(testCustomerName), findsOneWidget);
+      expect(find.text('soko'), findsNothing);
       expect(find.textContaining('1 БАРИЛГА · '), findsOneWidget);
       // The fixture's building carries three ATTENTION devices and no critical
       // ones, so the headline is the attention line and the figure is its own.
@@ -372,6 +378,144 @@ void main() {
       expect(find.text('ЭНЭ ДАВХРЫН ХҮСЭЛТҮҮД'), findsOneWidget);
       expect(find.textContaining('SR-202607-0012'), findsWidgets);
     });
+
+    // The one place in this app where truncation produced a positive false statement
+    // rather than an undercount.
+    //
+    // There is no floor filter on `GET /service-requests`, so the history tab reads
+    // the building's requests and narrows them client-side. Read as a single page of
+    // 100, a floor whose history sits behind the newest hundred got «Энэ давхарт
+    // бүртгэгдсэн үйлчилгээний хүсэлт алга байна» — an assertion of zero about a floor
+    // with a full service record.
+    testWidgets('a floor whose requests are on page two is not declared empty',
+        (WidgetTester tester) async {
+      const String thisFloor = '6d0000000000000000000002';
+      const String otherFloor = '6d00000000000000000000ff';
+
+      final FakeCustomerPortalRepository repository = FakeCustomerPortalRepository(
+        requests: <ServiceRequestListItemModel>[
+          // A hundred newer requests, none of them on this floor.
+          for (int i = 0; i < 100; i++)
+            serviceRequestFixture(
+              id: 'r$i',
+              requestNumber: 'SR-OTHER-${i.toString().padLeft(4, '0')}',
+              floorId: otherFloor,
+              floorName: '9-р давхар',
+            ),
+          // This floor's own history, older, and therefore on page two.
+          serviceRequestFixture(
+            id: 'r-mine',
+            requestNumber: 'SR-202601-0001',
+            floorId: thisFloor,
+          ),
+        ],
+        requestPageSize: 100,
+      );
+
+      await pumpPhone(
+        tester,
+        wrapCustomerScreen(
+          const FloorDetailScreen(
+            floorId: thisFloor,
+            buildingId: '6b0000000000000000000001',
+            buildingName: 'Төв цамхаг',
+            projectName: 'Урьдчилан сэргийлэх үйлчилгээ',
+          ),
+          repository: repository,
+        ),
+      );
+
+      await tester.tap(find.text('ТҮҮХ'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('Энэ давхарт бүртгэгдсэн үйлчилгээний хүсэлт алга байна.'),
+        findsNothing,
+        reason: 'the floor has a request; it was merely on the second page',
+      );
+      expect(find.textContaining('SR-202601-0001'), findsWidgets);
+      expect(repository.requestPagesRequested, contains(2));
+    });
+
+    testWidgets('a walk cut short by the page ceiling refuses to claim a zero',
+        (WidgetTester tester) async {
+      // A building busier than the walk's own ceiling, with nothing on this floor in
+      // what it managed to read. The honest answer is "none turned up in what we
+      // read", never "this floor has none".
+      final FakeCustomerPortalRepository repository = FakeCustomerPortalRepository(
+        requests: <ServiceRequestListItemModel>[
+          for (int i = 0; i < 1000; i++)
+            serviceRequestFixture(
+              id: 'r$i',
+              requestNumber: 'SR-OTHER-${i.toString().padLeft(4, '0')}',
+              floorId: '6d00000000000000000000ff',
+              floorName: '9-р давхар',
+            ),
+        ],
+        requestPageSize: 1,
+      );
+
+      await pumpPhone(
+        tester,
+        wrapCustomerScreen(
+          const FloorDetailScreen(
+            floorId: '6d0000000000000000000002',
+            buildingId: '6b0000000000000000000001',
+            buildingName: 'Төв цамхаг',
+            projectName: 'Урьдчилан сэргийлэх үйлчилгээ',
+          ),
+          repository: repository,
+        ),
+      );
+
+      await tester.tap(find.text('ТҮҮХ'));
+      await tester.pumpAndSettle();
+
+      // Twenty: it walked, and it stopped. Not one, and not a thousand.
+      expect(repository.requestPagesRequested.length, 20);
+      expect(
+        find.text('Энэ давхарт бүртгэгдсэн үйлчилгээний хүсэлт алга байна.'),
+        findsNothing,
+        reason: 'a zero it did not earn must not be stated as one',
+      );
+      expect(find.textContaining('олдсонгүй'), findsOneWidget);
+    });
+
+    testWidgets('a floor with no requests at all still says so plainly',
+        (WidgetTester tester) async {
+      // The honest zero: the walk saw every page and there was nothing on this floor.
+      final FakeCustomerPortalRepository repository = FakeCustomerPortalRepository(
+        requests: <ServiceRequestListItemModel>[
+          serviceRequestFixture(
+            id: 'r-elsewhere',
+            requestNumber: 'SR-OTHER-0001',
+            floorId: '6d00000000000000000000ff',
+            floorName: '9-р давхар',
+          ),
+        ],
+      );
+
+      await pumpPhone(
+        tester,
+        wrapCustomerScreen(
+          const FloorDetailScreen(
+            floorId: '6d0000000000000000000002',
+            buildingId: '6b0000000000000000000001',
+            buildingName: 'Төв цамхаг',
+            projectName: 'Урьдчилан сэргийлэх үйлчилгээ',
+          ),
+          repository: repository,
+        ),
+      );
+
+      await tester.tap(find.text('ТҮҮХ'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('Энэ давхарт бүртгэгдсэн үйлчилгээний хүсэлт алга байна.'),
+        findsOneWidget,
+      );
+    });
   });
 
   group('s-device-detail', () {
@@ -534,13 +678,13 @@ void main() {
         ),
       );
 
-      expect(find.text('ИДЭВХТЭЙ ХҮСЭЛТҮҮД'), findsOneWidget);
+      expect(find.text('ИДЭВХТЭЙ ХҮСЭЛТҮҮД · 1'), findsOneWidget);
       expect(find.textContaining('SR-202607-0012'), findsOneWidget);
       expect(find.textContaining('SR-202607-0004'), findsNothing);
 
       await tester.tap(find.text('ДУУССАН'));
       await tester.pumpAndSettle();
-      expect(find.text('ДУУССАН ХҮСЭЛТҮҮД'), findsOneWidget);
+      expect(find.text('ДУУССАН ХҮСЭЛТҮҮД · 1'), findsOneWidget);
       expect(find.textContaining('SR-202607-0004'), findsOneWidget);
       expect(find.textContaining('SR-202607-0012'), findsNothing);
 
@@ -592,6 +736,150 @@ void main() {
       await scrollTo(tester, find.text('ҮЙЛ ЯВЦ'));
       expect(find.text('Шинэ → Хуваарилагдсан'), findsOneWidget);
       expect(find.text('Шинэ төлөвт бүртгэгдсэн'), findsOneWidget);
+    });
+
+    testWidgets('carries a report tab that switches the content',
+        (WidgetTester tester) async {
+      await pumpPhone(
+        tester,
+        wrapCustomerScreen(
+          const ServiceRequestDetailScreen(requestId: '710000000000000000000006'),
+          repository: FakeCustomerPortalRepository(
+            requestDetail: serviceRequestFixture(hasApprovedReport: true),
+            workReport: customerWorkReportFixture(),
+          ),
+        ),
+      );
+
+      expect(find.text('ХҮСЭЛТИЙН ЯВЦ'), findsOneWidget);
+      expect(find.text('ТАЙЛАН'), findsOneWidget);
+      // The progress tab is what opens.
+      expect(
+        find.text('Хэт ачаалал илэрсэн, таслуур солих шаардлагатай.'),
+        findsOneWidget,
+      );
+
+      await tester.tap(find.text('ТАЙЛАН'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('ДҮГНЭЛТ БА ЗӨВЛӨМЖ'), findsOneWidget);
+      // The request's own description belongs to the other tab and is gone with it.
+      expect(
+        find.text('Хэт ачаалал илэрсэн, таслуур солих шаардлагатай.'),
+        findsNothing,
+      );
+
+      // And back, so the switch is not one-way.
+      await tester.tap(find.text('ХҮСЭЛТИЙН ЯВЦ'));
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Хэт ачаалал илэрсэн, таслуур солих шаардлагатай.'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets(
+        'the report tab shows the conclusion, the band, both photo sets and who '
+        'approved it', (WidgetTester tester) async {
+      await pumpPhone(
+        tester,
+        wrapCustomerScreen(
+          const ServiceRequestDetailScreen(requestId: '710000000000000000000006'),
+          repository: FakeCustomerPortalRepository(
+            requestDetail: serviceRequestFixture(hasApprovedReport: true),
+            workReport: customerWorkReportFixture(),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('ТАЙЛАН'));
+      await tester.pumpAndSettle();
+
+      // The score with the band the server derived for it - not a band this app
+      // computed from the figure.
+      expect(find.byType(ScoreRing), findsOneWidget);
+      expect(find.text('38'), findsOneWidget);
+      expect(find.text(RiskLevel.critical.label), findsOneWidget);
+
+      expect(
+        find.text(
+          'Таслуурын холбогч халалттай байсныг сольж, ачааллыг тэнцүүлэв.',
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.text('Гурван сарын дараа дахин хэмжилт хийлгэнэ үү.'),
+        findsOneWidget,
+      );
+      await scrollTo(tester, find.text('ЗАСВАР ШААРДЛАГАТАЙ'));
+      expect(find.text('ЗАСВАР ШААРДЛАГАТАЙ'), findsOneWidget);
+      expect(find.text('ДАХИН ҮЗЛЭГ'), findsOneWidget);
+      expect(find.text('ДАХИН ОЧИХ 2026.08.20'), findsOneWidget);
+
+      await scrollTo(tester, find.text('Ц. Ганбаатар'));
+      expect(find.text('Баталсан хүн'), findsOneWidget);
+      expect(find.text('Ц. Ганбаатар'), findsOneWidget);
+      expect(find.text('Батлагдсан'), findsOneWidget);
+
+      // Two labelled sets, so the fault and the repair cannot be confused, and both
+      // go through the authenticated fetch because `GET /files/:id` needs the header.
+      await scrollTo(tester, find.text('АЖЛЫН ӨМНӨХ ЗУРАГ'));
+      expect(find.text('omnoh-0.png'), findsOneWidget);
+      await scrollTo(tester, find.text('АЖЛЫН ДАРААХ ЗУРАГ'));
+      expect(find.text('daraah-0.png'), findsOneWidget);
+      expect(find.byType(AuthenticatedImage), findsWidgets);
+    });
+
+    testWidgets(
+        'with no approved report the tab says so and asks the server for nothing',
+        (WidgetTester tester) async {
+      final FakeCustomerPortalRepository repository =
+          FakeCustomerPortalRepository(
+        requestDetail: serviceRequestFixture(),
+      );
+
+      await pumpPhone(
+        tester,
+        wrapCustomerScreen(
+          const ServiceRequestDetailScreen(requestId: '710000000000000000000006'),
+          repository: repository,
+        ),
+      );
+
+      await tester.tap(find.text('ТАЙЛАН'));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('хараахан бэлэн болоогүй'), findsOneWidget);
+      expect(find.text('ДҮГНЭЛТ БА ЗӨВЛӨМЖ'), findsNothing);
+      // The whole point of `hasApprovedReport`: no doomed request went out.
+      expect(repository.workReportRequestedFor, isEmpty);
+    });
+
+    testWidgets('a 404 from the report endpoint reads as not-ready, not an error',
+        (WidgetTester tester) async {
+      // The detail said there was an approved report and the endpoint disagreed - a
+      // report un-approved between the two reads, or the two racing.
+      final FakeCustomerPortalRepository repository =
+          FakeCustomerPortalRepository(
+        requestDetail: serviceRequestFixture(hasApprovedReport: true),
+      );
+
+      await pumpPhone(
+        tester,
+        wrapCustomerScreen(
+          const ServiceRequestDetailScreen(requestId: '710000000000000000000006'),
+          repository: repository,
+        ),
+      );
+
+      await tester.tap(find.text('ТАЙЛАН'));
+      await tester.pumpAndSettle();
+
+      expect(repository.workReportRequestedFor,
+          <String>['710000000000000000000006']);
+      expect(find.textContaining('хараахан бэлэн болоогүй'), findsOneWidget);
+      // Not the failure card, and no retry button: nothing has gone wrong.
+      expect(find.text('Дахин оролдох'), findsNothing);
     });
   });
 
@@ -705,7 +993,7 @@ void main() {
       await tester.tap(find.text('Хүсэлт'));
       await tester.pumpAndSettle();
 
-      expect(find.text('ИДЭВХТЭЙ ХҮСЭЛТҮҮД'), findsOneWidget);
+      expect(find.text('ИДЭВХТЭЙ ХҮСЭЛТҮҮД · 1'), findsOneWidget);
     });
   });
 }

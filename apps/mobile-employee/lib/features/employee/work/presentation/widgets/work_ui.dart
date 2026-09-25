@@ -441,6 +441,7 @@ class SheetField extends StatelessWidget {
     this.inputFormatters,
     this.error,
     this.enabled = true,
+    this.onChanged,
   });
 
   final TextEditingController controller;
@@ -450,6 +451,16 @@ class SheetField extends StatelessWidget {
   final List<TextInputFormatter>? inputFormatters;
   final String? error;
   final bool enabled;
+
+  /// Called on every keystroke, for a field whose value has to reach a notifier rather
+  /// than sit in the controller until something asks.
+  ///
+  /// A controller only survives as long as the widget that owns it. Where the state
+  /// behind the screen outlives the route — the conclusion editor's is family-keyed and
+  /// not autoDispose — a field with no sink is discarded on the way out while its
+  /// neighbours, which do report upward, are kept. Optional because most sheets here
+  /// are read at their save button and disposed with it.
+  final ValueChanged<String>? onChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -465,6 +476,7 @@ class SheetField extends StatelessWidget {
           maxLines: maxLines,
           keyboardType: keyboardType,
           inputFormatters: inputFormatters,
+          onChanged: onChanged,
           style: EmployeeTokens.body.copyWith(color: EmployeeTokens.ink),
           decoration: InputDecoration(
             hintText: hint,

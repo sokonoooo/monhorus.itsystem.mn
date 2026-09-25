@@ -14,7 +14,7 @@ import { hashPassword } from '../../utils/password.util';
 import { AuditLog } from '../audit/audit-log.model';
 import { Role } from '../rbac/role.model';
 import { User } from '../user/user.model';
-import { Customer } from './object.models';
+import { Customer, ObjectNode } from './object.models';
 
 const API = '/api/v1';
 
@@ -95,13 +95,13 @@ async function seedTenant(code: string): Promise<Tenant> {
   const project = await request(app)
     .post(`${API}/projects`)
     .set('Authorization', `Bearer ${token}`)
-    .send({ customerId: tenantCustomerId, code: `${code}-PRJ`, name: `${code} төсөл` });
+    .send({ customerId: tenantCustomerId, name: `${code} төсөл` });
   expect(project.status).toBe(201);
 
   const building = await request(app)
     .post(`${API}/buildings`)
     .set('Authorization', `Bearer ${token}`)
-    .send({ projectId: project.body.data.id, code: `${code}-BLD`, name: `${code} барилга` });
+    .send({ projectId: project.body.data.id, name: `${code} барилга` });
   expect(building.status).toBe(201);
 
   const floor = await request(app)
@@ -109,7 +109,6 @@ async function seedTenant(code: string): Promise<Tenant> {
     .set('Authorization', `Bearer ${token}`)
     .send({
       buildingId: building.body.data.id,
-      code: `${code}-FL`,
       name: `${code} 1 давхар`,
       floorNumber: 1,
     });
@@ -127,7 +126,7 @@ async function createProject(overrides: Record<string, unknown> = {}): Promise<s
   const response = await request(app)
     .post(`${API}/projects`)
     .set('Authorization', `Bearer ${token}`)
-    .send({ customerId, code: 'PRJ-1', name: 'Урьдчилан сэргийлэх үйлчилгээ', ...overrides });
+    .send({ customerId, name: 'Урьдчилан сэргийлэх үйлчилгээ', ...overrides });
   expect(response.status).toBe(201);
   return response.body.data.id as string;
 }
@@ -139,7 +138,7 @@ async function createBuilding(
   const response = await request(app)
     .post(`${API}/buildings`)
     .set('Authorization', `Bearer ${token}`)
-    .send({ projectId, code: 'BLD-1', name: 'Төв барилга', ...overrides });
+    .send({ projectId, name: 'Төв барилга', ...overrides });
   expect(response.status).toBe(201);
   return response.body.data.id as string;
 }
@@ -151,7 +150,7 @@ async function createFloor(
   const response = await request(app)
     .post(`${API}/floors`)
     .set('Authorization', `Bearer ${token}`)
-    .send({ buildingId, code: 'FL-1', name: '1 давхар', floorNumber: 1, ...overrides });
+    .send({ buildingId, name: '1 давхар', floorNumber: 1, ...overrides });
   expect(response.status).toBe(201);
   return response.body.data.id as string;
 }
@@ -179,7 +178,6 @@ describe('project CRUD', () => {
       .set('Authorization', `Bearer ${token}`)
       .send({
         customerId,
-        code: 'PRJ-9',
         name: 'Жилийн үзлэг',
         contractNumber: 'C-2026-001',
         startDate: '2026-01-01T00:00:00.000Z',
@@ -199,7 +197,6 @@ describe('project CRUD', () => {
       .set('Authorization', `Bearer ${token}`)
       .send({
         customerId,
-        code: 'PRJ-8',
         name: 'Буруу хугацаа',
         startDate: '2026-12-31T00:00:00.000Z',
         endDate: '2026-01-01T00:00:00.000Z',
@@ -208,14 +205,20 @@ describe('project CRUD', () => {
     expect(response.status).toBe(400);
   });
 
-  it('refuses a duplicate code within the same customer', async () => {
-    await createProject();
+  /**
+   * A caller cannot collide with an existing code any more, because a caller no longer
+   * proposes one. The duplicate-code rejection this replaces tested a field that has been
+   * taken off the wire; what must hold now is that the server never issues a code twice,
+   * which is the `generated codes` group below.
+   */
+  it('ignores a code a caller tries to supply and issues its own', async () => {
     const response = await request(app)
       .post(`${API}/projects`)
       .set('Authorization', `Bearer ${token}`)
-      .send({ customerId, code: 'PRJ-1', name: 'Давхардсан' });
+      .send({ customerId, name: 'Кодоо өөрөө сонгох гэсэн', code: 'MINE-1' });
 
-    expect(response.status).toBe(409);
+    expect(response.status).toBe(201);
+    expect(response.body.data.code).toBe('PRJ-001');
   });
 
   it('archives rather than deletes, and reports counts', async () => {
@@ -264,8 +267,8 @@ describe('project CRUD', () => {
   });
 
   it('searches and filters the list', async () => {
-    await createProject({ code: 'PRJ-A', name: 'Гэрэлтүүлгийн төсөл' });
-    await createProject({ code: 'PRJ-B', name: 'Самбарын төсөл' });
+    await createProject({ name: 'Гэрэлтүүлгийн төсөл' });
+    await createProject({ name: 'Самбарын төсөл' });
 
     const search = await request(app)
       .get(`${API}/projects?search=${encodeURIComponent('Гэрэлтүүлг')}`)
@@ -285,7 +288,7 @@ describe('project CRUD', () => {
     const response = await request(app)
       .post(`${API}/projects`)
       .set('Authorization', `Bearer ${readerToken}`)
-      .send({ customerId, code: 'PRJ-X', name: 'Эрхгүй' });
+      .send({ customerId, name: 'Эрхгүй' });
 
     expect(response.status).toBe(403);
   });
@@ -341,7 +344,7 @@ describe('building CRUD and containment', () => {
     const response = await request(app)
       .post(`${API}/buildings`)
       .set('Authorization', `Bearer ${token}`)
-      .send({ projectId, code: 'BLD-9', name: 'Хагас координат', gpsLatitude: 47.9 });
+      .send({ projectId, name: 'Хагас координат', gpsLatitude: 47.9 });
 
     expect(response.status).toBe(400);
   });
@@ -356,7 +359,7 @@ describe('building CRUD and containment', () => {
     const response = await request(app)
       .post(`${API}/buildings`)
       .set('Authorization', `Bearer ${token}`)
-      .send({ projectId, code: 'BLD-2', name: 'Архивласан төсөлд' });
+      .send({ projectId, name: 'Архивласан төсөлд' });
 
     expect(response.status).toBe(400);
     expect(response.body.message).toContain('Архивласан');
@@ -366,16 +369,16 @@ describe('building CRUD and containment', () => {
     const response = await request(app)
       .post(`${API}/buildings`)
       .set('Authorization', `Bearer ${token}`)
-      .send({ projectId: '000000000000000000000000', code: 'BLD-3', name: 'Байхгүй төсөл' });
+      .send({ projectId: '000000000000000000000000', name: 'Байхгүй төсөл' });
 
     expect(response.status).toBe(404);
   });
 
   it('filters buildings by project', async () => {
-    const first = await createProject({ code: 'PRJ-C' });
-    const second = await createProject({ code: 'PRJ-D' });
-    await createBuilding(first, { code: 'B-1' });
-    await createBuilding(second, { code: 'B-2' });
+    const first = await createProject();
+    const second = await createProject();
+    await createBuilding(first);
+    await createBuilding(second);
 
     const response = await request(app)
       .get(`${API}/buildings?projectId=${first}`)
@@ -404,7 +407,7 @@ describe('floor CRUD and containment', () => {
   it('accepts a negative floor number for a basement', async () => {
     const projectId = await createProject();
     const buildingId = await createBuilding(projectId);
-    const floorId = await createFloor(buildingId, { code: 'FL-B1', floorNumber: -1, name: '-1 давхар' });
+    const floorId = await createFloor(buildingId, { floorNumber: -1, name: '-1 давхар' });
 
     const detail = await request(app)
       .get(`${API}/floors/${floorId}`)
@@ -424,7 +427,7 @@ describe('floor CRUD and containment', () => {
     const response = await request(app)
       .post(`${API}/floors`)
       .set('Authorization', `Bearer ${token}`)
-      .send({ buildingId, code: 'FL-9', name: 'Архивласан барилгад' });
+      .send({ buildingId, name: 'Архивласан барилгад' });
 
     expect(response.status).toBe(400);
   });
@@ -432,8 +435,8 @@ describe('floor CRUD and containment', () => {
   it('filters floors by building and by project', async () => {
     const projectId = await createProject();
     const buildingId = await createBuilding(projectId);
-    await createFloor(buildingId, { code: 'FL-1' });
-    await createFloor(buildingId, { code: 'FL-2', name: '2 давхар', floorNumber: 2 });
+    await createFloor(buildingId);
+    await createFloor(buildingId, { name: '2 давхар', floorNumber: 2 });
 
     const byBuilding = await request(app)
       .get(`${API}/floors?buildingId=${buildingId}`)
@@ -670,7 +673,7 @@ describe('customer scope on projects, buildings and floors', () => {
     const create = await request(app)
       .post(`${API}/projects`)
       .set('Authorization', `Bearer ${customerToken}`)
-      .send({ customerId: tenantA.customerId, code: 'TA-NEW', name: 'Шинэ төсөл' });
+      .send({ customerId: tenantA.customerId, name: 'Шинэ төсөл' });
     expect(create.status).toBe(403);
 
     const update = await request(app)
@@ -699,7 +702,7 @@ describe('customer scope on projects, buildings and floors', () => {
     const createIntoB = await request(app)
       .post(`${API}/projects`)
       .set('Authorization', `Bearer ${overPrivileged}`)
-      .send({ customerId: tenantB.customerId, code: 'TB-X', name: 'Өөр харилцагчид' });
+      .send({ customerId: tenantB.customerId, name: 'Өөр харилцагчид' });
     expect(createIntoB.status).toBe(403);
     expect(createIntoB.body.message).toContain('Өөр харилцагчийн');
 
@@ -707,14 +710,14 @@ describe('customer scope on projects, buildings and floors', () => {
     const buildingUnderB = await request(app)
       .post(`${API}/buildings`)
       .set('Authorization', `Bearer ${overPrivileged}`)
-      .send({ projectId: tenantB.projectId, code: 'TB-X2', name: 'Өөр төсөлд' });
+      .send({ projectId: tenantB.projectId, name: 'Өөр төсөлд' });
     expect(buildingUnderB.status).toBe(404);
 
     // A floor under another tenant's building, for the same reason.
     const floorUnderB = await request(app)
       .post(`${API}/floors`)
       .set('Authorization', `Bearer ${overPrivileged}`)
-      .send({ buildingId: tenantB.buildingId, code: 'TB-X3', name: 'Өөр барилгад' });
+      .send({ buildingId: tenantB.buildingId, name: 'Өөр барилгад' });
     expect(floorUnderB.status).toBe(404);
 
     const updateB = await request(app)
@@ -765,5 +768,231 @@ describe('customer scope on projects, buildings and floors', () => {
     const detail = await asStaff(`/floors/${tenantB.floorId}`);
     expect(detail.status).toBe(200);
     expect(detail.body.data.id).toBe(tenantB.floorId);
+  });
+});
+
+/**
+ * Project, building and floor codes are issued by the server, never by the caller.
+ *
+ * The three things that have to hold are all here: the SHAPE a reader was promised
+ * (`PRJ-001`), that no two records ever share a code, and that the guarantee survives
+ * simultaneous creates — which is the case a generator built on counting existing rows
+ * gets wrong, and the reason this one draws from an atomic counter instead.
+ */
+describe('generated codes', () => {
+  it('issues the documented shape, numbered from one per kind', async () => {
+    const projectId = await createProject();
+    const buildingId = await createBuilding(projectId);
+    const floorId = await createFloor(buildingId);
+
+    const project = await request(app)
+      .get(`${API}/projects/${projectId}`)
+      .set('Authorization', `Bearer ${token}`);
+    const building = await request(app)
+      .get(`${API}/buildings/${buildingId}`)
+      .set('Authorization', `Bearer ${token}`);
+    const floor = await request(app)
+      .get(`${API}/floors/${floorId}`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(project.body.data.code).toBe('PRJ-001');
+    expect(building.body.data.code).toBe('BLD-001');
+    expect(floor.body.data.code).toBe('FLR-001');
+  });
+
+  it('counts each kind up independently', async () => {
+    const projectId = await createProject();
+    await createProject({ name: 'Хоёр дахь төсөл' });
+    const buildingId = await createBuilding(projectId);
+    await createBuilding(projectId, { name: 'Хоёр дахь барилга' });
+    await createFloor(buildingId);
+    await createFloor(buildingId, { name: '2 давхар', floorNumber: 2 });
+
+    const codes = await ObjectNode.find({ customer: customerId }).select('kind code');
+    const of = (kind: string): string[] =>
+      codes
+        .filter((row) => row.kind === kind)
+        .map((row) => row.code)
+        .sort();
+
+    expect(of('PROJECT')).toEqual(['PRJ-001', 'PRJ-002']);
+    expect(of('BUILDING')).toEqual(['BLD-001', 'BLD-002']);
+    expect(of('FLOOR')).toEqual(['FLR-001', 'FLR-002']);
+  });
+
+  /**
+   * A floor is numbered per CUSTOMER, not per building — the unique index is
+   * `{ customer, code }`, so restarting at 1 inside each building would collide the
+   * moment a second building got a floor. Asserted so nobody "fixes" the numbering into
+   * a duplicate key.
+   */
+  it('keeps counting floors across buildings rather than restarting', async () => {
+    const projectId = await createProject();
+    const first = await createBuilding(projectId);
+    const second = await createBuilding(projectId, { name: 'Хоёр дахь барилга' });
+
+    await createFloor(first);
+    const floorId = await createFloor(second, { name: 'Нөгөө барилгын давхар' });
+
+    const floor = await request(app)
+      .get(`${API}/floors/${floorId}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(floor.body.data.code).toBe('FLR-002');
+  });
+
+  it('numbers each customer from one, independently of the others', async () => {
+    const other = await Customer.create({ code: 'OTH', name: 'Өөр ХХК' });
+    await createProject();
+
+    const response = await request(app)
+      .post(`${API}/projects`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ customerId: String(other._id), name: 'Өөр харилцагчийн эхний төсөл' });
+
+    expect(response.status).toBe(201);
+    // Both customers own a PRJ-001, which the per-customer unique index permits.
+    expect(response.body.data.code).toBe('PRJ-001');
+  });
+
+  /**
+   * THE CASE THE COUNTER EXISTS FOR.
+   *
+   * Ten creates in flight at once. A generator that read the highest existing code and
+   * added one would hand several of them the same number; the unique index would reject
+   * the losers and the user would see a 409 for pressing a button at the wrong moment.
+   * The atomic `$inc` cannot do that — and it needs no transaction, which matters because
+   * the test database is a standalone mongod where transactions silently do nothing.
+   */
+  it('hands ten simultaneous creates ten distinct codes', async () => {
+    const responses = await Promise.all(
+      Array.from({ length: 10 }, (_unused, index) =>
+        request(app)
+          .post(`${API}/projects`)
+          .set('Authorization', `Bearer ${token}`)
+          .send({ customerId, name: `Зэрэг үүсгэсэн ${index + 1}` }),
+      ),
+    );
+
+    for (const response of responses) expect(response.status).toBe(201);
+
+    const codes = responses.map((response) => response.body.data.code as string);
+    expect(new Set(codes).size).toBe(10);
+    expect(codes.every((code) => /^PRJ-\d{3,}$/.test(code))).toBe(true);
+    expect(await ObjectNode.countDocuments({ customer: customerId, kind: 'PROJECT' })).toBe(10);
+  });
+
+  /**
+   * A deleted code is retired, not recycled. Somebody may have written PRJ-002 on a
+   * drawing or in an email, and a second, unrelated project answering to it later is
+   * worse than a gap in the numbering.
+   */
+  it('does not reissue the code of a deleted record', async () => {
+    await createProject();
+    const second = await createProject({ name: 'Устгагдах төсөл' });
+
+    const deleted = await request(app)
+      .delete(`${API}/projects/${second}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(deleted.status).toBe(200);
+
+    const third = await request(app)
+      .post(`${API}/projects`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ customerId, name: 'Дараагийн төсөл' });
+
+    expect(third.body.data.code).toBe('PRJ-003');
+  });
+
+  /**
+   * Codes existed before they were generated, and the dev seed still writes them by hand.
+   * The counter is seeded from what the customer already shows, so the first generated
+   * code lands after them instead of colliding with one.
+   */
+  it('starts after the codes a customer already had', async () => {
+    await ObjectNode.create({
+      kind: 'PROJECT',
+      code: 'PRJ-007',
+      name: 'Гараар бүртгэсэн',
+      parent: null,
+      customer: new Types.ObjectId(customerId),
+      ancestors: [],
+      attributes: {},
+    });
+
+    const response = await request(app)
+      .post(`${API}/projects`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ customerId, name: 'Дараах' });
+
+    expect(response.body.data.code).toBe('PRJ-008');
+  });
+
+  /**
+   * A hand-typed code in the generated shape is skipped rather than overwritten. The
+   * counter cannot know about a code typed after it was seeded, so the existence check
+   * is what keeps the promise; the skipped number is simply lost.
+   */
+  it('steps over a code that was taken after the counter was seeded', async () => {
+    await createProject();
+
+    await ObjectNode.create({
+      kind: 'PROJECT',
+      code: 'PRJ-002',
+      name: 'Дундуур нь орсон',
+      parent: null,
+      customer: new Types.ObjectId(customerId),
+      ancestors: [],
+      attributes: {},
+    });
+
+    const response = await request(app)
+      .post(`${API}/projects`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ customerId, name: 'Дараах' });
+
+    expect(response.status).toBe(201);
+    expect(response.body.data.code).toBe('PRJ-003');
+  });
+
+  /**
+   * The other half of "generated": it must not drift afterwards. The update schemas are
+   * `.strict()`, so a code on the wire is refused outright rather than ignored — a
+   * silent drop would let a caller believe it had renamed something.
+   */
+  it('refuses to edit a code, and leaves it alone when the name changes', async () => {
+    const projectId = await createProject();
+
+    const rejected = await request(app)
+      .patch(`${API}/projects/${projectId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ code: 'PRJ-999' });
+    expect(rejected.status).toBe(400);
+
+    const renamed = await request(app)
+      .patch(`${API}/projects/${projectId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'Шинэ нэр' });
+
+    expect(renamed.status).toBe(200);
+    expect(renamed.body.data.name).toBe('Шинэ нэр');
+    expect(renamed.body.data.code).toBe('PRJ-001');
+  });
+
+  it('refuses to edit a building or a floor code either', async () => {
+    const projectId = await createProject();
+    const buildingId = await createBuilding(projectId);
+    const floorId = await createFloor(buildingId);
+
+    const building = await request(app)
+      .patch(`${API}/buildings/${buildingId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ code: 'BLD-999' });
+    expect(building.status).toBe(400);
+
+    const floor = await request(app)
+      .patch(`${API}/floors/${floorId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ code: 'FLR-999' });
+    expect(floor.status).toBe(400);
   });
 });

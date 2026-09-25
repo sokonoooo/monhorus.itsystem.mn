@@ -21,9 +21,14 @@ import {
   resolveCustomerScope,
   type ResolvedCustomerScope,
 } from '../../common/security/customer-scope';
-import { created, ok } from '../../common/utils/api-response.util';
+import { created, noContent, ok } from '../../common/utils/api-response.util';
 import { pathParam } from '../../common/utils/path-param.util';
 import { buildRequestMeta as meta } from '../../common/utils/request-meta.util';
+import {
+  OBJECT_NODE_CHILDREN_DEFAULT_LIMIT,
+  OBJECT_NODE_CHILDREN_MAX_LIMIT,
+  noteTruncation,
+} from '../../common/utils/read-limit.util';
 import {
   authenticate,
   enforcePasswordChange,
@@ -55,7 +60,12 @@ const childrenQuerySchema = z.object({
     .enum(['CUSTOMER', 'PROJECT', 'BUILDING', 'FLOOR', 'ROOM', 'PANEL', 'CIRCUIT', 'DEVICE'])
     .optional(),
   search: z.string().trim().max(200).optional(),
-  limit: z.coerce.number().int().positive().max(200).default(100),
+  limit: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(OBJECT_NODE_CHILDREN_MAX_LIMIT)
+    .default(OBJECT_NODE_CHILDREN_DEFAULT_LIMIT),
 });
 
 type ChildrenQuery = z.infer<typeof childrenQuerySchema>;
@@ -129,6 +139,12 @@ objectRouter.get(
  *
  * Returns only the direct children of the requested parent, never the whole tree.
  * The dependent selector on the request form calls this once per level.
+ *
+ * Staff-only. It was briefly opened to `portal.floor.view` so the customer app's
+ * create-request sheet could list a floor's Өрөө/Бүс nodes; that sheet no longer collects
+ * a zone and neither mobile app reads this route, so the guard is back to the narrower of
+ * the two. The customer-facing hierarchy reads live on `/floors` and `/floors/:id`, which
+ * carry the portal key themselves.
  */
 objectRouter.get(
   '/nodes',
@@ -158,6 +174,16 @@ objectRouter.get(
       }
 
       const nodes = await ObjectNode.find(filter).sort({ name: 1 }).limit(query.limit);
+      /*
+       * This route is the one list endpoint that returns a bare array rather than
+       * `PaginatedData`, so a client that is handed a full page has no field to read and no
+       * way to tell a complete level from a cut-off one. Until the response carries a
+       * `total`, the cap at least announces itself here.
+       */
+      noteTruncation('objects.nodes', nodes.length, query.limit, {
+        parentId: query.parentId ?? null,
+        kind: query.kind ?? null,
+      });
       const childSet = await hasChildrenMap(nodes.map((node) => node._id));
       const bands = await getRiskBands();
 
@@ -243,6 +269,33 @@ objectRouter.patch(
         meta(req),
       );
       ok(res, result, 'Объект шинэчлэгдлээ.');
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+/**
+ * Removes a node, or refuses with the reasons it cannot go.
+ *
+ * The general node "remove", and the only one that reaches the levels below a floor —
+ * `/projects`, `/buildings` and `/floors` each carry their own. Archiving through
+ * `PATCH { isActive: false }` stays the always-available alternative and is what a node
+ * something already references gets.
+ */
+objectRouter.delete(
+  '/nodes/:nodeId',
+  requirePermission(PERMISSIONS.OBJECT_MANAGE),
+  validate({ params: z.object({ nodeId: objectId }) }),
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      await objectService.deleteObjectNode(
+        pathParam(req, 'nodeId'),
+        scopeOf(req),
+        requireAuth(req),
+        meta(req),
+      );
+      noContent(res, 'Объект устгагдлаа.');
     } catch (error) {
       next(error);
     }

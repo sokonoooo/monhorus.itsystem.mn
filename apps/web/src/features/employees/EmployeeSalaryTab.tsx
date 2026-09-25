@@ -12,7 +12,7 @@ import { useEffect, useState, type ReactElement } from 'react';
 
 import { Alert } from '../../components/ui/Alert';
 import { Button } from '../../components/ui/Button';
-import { Skeleton } from '../../components/ui/States';
+import { EmptyState, Skeleton } from '../../components/ui/States';
 import { useAuth } from '../../contexts/auth-context';
 import { ApiError } from '../../lib/api-client';
 import { employeeService } from '../../services/employee.service';
@@ -25,6 +25,14 @@ import { Field, Section, SelectInput, TextInput } from './FormControls';
  *
  * Saving never overwrites history: the backend closes the open period and appends a
  * new effective-dated record.
+ *
+ * That append is what makes seeding the form mandatory rather than a convenience. The
+ * backend writes every field of the new row from the payload — there is no merge with the
+ * period being closed — so a blank field is a written zero, not an unchanged value. The
+ * four allowances started at `'0'` and were never seeded from the loaded record, so
+ * raising somebody's base salary silently zeroed their transport, meal, phone and other
+ * allowances from the new effective date onward. Every field is therefore carried forward
+ * from the most recent record and only the dates are left for the user to supply.
  */
 export function EmployeeSalaryTab({ employeeId }: { employeeId: string | null }): ReactElement {
   const { can } = useAuth();
@@ -63,7 +71,34 @@ export function EmployeeSalaryTab({ employeeId }: { employeeId: string | null })
     employeeService
       .salaryHistory(employeeId)
       .then((rows) => {
-        if (!cancelled) setHistory(rows);
+        if (cancelled) return;
+        setHistory(rows);
+
+        /*
+         * The most recent record seeds the form.
+         *
+         * `listSalaryHistory` sorts by `effectiveFrom` descending, so the open period is
+         * first; `isCurrent` is preferred where present so a future-dated row cannot be
+         * mistaken for the one in force. The dates are deliberately not seeded: a new
+         * period must start strictly after the open one, and copying its start date would
+         * only produce a rejection.
+         */
+        const latest = rows.find((row) => row.isCurrent) ?? rows[0];
+        if (!latest) return;
+
+        setGrade(latest.grade ?? '');
+        setBaseSalary(String(latest.baseSalary));
+        setCurrency(latest.currency);
+        setCalculationType(latest.calculationType);
+        setBankName(latest.bankName ?? '');
+        setBankAccountName(latest.bankAccountName ?? '');
+        setBankAccountNumber(latest.bankAccountNumber ?? '');
+        setSocialInsurance(latest.socialInsurance);
+        setPersonalIncomeTax(latest.personalIncomeTax);
+        setTransportAllowance(String(latest.transportAllowance));
+        setMealAllowance(String(latest.mealAllowance));
+        setPhoneAllowance(String(latest.phoneAllowance));
+        setOtherAllowance(String(latest.otherAllowance));
       })
       .catch((caught: unknown) => {
         if (cancelled) return;
@@ -133,11 +168,7 @@ export function EmployeeSalaryTab({ employeeId }: { employeeId: string | null })
   }
 
   if (!employeeId) {
-    return (
-      <Alert variant="info">
-        Цалингийн мэдээллийг ажилтныг үүсгэсний дараа бүртгэнэ.
-      </Alert>
-    );
+    return <EmptyState title="Цалингийн мэдээллийг ажилтныг үүсгэсний дараа бүртгэнэ." />;
   }
 
   if (loading) {
@@ -148,11 +179,6 @@ export function EmployeeSalaryTab({ employeeId }: { employeeId: string | null })
     <div className="space-y-6">
       {error && <Alert variant="error">{error}</Alert>}
       {notice && <Alert variant="success">{notice}</Alert>}
-
-      <Alert variant="info">
-        Цалингийн түүх хүчин төгөлдөр огноогоор хадгалагдана. Шинэ утга оруулахад өмнөх
-        бичлэг устахгүй, харин хугацаа нь хаагдана.
-      </Alert>
 
       <Section title="Цалингийн мэдээлэл">
         <Field label="Цалингийн зэрэглэл" error={fieldErrors.grade}>
@@ -255,6 +281,11 @@ export function EmployeeSalaryTab({ employeeId }: { employeeId: string | null })
             <table className="min-w-full divide-y divide-slate-200 text-sm">
               <thead className="bg-slate-50">
                 <tr>
+                  {/* Numbered but not paged: the salary history arrives with the employee
+                      and is short by nature — one row per revision. */}
+                  <th className="w-12 whitespace-nowrap px-3 py-2 text-right font-semibold text-slate-700">
+                    №
+                  </th>
                   <th className="px-3 py-2 text-left font-semibold text-slate-700">Эхлэх</th>
                   <th className="px-3 py-2 text-left font-semibold text-slate-700">Дуусах</th>
                   <th className="px-3 py-2 text-right font-semibold text-slate-700">Үндсэн цалин</th>
@@ -263,8 +294,11 @@ export function EmployeeSalaryTab({ employeeId }: { employeeId: string | null })
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {history.map((row) => (
+                {history.map((row, index) => (
                   <tr key={row.id}>
+                    <td className="px-3 py-2 text-right tabular-nums text-slate-500">
+                      {index + 1}
+                    </td>
                     <td className="px-3 py-2">{row.effectiveFrom.slice(0, 10)}</td>
                     <td className="px-3 py-2">{row.effectiveTo?.slice(0, 10) ?? '-'}</td>
                     <td className="px-3 py-2 text-right font-medium">

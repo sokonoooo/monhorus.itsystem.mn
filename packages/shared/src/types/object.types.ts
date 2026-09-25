@@ -77,10 +77,26 @@ export interface CustomerDto {
   responsibleEmployeeId: string | null;
   responsibleEmployeeName: string | null;
   notes: string | null;
+  /**
+   * The customer's own letterhead, as a stored-file id, or null when it has none.
+   *
+   * Printed on the reports for this customer's work beside the operator's. Null is the
+   * ordinary state for a customer nobody has given a logo to, and those reports print
+   * under the operator's logo alone.
+   */
+  logoFileId: string | null;
   isActive: boolean;
   projectCount?: number;
   buildingCount?: number;
   activeAgreementCount?: number;
+  /**
+   * Who created the record, resolved to a display name.
+   *
+   * Null where it is not known: rows created before the creator was recorded, and
+   * records the system itself made. The screen renders that as a dash rather than
+   * guessing, because an absent creator is a real answer here.
+   */
+  createdByName: string | null;
 }
 
 export interface ObjectChildrenQuery {

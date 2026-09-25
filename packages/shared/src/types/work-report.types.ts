@@ -1,3 +1,7 @@
+import type {
+  ObjectAttributeValue,
+  ObjectTypeAttributeDto,
+} from '../constants/object-type-attribute';
 import type { MaterialUnit } from '../constants/material';
 import type { RiskLevel } from '../constants/service-request';
 import type { WorkReportRequirement, WorkReportStatus } from '../constants/work-report';
@@ -53,6 +57,21 @@ export interface WorkReportObjectAssessmentDto {
   conclusion: string | null;
   recommendation: string | null;
   photoIds: readonly string[];
+  /**
+   * What this equipment has answered for its type's declared attributes (4.1).
+   *
+   * Read off the OBJECT, not off the finding — they are facts about the kit rather than
+   * observations of this visit, so every report against the same equipment sees the same
+   * answers and writing one corrects them everywhere.
+   */
+  attributeValues: Record<string, ObjectAttributeValue>;
+  /**
+   * The definitions in force for this equipment's type, in display order.
+   *
+   * Per row rather than per report, because a report may name a panel and a breaker and
+   * they declare different things. Empty for a type that declares none.
+   */
+  objectTypeAttributes: readonly ObjectTypeAttributeDto[];
 }
 
 /**
@@ -97,4 +116,44 @@ export interface WorkReportDto {
 
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * The conclusion as a CUSTOMER may read it — the finished verdict on their own request.
+ *
+ * A SEPARATE TYPE RATHER THAN A SUBSET OF `WorkReportDto`, because the staff DTO is a
+ * working document and this is a published result. Everything omitted here is omitted
+ * deliberately:
+ *
+ *   * `status`, `missing`, `isComplete` — the drafting state. A customer only ever sees an
+ *     approved conclusion, so a status field could carry exactly one value and would still
+ *     invite a client to render "батлагдсан/ноорог" for a record it can never see in the
+ *     other state.
+ *   * `returnReason`, `returnedBy*`, `submittedBy*` — the internal review conversation.
+ *     "Дүгнэлт дутуу, дахин бич" is a message from one colleague to another and is not the
+ *     customer's business.
+ *   * `createdBy`/`createdByName` — NOT the author. `getOrCreateWorkReport` stamps whoever
+ *     opened the form first, which live data shows is regularly not the person who wrote a
+ *     word of it. `approvedByName` is the only name here that is a claim anyone stands
+ *     behind, so it is the only name sent.
+ *   * `actionTaken`, `materials`, `objects`, `objectAssessments` — the operational detail.
+ *     Equipment codes and per-object findings belong to the object master, which the portal
+ *     reaches through its own permissions and its own scoping.
+ *
+ * There is no `id` and no `serviceRequestId` either: the customer read is keyed on the
+ * request the caller already named, so neither identifier tells them anything they did not
+ * supply, and a conclusion id is a handle onto staff routes.
+ */
+export interface CustomerWorkReportDto {
+  conclusion: string | null;
+  recommendation: string | null;
+  score: number | null;
+  riskLevel: RiskLevel | null;
+  repairRequired: boolean;
+  revisitRequired: boolean;
+  revisitDate: string | null;
+  beforePhotos: readonly WorkReportPhotoDto[];
+  afterPhotos: readonly WorkReportPhotoDto[];
+  approvedAt: string | null;
+  approvedByName: string | null;
 }

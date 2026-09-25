@@ -3,15 +3,19 @@ import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { invalidateRiskBands } from '../../../hooks/use-risk-bands';
 import { objectMasterService, objectTypeService } from '../../../services/object-master.service';
 import { objectService } from '../../../services/object.service';
 import { projectService } from '../../../services/project.service';
+import { dispatchService } from '../../../services/service-request.service';
+import { vocabularyService } from '../../../services/vocabulary.service';
 import {
   makeFloor,
   makeObjectDetail,
   makeObjectListItem,
   makeObjectType,
   makePage,
+  makeVocabulary,
 } from '../../../test/fixtures';
 import { renderWithAuth } from '../../../test/render';
 import { ObjectFormPage } from './ObjectFormPage';
@@ -40,8 +44,21 @@ function renderFloorlessCreate() {
   });
 }
 
+/**
+ * The ladder this installation runs, as the form reads it from `GET /vocabulary`.
+ *
+ * The form resolves the red/black band from this and from nothing else, so a test of the
+ * conditional fields has to state which ladder is in force. `makeVocabulary` defaults to the
+ * shipped one — 81/61/41/21 — which is what the band comments in this file refer to.
+ */
+function evaluationSettings() {
+  return makeVocabulary();
+}
+
 describe('ObjectFormPage', () => {
   beforeEach(() => {
+    invalidateRiskBands();
+    vi.spyOn(vocabularyService, 'get').mockResolvedValue(evaluationSettings());
     vi.spyOn(projectService, 'getFloor').mockResolvedValue(makeFloor());
     vi.spyOn(projectService, 'listFloors').mockResolvedValue(makePage([makeFloor()]));
     vi.spyOn(objectTypeService, 'list').mockResolvedValue(makePage([makeObjectType()]));
@@ -126,7 +143,13 @@ describe('ObjectFormPage', () => {
 
     // Nothing is written: the object and the assessment are two calls, and letting the
     // first one through would leave an object on record whose score was thrown away.
-    expect(await screen.findByText('Улаан/хар төлөвт авах арга хэмжээ заавал.')).toBeInTheDocument();
+    // The refusal names the band as the band names itself — the same wording the backend
+    // would have used, rather than "улаан/хар", which was a colour this file had guessed.
+    // 20 is the BLACK band, not the red one: the shipped ladder starts CRITICAL at 21, and
+    // the old message could not tell the two apart because it named neither.
+    expect(
+      await screen.findByText('«Ашиглах боломжгүй» түвшинд авах арга хэмжээ заавал.'),
+    ).toBeInTheDocument();
     expect(create).not.toHaveBeenCalled();
   });
 
@@ -169,6 +192,240 @@ describe('ObjectFormPage', () => {
     });
   });
 
+  /**
+   * A middle band demands a follow-up, and this form had no control that could state one.
+   *
+   * The backend keys section 10.1 on what the BAND declares, not on what it is called:
+   * `requiresRecommendation && !requiresConclusion` demands a recommendation plus
+   * `revisitRequired || repairRequired`. In the shipped ladder that is every score from 41
+   * to 80. This form rendered neither checkbox and sent neither field, so on a
+   * conclusion-generating type any such score wrote the object and then lost its assessment
+   * to a refusal naming a field nothing on the page could fill in.
+   */
+  it('records a repair follow-up with a mid-band score', async () => {
+    vi.spyOn(objectMasterService, 'create').mockResolvedValue(makeObjectDetail());
+    vi.spyOn(objectMasterService, 'uploadAssessmentPhoto').mockResolvedValue({
+      id: '507f1f77bcf86cd799439199',
+    } as never);
+    const assess = vi
+      .spyOn(objectMasterService, 'recordAssessment')
+      .mockResolvedValue({} as never);
+    const user = userEvent.setup();
+
+    renderCreate();
+
+    await user.selectOptions(await screen.findByLabelText(/^Тоноглолын төрөл/), TYPE_ID);
+    await user.type(screen.getByLabelText(/^Код/), 'EQ-17');
+    await user.type(screen.getByLabelText(/^Нэр\*/), 'Засвар шаардсан тоноглол');
+    // 55 sits in the orange band under the shipped thresholds: a recommendation and a
+    // follow-up, but no written conclusion.
+    await user.type(screen.getByLabelText(/^Үнэлгээ/), '55');
+    await user.type(screen.getByLabelText(/^Зөвлөмж/), 'Ойрын хугацаанд солих');
+
+    await user.click(await screen.findByLabelText('Засвар шаардлагатай'));
+    await user.upload(
+      screen.getByLabelText('Нотлох зураг'),
+      new File(['x'], 'evidence.png', { type: 'image/png' }),
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Хадгалах' }));
+
+    // The payload is the assertion: a checkbox that is rendered but never sent fails in
+    // exactly the same way as one that was never rendered at all.
+    await waitFor(() => {
+      expect(assess).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          newScore: 55,
+          recommendation: 'Ойрын хугацаанд солих',
+          repairRequired: true,
+          revisitRequired: false,
+        }),
+      );
+    });
+  });
+
+  /**
+   * The same band, refused BEFORE anything is written.
+   *
+   * Rendering the controls is only half the fix: a technician who leaves the recommendation
+   * blank and ticks neither box is about to be refused by `recordAssessment`, and by then
+   * the object exists and its score is gone. The form asks the same question the server
+   * asks — off the band's own `requiresRecommendation` / `requiresConclusion` flags, never
+   * off its name — and stops while stopping is still free.
+   */
+  it('refuses a mid-band score with no recommendation and no follow-up', async () => {
+    const create = vi.spyOn(objectMasterService, 'create').mockResolvedValue(makeObjectDetail());
+    const user = userEvent.setup();
+
+    renderCreate();
+
+    await user.selectOptions(await screen.findByLabelText(/^Тоноглолын төрөл/), TYPE_ID);
+    await user.type(screen.getByLabelText(/^Код/), 'EQ-20');
+    await user.type(screen.getByLabelText(/^Нэр\*/), 'Засвар шаардсан тоноглол');
+    await user.type(screen.getByLabelText(/^Үнэлгээ/), '55');
+    await user.upload(
+      screen.getByLabelText('Нотлох зураг'),
+      new File(['x'], 'evidence.png', { type: 'image/png' }),
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Хадгалах' }));
+
+    // The band names itself, exactly as the backend's own refusal does.
+    expect(
+      await screen.findByText('«Ойрын хугацаанд засварлах» түвшинд зөвлөмж заавал.'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('«Ойрын хугацаанд засварлах» түвшинд засвар эсвэл давтан үзлэг заавал.'),
+    ).toBeInTheDocument();
+    // Nothing was written, so nothing was lost.
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  /**
+   * A band that demands a written conclusion does NOT also demand a follow-up — the backend
+   * asks for one only when `!requiresConclusion`, because a band demanding both would make
+   * the conclusion redundant. The form transcribes that, rather than asking for everything
+   * whenever it asks for anything.
+   */
+  it('asks a red score for no follow-up, only for the three findings', async () => {
+    vi.spyOn(objectMasterService, 'create').mockResolvedValue(makeObjectDetail());
+    vi.spyOn(objectMasterService, 'uploadAssessmentPhoto').mockResolvedValue({
+      id: '507f1f77bcf86cd799439199',
+    } as never);
+    const assess = vi
+      .spyOn(objectMasterService, 'recordAssessment')
+      .mockResolvedValue({} as never);
+    const user = userEvent.setup();
+
+    renderCreate();
+
+    await user.selectOptions(await screen.findByLabelText(/^Тоноглолын төрөл/), TYPE_ID);
+    await user.type(screen.getByLabelText(/^Код/), 'EQ-21');
+    await user.type(screen.getByLabelText(/^Нэр\*/), 'Ноцтой тоноглол');
+    await user.type(screen.getByLabelText(/^Үнэлгээ/), '20');
+    await user.type(screen.getByLabelText(/^Дүгнэлт/), 'Тусгаарлагч эвдэрсэн');
+    await user.type(screen.getByLabelText(/^Зөвлөмж/), 'Яаралтай солих');
+    await user.type(screen.getByLabelText(/^Авах арга хэмжээ/), 'Тэжээлийг тасаллаа');
+    await user.upload(
+      screen.getByLabelText('Нотлох зураг'),
+      new File(['x'], 'evidence.png', { type: 'image/png' }),
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Хадгалах' }));
+
+    // Neither box ticked, and the save goes through: the black and red bands carry a
+    // conclusion instead.
+    await waitFor(() => {
+      expect(assess).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ newScore: 20, repairRequired: false, revisitRequired: false }),
+      );
+    });
+  });
+
+  /**
+   * The other half of the same rule. A revisit carries a date and an owner (section 9.3),
+   * which the shared schema refuses without — so the form has to ask for both rather than
+   * leaving the technician to claim a repair they did not mean.
+   */
+  it('records a revisit with its date and owner from a mid-band score', async () => {
+    vi.spyOn(dispatchService, 'employeeCandidates').mockResolvedValue([
+      {
+        id: '507f1f77bcf86cd799439171',
+        firstName: 'Бат',
+        lastName: 'Дорж',
+      } as never,
+    ]);
+    vi.spyOn(objectMasterService, 'create').mockResolvedValue(makeObjectDetail());
+    vi.spyOn(objectMasterService, 'uploadAssessmentPhoto').mockResolvedValue({
+      id: '507f1f77bcf86cd799439199',
+    } as never);
+    const assess = vi
+      .spyOn(objectMasterService, 'recordAssessment')
+      .mockResolvedValue({} as never);
+    const user = userEvent.setup();
+
+    renderCreate();
+
+    await user.selectOptions(await screen.findByLabelText(/^Тоноглолын төрөл/), TYPE_ID);
+    await user.type(screen.getByLabelText(/^Код/), 'EQ-18');
+    await user.type(screen.getByLabelText(/^Нэр\*/), 'Дахин үзэх тоноглол');
+    // 70 sits in the yellow band under the shipped thresholds — the same rule as 55.
+    await user.type(screen.getByLabelText(/^Үнэлгээ/), '70');
+    await user.type(screen.getByLabelText(/^Зөвлөмж/), 'Дахин хэмжилт хийх');
+
+    await user.click(await screen.findByLabelText('Дахин үзлэг шаардлагатай'));
+    await user.type(await screen.findByLabelText(/^Дахин очих огноо/), '2026-10-01');
+    await user.selectOptions(
+      await screen.findByLabelText(/^Хариуцагч/),
+      '507f1f77bcf86cd799439171',
+    );
+    await user.upload(
+      screen.getByLabelText('Нотлох зураг'),
+      new File(['x'], 'evidence.png', { type: 'image/png' }),
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Хадгалах' }));
+
+    await waitFor(() => {
+      expect(assess).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          newScore: 70,
+          revisitRequired: true,
+          repairRequired: false,
+          revisitDate: '2026-10-01T00:00:00.000Z',
+          revisitOwnerEmployeeId: '507f1f77bcf86cd799439171',
+        }),
+      );
+    });
+  });
+
+  /**
+   * The band that already worked has to keep working: a red score demands all three
+   * findings and now also carries the two follow-up flags, off unless they were ticked.
+   */
+  it('still sends a red assessment, now with the follow-up flags', async () => {
+    vi.spyOn(objectMasterService, 'create').mockResolvedValue(makeObjectDetail());
+    vi.spyOn(objectMasterService, 'uploadAssessmentPhoto').mockResolvedValue({
+      id: '507f1f77bcf86cd799439199',
+    } as never);
+    const assess = vi
+      .spyOn(objectMasterService, 'recordAssessment')
+      .mockResolvedValue({} as never);
+    const user = userEvent.setup();
+
+    renderCreate();
+
+    await user.selectOptions(await screen.findByLabelText(/^Тоноглолын төрөл/), TYPE_ID);
+    await user.type(screen.getByLabelText(/^Код/), 'EQ-19');
+    await user.type(screen.getByLabelText(/^Нэр\*/), 'Ноцтой тоноглол');
+    await user.type(screen.getByLabelText(/^Үнэлгээ/), '20');
+    await user.type(screen.getByLabelText(/^Дүгнэлт/), 'Тусгаарлагч эвдэрсэн');
+    await user.type(screen.getByLabelText(/^Зөвлөмж/), 'Яаралтай солих');
+    await user.type(screen.getByLabelText(/^Авах арга хэмжээ/), 'Тэжээлийг тасаллаа');
+    await user.click(await screen.findByLabelText('Засвар шаардлагатай'));
+    await user.upload(
+      screen.getByLabelText('Нотлох зураг'),
+      new File(['x'], 'evidence.png', { type: 'image/png' }),
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Хадгалах' }));
+
+    await waitFor(() => {
+      expect(assess).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          newScore: 20,
+          actionTaken: 'Тэжээлийг тасаллаа',
+          repairRequired: true,
+          revisitRequired: false,
+        }),
+      );
+    });
+  });
+
   /** A green score asks for none of the conditional fields. */
   it('leaves the action taken optional for a normal score', async () => {
     vi.spyOn(objectMasterService, 'create').mockResolvedValue(makeObjectDetail());
@@ -202,6 +459,77 @@ describe('ObjectFormPage', () => {
   });
 
   /**
+   * `useRiskBands` returns null when the thresholds cannot be read, rather than passing off
+   * the shipped constants as the ones in force. This form then cannot tell which side of
+   * the line a score falls on, so it asks for all three findings and states no threshold —
+   * the alternative is writing the object and losing the assessment to a backend refusal.
+   */
+  it('demands all three findings, without naming a band, when the thresholds cannot be read', async () => {
+    invalidateRiskBands();
+    vi.spyOn(vocabularyService, 'get').mockRejectedValue(new Error('offline'));
+    const create = vi.spyOn(objectMasterService, 'create').mockResolvedValue(makeObjectDetail());
+    const user = userEvent.setup();
+
+    renderCreate();
+
+    await user.selectOptions(await screen.findByLabelText(/^Тоноглолын төрөл/), TYPE_ID);
+    await user.type(screen.getByLabelText(/^Код/), 'EQ-16');
+    await user.type(screen.getByLabelText(/^Нэр\*/), 'Хэвийн тоноглол');
+    // 95 would be green under the shipped thresholds, but no thresholds are known.
+    await user.type(screen.getByLabelText(/^Үнэлгээ/), '95');
+
+    expect(await screen.findByText(/тохиргоог уншиж чадсангүй/)).toBeInTheDocument();
+    // No band is named in either direction — there is none to name.
+    expect(screen.queryByText(/түвшинд байна/)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Хадгалах' }));
+
+    expect(
+      await screen.findByText('Үнэлгээний түвшин тодорхойгүй тул дүгнэлт заавал.'),
+    ).toBeInTheDocument();
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  /**
+   * A LADDER WITH NO FLAGS ON IT IS A LADDER THIS BUILD DOES NOT UNDERSTAND.
+   *
+   * Only a server older than this bundle answers that way, and the tempting reading of a
+   * missing boolean is the dangerous one: falsy, so the black band demands nothing. The
+   * hook refuses the payload instead, and the form falls into the same "cannot tell" branch
+   * as a failed read — asking for everything and naming no band.
+   */
+  it('treats a ladder published without the band flags as unknown', async () => {
+    invalidateRiskBands();
+    const withoutFlags = evaluationSettings();
+    vi.spyOn(vocabularyService, 'get').mockResolvedValue({
+      ...withoutFlags,
+      riskBands: withoutFlags.riskBands.map(
+        ({ requiresConclusion: _c, requiresRecommendation: _r, ...band }) => band as never,
+      ),
+    });
+    const create = vi.spyOn(objectMasterService, 'create').mockResolvedValue(makeObjectDetail());
+    const user = userEvent.setup();
+
+    renderCreate();
+
+    await user.selectOptions(await screen.findByLabelText(/^Тоноглолын төрөл/), TYPE_ID);
+    await user.type(screen.getByLabelText(/^Код/), 'EQ-22');
+    await user.type(screen.getByLabelText(/^Нэр\*/), 'Хэвийн тоноглол');
+    // 95 would be green, and green demands nothing — but nothing here can say so.
+    await user.type(screen.getByLabelText(/^Үнэлгээ/), '95');
+
+    expect(await screen.findByText(/тохиргоог уншиж чадсангүй/)).toBeInTheDocument();
+    expect(screen.queryByText(/түвшинд байна/)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Хадгалах' }));
+
+    expect(
+      await screen.findByText('Үнэлгээний түвшин тодорхойгүй тул дүгнэлт заавал.'),
+    ).toBeInTheDocument();
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  /**
    * The API has always accepted a floorless object, so registration does not have to start
    * by walking down to a specific floor.
    */
@@ -230,6 +558,48 @@ describe('ObjectFormPage', () => {
         }),
       );
     });
+  });
+
+  /**
+   * A TENANT'S FLOOR MUST BE OFFERED, WHEREVER IT SORTS SYSTEM-WIDE.
+   *
+   * `floorListQuerySchema` has no `customerId` parameter, so this page fetches active
+   * floors and filters by tenant here. One capped page of a hundred therefore did not
+   * merely shorten the picker: past a hundred active floors across every customer, this
+   * tenant's floor fell outside the window entirely and the select read "Идэвхтэй давхар
+   * алга" — a customer with floors, told it had none. The page walk is what makes the
+   * client-side filter honest; the real fix is the missing server parameter.
+   */
+  it('offers a floor that sorts past the first page of active floors', async () => {
+    const user = userEvent.setup();
+    // A hundred floors belonging to somebody else, then this tenant's on the second page.
+    const otherTenant = Array.from({ length: 100 }, (_, index) =>
+      makeFloor({
+        id: `507f1f77bcf86cd7994392${String(index).padStart(2, '0')}`,
+        customerId: '507f1f77bcf86cd799439099',
+        name: `Өөр харилцагчийн ${index + 1}`,
+      }),
+    );
+    vi.spyOn(projectService, 'listFloors').mockImplementation(async (query) =>
+      (query as { page?: number }).page === 2
+        ? { items: [makeFloor()], page: 2, limit: 100, total: 101, totalPages: 2 }
+        : { items: otherTenant, page: 1, limit: 100, total: 101, totalPages: 2 },
+    );
+
+    renderFloorlessCreate();
+
+    await user.selectOptions(
+      await screen.findByLabelText(/^Харилцагч/),
+      '507f1f77bcf86cd799439011',
+    );
+
+    const floorField = await screen.findByLabelText(/^Давхар/);
+    await waitFor(() => expect(floorField).toBeEnabled());
+    expect(
+      within(floorField).getByRole('option', {
+        name: 'Урьдчилан сэргийлэх үйлчилгээ · Төв барилга · 2 давхар',
+      }),
+    ).toBeInTheDocument();
   });
 
   /** The floor is a choice here, not a read-only echo of the route. */
@@ -558,6 +928,378 @@ describe('ObjectFormPage', () => {
           }),
         );
       });
+    });
+  });
+
+  /**
+   * The category's electrical fields are two dozen optional figures, every one of them
+   * nullish at the API. They are folded into a section rather than laid out in front of
+   * somebody registering a socket — but never over something that matters, which is what
+   * these tests are about: values already entered and errors already raised open it.
+   */
+  describe('the electrical section', () => {
+    const OBJECT_ID = '507f1f77bcf86cd799439181';
+
+    function electricalToggle(): HTMLElement {
+      return screen.getByRole('button', { name: /Цахилгааны мэдээлэл/ });
+    }
+
+    /** The form as the edit action opens it, over the object the API hands back. */
+    function renderEdit() {
+      return renderWithAuth(<ObjectFormPage />, {
+        permissions: [PERMISSIONS.OBJECT_MASTER_VIEW, PERMISSIONS.OBJECT_MASTER_MANAGE],
+        route: `/floors/${FLOOR_ID}/objects/${OBJECT_ID}/edit`,
+        path: '/floors/:floorId/objects/:objectId/edit',
+      });
+    }
+
+    it('starts folded away on a new object, with its fields out of sight', async () => {
+      renderCreate();
+
+      await waitFor(() => expect(electricalToggle()).toHaveAttribute('aria-expanded', 'false'));
+      // Present, so nothing about the form's state depends on the fold — and not shown.
+      expect(screen.getByLabelText('Нэрлэсэн чадал (kW)')).not.toBeVisible();
+      expect(screen.getByLabelText('Тоо ширхэг')).not.toBeVisible();
+      expect(screen.getByLabelText('Тэжээх хэлхээ')).not.toBeVisible();
+      // What the form does open with: the identity fields, the description and the note.
+      expect(screen.getByLabelText(/^Нэр\*/)).toBeVisible();
+      expect(screen.getByLabelText('Тэмдэглэл')).toBeVisible();
+    });
+
+    it('reveals the fields when opened and sends what was typed into them', async () => {
+      const create = vi.spyOn(objectMasterService, 'create').mockResolvedValue(makeObjectDetail());
+      const user = userEvent.setup();
+
+      renderCreate();
+
+      await user.click(await screen.findByRole('button', { name: /Цахилгааны мэдээлэл/ }));
+      expect(electricalToggle()).toHaveAttribute('aria-expanded', 'true');
+
+      const ratedPower = screen.getByLabelText('Нэрлэсэн чадал (kW)');
+      expect(ratedPower).toBeVisible();
+
+      await user.type(ratedPower, '3.5');
+      await user.type(screen.getByLabelText('Тоо ширхэг'), '2');
+      await user.selectOptions(screen.getByLabelText(/^Тоноглолын төрөл/), TYPE_ID);
+      await user.type(screen.getByLabelText(/^Код/), 'EQ-21');
+      await user.type(screen.getByLabelText(/^Нэр\*/), 'Нээгээд бөглөсөн');
+
+      await user.click(screen.getByRole('button', { name: 'Хадгалах' }));
+
+      await waitFor(() => {
+        expect(create).toHaveBeenCalledWith(
+          expect.objectContaining({
+            equipment: expect.objectContaining({ ratedPowerKw: 3.5, quantity: 2 }),
+          }),
+        );
+      });
+    });
+
+    /** A capacity already on record must not be hidden behind a fold nobody knew to open. */
+    it('opens itself on an object that already carries electrical values', async () => {
+      vi.spyOn(objectMasterService, 'getById').mockResolvedValue(
+        makeObjectDetail({
+          category: 'PANEL',
+          panel: { capacityKw: 25, location: 'Баруун жигүүр', protection: 'IP54' },
+        }),
+      );
+
+      renderEdit();
+
+      const capacity = await screen.findByLabelText('Хүчин чадал (kW)');
+      expect(capacity).toHaveValue(25);
+      expect(capacity).toBeVisible();
+      expect(electricalToggle()).toHaveAttribute('aria-expanded', 'true');
+    });
+
+    it('stays folded away on an object that carries none', async () => {
+      vi.spyOn(objectMasterService, 'getById').mockResolvedValue(
+        makeObjectDetail({
+          category: 'PANEL',
+          panel: { capacityKw: null, location: null, protection: null },
+        }),
+      );
+
+      renderEdit();
+
+      await waitFor(() => expect(electricalToggle()).toHaveAttribute('aria-expanded', 'false'));
+      expect(screen.getByLabelText('Хүчин чадал (kW)')).not.toBeVisible();
+    });
+
+    /**
+     * The case that would otherwise be a dead end: a save refused over a message folded out
+     * of sight, with nothing on screen to say why. The error opens the section itself, and
+     * it does so over the user's own decision to close it.
+     */
+    it('opens itself, over a fold the user chose, when an error lands inside it', async () => {
+      const create = vi.spyOn(objectMasterService, 'create').mockResolvedValue(makeObjectDetail());
+      const user = userEvent.setup();
+
+      renderCreate();
+
+      await user.click(await screen.findByRole('button', { name: /Цахилгааны мэдээлэл/ }));
+      // Zero fails `quantity`: the schema asks for a whole number above nothing.
+      await user.type(screen.getByLabelText('Тоо ширхэг'), '0');
+
+      await user.click(electricalToggle());
+      expect(screen.getByLabelText('Тоо ширхэг')).not.toBeVisible();
+
+      await user.selectOptions(screen.getByLabelText(/^Тоноглолын төрөл/), TYPE_ID);
+      await user.type(screen.getByLabelText(/^Код/), 'EQ-22');
+      await user.type(screen.getByLabelText(/^Нэр\*/), 'Далдалсан алдаа');
+      await user.click(screen.getByRole('button', { name: 'Хадгалах' }));
+
+      const quantity = await screen.findByLabelText('Тоо ширхэг');
+      await waitFor(() => expect(quantity).toBeVisible());
+      expect(electricalToggle()).toHaveAttribute('aria-expanded', 'true');
+      expect(screen.getByText('Тоо ширхэг 0-ээс их байна.')).toBeVisible();
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    /**
+     * The register-on-this-panel route arrives with the mount already chosen, and the code
+     * suggestion is asked for off the back of it. Both are values the form was opened
+     * carrying, so the section is open on arrival rather than hiding where the code came
+     * from.
+     */
+    it('is open on arrival when the route pre-filled the mounting panel', async () => {
+      const PANEL_ID = '507f1f77bcf86cd799439161';
+      vi.spyOn(objectMasterService, 'list').mockImplementation(async (query = {}) =>
+        makePage(
+          query.category === 'PANEL'
+            ? [makeObjectListItem({ id: PANEL_ID, code: 'DB-2A', name: 'Түгээх самбар 2A' })]
+            : [],
+        ),
+      );
+      vi.spyOn(objectMasterService, 'codeSuggestion').mockResolvedValue({
+        code: 'DB-2A-01',
+        basedOn: 'DB-2A',
+      });
+
+      renderWithAuth(<ObjectFormPage />, {
+        permissions: [PERMISSIONS.OBJECT_MASTER_VIEW, PERMISSIONS.OBJECT_MASTER_MANAGE],
+        route: `/floors/${FLOOR_ID}/objects/new?category=EQUIPMENT&panelId=${PANEL_ID}`,
+        path: '/floors/:floorId/objects/new',
+      });
+
+      const mount = await screen.findByLabelText('Байрлах самбар');
+      await waitFor(() => expect(mount).toHaveValue(PANEL_ID));
+      expect(mount).toBeVisible();
+      expect(electricalToggle()).toHaveAttribute('aria-expanded', 'true');
+      await waitFor(() => expect(screen.getByLabelText(/^Код/)).toHaveValue('DB-2A-01'));
+    });
+  });
+});
+
+/**
+ * The chosen type's own fields on the registration form (requirements 4.1).
+ *
+ * The Үнэлгээ бүртгэх form asks the same questions from the same renderer; this covers the
+ * other entry point, where the equipment is first recorded. Everything is rendered from
+ * definitions the API supplies, so what is pinned down is that the form ASKS FOR WHAT THE
+ * TYPE DECLARES and refuses to submit without it — with nothing in the page naming an
+ * attribute, a type or a category.
+ */
+describe('ObjectFormPage per-type attributes', () => {
+  const FUSE = {
+    key: 'fuse',
+    label: 'Хайлмал хамгаалалт',
+    type: 'SELECT' as const,
+    required: true,
+    options: [
+      { value: 'FUSED', label: 'Хайлмалтай' },
+      { value: 'NOT_FUSED', label: 'Хайлмалгүй' },
+    ],
+  };
+
+  const POLES = {
+    key: 'poles',
+    label: 'Туйлын тоо',
+    type: 'NUMBER' as const,
+    required: false,
+    options: [],
+  };
+
+  const SEALED = {
+    key: 'sealed',
+    label: 'Лацдсан эсэх',
+    type: 'BOOLEAN' as const,
+    required: true,
+    options: [],
+  };
+
+  beforeEach(() => {
+    invalidateRiskBands();
+    vi.spyOn(vocabularyService, 'get').mockResolvedValue(evaluationSettings());
+    vi.spyOn(projectService, 'getFloor').mockResolvedValue(makeFloor());
+    vi.spyOn(projectService, 'listFloors').mockResolvedValue(makePage([makeFloor()]));
+    vi.spyOn(objectMasterService, 'list').mockResolvedValue(makePage([]));
+  });
+
+  function withAttributes(attributes: readonly unknown[]): void {
+    vi.spyOn(objectTypeService, 'list').mockResolvedValue(
+      makePage([makeObjectType({ attributes: attributes as never })]),
+    );
+  }
+
+  /** Fills in the fields every create needs, whatever the type declares on top. */
+  async function fillBasics(user: ReturnType<typeof userEvent.setup>): Promise<void> {
+    await user.selectOptions(await screen.findByLabelText(/^Тоноглолын төрөл/), TYPE_ID);
+    await user.type(screen.getByLabelText(/^Код/), 'MCB-01');
+    await user.type(screen.getByLabelText(/^Нэр\*/), 'Автомат таслуур 1');
+  }
+
+  it('renders nothing extra for a type that declares no attributes', async () => {
+    // The path every type took before this existed, and the one that must be untouched.
+    withAttributes([]);
+    const create = vi.spyOn(objectMasterService, 'create').mockResolvedValue(makeObjectDetail());
+    const user = userEvent.setup();
+
+    renderCreate();
+    await fillBasics(user);
+    await user.click(screen.getByRole('button', { name: 'Хадгалах' }));
+
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(create.mock.calls[0]![0]).toMatchObject({ attributeValues: {} });
+  });
+
+  it('renders a field per declared attribute once a type is chosen', async () => {
+    withAttributes([FUSE, POLES]);
+    const user = userEvent.setup();
+
+    renderCreate();
+    // Nothing is shown before a type is chosen, because nothing is known yet.
+    expect(screen.queryByLabelText(/Хайлмал хамгаалалт/)).not.toBeInTheDocument();
+
+    await user.selectOptions(await screen.findByLabelText(/^Тоноглолын төрөл/), TYPE_ID);
+
+    expect(screen.getByLabelText(/Хайлмал хамгаалалт/)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Туйлын тоо/)).toBeInTheDocument();
+  });
+
+  it('offers a SELECT exactly the options its definition lists', async () => {
+    withAttributes([FUSE]);
+    const user = userEvent.setup();
+
+    renderCreate();
+    await user.selectOptions(await screen.findByLabelText(/^Тоноглолын төрөл/), TYPE_ID);
+
+    const select = screen.getByLabelText(/Хайлмал хамгаалалт/);
+    const labels = within(select).getAllByRole('option').map((option) => option.textContent);
+    expect(labels).toEqual(['Сонгоно уу', 'Хайлмалтай', 'Хайлмалгүй']);
+  });
+
+  it('sends the chosen values, parsed to their declared types', async () => {
+    withAttributes([FUSE, POLES, SEALED]);
+    const create = vi.spyOn(objectMasterService, 'create').mockResolvedValue(makeObjectDetail());
+    const user = userEvent.setup();
+
+    renderCreate();
+    await fillBasics(user);
+
+    await user.selectOptions(screen.getByLabelText(/Хайлмал хамгаалалт/), 'FUSED');
+    await user.type(screen.getByLabelText(/Туйлын тоо/), '3');
+    await user.selectOptions(screen.getByLabelText(/Лацдсан эсэх/), 'false');
+
+    await user.click(screen.getByRole('button', { name: 'Хадгалах' }));
+
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(create.mock.calls[0]![0]).toMatchObject({
+      // A number as a number and a boolean as a boolean, not as the text of their inputs.
+      attributeValues: { fuse: 'FUSED', poles: 3, sealed: false },
+    });
+  });
+
+  it('refuses to submit while a required attribute is empty', async () => {
+    withAttributes([FUSE]);
+    const create = vi.spyOn(objectMasterService, 'create').mockResolvedValue(makeObjectDetail());
+    const user = userEvent.setup();
+
+    renderCreate();
+    await fillBasics(user);
+    await user.click(screen.getByRole('button', { name: 'Хадгалах' }));
+
+    // Caught before the request, from the same shared rule the backend enforces with, and
+    // reported under the field itself rather than as a banner alone.
+    expect(await screen.findByText(/"Хайлмал хамгаалалт" заавал бөглөнө/)).toBeInTheDocument();
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('lets an optional attribute stay empty', async () => {
+    withAttributes([POLES]);
+    const create = vi.spyOn(objectMasterService, 'create').mockResolvedValue(makeObjectDetail());
+    const user = userEvent.setup();
+
+    renderCreate();
+    await fillBasics(user);
+    await user.click(screen.getByRole('button', { name: 'Хадгалах' }));
+
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(create.mock.calls[0]![0]).toMatchObject({ attributeValues: {} });
+  });
+
+  it('treats a required yes/no answered "Үгүй" as answered', async () => {
+    /**
+     * The reason a BOOLEAN is a three-state select and not a checkbox: an unticked box cannot
+     * be told apart from a deliberate no, which would make `required` satisfiable by never
+     * looking at the field.
+     */
+    withAttributes([SEALED]);
+    const create = vi.spyOn(objectMasterService, 'create').mockResolvedValue(makeObjectDetail());
+    const user = userEvent.setup();
+
+    renderCreate();
+    await fillBasics(user);
+
+    await user.click(screen.getByRole('button', { name: 'Хадгалах' }));
+    expect(await screen.findByText(/"Лацдсан эсэх" заавал бөглөнө/)).toBeInTheDocument();
+    expect(create).not.toHaveBeenCalled();
+
+    await user.selectOptions(screen.getByLabelText(/Лацдсан эсэх/), 'false');
+    await user.click(screen.getByRole('button', { name: 'Хадгалах' }));
+
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(create.mock.calls[0]![0]).toMatchObject({ attributeValues: { sealed: false } });
+  });
+
+  it('hydrates an edit from the values the object already carries', async () => {
+    withAttributes([FUSE, POLES]);
+    vi.spyOn(objectMasterService, 'getById').mockResolvedValue(
+      makeObjectDetail({
+        objectType: {
+          id: TYPE_ID,
+          code: 'MCB',
+          name: 'Автомат таслуур',
+          icon: 'BREAKER',
+          iconUrl: null,
+          showOnPlan: false,
+          attributes: [FUSE, POLES],
+        },
+        category: 'EQUIPMENT',
+        panel: null,
+        equipment: null,
+        attributeValues: { fuse: 'NOT_FUSED', poles: 4 },
+      }),
+    );
+    const update = vi.spyOn(objectMasterService, 'update').mockResolvedValue(makeObjectDetail());
+    const user = userEvent.setup();
+
+    renderWithAuth(<ObjectFormPage />, {
+      permissions: [PERMISSIONS.OBJECT_MASTER_VIEW, PERMISSIONS.OBJECT_MASTER_MANAGE],
+      route: `/floors/${FLOOR_ID}/objects/o1/edit`,
+      path: '/floors/:floorId/objects/:objectId/edit',
+    });
+
+    // A number comes back in its box as text, and a SELECT comes back on its option.
+    expect(await screen.findByLabelText(/Хайлмал хамгаалалт/)).toHaveValue('NOT_FUSED');
+    expect(screen.getByLabelText(/Туйлын тоо/)).toHaveValue(4);
+
+    await user.selectOptions(screen.getByLabelText(/Хайлмал хамгаалалт/), 'FUSED');
+    await user.click(screen.getByRole('button', { name: 'Хадгалах' }));
+
+    await waitFor(() => expect(update).toHaveBeenCalled());
+    expect(update.mock.calls[0]![1]).toMatchObject({
+      attributeValues: { fuse: 'FUSED', poles: 4 },
     });
   });
 });

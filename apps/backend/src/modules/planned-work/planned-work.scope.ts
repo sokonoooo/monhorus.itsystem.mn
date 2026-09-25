@@ -77,6 +77,17 @@ export const OVERSIGHT_PERMISSIONS: readonly PermissionKey[] = [
   PERMISSIONS.PLANNED_WORK_UPDATE,
   PERMISSIONS.PLANNED_WORK_RESCHEDULE,
   PERMISSIONS.PLANNED_WORK_CANCEL,
+  /**
+   * Deciding whether a customer's request goes ahead is authority over work other people
+   * do, so it belongs here on its own merits — and it has to be here for the gate to
+   * function. A PENDING_APPROVAL work has an empty crew by construction, so a scoped caller
+   * can never match one: a role granted `planned_work.approve` and nothing else would hold
+   * the permission, see the button and be refused by the scope check on every request in
+   * the queue. The seeded roles that get this key also hold `planned_work.update` and would
+   * have been unscoped anyway, which is exactly why the omission would not have surfaced
+   * until somebody built a dedicated approver role.
+   */
+  PERMISSIONS.PLANNED_WORK_APPROVE,
   PERMISSIONS.PLANNED_WORK_APPROVE_REPORT,
   PERMISSIONS.DISPATCH_ASSIGN,
 ];

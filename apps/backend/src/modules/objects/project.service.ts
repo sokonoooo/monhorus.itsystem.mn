@@ -1,5 +1,6 @@
 import type {
   BuildingDto,
+  RiskBand,
   RiskLevel,
   RiskSummaryDto,
   BuildingListQueryInput,
@@ -19,19 +20,23 @@ import { Types, type FilterQuery, type HydratedDocument } from 'mongoose';
 
 import { AppError } from '../../common/errors/app-error';
 import { ERROR_CODES } from '../../common/errors/error-codes';
+import { Counter, nextSequenceValue } from '../../common/models/counter.model';
 import {
   customerScopeFilter,
   resolveOwnerCustomerId,
   type ResolvedCustomerScope,
 } from '../../common/security/customer-scope';
 import type { AuthContext } from '../../common/types/express';
+import { CREATOR_POPULATE, creatorName } from '../../common/utils/creator.util';
 import type { RequestMeta } from '../../common/utils/request-meta.util';
 import { recordAudit } from '../audit/audit.service';
 import { Employee } from '../employee/employee.model';
 import { ObjectRecord } from '../object-master/object-master.models';
+import { riskScopeFilter } from '../object-master/risk-scope';
 import { rollupOf } from '../report-record/rollup.service';
 import { PlannedWork } from '../planned-work/planned-work.models';
 import { ServiceRequest } from '../service-request/service-request.model';
+import { getRiskBands } from '../settings/settings.service';
 import { Customer, FloorPlan, ObjectNode, type IObjectNode } from './object.models';
 
 /**
@@ -102,21 +107,114 @@ async function findNode(
   return node;
 }
 
-/** Codes are unique per customer, matching the existing compound index. */
-async function assertCodeAvailable(
+/**
+ * The prefix each generated code carries, and the only place the vocabulary is written
+ * down.
+ *
+ * These three are what keep the kinds apart in a namespace that does NOT separate them:
+ * the unique index is `{ customer, code }` with no `kind` in it, so every project,
+ * building and floor of one customer draws from one pool of strings. Numbering each kind
+ * from 1 is only safe because `PRJ-001`, `BLD-001` and `FLR-001` cannot collide.
+ */
+const CODE_PREFIXES = { PROJECT: 'PRJ', BUILDING: 'BLD', FLOOR: 'FLR' } as const;
+
+type GeneratedCodeKind = keyof typeof CODE_PREFIXES;
+
+/**
+ * How many times a code may be re-drawn before the attempt is abandoned.
+ *
+ * Each retry advances the atomic counter, so the candidates never repeat and the loop is
+ * making real progress rather than spinning; the bound exists so a collection full of
+ * hand-typed `PRJ-001`..`PRJ-020` fails with a sentence instead of looping forever.
+ */
+const MAX_CODE_ATTEMPTS = 25;
+
+/** Numbered per customer per kind, because the unique index is per customer. */
+function codeCounterKey(customerId: Types.ObjectId, kind: GeneratedCodeKind): string {
+  return `object-node-code:${String(customerId)}:${kind}`;
+}
+
+/**
+ * Brings a fresh counter up to what this customer already has.
+ *
+ * Codes were typed by hand before this existed, and the dev seed still writes `PRJ-1`, so
+ * a counter starting from zero would offer a code the customer is already using. The scan
+ * runs once per (customer, kind): after the counter document exists it is never repeated,
+ * so creating in a loop costs one atomic increment apiece.
+ *
+ * `$max` rather than `$set` is what makes the seed safe against a concurrent allocation.
+ * If a create has already pushed the counter past the scanned maximum, `$max` leaves it
+ * alone; two seeds racing each other are idempotent for the same reason.
+ *
+ * Only codes in the generated SHAPE are scanned. A customer whose buildings are called
+ * `A-WING` and `TOWER-2` has nothing to teach a counter that issues `BLD-007`, and those
+ * codes stay exactly as they are — the collision check below is what protects them.
+ */
+async function seedCodeCounter(
+  key: string,
   customerId: Types.ObjectId,
-  code: string,
-  excludeId?: Types.ObjectId,
+  kind: GeneratedCodeKind,
 ): Promise<void> {
-  const filter: FilterQuery<IObjectNode> = { customer: customerId, code };
-  if (excludeId) filter._id = { $ne: excludeId };
-  const existing = await ObjectNode.findOne(filter).select('_id');
-  if (existing) {
-    throw AppError.conflict(
-      ERROR_CODES.DUPLICATE_KEY,
-      'Энэ харилцагчид ижил кодтой бичлэг бүртгэгдсэн байна.',
-    );
+  if (await Counter.exists({ key })) return;
+
+  const prefix = CODE_PREFIXES[kind];
+  const pattern = new RegExp(`^${prefix}-(\\d+)$`);
+  const existing = await ObjectNode.find({
+    customer: customerId,
+    kind,
+    code: pattern,
+  }).select('code');
+
+  let highest = 0;
+  for (const row of existing) {
+    const match = pattern.exec(row.code);
+    const value = match ? Number(match[1]) : 0;
+    if (Number.isSafeInteger(value) && value > highest) highest = value;
   }
+  if (highest === 0) return;
+
+  await Counter.updateOne({ key }, { $max: { value: highest } }, { upsert: true });
+}
+
+/**
+ * The next free code for a customer's next project, building or floor.
+ *
+ * RACE-FREE BY CONSTRUCTION. The number comes from the atomic counter — a single
+ * `findOneAndUpdate` with `$inc`, which is atomic on a standalone mongod and needs no
+ * transaction — so ten simultaneous creates are handed ten different numbers. Counting
+ * existing rows instead would hand all ten the same one.
+ *
+ * DELETED CODES ARE NEVER REISSUED, and that falls out of the same design rather than
+ * being a rule enforced somewhere: the counter only ever moves up, and it is not consulted
+ * about what is still in the collection. Deleting `PRJ-004` leaves a gap, and the next
+ * project is `PRJ-005`. A skipped candidate leaves the same kind of gap, which is the
+ * behaviour invoice numbering here already lives with.
+ *
+ * The existence check on top of the counter covers what the counter cannot know: a code
+ * typed by hand after the counter was seeded, or one belonging to a DIFFERENT kind, since
+ * the index those share is per customer and blind to kind.
+ */
+async function allocateNodeCode(
+  customerId: Types.ObjectId,
+  kind: GeneratedCodeKind,
+): Promise<string> {
+  const key = codeCounterKey(customerId, kind);
+  await seedCodeCounter(key, customerId, kind);
+
+  for (let attempt = 0; attempt < MAX_CODE_ATTEMPTS; attempt += 1) {
+    const sequence = await nextSequenceValue(key);
+    // Padded to three so a list sorts the way a reader expects for the first 999, and
+    // simply grows past it — PRJ-1000 is ugly but correct, and truncating would collide.
+    const candidate = `${CODE_PREFIXES[kind]}-${String(sequence).padStart(3, '0')}`;
+
+    if (await ObjectNode.exists({ customer: customerId, code: candidate })) continue;
+    return candidate;
+  }
+
+  throw AppError.conflict(
+    ERROR_CODES.DUPLICATE_KEY,
+    'Энэ харилцагчид чөлөөтэй код олдсонгүй.',
+  );
 }
 
 async function descendantIds(nodeId: Types.ObjectId): Promise<Types.ObjectId[]> {
@@ -163,7 +261,32 @@ interface FloorRiskRow {
   lastAssessedAt: Date | null;
 }
 
-function foldRiskRows(rows: readonly FloorRiskRow[]): RiskSummaryDto {
+/**
+ * The bands whose presence raises the danger marker.
+ *
+ * Derived from what a band DOES, never from what it is called. `hasCritical` used to read
+ * `counts.get('CRITICAL') || counts.get('OUT_OF_SERVICE')` — the exact name-matching
+ * `risk-band.ts` forbids in prose and `object-master.service.ts` had already stopped
+ * doing. Rename either band in Тохиргоо and the marker went silent across web, both apps,
+ * and the sorting and filtering built on it, with nothing to show that it had.
+ *
+ * A band that demands a written conclusion is one the operator treats as serious, and the
+ * band that takes equipment out of service obviously is; `report.service.ts` reads
+ * "critical" the same way. On the shipped ladder that is exactly `{CRITICAL,
+ * OUT_OF_SERVICE}`, so nothing changes for an installation that has configured nothing.
+ */
+function criticalLevelsOf(bands: readonly RiskBand[]): ReadonlySet<RiskLevel> {
+  return new Set(
+    bands
+      .filter((band) => band.requiresConclusion || band.decommissions)
+      .map((band) => band.level),
+  );
+}
+
+function foldRiskRows(
+  rows: readonly FloorRiskRow[],
+  criticalLevels: ReadonlySet<RiskLevel>,
+): RiskSummaryDto {
   const counts = new Map<RiskLevel, number>();
   let unassessedCount = 0;
   let lastAssessedAt: Date | null = null;
@@ -183,7 +306,9 @@ function foldRiskRows(rows: readonly FloorRiskRow[]): RiskSummaryDto {
   return {
     counts: [...counts.entries()].map(([level, count]) => ({ level, count })),
     unassessedCount,
-    hasCritical: (counts.get('CRITICAL') ?? 0) > 0 || (counts.get('OUT_OF_SERVICE') ?? 0) > 0,
+    hasCritical: [...counts.entries()].some(
+      ([level, count]) => count > 0 && criticalLevels.has(level),
+    ),
     lastAssessedAt: lastAssessedAt ? lastAssessedAt.toISOString() : null,
   };
 }
@@ -235,7 +360,10 @@ export async function riskSummariesFor(
   if (floorIds.length === 0) return summaries;
 
   const rows = await ObjectRecord.aggregate<FloorRiskRow>([
-    { $match: { floor: { $in: floorIds } } },
+    // Retired equipment neither raises the danger marker nor swells «үнэлгээ хийгээгүй».
+    // Same predicate as the rollup, the dashboard and the inspection counters; see
+    // `object-master/risk-scope.ts` for why it is not `countsTowardLoad`.
+    { $match: { floor: { $in: floorIds }, ...riskScopeFilter } },
     {
       $group: {
         _id: { floor: '$floor', level: '$latestAssessment.riskLevel' },
@@ -254,8 +382,11 @@ export async function riskSummariesFor(
     }
   }
 
+  // Resolved once for the whole page rather than per node: the settings map is cached, but
+  // the ladder still has to be folded out of it, and this runs for every row on the list.
+  const criticalLevels = criticalLevelsOf(await getRiskBands());
   for (const [nodeId, nodeRows] of byNode) {
-    summaries.set(nodeId, foldRiskRows(nodeRows));
+    summaries.set(nodeId, foldRiskRows(nodeRows, criticalLevels));
   }
 
   return summaries;
@@ -270,19 +401,48 @@ async function riskSummaryFor(
   return summaries.get(String(nodeId)) ?? EMPTY_RISK_SUMMARY;
 }
 
+/** What a node's direct children are called, for the "N x бүртгэлтэй" blocker. */
+const CHILD_LABEL: Record<IObjectNode['kind'], string> = {
+  CUSTOMER: 'төсөл',
+  PROJECT: 'барилга',
+  BUILDING: 'давхар',
+  FLOOR: 'өрөө/бүс',
+  ROOM: 'самбар',
+  PANEL: 'хэлхээ',
+  CIRCUIT: 'төхөөрөмж',
+  DEVICE: 'дэд бүртгэл',
+};
+
+/**
+ * Which location field on a service request points at a node of this kind.
+ *
+ * One map rather than a chain of conditionals: the chain read `PROJECT ? project : BUILDING
+ * ? building : floor`, so a zone was checked against the `floor` field and its requests were
+ * never found — deleting a referenced zone would have orphaned every one of them.
+ */
+const REQUEST_LOCATION_FIELD: Record<IObjectNode['kind'], string | null> = {
+  CUSTOMER: null,
+  PROJECT: 'project',
+  BUILDING: 'building',
+  FLOOR: 'floor',
+  ROOM: 'room',
+  PANEL: 'panel',
+  CIRCUIT: 'circuit',
+  DEVICE: 'device',
+};
+
 /**
  * Reasons a node may not be deleted.
  *
  * Empty means deletion is allowed. Anything with children, linked objects, planned work or
  * service requests is archived instead, so history is never orphaned.
  */
-async function deleteBlockersFor(node: Doc<IObjectNode>): Promise<string[]> {
+export async function deleteBlockersFor(node: Doc<IObjectNode>): Promise<string[]> {
   const blockers: string[] = [];
 
   const children = await ObjectNode.countDocuments({ parent: node._id });
   if (children > 0) {
-    const label = node.kind === 'PROJECT' ? 'барилга' : 'давхар';
-    blockers.push(`${children} ${label} бүртгэлтэй.`);
+    blockers.push(`${children} ${CHILD_LABEL[node.kind]} бүртгэлтэй.`);
   }
 
   if (node.kind === 'FLOOR') {
@@ -296,6 +456,8 @@ async function deleteBlockersFor(node: Doc<IObjectNode>): Promise<string[]> {
     if (counts.objects > 0) blockers.push(`${counts.objects} объект холбогдсон.`);
   }
 
+  const requestField = REQUEST_LOCATION_FIELD[node.kind];
+
   const [plannedWork, requests] = await Promise.all([
     PlannedWork.countDocuments(
       node.kind === 'PROJECT'
@@ -304,13 +466,9 @@ async function deleteBlockersFor(node: Doc<IObjectNode>): Promise<string[]> {
           ? { building: node._id }
           : { _id: null },
     ),
-    ServiceRequest.countDocuments(
-      node.kind === 'PROJECT'
-        ? { project: node._id }
-        : node.kind === 'BUILDING'
-          ? { building: node._id }
-          : { floor: node._id },
-    ),
+    requestField === null
+      ? 0
+      : ServiceRequest.countDocuments({ [requestField]: node._id }),
   ]);
 
   if (plannedWork > 0) blockers.push(`${plannedWork} төлөвлөгөөт ажилд ашиглагдсан.`);
@@ -347,6 +505,7 @@ export async function toProjectDto(
     objectCount: counts.objects,
     riskSummary,
     rollup: await rollupOf(node._id),
+    createdByName: creatorName(node.createdBy),
     createdAt: node.createdAt.toISOString(),
     updatedAt: node.updatedAt.toISOString(),
     deleteBlockers: await deleteBlockersFor(node),
@@ -375,6 +534,7 @@ export async function toBuildingDto(
     objectCount: counts.objects,
     riskSummary,
     rollup: await rollupOf(node._id),
+    createdByName: creatorName(node.createdBy),
     createdAt: node.createdAt.toISOString(),
     updatedAt: node.updatedAt.toISOString(),
     deleteBlockers: await deleteBlockersFor(node),
@@ -411,6 +571,7 @@ export async function toFloorDto(
     objectCount,
     riskSummary,
     rollup: await rollupOf(node._id),
+    createdByName: creatorName(node.createdBy),
     createdAt: node.createdAt.toISOString(),
     updatedAt: node.updatedAt.toISOString(),
     deleteBlockers: await deleteBlockersFor(node),
@@ -442,6 +603,7 @@ export async function listProjects(
       .populate([
         { path: 'customer', select: 'name' },
         { path: 'attributes.responsibleEmployee', select: 'firstName lastName' },
+        CREATOR_POPULATE,
       ])
       .sort({ [sortField]: query.sortDir === 'asc' ? 1 : -1 })
       .skip(skip)
@@ -473,6 +635,7 @@ async function loadProject(
   }).populate([
     { path: 'customer', select: 'name' },
     { path: 'attributes.responsibleEmployee', select: 'firstName lastName' },
+    CREATOR_POPULATE,
   ]);
   if (!node) {
     throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Төсөл олдсонгүй.');
@@ -505,8 +668,6 @@ export async function createProject(
     ]);
   }
 
-  await assertCodeAvailable(customer._id, input.code);
-
   if (input.responsibleEmployeeId) {
     const employee = await Employee.findById(input.responsibleEmployeeId).select('_id');
     if (!employee) {
@@ -516,9 +677,13 @@ export async function createProject(
     }
   }
 
+  // Allocated last, after every other reason to reject the request has been ruled out: a
+  // number drawn for a create that then fails validation is a number nobody ever sees.
+  const code = await allocateNodeCode(customer._id, 'PROJECT');
+
   const node = await ObjectNode.create({
     kind: 'PROJECT',
-    code: input.code,
+    code,
     name: input.name,
     parent: null,
     customer: customer._id,
@@ -533,6 +698,7 @@ export async function createProject(
       endDate: input.endDate ? new Date(input.endDate) : null,
     },
     isActive: true,
+    createdBy: new Types.ObjectId(actor.userId),
   });
 
   await recordAudit({
@@ -559,10 +725,6 @@ export async function updateProject(
   const node = await findNode(projectId, 'PROJECT', scope, 'Төсөл олдсонгүй.');
   const before = { code: node.code, name: node.name, isActive: node.isActive };
 
-  if (input.code !== undefined && input.code !== node.code) {
-    await assertCodeAvailable(node.customer, input.code, node._id);
-    node.code = input.code;
-  }
   if (input.name !== undefined) node.name = input.name;
   if (input.description !== undefined) node.description = input.description ?? null;
   if (input.isActive !== undefined) node.isActive = input.isActive;
@@ -657,7 +819,7 @@ export async function listBuildings(
   const skip = (query.page - 1) * query.limit;
   const [rows, total] = await Promise.all([
     ObjectNode.find(filter)
-      .populate({ path: 'parent', select: 'name' })
+      .populate([{ path: 'parent', select: 'name' }, CREATOR_POPULATE])
       .sort({ name: 1 })
       .skip(skip)
       .limit(query.limit),
@@ -685,7 +847,7 @@ export async function getBuildingById(
     _id: buildingId,
     kind: 'BUILDING',
     ...customerScopeFilter(scope),
-  }).populate({ path: 'parent', select: 'name' });
+  }).populate([{ path: 'parent', select: 'name' }, CREATOR_POPULATE]);
   if (!node) {
     throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Барилга олдсонгүй.');
   }
@@ -711,11 +873,13 @@ export async function createBuilding(
     );
   }
 
-  await assertCodeAvailable(project.customer, input.code);
+  // Allocated last, after every other reason to reject the request has been ruled out: a
+  // number drawn for a create that then fails validation is a number nobody ever sees.
+  const code = await allocateNodeCode(project.customer, 'BUILDING');
 
   const node = await ObjectNode.create({
     kind: 'BUILDING',
-    code: input.code,
+    code,
     name: input.name,
     parent: project._id,
     customer: project.customer,
@@ -727,6 +891,7 @@ export async function createBuilding(
       gpsLongitude: input.gpsLongitude ?? null,
     },
     isActive: true,
+    createdBy: new Types.ObjectId(actor.userId),
   });
 
   await recordAudit({
@@ -751,10 +916,6 @@ export async function updateBuilding(
   const node = await findNode(buildingId, 'BUILDING', scope, 'Барилга олдсонгүй.');
   const before = { code: node.code, name: node.name, isActive: node.isActive };
 
-  if (input.code !== undefined && input.code !== node.code) {
-    await assertCodeAvailable(node.customer, input.code, node._id);
-    node.code = input.code;
-  }
   if (input.name !== undefined) node.name = input.name;
   if (input.description !== undefined) node.description = input.description ?? null;
   if (input.isActive !== undefined) node.isActive = input.isActive;
@@ -828,7 +989,7 @@ export async function listFloors(
   const skip = (query.page - 1) * query.limit;
   const [rows, total] = await Promise.all([
     ObjectNode.find(filter)
-      .populate({ path: 'parent', select: 'name' })
+      .populate([{ path: 'parent', select: 'name' }, CREATOR_POPULATE])
       .sort({ 'attributes.floorNumber': 1, name: 1 })
       .skip(skip)
       .limit(query.limit),
@@ -863,7 +1024,7 @@ export async function getFloorById(
     _id: floorId,
     kind: 'FLOOR',
     ...customerScopeFilter(scope),
-  }).populate({ path: 'parent', select: 'name' });
+  }).populate([{ path: 'parent', select: 'name' }, CREATOR_POPULATE]);
   if (!node) {
     throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Давхар олдсонгүй.');
   }
@@ -894,11 +1055,13 @@ export async function createFloor(
     );
   }
 
-  await assertCodeAvailable(building.customer, input.code);
+  // Allocated last, after every other reason to reject the request has been ruled out: a
+  // number drawn for a create that then fails validation is a number nobody ever sees.
+  const code = await allocateNodeCode(building.customer, 'FLOOR');
 
   const node = await ObjectNode.create({
     kind: 'FLOOR',
-    code: input.code,
+    code,
     name: input.name,
     parent: building._id,
     customer: building.customer,
@@ -910,6 +1073,7 @@ export async function createFloor(
       purpose: input.purpose ?? null,
     },
     isActive: true,
+    createdBy: new Types.ObjectId(actor.userId),
   });
 
   await recordAudit({
@@ -934,10 +1098,6 @@ export async function updateFloor(
   const node = await findNode(floorId, 'FLOOR', scope, 'Давхар олдсонгүй.');
   const before = { code: node.code, name: node.name, isActive: node.isActive };
 
-  if (input.code !== undefined && input.code !== node.code) {
-    await assertCodeAvailable(node.customer, input.code, node._id);
-    node.code = input.code;
-  }
   if (input.name !== undefined) node.name = input.name;
   if (input.description !== undefined) node.description = input.description ?? null;
   if (input.isActive !== undefined) node.isActive = input.isActive;

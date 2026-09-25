@@ -166,6 +166,26 @@ class CustomerTokens {
   static const Color accentWashStrong = Color(0x1A5980A6);
 
   // ---------------------------------------------------------------------------
+  // 1c. The launcher colour
+  // ---------------------------------------------------------------------------
+  //
+  // The hue of the app's own icon, used ONLY on the sign-in screen.
+  //
+  // Deliberately not [accent]: the two apps ship the same steel-blue accent because the
+  // product surfaces inside them are the same product, and recolouring those would be a
+  // rebrand rather than a sign-in screen. What the sign-in screen has to answer is a
+  // narrower question — "is this the app I just tapped" — and the only honest answer to
+  // that is the colour on the icon the person tapped.
+  //
+  // Read from the launcher artwork rather than chosen: `Icon-App-1024x1024@1x.png`.
+
+  /// The icon's field colour.
+  static const Color brand = Color(0xFF52B3CC);
+
+  /// The same hue darkened, for the foot of the sign-in gradient and the pressed button.
+  static const Color brandDeep = Color(0xFF2F8AA6);
+
+  // ---------------------------------------------------------------------------
   // 1b. The hero band
   // ---------------------------------------------------------------------------
   //
@@ -447,4 +467,38 @@ class AccentTone {
     background: CustomerTokens.purpleBg,
     border: CustomerTokens.purpleBorder,
   );
+
+  // --- The server's colour names --------------------------------------------
+
+  /// The triad for a colour NAME sent by the server, or null for one this palette has
+  /// no answer for.
+  ///
+  /// `GET /vocabulary` names a colour rather than sending a hex, because every client
+  /// paints in its own system — Tailwind classes on the web, these triads here — and
+  /// neither can build one from an arbitrary runtime string. This is where the two
+  /// closed palettes meet ours:
+  ///
+  /// * `RISK_COLOURS` — green, yellow, orange, red, black, grey, blue, purple.
+  /// * `STAGE_COLOURS` — grey, blue, indigo, amber, orange, green, red.
+  ///
+  /// `amber` folds onto [yellow] and `indigo` onto [purple]: this system has one
+  /// warm-signal hue and one violet, and inventing a second of either for a name we
+  /// happen not to carry would put a colour on screen that belongs to nothing else in
+  /// the ramp.
+  ///
+  /// Null rather than a default, so the caller keeps the tone it was compiled with
+  /// instead of a status silently going grey because a future palette grew a name.
+  static AccentTone? named(String? colour) {
+    return switch (colour) {
+      'green' => AccentTone.green,
+      'yellow' || 'amber' => AccentTone.yellow,
+      'orange' => AccentTone.orange,
+      'red' => AccentTone.red,
+      'black' => AccentTone.black,
+      'grey' => AccentTone.neutral,
+      'blue' => AccentTone.blue,
+      'purple' || 'indigo' => AccentTone.purple,
+      _ => null,
+    };
+  }
 }

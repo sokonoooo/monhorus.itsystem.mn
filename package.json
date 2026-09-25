@@ -16,7 +16,6 @@
     "dev": "turbo run dev",
     "build": "turbo run build",
     "typecheck": "turbo run typecheck",
-    "lint": "turbo run lint",
     "bootstrap:admin": "npm run bootstrap:admin --workspace @monhorus/backend",
     "test": "turbo run test"
   },

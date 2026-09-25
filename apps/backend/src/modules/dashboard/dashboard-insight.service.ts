@@ -2,7 +2,6 @@ import {
   DASHBOARD_CUSTOM_WIDGET_LIMIT,
   PERMISSIONS,
   SERVICE_REQUEST_STATUS_LABELS,
-  SERVICE_REQUEST_TYPE_LABELS,
   type DashboardCustomWidgetDto,
   type DashboardCustomWidgetInput,
   type DashboardInsightDimension,
@@ -58,7 +57,6 @@ const DIMENSION_SOURCES: Record<DashboardInsightDimension, DimensionSource> = {
   CUSTOMER: { path: 'customer', kind: 'REF', from: 'customers' },
   FLOOR: { path: 'floor', kind: 'REF', from: 'objectnodes' },
   STATUS: { path: 'status', kind: 'ENUM', labels: SERVICE_REQUEST_STATUS_LABELS },
-  REQUEST_TYPE: { path: 'requestType', kind: 'ENUM', labels: SERVICE_REQUEST_TYPE_LABELS },
   TEAM: { path: 'assignedTeam', kind: 'REF', from: 'teams' },
   // A request can carry several assignees, so it is counted once per assignee rather than
   // once overall. The buckets therefore sum to more than `total` on shared work, which is

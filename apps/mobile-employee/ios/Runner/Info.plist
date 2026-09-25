@@ -7,7 +7,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Monhorus Employee</string>
+	<string>Agata Employee</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -24,6 +24,10 @@
 	<string>????</string>
 	<key>CFBundleVersion</key>
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
+	<!-- Flutter apps use only exempt encryption (HTTPS), so declaring this here
+	     avoids the export-compliance question on every App Store Connect upload. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>UIApplicationSceneManifest</key>
@@ -59,16 +63,16 @@
 	<!-- Reaching that same backend from a physical device also trips iOS local
 	     network privacy, which prompts once on first connection. -->
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Монхорус нь дотоод сүлжээн дэх серверт холбогдоход энэ зөвшөөрлийг ашиглана.</string>
+	<string>Agata Employee нь дотоод сүлжээн дэх серверт холбогдоход энэ зөвшөөрлийг ашиглана.</string>
 	<!-- Evidence photos. iOS terminates the process the first time a camera or
 	     photo-library picker is presented without these keys, so they are required
 	     rather than optional: a planned-work task cannot reach "Дууссан" without
 	     its before and after pictures, and a device үнэлгээ is refused by the
 	     backend without at least one photo. -->
 	<key>NSCameraUsageDescription</key>
-	<string>Монхорус нь ажлын явц, төхөөрөмжийн үнэлгээний нотлох зураг авахад камерыг ашиглана.</string>
+	<string>Agata Employee нь ажлын явц, төхөөрөмжийн үнэлгээний нотлох зураг авахад камерыг ашиглана.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Монхорус нь ажлын явц, төхөөрөмжийн үнэлгээнд хавсаргах зургийг таны зургийн сангаас сонгоно.</string>
+	<string>Agata Employee нь ажлын явц, төхөөрөмжийн үнэлгээнд хавсаргах зургийг таны зургийн сангаас сонгоно.</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UILaunchStoryboardName</key>

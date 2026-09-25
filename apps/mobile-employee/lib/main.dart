@@ -24,7 +24,7 @@ class MonhorusEmployeeApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Monhorus',
+      title: 'Agata',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light,
       home: const AuthGate(),
@@ -54,7 +54,7 @@ class AuthGate extends ConsumerWidget {
 
   /// Where a signed-in account starts.
   ///
-  /// This build is staff-only. A `customer` account is a valid Monhorus login but
+  /// This build is staff-only. A `customer` account is a valid Agata login but
   /// belongs in the customer app, so it is shown a dead end here rather than an
   /// employee shell full of controls the backend would refuse. Role is only the
   /// coarse tier the client routes on; the server's permission checks remain the
@@ -99,7 +99,7 @@ class _CustomerNotSupportedScreen extends ConsumerWidget {
                   const SizedBox(height: 10),
                   Text(
                     'Таны бүртгэл харилцагчийн эрхтэй байна. Харилцагчийн '
-                    'Monhorus аппаар нэвтэрнэ үү.',
+                    'Agata аппаар нэвтэрнэ үү.',
                     textAlign: TextAlign.center,
                     style: EmployeeTokens.emptyText,
                   ),
@@ -131,7 +131,7 @@ class _SplashScreen extends StatelessWidget {
           mainAxisAlignment: MainAxisAlignment.center,
           children: <Widget>[
             Text(
-              'Monhorus',
+              'Agata',
               style: EmployeeTokens.display,
             ),
             const SizedBox(height: 20),

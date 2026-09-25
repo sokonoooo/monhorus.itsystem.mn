@@ -1,4 +1,5 @@
 import {
+  EMPLOYEE_STATUS_LABELS,
   EMPLOYEE_TYPE_LABELS,
   GENDER_LABELS,
   PERMISSIONS,
@@ -15,6 +16,7 @@ import { PageHeader } from '../../components/ui/PageHeader';
 import { ErrorState, Skeleton } from '../../components/ui/States';
 import { useAuth } from '../../contexts/auth-context';
 import { ApiError } from '../../lib/api-client';
+import { BUSINESS_TIME_ZONE } from '../../lib/business-day';
 import { employeeService } from '../../services/employee.service';
 import { EmployeeDocumentsPanel } from './EmployeeDocumentsPanel';
 import { EmployeeSystemAccessPanel } from './EmployeeSystemAccessPanel';
@@ -91,7 +93,7 @@ ${payload.registrationNumber ? `<tr><td>Регистрийн дугаар</td><t
 <tr><td>Харьяалагдах алба</td><td>${payload.departmentName ?? '-'}</td></tr>
 <tr><td>Албан тушаал</td><td>${payload.positionName ?? '-'}</td></tr>
 <tr><td>Ажилд орсон огноо</td><td>${payload.employmentStartDate?.slice(0, 10) ?? '-'}</td></tr>
-<tr><td>Одоогийн төлөв</td><td>${payload.status}</td></tr>
+<tr><td>Одоогийн төлөв</td><td>${EMPLOYEE_STATUS_LABELS[payload.status] ?? payload.status}</td></tr>
 </table>
 <div class="foot"><p>Тодорхойлолт гаргасан огноо: ${payload.generatedAt.slice(0, 10)}</p>
 <p>Эрх бүхий албан тушаалтан: ${payload.generatedByName}</p></div>
@@ -275,7 +277,7 @@ ${payload.registrationNumber ? `<tr><td>Регистрийн дугаар</td><t
                       </p>
                       <p className="text-xs text-slate-500">
                         {new Date(entry.changedAt).toLocaleString('mn-MN', {
-                          timeZone: 'Asia/Ulaanbaatar',
+                          timeZone: BUSINESS_TIME_ZONE,
                         })}
                         {entry.changedByName ? ` · ${entry.changedByName}` : ''}
                         {entry.reason ? ` · ${entry.reason}` : ''}

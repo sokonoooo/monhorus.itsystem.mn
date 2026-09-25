@@ -5,6 +5,7 @@ import '../../../../../core/media/photo_capture.dart';
 import '../../../../../core/network/api_result.dart';
 import '../../data/models/inspection_models.dart';
 import '../../data/models/object_models.dart';
+import '../../data/models/report_record_models.dart';
 import '../../data/models/project_models.dart';
 import '../entities/risk_level.dart';
 
@@ -29,11 +30,25 @@ abstract class ProjectRepository {
 
   Future<ApiResult<FloorPlanModel?>> getFloorPlan(String floorId);
 
-  Future<ApiResult<PaginatedData<ObjectListItemModel>>> listFloorObjects(String floorId);
+  /// One page of the devices linked to a floor.
+  ///
+  /// [page] is exposed because `/floors/:id/objects` caps a page at 100 and a caller
+  /// that draws the plan or counts the unplaced has to read every one of them;
+  /// `PaginatedData.totalPages` says how many there are.
+  Future<ApiResult<PaginatedData<ObjectListItemModel>>> listFloorObjects(
+    String floorId, {
+    int page,
+  });
 
   Future<ApiResult<ObjectDetailModel>> getObject(String objectId);
 
   Future<ApiResult<ObjectHistoryModel>> getObjectHistory(String objectId);
+
+  /// Every report that recorded a finding on one piece of equipment, newest first.
+  Future<ApiResult<List<ReportRecordModel>>> listObjectReports(String objectId);
+
+  /// One report with the per-equipment findings behind it.
+  Future<ApiResult<ReportRecordDetailModel>> getReport(String reportId);
 
   /// Uploads one evidence photo and returns its stored-file metadata.
   ///

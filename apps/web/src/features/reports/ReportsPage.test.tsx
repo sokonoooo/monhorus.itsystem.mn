@@ -1,5 +1,5 @@
 import { PERMISSIONS } from '@monhorus/shared';
-import { screen, within } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -22,6 +22,93 @@ describe('ReportsPage', () => {
     const table = await screen.findByRole('table');
     expect(within(table).getByRole('columnheader', { name: 'Хүсэлтийн №' })).toBeInTheDocument();
     expect(within(table).getByText('SR-202607-0001')).toBeInTheDocument();
+  });
+
+  /**
+   * The catalogue used to ask for a thousand rows and render every one, so a longer report
+   * silently lost its tail. These pin the window, the numbering across it, and that a
+   * filter change sends the reader back to the first page.
+   */
+  it('numbers the rows, continuing across pages', async () => {
+    vi.spyOn(reportService, 'run').mockResolvedValue(
+      makeReportResult({ page: 3, limit: 25, total: 120, totalPages: 5 }),
+    );
+
+    renderWithAuth(<ReportsPage />, { permissions: [PERMISSIONS.REPORT_VIEW] });
+
+    const table = await screen.findByRole('table');
+    expect(within(table).getByRole('columnheader', { name: '№' })).toBeInTheDocument();
+    // Page 3 of 25 begins at 51. Restarting at 1 is the failure this exists to catch.
+    const cells = within(table).getAllByRole('cell');
+    expect(cells[0]?.textContent?.trim()).toBe('51');
+  });
+
+  it('states the report total rather than the rows on screen', async () => {
+    vi.spyOn(reportService, 'run').mockResolvedValue(
+      makeReportResult({ page: 1, limit: 25, total: 120, totalPages: 5 }),
+    );
+
+    renderWithAuth(<ReportsPage />, { permissions: [PERMISSIONS.REPORT_VIEW] });
+
+    // The fixture carries two rows; the report has 120.
+    expect(await screen.findByText(/Нийт 120 мөр/)).toBeInTheDocument();
+  });
+
+  it('asks the server for one page rather than for everything', async () => {
+    const run = vi
+      .spyOn(reportService, 'run')
+      .mockResolvedValue(makeReportResult({ total: 120, totalPages: 5 }));
+
+    renderWithAuth(<ReportsPage />, { permissions: [PERMISSIONS.REPORT_VIEW] });
+    await screen.findByRole('table');
+
+    // A page-sized window, not the thousand-row fetch this page used to make.
+    expect(run).toHaveBeenCalledWith(
+      'SLA',
+      expect.objectContaining({ page: 1, limit: 25 }),
+    );
+  });
+
+  it('offers a pager and asks for the next page when it is used', async () => {
+    const user = userEvent.setup();
+    const run = vi
+      .spyOn(reportService, 'run')
+      .mockResolvedValue(makeReportResult({ page: 1, limit: 25, total: 120, totalPages: 5 }));
+
+    renderWithAuth(<ReportsPage />, { permissions: [PERMISSIONS.REPORT_VIEW] });
+    await screen.findByRole('table');
+
+    await user.click(screen.getByRole('button', { name: 'Дараах' }));
+
+    await waitFor(() =>
+      expect(run).toHaveBeenLastCalledWith('SLA', expect.objectContaining({ page: 2 })),
+    );
+  });
+
+  it('sends the reader back to page one when the report changes', async () => {
+    const user = userEvent.setup();
+    const run = vi
+      .spyOn(reportService, 'run')
+      .mockResolvedValue(makeReportResult({ page: 1, limit: 25, total: 120, totalPages: 5 }));
+
+    renderWithAuth(<ReportsPage />, { permissions: [PERMISSIONS.REPORT_VIEW] });
+    await screen.findByRole('table');
+
+    await user.click(screen.getByRole('button', { name: 'Дараах' }));
+    await waitFor(() =>
+      expect(run).toHaveBeenLastCalledWith('SLA', expect.objectContaining({ page: 2 })),
+    );
+
+    // Now change the filter. Page 2 of the old report is rarely page 2 of the new one and
+    // is often past its end, which would answer with an empty table.
+    await user.selectOptions(screen.getByLabelText('Тайлангийн төрөл'), 'INVOICE_RECEIVABLE');
+
+    await waitFor(() =>
+      expect(run).toHaveBeenLastCalledWith(
+        'INVOICE_RECEIVABLE',
+        expect.objectContaining({ page: 1 }),
+      ),
+    );
   });
 
   it('offers every report in the section 15.2 catalogue', async () => {
@@ -67,13 +154,88 @@ describe('ReportsPage', () => {
     expect(download).toHaveBeenCalledWith('SLA', expect.objectContaining({ limit: 1000 }));
   });
 
-  /** A capped row set must be stated, so an export is never mistaken for a complete one. */
-  it('warns when the row set was truncated', async () => {
-    vi.spyOn(reportService, 'run').mockResolvedValue(makeReportResult({ truncatedAt: 1000 }));
+  /**
+   * P0-15. THE OLD BANNER COULD NOT FIRE, AND THE TEST THAT COVERED IT MOCKED A VALUE THE
+   * REAL CODE NEVER PRODUCES.
+   *
+   * The banner was driven by `report.truncatedAt`, which the server sets only when the
+   * request carries `format=csv`. The screen never sends that — only `downloadCsv` does —
+   * so on this page `truncatedAt` is always null and the banner was unreachable. The
+   * previous test here mocked `run` as returning `truncatedAt: 1000` and passed, which
+   * certified dead UI: a mock asserting an impossible state is worse than no test.
+   *
+   * The reachable fact is the one the screen already holds. `report.total` is the row
+   * count for exactly the filters an export uses — `handleExport` drops only `page` — so
+   * comparing it to the export cap is the same question, asked with data that exists.
+   */
+  it('warns before the export that the file will hold only part of the report', async () => {
+    vi.spyOn(reportService, 'run').mockResolvedValue(
+      makeReportResult({ total: 1200, totalPages: 48 }),
+    );
+
+    renderWithAuth(<ReportsPage />, {
+      permissions: [PERMISSIONS.REPORT_VIEW, PERMISSIONS.REPORT_EXPORT],
+    });
+
+    expect(await screen.findByText(/эхний 1000 мөр л багтана/)).toBeInTheDocument();
+    expect(screen.getByText(/нийт 1200 мөртэй/)).toBeInTheDocument();
+  });
+
+  it('says nothing about a cap when the whole report fits in one export', async () => {
+    vi.spyOn(reportService, 'run').mockResolvedValue(makeReportResult({ total: 2 }));
+
+    renderWithAuth(<ReportsPage />, {
+      permissions: [PERMISSIONS.REPORT_VIEW, PERMISSIONS.REPORT_EXPORT],
+    });
+
+    await screen.findByRole('table');
+    expect(screen.queryByText(/л багтана/)).not.toBeInTheDocument();
+  });
+
+  /** A reader with no export button is not warned about the shape of a file they cannot ask for. */
+  it('does not warn a reader who may not export', async () => {
+    vi.spyOn(reportService, 'run').mockResolvedValue(
+      makeReportResult({ total: 1200, totalPages: 48 }),
+    );
 
     renderWithAuth(<ReportsPage />, { permissions: [PERMISSIONS.REPORT_VIEW] });
 
-    expect(await screen.findByText(/1000-аар хязгаарлагдсан/)).toBeInTheDocument();
+    await screen.findByRole('table');
+    expect(screen.queryByText(/л багтана/)).not.toBeInTheDocument();
+  });
+
+  /**
+   * The download used to report a flat success whatever came back, so a partial file and a
+   * complete one were announced with the same four words.
+   */
+  it('states how much of the report a capped download actually contained', async () => {
+    vi.spyOn(reportService, 'run').mockResolvedValue(
+      makeReportResult({ total: 1200, totalPages: 48 }),
+    );
+    vi.spyOn(reportService, 'downloadCsv').mockResolvedValue(undefined);
+    const user = userEvent.setup();
+
+    renderWithAuth(<ReportsPage />, {
+      permissions: [PERMISSIONS.REPORT_VIEW, PERMISSIONS.REPORT_EXPORT],
+    });
+
+    await user.click(await screen.findByRole('button', { name: 'Excel (CSV) татах' }));
+
+    expect(await screen.findByText(/1200 мөрөөс эхний 1000 мөр багтсан/)).toBeInTheDocument();
+  });
+
+  it('reports a plain success when the export carried the whole report', async () => {
+    vi.spyOn(reportService, 'run').mockResolvedValue(makeReportResult({ total: 2 }));
+    vi.spyOn(reportService, 'downloadCsv').mockResolvedValue(undefined);
+    const user = userEvent.setup();
+
+    renderWithAuth(<ReportsPage />, {
+      permissions: [PERMISSIONS.REPORT_VIEW, PERMISSIONS.REPORT_EXPORT],
+    });
+
+    await user.click(await screen.findByRole('button', { name: 'Excel (CSV) татах' }));
+
+    expect(await screen.findByText('CSV файл татагдлаа.')).toBeInTheDocument();
   });
 
   it('shows an empty state when the range has no rows', async () => {
@@ -82,5 +244,47 @@ describe('ReportsPage', () => {
     renderWithAuth(<ReportsPage />, { permissions: [PERMISSIONS.REPORT_VIEW] });
 
     expect(await screen.findByText('Мэдээлэл алга')).toBeInTheDocument();
+  });
+  /**
+   * THE RANGE IS AN ULAANBAATAR DAY, NOT A UTC ONE.
+   *
+   * The filters used to be sent as `${date}T00:00:00.000Z` / `T23:59:59.999Z`, which frames
+   * the UTC day. Ulaanbaatar runs eight hours ahead, so every report dropped 00:00-08:00 of
+   * its first day and swallowed 00:00-08:00 of the day after its last — a call logged at
+   * 07:00 on the 1st was missing from that month's report and appeared in the previous
+   * month's. Both boundaries are asserted, because getting one right is what made the old
+   * shape look plausible.
+   */
+  it('frames a single day range on the Ulaanbaatar day', async () => {
+    const run = vi.spyOn(reportService, 'run').mockResolvedValue(makeReportResult());
+
+    renderWithAuth(<ReportsPage />, {
+      permissions: [PERMISSIONS.REPORT_VIEW],
+      route: '/reports?dateFrom=2026-08-21&dateTo=2026-08-21',
+    });
+
+    await waitFor(() => expect(run).toHaveBeenCalled());
+    const query = run.mock.calls[0]![1]!;
+    expect(query.dateFrom).toBe('2026-08-20T16:00:00.000Z');
+    expect(query.dateTo).toBe('2026-08-21T15:59:59.999Z');
+
+    // 07:00 on 21 August in Ulaanbaatar — inside the day the reader asked for.
+    expect('2026-08-20T23:00:00.000Z' >= query.dateFrom!).toBe(true);
+    // 07:00 on 22 August — the morning the old range wrongly included.
+    expect('2026-08-21T23:00:00.000Z' <= query.dateTo!).toBe(false);
+  });
+
+  /** The KPI strip must be asked about the same range as the table, not a shifted one. */
+  it('asks for the KPIs over the same Ulaanbaatar range', async () => {
+    vi.spyOn(reportService, 'run').mockResolvedValue(makeReportResult());
+    const kpis = vi.spyOn(reportService, 'kpis').mockResolvedValue(makeKpiSummary());
+
+    renderWithAuth(<ReportsPage />, {
+      permissions: [PERMISSIONS.REPORT_VIEW],
+      route: '/reports?dateFrom=2026-08-21&dateTo=2026-08-21',
+    });
+
+    await waitFor(() => expect(kpis).toHaveBeenCalled());
+    expect(kpis).toHaveBeenCalledWith('2026-08-20T16:00:00.000Z', '2026-08-21T15:59:59.999Z');
   });
 });

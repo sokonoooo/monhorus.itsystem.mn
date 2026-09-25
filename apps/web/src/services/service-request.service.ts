@@ -1,5 +1,6 @@
 import type {
   ApiResponse,
+  CallableObjectTypeDto,
   SaveWorkReportInput,
   WorkReportDto,
   WorkReportPhotoDto,
@@ -37,6 +38,22 @@ export const serviceRequestService = {
     );
   },
 
+  /**
+   * The equipment types this caller may raise a call against.
+   *
+   * Not `/object-types`: reading the catalogue needs `object_master.view`, which a
+   * customer-portal account does not hold, so both call forms would be unable to fill their
+   * own required field. This endpoint is gated on being able to CREATE a request instead,
+   * and returns only what a picker needs.
+   */
+  async callableObjectTypes(): Promise<CallableObjectTypeDto[]> {
+    return unwrap(
+      await apiClient.get<ApiResponse<CallableObjectTypeDto[]>>(
+        '/service-requests/callable-object-types',
+      ),
+    );
+  },
+
   async create(payload: CreateServiceRequestInput): Promise<ServiceRequestDetailDto> {
     return unwrap(
       await apiClient.post<ApiResponse<ServiceRequestDetailDto>>('/service-requests', payload),
@@ -51,6 +68,27 @@ export const serviceRequestService = {
       await apiClient.post<ApiResponse<ServiceRequestDetailDto>>(
         `/service-requests/${requestId}/assign`,
         payload,
+      ),
+    );
+  },
+
+  /**
+   * Нээлттэй ажил — the caller takes an open request for themselves.
+   *
+   * Deliberately not `assign` with the caller's own id. Assigning is `dispatch.assign`, the
+   * authority to put SOMEBODY ELSE on a job; this is `service_request.claim`, which a
+   * technician holds, and it can only ever write the caller onto work that currently has
+   * nobody. There is no body for the same reason — the claimer is the session, so there is
+   * no parameter through which one employee could be put on a job by another.
+   *
+   * The server decides whether a claim wins. Two technicians tapping at the same moment are
+   * ordered by one atomic write there, and the loser is answered 409; nothing here may
+   * anticipate that outcome.
+   */
+  async claim(requestId: string): Promise<ServiceRequestDetailDto> {
+    return unwrap(
+      await apiClient.post<ApiResponse<ServiceRequestDetailDto>>(
+        `/service-requests/${requestId}/claim`,
       ),
     );
   },

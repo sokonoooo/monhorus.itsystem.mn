@@ -1,4 +1,4 @@
-import { PERMISSIONS, SETTING_KEYS } from '@monhorus/shared';
+import { DEFAULT_RISK_BANDS, PERMISSIONS, SETTING_KEYS } from '@monhorus/shared';
 import type { Express } from 'express';
 import request from 'supertest';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -9,6 +9,7 @@ import {
   resetDomainCollections,
   startTestApp,
   stopTestApp,
+  createCallableObjectType,
 } from '../../test/helpers';
 import { AuditLog } from '../audit/audit-log.model';
 import { Setting } from './setting.model';
@@ -18,6 +19,7 @@ const API = '/api/v1';
 
 let app: Express;
 let adminToken: string;
+let callableTypeId: string;
 let readerToken: string;
 
 async function login(email: string, password: string): Promise<string> {
@@ -45,6 +47,8 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await resetDomainCollections();
+  // After the reset: object types are domain data and are wiped with everything else.
+  callableTypeId = await createCallableObjectType();
   // The service caches the resolved map, and resetDomainCollections wipes the overrides
   // behind its back, so the cache has to be dropped between tests.
   invalidateSettingsCache();
@@ -83,8 +87,9 @@ describe('GET /settings', () => {
     expect(urgent?.defaultValue).toBe(6);
     expect(urgent?.isOverridden).toBe(false);
 
-    const normalMin = entries.find((entry) => entry.key === SETTING_KEYS.EVAL_NORMAL_MIN);
-    expect(normalMin?.value).toBe(81);
+    const bands = entries.find((entry) => entry.key === SETTING_KEYS.EVAL_RISK_BANDS);
+    expect(bands?.type).toBe('riskBands');
+    expect(bands?.value).toHaveLength(5);
   });
 
   it('groups entries as general, sla, evaluation and finance', async () => {
@@ -93,7 +98,7 @@ describe('GET /settings', () => {
       .set('Authorization', `Bearer ${adminToken}`);
 
     const groups = (response.body.data.groups as { group: string }[]).map((entry) => entry.group);
-    expect(groups).toEqual(['general', 'sla', 'evaluation', 'finance']);
+    expect(groups).toEqual(['general', 'sla', 'workflow', 'evaluation', 'finance']);
   });
 
   /** Requirements 12.2 sources tax from settings and states no rate, so the default is zero. */
@@ -197,23 +202,44 @@ describe('PATCH /settings', () => {
     expect(response.status).toBe(400);
   });
 
-  it('refuses evaluation thresholds that are not strictly descending', async () => {
-    const response = await patchSettings({
-      [SETTING_KEYS.EVAL_NORMAL_MIN]: 50,
-      [SETTING_KEYS.EVAL_ATTENTION_MIN]: 60,
-    });
+  it('refuses a ladder that leaves a hole in the scale', async () => {
+    // Nothing starts at zero, so a score of 3 would belong to no band at all.
+    const bands = DEFAULT_RISK_BANDS.map((band) =>
+      band.minScore === 0 ? { ...band, minScore: 10 } : band,
+    );
+    const response = await patchSettings({ [SETTING_KEYS.EVAL_RISK_BANDS]: bands });
 
     expect(response.status).toBe(400);
-    expect(JSON.stringify(response.body.issues)).toContain('бага байх ёстой');
+    expect(JSON.stringify(response.body.issues)).toContain('0 оноогоор');
+  });
+
+  it('refuses more than one band taking equipment out of service', async () => {
+    const bands = DEFAULT_RISK_BANDS.map((band) =>
+      band.key === 'CRITICAL' ? { ...band, decommissions: true } : band,
+    );
+    const response = await patchSettings({ [SETTING_KEYS.EVAL_RISK_BANDS]: bands });
+
+    expect(response.status).toBe(400);
+    expect(JSON.stringify(response.body.issues)).toContain('ашиглалтаас гаргана');
   });
 
   it('accepts a valid rebanding', async () => {
-    const response = await patchSettings({
-      [SETTING_KEYS.EVAL_NORMAL_MIN]: 90,
-      [SETTING_KEYS.EVAL_ATTENTION_MIN]: 70,
-      [SETTING_KEYS.EVAL_SCHEDULE_REPAIR_MIN]: 50,
-      [SETTING_KEYS.EVAL_CRITICAL_MIN]: 30,
-    });
+    const bands = DEFAULT_RISK_BANDS.map((band) => ({
+      ...band,
+      minScore: band.minScore === 0 ? 0 : band.minScore + 5,
+    }));
+    const response = await patchSettings({ [SETTING_KEYS.EVAL_RISK_BANDS]: bands });
+
+    expect(response.status).toBe(200);
+  });
+
+  it('accepts a three band ladder, renamed and recoloured', async () => {
+    const bands = [
+      { ...DEFAULT_RISK_BANDS[0]!, label: 'Зогсоох', colour: 'black', minScore: 0 },
+      { ...DEFAULT_RISK_BANDS[2]!, label: 'Ажиглах', colour: 'orange', minScore: 40 },
+      { ...DEFAULT_RISK_BANDS[4]!, label: 'Хэвийн', colour: 'green', minScore: 75 },
+    ];
+    const response = await patchSettings({ [SETTING_KEYS.EVAL_RISK_BANDS]: bands });
 
     expect(response.status).toBe(200);
   });
@@ -283,8 +309,90 @@ describe('DELETE /settings/:key', () => {
   });
 });
 
+describe('a reconfigured risk ladder', () => {
+  /**
+   * The point of the whole feature: renaming a band must move its name and nothing else,
+   * and the safety rules must follow the band rather than the word it used to be called.
+   */
+  it('serves the administrator\'s own names through the vocabulary', async () => {
+    const renamed = DEFAULT_RISK_BANDS.map((band) =>
+      band.key === 'CRITICAL' ? { ...band, label: 'Аюултай', colour: 'purple' } : band,
+    );
+
+    const saved = await patchSettings({ [SETTING_KEYS.EVAL_RISK_BANDS]: renamed });
+    expect(saved.status).toBe(200);
+
+    const vocabulary = await request(app)
+      .get(`${API}/vocabulary`)
+      .set('Authorization', `Bearer ${adminToken}`);
+
+    const band = (vocabulary.body.data.riskBands as { level: string; label: string; colour: string }[])
+      .find((entry) => entry.level === 'CRITICAL');
+    expect(band?.label).toBe('Аюултай');
+    expect(band?.colour).toBe('purple');
+  });
+
+  it('bands a score against a three band ladder', async () => {
+    const three = [
+      { ...DEFAULT_RISK_BANDS[0]!, minScore: 0 },
+      { ...DEFAULT_RISK_BANDS[2]!, minScore: 40 },
+      { ...DEFAULT_RISK_BANDS[4]!, minScore: 75 },
+    ];
+    const saved = await patchSettings({ [SETTING_KEYS.EVAL_RISK_BANDS]: three });
+    expect(saved.status).toBe(200);
+
+    const vocabulary = await request(app)
+      .get(`${API}/vocabulary`)
+      .set('Authorization', `Bearer ${adminToken}`);
+
+    const bands = vocabulary.body.data.riskBands as { level: string; min: number; max: number }[];
+    expect(bands).toHaveLength(3);
+    // Highest score first, tiling the whole scale with no gap.
+    expect(bands.map((band) => [band.min, band.max])).toEqual([
+      [75, 100],
+      [40, 74],
+      [0, 39],
+    ]);
+  });
+
+  it('lets an administrator add a band beyond the shipped five', async () => {
+    const six = [
+      ...DEFAULT_RISK_BANDS,
+      {
+        key: 'BAND_6',
+        label: 'Онцгой хяналт',
+        colour: 'purple',
+        minScore: 95,
+        requiresConclusion: false,
+        requiresRecommendation: false,
+        decommissions: false,
+        notifies: false,
+      },
+    ];
+
+    const saved = await patchSettings({ [SETTING_KEYS.EVAL_RISK_BANDS]: six });
+    expect(saved.status).toBe(200);
+
+    const vocabulary = await request(app)
+      .get(`${API}/vocabulary`)
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(vocabulary.body.data.riskBands).toHaveLength(6);
+  });
+});
+
 describe('settings actually drive behaviour', () => {
-  it('changes the SLA deadline a new request receives', async () => {
+  /**
+   * Rewritten when equipment types gained their own SLA windows.
+   *
+   * This used to assert that `sla.urgent_hours` set the deadline on a new request. It no
+   * longer can: every call names an equipment type, and that type's hours win outright.
+   * The global urgent/standard hours now apply only to calls raised before types carried
+   * hours - which is to say, only on the extension path for historic work.
+   *
+   * Kept, inverted, rather than deleted: the setting still exists and somebody will
+   * reasonably assume it governs new calls. This is where they find out it does not.
+   */
+  it('does not override the equipment window for a new request', async () => {
     const objects = await createObjectFixture();
 
     await patchSettings({ [SETTING_KEYS.SLA_URGENT_HOURS]: 2 });
@@ -296,6 +404,7 @@ describe('settings actually drive behaviour', () => {
         customerId: objects.customerId,
         buildingId: objects.buildingId,
         requestType: 'URGENT_CALL',
+        objectTypeId: callableTypeId,
         isUrgent: true,
         description: 'Гэрэлтүүлэг ажиллахгүй байна',
         contactName: 'Бат',
@@ -309,9 +418,9 @@ describe('settings actually drive behaviour', () => {
     const dueAt = Date.parse(created.body.data.slaDueAt);
     const windowHours = (dueAt - createdAt) / 3_600_000;
 
-    // Two hours, not the compiled-in six.
-    expect(windowHours).toBeGreaterThan(1.9);
-    expect(windowHours).toBeLessThan(2.1);
+    // The equipment type's 24, not the 2 just configured and not the compiled-in 6.
+    expect(windowHours).toBeGreaterThan(23.9);
+    expect(windowHours).toBeLessThan(24.1);
   });
 
   it('publishes a change immediately rather than after the cache expires', async () => {
@@ -347,7 +456,14 @@ describe('settings actually drive behaviour', () => {
     await request(app)
       .patch(`${API}/settings`)
       .set('Authorization', `Bearer ${objectToken}`)
-      .send({ settings: { [SETTING_KEYS.EVAL_NORMAL_MIN]: 90 } });
+      .send({
+        settings: {
+          // Lift the healthy band's floor to 90 and the same stored 85 rebands downward.
+          [SETTING_KEYS.EVAL_RISK_BANDS]: DEFAULT_RISK_BANDS.map((band) =>
+            band.key === 'NORMAL' ? { ...band, minScore: 90 } : band,
+          ),
+        },
+      });
 
     const reread = await request(app)
       .get(`${API}/objects/nodes?parentId=${objects.buildingId}`)

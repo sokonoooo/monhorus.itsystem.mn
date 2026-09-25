@@ -2,8 +2,9 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import multer, { type FileFilterCallback } from 'multer';
-import type { Request } from 'express';
+import { MAX_OBJECT_TYPE_ICON_BYTES, OBJECT_TYPE_ICON_MIME } from '@monhorus/shared';
+import multer, { MulterError, type FileFilterCallback } from 'multer';
+import type { NextFunction, Request, Response } from 'express';
 
 import { AppError } from '../../common/errors/app-error';
 import { ERROR_CODES } from '../../common/errors/error-codes';
@@ -99,4 +100,74 @@ export function deleteStoredFile(storageKey: string): void {
   } catch {
     // Missing file on disk must not block deletion of its metadata row.
   }
+}
+
+/**
+ * Writes bytes the server itself produced, under a fresh opaque key.
+ *
+ * Exists for the sanitised-SVG path: that upload is buffered in memory precisely so the
+ * ORIGINAL never touches the disk, and what lands here is the parser's own output rather
+ * than anything the caller sent.
+ */
+export function writeStoredFileBytes(contents: string | Buffer): string {
+  ensureUploadDirectory();
+  const storageKey = generateStorageKey();
+  fs.writeFileSync(resolveStoredFilePath(storageKey), contents);
+  return storageKey;
+}
+
+// -- SVG icons ---------------------------------------------------------------
+
+/**
+ * Accepts a single custom object-type icon into MEMORY, never onto the disk.
+ *
+ * Buffered on purpose. Every other upload here streams to disk and is inspected afterwards,
+ * which is fine for a JPEG and wrong for an SVG: an unsanitised SVG is executable content,
+ * and a system that writes one down before cleaning it has, however briefly, a hostile file
+ * in its storage directory addressable by whatever else can read that directory. 64 KB fits
+ * in memory a thousand times over.
+ *
+ * The content-type filter below is a cheap first gate and NOTHING MORE. The real check is
+ * `sanitiseSvgIcon`, which parses the bytes and refuses anything that is not an SVG — a
+ * caller who forges `image/svg+xml` on a PNG passes here and is rejected there.
+ */
+const svgIconUpload = multer({
+  storage: multer.memoryStorage(),
+  fileFilter(_req: Request, file: Express.Multer.File, callback: FileFilterCallback): void {
+    if (file.mimetype !== OBJECT_TYPE_ICON_MIME) {
+      callback(
+        AppError.badRequest(ERROR_CODES.VALIDATION_ERROR, 'Зөвхөн SVG айкон оруулна.', [
+          { field: 'file', message: 'SVG файл сонгоно уу.' },
+        ]),
+      );
+      return;
+    }
+    callback(null, true);
+  },
+  limits: { fileSize: MAX_OBJECT_TYPE_ICON_BYTES, files: 1 },
+}).single('file');
+
+/**
+ * The middleware form, with multer's own errors translated.
+ *
+ * Without this an over-large file surfaces as a bare `MulterError`, which the terminal error
+ * handler does not recognise and reports as a 500 — an input problem dressed up as a server
+ * fault. The size ceiling is a rule about the request, so it answers 400 like every other one.
+ */
+export function acceptSvgIcon(req: Request, res: Response, next: NextFunction): void {
+  svgIconUpload(req, res, (error: unknown) => {
+    if (error instanceof MulterError) {
+      const message =
+        error.code === 'LIMIT_FILE_SIZE'
+          ? `Айкон ${Math.floor(MAX_OBJECT_TYPE_ICON_BYTES / 1024)}KB-аас том байж болохгүй.`
+          : 'Файл хүлээн авах боломжгүй.';
+      next(
+        AppError.badRequest(ERROR_CODES.VALIDATION_ERROR, message, [
+          { field: 'file', message },
+        ]),
+      );
+      return;
+    }
+    next(error);
+  });
 }

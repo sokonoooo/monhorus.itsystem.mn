@@ -9,12 +9,17 @@ import {
   type ReportSourceType,
   type ReportStatus,
   type ReportType,
+  formatAttributeValue,
+  type ObjectAttributeValue,
 } from '@monhorus/shared';
 import { Types } from 'mongoose';
 
 import { logger } from '../../config/logger';
+import { recordAudit } from '../audit/audit.service';
 import { appendAssessmentHistory } from '../object-master/assessment-history.service';
+import { applyBandSideEffects, bandFor } from '../object-master/band-effects';
 import { ObjectRecord } from '../object-master/object-master.models';
+import { toObjectTypeAttributeDtos } from '../object-master/object-type.service';
 import { ObjectNode } from '../objects/object.models';
 import { getRiskBands } from '../settings/settings.service';
 import {
@@ -193,6 +198,46 @@ export async function writeReport(input: WriteReportInput): Promise<Doc<IReport>
  * so a sub-task that stops naming a panel stops reporting on it. Appending instead would
  * leave the report asserting a finding its source has withdrawn.
  */
+/**
+ * The equipment type's attributes as they stand right now, resolved for a frozen record.
+ *
+ * Read at the moment the item is written rather than at the moment it is read, because a
+ * report is a dated document: the answers live on the equipment and move as it is corrected,
+ * so a report reading them live would rewrite its own history and two printouts of the same
+ * document could disagree.
+ *
+ * The LABEL and the DISPLAYED text are captured alongside the raw value, so the row can print
+ * itself with no lookup — an administrator may rename or delete the attribute afterwards, and
+ * the report must still be able to say what it recorded.
+ *
+ * Only answered attributes are captured. A blank is not a finding, and a row reading
+ * "Хайлмал: —" would suggest somebody looked and found nothing.
+ */
+async function snapshotAttributes(
+  objectId: Types.ObjectId,
+): Promise<
+  { key: string; label: string; value: ObjectAttributeValue; display: string }[]
+> {
+  const object = await ObjectRecord.findById(objectId)
+    .select('attributeValues objectType')
+    .populate({ path: 'objectType', select: 'attributes' });
+  if (!object) return [];
+
+  const type = object.objectType as unknown as { attributes?: unknown } | null;
+  const defs = toObjectTypeAttributeDtos(
+    type && typeof type === 'object' && 'attributes' in type
+      ? (type.attributes as never)
+      : undefined,
+  );
+  const values = object.attributeValues ?? {};
+
+  return defs.flatMap((def) => {
+    const display = formatAttributeValue(def, values[def.key]);
+    if (display === null) return [];
+    return [{ key: def.key, label: def.label, value: values[def.key]!, display }];
+  });
+}
+
 async function syncItems(
   reportId: Types.ObjectId,
   customer: Types.ObjectId | null,
@@ -220,6 +265,9 @@ async function syncItems(
           conclusion: item.conclusion ?? null,
           recommendation: item.recommendation ?? null,
           measuredLoadKw: item.measuredLoadKw ?? null,
+          // Frozen here, beside the score and the narrative, and rewritten only when they
+          // are — so the snapshot shares the finding's lifecycle exactly.
+          attributes: await snapshotAttributes(item.object),
           evidenceAttachments: item.evidenceAttachments ?? [],
           judgedBy: item.judgedBy ?? null,
           judgedByName: item.judgedByName ?? null,
@@ -232,6 +280,23 @@ async function syncItems(
     keep.push(saved._id);
   }
 
+  /**
+   * A HARD delete, on purpose, and it stays one.
+   *
+   * A withdrawn finding must disappear from every read that lists a report's items — the
+   * report detail, the list's item count, the object's own report list, Үзлэг ба дүгнэлт,
+   * the risk aggregates. There are a dozen such queries across four modules; a soft flag
+   * would have to be honoured by every one of them, and the first that forgot would keep
+   * reporting a finding the source has retracted, which is exactly the thing this delete
+   * exists to prevent.
+   *
+   * Deleting the row does destroy its `_id`, and the assessment history used to key its
+   * idempotency guard on that id — so withdrawing an object and adding it back appended a
+   * second, permanently undeletable history row. The guard now keys on the NATURAL key,
+   * `(object, sourceReport, newScore)`, which is what `{ report, object }` being unique on
+   * this collection means: the same finding, whatever id the item happens to carry today.
+   * See `appendAssessmentHistory`.
+   */
   await ReportItem.deleteMany({ report: reportId, _id: { $nin: keep } });
 }
 
@@ -269,6 +334,19 @@ export async function applyReportToEquipment(reportId: Types.ObjectId): Promise<
 
   const items = await ReportItem.find({ report: reportId });
   const touchedFloors = new Set<string>();
+
+  /**
+   * The ladder in force, resolved once for the whole report.
+   *
+   * Needed here because a score does more than move a head: rule 17.9 retires equipment
+   * that lands in the band carrying `decommissions`. That side effect used to exist only
+   * on the manual assessment screen, so the identical score arriving through a
+   * planned-work report, a service-request work report or a consolidated review moved the
+   * object's `score` and `riskLevel` and left it ACTIVE — still counted in the floor load,
+   * still offered as a panel to wire new circuits to, and never listed under «Ашиглалтаас
+   * гарсан». See `object-master/band-effects.ts`.
+   */
+  const bands = await getRiskBands();
 
   for (const item of items) {
     if (item.score === null || item.riskLevel === null) continue;
@@ -331,7 +409,31 @@ export async function applyReportToEquipment(reportId: Types.ObjectId): Promise<
       revisitRequired: object.latestAssessment?.revisitRequired ?? false,
       revisitDate: object.latestAssessment?.revisitDate ?? null,
     };
+
+    // Rule 17.9, from the same function the manual path calls. Idempotent: an object
+    // already out of service is left alone, so re-applying a corrected report — which is
+    // routine — cannot double-write or resurrect a status.
+    const statusChange = applyBandSideEffects(object, bandFor(item.riskLevel, bands));
+
     await object.save();
+
+    if (statusChange) {
+      /**
+       * Audited like the manual path audits it, and for the same reason: this is an
+       * irreversible write to the object's standing that no human explicitly asked for on
+       * this screen. The actor is whoever signed the report off — the only person this
+       * path can honestly name.
+       */
+      await recordAudit({
+        entityType: 'Object',
+        entityId: object._id,
+        action: 'StatusChanged',
+        actor: { id: assessedBy, role: null, label: assessedByName },
+        reason: `report ${report.reportNumber} scored into a band that decommissions`,
+        oldValue: { status: statusChange.from },
+        newValue: { status: statusChange.to, score: item.score, riskLevel: item.riskLevel },
+      });
+    }
 
     if (object.floor) touchedFloors.add(String(object.floor));
   }
@@ -403,6 +505,14 @@ export function toReportItemDto(item: Doc<IReportItem>): ReportItemDto {
     conclusion: item.conclusion,
     recommendation: item.recommendation,
     measuredLoadKw: item.measuredLoadKw,
+    // Frozen when the item was written; an item from before the feature has none, and
+    // nothing is back-filled — see the note on `IReportItem.attributes`.
+    attributes: (item.attributes ?? []).map((attribute) => ({
+      key: attribute.key,
+      label: attribute.label,
+      value: attribute.value,
+      display: attribute.display,
+    })),
     evidenceAttachments: (item.evidenceAttachments ?? [])
       .map(attachmentDto)
       .filter((entry): entry is ReportAttachmentDto => entry !== null),

@@ -71,6 +71,37 @@ describe('ProjectDetailPage building create', () => {
     vi.spyOn(projectService, 'listBuildings').mockResolvedValue(makePage([]));
   });
 
+  /**
+   * `BLD-001` is drawn from a per-customer counter the server holds. The pattern keeps `^`
+   * and drops `$` because `Field` appends a `*` to a required label, so a plain equality
+   * query would pass even with the field still on screen.
+   */
+  it('asks for no code when creating a building', async () => {
+    const user = userEvent.setup();
+
+    renderProject();
+    const drawer = await openBuildingDrawer(user);
+
+    expect(within(drawer).queryByLabelText(/^Код/)).toBeNull();
+  });
+
+  /** Absent, not empty: the create schema strips what it does not declare. */
+  it('sends a create payload with no code key at all', async () => {
+    const create = vi.spyOn(projectService, 'createBuilding').mockResolvedValue(makeBuilding());
+    const user = userEvent.setup();
+
+    renderProject();
+    const drawer = await openBuildingDrawer(user);
+
+    await user.type(within(drawer).getByLabelText(/^Барилгын нэр/), 'Кодгүй барилга');
+    await user.click(within(drawer).getByRole('button', { name: 'Хадгалах' }));
+
+    await waitFor(() => {
+      expect(create).toHaveBeenCalledWith(expect.not.objectContaining({ code: expect.anything() }));
+    });
+    expect('code' in create.mock.calls[0]![0]).toBe(false);
+  });
+
   it('sends the coordinates chosen on the map together with the rest of the form', async () => {
     const create = vi.spyOn(projectService, 'createBuilding').mockResolvedValue(makeBuilding());
     const user = userEvent.setup();
@@ -78,7 +109,6 @@ describe('ProjectDetailPage building create', () => {
     renderProject();
     const drawer = await openBuildingDrawer(user);
 
-    await user.type(within(drawer).getByLabelText(/^Код/), 'BLD-9');
     await user.type(within(drawer).getByLabelText(/^Барилгын нэр/), 'Шинэ корпус');
     await user.type(within(drawer).getByLabelText('Хаяг'), 'Их сургуулийн гудамж 3');
     await user.click(within(drawer).getByRole('button', { name: 'Газрын зураг дээр дарах' }));
@@ -89,7 +119,6 @@ describe('ProjectDetailPage building create', () => {
     await waitFor(() => {
       expect(create).toHaveBeenCalledWith({
         projectId: PROJECT_ID,
-        code: 'BLD-9',
         name: 'Шинэ корпус',
         address: 'Их сургуулийн гудамж 3',
         gpsLatitude: 47.9175,
@@ -106,7 +135,6 @@ describe('ProjectDetailPage building create', () => {
     renderProject();
     const drawer = await openBuildingDrawer(user);
 
-    await user.type(within(drawer).getByLabelText(/^Код/), 'BLD-8');
     await user.type(within(drawer).getByLabelText(/^Барилгын нэр/), 'Агуулах');
     await user.type(within(drawer).getByLabelText('Өргөрөг'), '48');
     await user.type(within(drawer).getByLabelText('Уртраг'), '107');
@@ -128,7 +156,6 @@ describe('ProjectDetailPage building create', () => {
     renderProject();
     const drawer = await openBuildingDrawer(user);
 
-    await user.type(within(drawer).getByLabelText(/^Код/), 'BLD-7');
     await user.type(within(drawer).getByLabelText(/^Барилгын нэр/), 'Зогсоол');
     await user.type(within(drawer).getByLabelText('Өргөрөг'), '48');
 
@@ -147,7 +174,6 @@ describe('ProjectDetailPage building create', () => {
     renderProject();
     const drawer = await openBuildingDrawer(user);
 
-    await user.type(within(drawer).getByLabelText(/^Код/), 'BLD-6');
     await user.type(within(drawer).getByLabelText(/^Барилгын нэр/), 'Дэд станц');
 
     await user.click(within(drawer).getByRole('button', { name: 'Хадгалах' }));
@@ -165,28 +191,111 @@ describe('ProjectDetailPage building create', () => {
   });
 });
 
+/**
+ * The building table used to fetch one capped page of 100 and render no pager, so a
+ * project with more buildings than that simply lost the rest. It now pages like every
+ * other list, and filters on the server rather than in the browser.
+ */
+describe('ProjectDetailPage building table', () => {
+  beforeEach(() => {
+    vi.spyOn(projectService, 'getProject').mockResolvedValue(makeProject());
+  });
+
+  it('asks the server for page two and numbers its rows from 21', async () => {
+    const list = vi.spyOn(projectService, 'listBuildings').mockResolvedValue({
+      ...makePage([makeBuilding()]),
+      page: 2,
+      total: 21,
+      totalPages: 2,
+    });
+
+    renderWithAuth(<ProjectDetailPage />, {
+      permissions: [PERMISSIONS.OBJECT_VIEW, PERMISSIONS.OBJECT_MANAGE],
+      route: `/projects/${PROJECT_ID}?page=2`,
+      path: '/projects/:projectId',
+    });
+
+    const table = await screen.findByRole('table');
+    expect(list).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: PROJECT_ID, page: 2, limit: 20 }),
+    );
+    expect(within(table).getByRole('columnheader', { name: '№' })).toBeInTheDocument();
+    const firstRow = within(table).getAllByRole('row')[1]!;
+    expect(within(firstRow).getAllByRole('cell')[0]).toHaveTextContent(/^21$/);
+  });
+
+  it('fetches the next page when the pager is used', async () => {
+    const list = vi
+      .spyOn(projectService, 'listBuildings')
+      .mockImplementation(async (query) => ({
+        ...makePage([makeBuilding()]),
+        page: query?.page ?? 1,
+        total: 40,
+        totalPages: 2,
+      }));
+    const user = userEvent.setup();
+
+    renderProject();
+
+    await screen.findByRole('table');
+    await user.click(screen.getByRole('button', { name: 'Дараах' }));
+
+    await waitFor(() => {
+      expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2 }));
+    });
+  });
+
+  /** Server-side: a browser-side filter would only ever search the page on screen. */
+  it('sends the search to the service and returns to the first page', async () => {
+    const list = vi.spyOn(projectService, 'listBuildings').mockResolvedValue({
+      ...makePage([makeBuilding()]),
+      page: 2,
+      total: 21,
+      totalPages: 2,
+    });
+    const user = userEvent.setup();
+
+    renderWithAuth(<ProjectDetailPage />, {
+      permissions: [PERMISSIONS.OBJECT_VIEW, PERMISSIONS.OBJECT_MANAGE],
+      route: `/projects/${PROJECT_ID}?page=2`,
+      path: '/projects/:projectId',
+    });
+
+    await screen.findByRole('table');
+    await user.type(screen.getByLabelText('Хайлт'), 'Төв{Enter}');
+
+    await waitFor(() => {
+      expect(list).toHaveBeenLastCalledWith(
+        expect.objectContaining({ search: 'Төв', page: 1, limit: 20 }),
+      );
+    });
+  });
+});
+
 describe('ProjectDetailPage delete blockers', () => {
   beforeEach(() => {
     vi.spyOn(projectService, 'listBuildings').mockResolvedValue(makePage([]));
   });
 
-  /** The reasons are read after the content they refer to, not before it. */
-  it('reports why deletion is blocked in a box at the bottom of the page', async () => {
+  /**
+   * The blue box that used to list the reasons is gone; what remains is the missing button.
+   * Why a project with dependants cannot be deleted is now read in the help panel, so the
+   * page must not grow the notice back.
+   */
+  it('withholds delete while blockers exist, without a notice on the page', async () => {
     vi.spyOn(projectService, 'getProject').mockResolvedValue(
       makeProject({ deleteBlockers: ['1 барилга бүртгэлтэй.'] }),
     );
 
     renderProject();
 
-    const box = await screen.findByText('Устгах боломжгүй');
-    expect(screen.getByText('1 барилга бүртгэлтэй.')).toBeInTheDocument();
+    await screen.findByRole('heading', { name: 'Барилга' });
     expect(screen.queryByRole('button', { name: 'Устгах' })).not.toBeInTheDocument();
-
-    const buildings = screen.getByRole('heading', { name: 'Барилга' });
-    expect(buildings.compareDocumentPosition(box)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(screen.queryByText('Устгах боломжгүй')).not.toBeInTheDocument();
+    expect(screen.queryByText('1 барилга бүртгэлтэй.')).not.toBeInTheDocument();
   });
 
-  it('shows no blocker box to a caller who cannot manage the project', async () => {
+  it('offers no delete or edit to a caller who cannot manage the project', async () => {
     vi.spyOn(projectService, 'getProject').mockResolvedValue(
       makeProject({ deleteBlockers: ['1 барилга бүртгэлтэй.'] }),
     );
@@ -198,6 +307,93 @@ describe('ProjectDetailPage delete blockers', () => {
     });
 
     await screen.findByRole('heading', { name: 'Барилга' });
-    expect(screen.queryByText('Устгах боломжгүй')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Устгах' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Засах' })).not.toBeInTheDocument();
+    expect(screen.queryByText('1 барилга бүртгэлтэй.')).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * Buildings under a project used to arrive as one `limit: 100` fetch rendered whole, so a
+ * large project's hundred-and-first building was absent from the page with nothing saying
+ * so. These pin the window, the numbering across it, and the pager that moves it.
+ */
+describe('ProjectDetailPage building list paging', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(projectService, 'getProject').mockResolvedValue(makeProject());
+  });
+
+  function buildingPage(page: number, count: number, total: number) {
+    return {
+      items: Array.from({ length: count }, (_, offset) =>
+        makeBuilding({
+          id: `b-${page}-${offset}`,
+          code: `BLD-${page}-${offset}`,
+          name: `Барилга ${page}-${offset}`,
+        }),
+      ),
+      page,
+      limit: 20,
+      total,
+      totalPages: Math.ceil(total / 20),
+    };
+  }
+
+  it('asks for one page of buildings rather than a hundred', async () => {
+    const list = vi
+      .spyOn(projectService, 'listBuildings')
+      .mockResolvedValue(buildingPage(1, 20, 120));
+
+    renderProject();
+    await screen.findByRole('table');
+
+    expect(list).toHaveBeenCalledWith({ projectId: PROJECT_ID, page: 1, limit: 20 });
+  });
+
+  it('numbers the buildings continuously across pages', async () => {
+    vi.spyOn(projectService, 'listBuildings').mockResolvedValue(buildingPage(3, 20, 120));
+
+    renderProject();
+
+    const table = await screen.findByRole('table');
+    expect(within(table).getByRole('columnheader', { name: '№' })).toBeInTheDocument();
+    // Page 3 of 20 begins at 41. Restarting at 1 is the failure this exists to catch.
+    expect(within(table).getAllByRole('cell')[0]?.textContent?.trim()).toBe('41');
+  });
+
+  it('states the project total rather than the rows on screen', async () => {
+    vi.spyOn(projectService, 'listBuildings').mockResolvedValue(buildingPage(1, 20, 120));
+
+    renderProject();
+    await screen.findByRole('table');
+
+    expect(screen.getByText(/Нийт 120/)).toBeInTheDocument();
+  });
+
+  it('asks the server for the next page when the pager is used', async () => {
+    const user = userEvent.setup();
+    const list = vi
+      .spyOn(projectService, 'listBuildings')
+      .mockResolvedValue(buildingPage(1, 20, 120));
+
+    renderProject();
+    await screen.findByRole('table');
+
+    await user.click(screen.getByRole('button', { name: 'Дараах' }));
+
+    await waitFor(() =>
+      expect(list).toHaveBeenLastCalledWith({ projectId: PROJECT_ID, page: 2, limit: 20 }),
+    );
+  });
+
+  /** One page is one screen: the pager has nothing to offer and must not appear. */
+  it('offers no pager when every building fits on one page', async () => {
+    vi.spyOn(projectService, 'listBuildings').mockResolvedValue(buildingPage(1, 3, 3));
+
+    renderProject();
+    await screen.findByRole('table');
+
+    expect(screen.queryByRole('button', { name: 'Дараах' })).not.toBeInTheDocument();
   });
 });

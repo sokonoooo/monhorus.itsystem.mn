@@ -10,6 +10,7 @@ import '../../../../auth/presentation/providers/auth_provider.dart';
 import '../../data/datasources/project_remote_data_source.dart';
 import '../../data/models/inspection_models.dart';
 import '../../data/models/object_models.dart';
+import '../../data/models/report_record_models.dart';
 import '../../data/models/project_models.dart';
 import '../../data/repositories/project_repository_impl.dart';
 import '../../domain/entities/risk_level.dart';
@@ -69,6 +70,29 @@ final Provider<bool> canAssessDevicesProvider = Provider<bool>((Ref ref) {
 
 // -- Helpers -----------------------------------------------------------------
 
+/// Ties one cached answer to the account it was fetched for.
+///
+/// Called for its effect, not its value: watching the signed-in id makes the provider
+/// drop what it is holding the moment a different technician signs in, so the next read
+/// goes to the server instead of to the previous session's cache.
+///
+/// Every future below needs it. None of them is `autoDispose`, `ProviderScope` sits
+/// above `MaterialApp` so a sign-out never clears the container, and Riverpod keeps a
+/// completed value long after its last listener has gone. Without this key the second
+/// technician on a shared van handset opened the tab onto the first one's project list,
+/// floor-plan bytes, device details and floor reports — no request made, and nothing on
+/// screen saying so. That is cross-account exposure, not staleness.
+///
+/// The id rather than the [AppUser], and this is the whole reason `autoDispose` is the
+/// wrong tool here: `/auth/me` is re-read on every mount and answers with a NEW object
+/// each time, so watching the object — or disposing on the last listener — would refetch
+/// the floor plan every time the screen is opened for a session that never changed. The
+/// same key [conclusionEditorProvider] takes, for the same reason, and the same one the
+/// customer app's `_sessionUserId` takes.
+void _keyOnSession(Ref ref) {
+  ref.watch(currentUserProvider.select((AppUser? user) => user?.id));
+}
+
 /// Unwraps an [ApiResult] for an async provider, throwing the [Failure] so it lands
 /// in `AsyncValue.error` with its Mongolian message intact.
 T _unwrap<T>(ApiResult<T> result) => result.when(
@@ -109,6 +133,7 @@ class ProjectListView {
 /// says so rather than labelling it "Миний төслүүд".
 final FutureProvider<ProjectListView> employeeProjectsProvider =
     FutureProvider<ProjectListView>((Ref ref) async {
+  _keyOnSession(ref);
   final ProjectRepository repository = ref.watch(projectRepositoryProvider);
   final PaginatedData<ProjectModel> page = _unwrap(await repository.listProjects());
   return ProjectListView(projects: page.items, total: page.total);
@@ -116,6 +141,7 @@ final FutureProvider<ProjectListView> employeeProjectsProvider =
 
 final FutureProviderFamily<ProjectModel, String> projectDetailProvider =
     FutureProvider.family<ProjectModel, String>((Ref ref, String projectId) async {
+  _keyOnSession(ref);
   final ProjectRepository repository = ref.watch(projectRepositoryProvider);
   return _unwrap(await repository.getProject(projectId));
 });
@@ -124,6 +150,7 @@ final FutureProviderFamily<ProjectModel, String> projectDetailProvider =
 final FutureProviderFamily<List<BuildingModel>, String> projectBuildingsProvider =
     FutureProvider.family<List<BuildingModel>, String>(
         (Ref ref, String projectId) async {
+  _keyOnSession(ref);
   final ProjectRepository repository = ref.watch(projectRepositoryProvider);
   final PaginatedData<BuildingModel> page =
       _unwrap(await repository.listProjectBuildings(projectId));
@@ -137,6 +164,7 @@ final FutureProviderFamily<List<BuildingModel>, String> projectBuildingsProvider
 
 final FutureProviderFamily<BuildingModel, String> buildingDetailProvider =
     FutureProvider.family<BuildingModel, String>((Ref ref, String buildingId) async {
+  _keyOnSession(ref);
   final ProjectRepository repository = ref.watch(projectRepositoryProvider);
   return _unwrap(await repository.getBuilding(buildingId));
 });
@@ -145,6 +173,7 @@ final FutureProviderFamily<BuildingModel, String> buildingDetailProvider =
 final FutureProviderFamily<List<FloorModel>, String> buildingFloorsProvider =
     FutureProvider.family<List<FloorModel>, String>(
         (Ref ref, String buildingId) async {
+  _keyOnSession(ref);
   final ProjectRepository repository = ref.watch(projectRepositoryProvider);
   final PaginatedData<FloorModel> page = _unwrap(await repository.listFloors(buildingId));
 
@@ -163,6 +192,7 @@ final FutureProviderFamily<List<FloorModel>, String> buildingFloorsProvider =
 
 final FutureProviderFamily<FloorModel, String> floorDetailProvider =
     FutureProvider.family<FloorModel, String>((Ref ref, String floorId) async {
+  _keyOnSession(ref);
   final ProjectRepository repository = ref.watch(projectRepositoryProvider);
   return _unwrap(await repository.getFloor(floorId));
 });
@@ -170,11 +200,44 @@ final FutureProviderFamily<FloorModel, String> floorDetailProvider =
 /// The floor's plan image, or null when none has been imported.
 final FutureProviderFamily<FloorPlanModel?, String> floorPlanProvider =
     FutureProvider.family<FloorPlanModel?, String>((Ref ref, String floorId) async {
+  _keyOnSession(ref);
   final ProjectRepository repository = ref.watch(projectRepositoryProvider);
   return _unwrap(await repository.getFloorPlan(floorId));
 });
 
 // -- Devices -----------------------------------------------------------------
+
+/// A ceiling on the paging loop, not on the floor.
+///
+/// `totalPages` is the server's own arithmetic, and a server that miscounts it would
+/// spin an unbounded loop forever. Twenty pages of 100 is two thousand devices on one
+/// floor — far past any real one, and the same ceiling the admin web's floor screen
+/// walks under.
+const int _maxObjectPages = 20;
+
+/// Every device on the floor, not the first hundred.
+///
+/// `/floors/:id/objects` caps a page at 100, so a single request silently lost every
+/// device past the first page — a floor with 120 of them drew 100 pins and gave no
+/// hint that twenty were missing. Worse, the screen counts the unplaced from this same
+/// list: «Планд байрлуулаагүй N төхөөрөмж байна» computed over a truncated read is a
+/// figure that looks like an all-clear for devices nobody ever saw. Pages are walked in
+/// order because the first response is what says how many there are.
+Future<List<ObjectListItemModel>> _allFloorObjects(
+  ProjectRepository repository,
+  String floorId,
+) async {
+  final List<ObjectListItemModel> all = <ObjectListItemModel>[];
+  for (int page = 1; page <= _maxObjectPages; page++) {
+    final PaginatedData<ObjectListItemModel> slice =
+        _unwrap(await repository.listFloorObjects(floorId, page: page));
+    all.addAll(slice.items);
+    // An empty page means there is nothing further to read; carrying on would loop
+    // against a server that disagrees with its own `totalPages`.
+    if (slice.items.isEmpty || page >= slice.totalPages) break;
+  }
+  return all;
+}
 
 /// Devices linked to a floor, worst band first so the ones needing work lead.
 ///
@@ -183,11 +246,11 @@ final FutureProviderFamily<FloorPlanModel?, String> floorPlanProvider =
 final FutureProviderFamily<List<ObjectListItemModel>, String> floorObjectsProvider =
     FutureProvider.family<List<ObjectListItemModel>, String>(
         (Ref ref, String floorId) async {
+  _keyOnSession(ref);
   final ProjectRepository repository = ref.watch(projectRepositoryProvider);
-  final PaginatedData<ObjectListItemModel> page =
-      _unwrap(await repository.listFloorObjects(floorId));
 
-  final List<ObjectListItemModel> objects = page.items.toList();
+  final List<ObjectListItemModel> objects =
+      await _allFloorObjects(repository, floorId);
   objects.sort((ObjectListItemModel a, ObjectListItemModel b) {
     final int? left = a.score;
     final int? right = b.score;
@@ -203,6 +266,7 @@ final FutureProviderFamily<List<ObjectListItemModel>, String> floorObjectsProvid
 final FutureProviderFamily<ObjectDetailModel, String> objectDetailProvider =
     FutureProvider.family<ObjectDetailModel, String>(
         (Ref ref, String objectId) async {
+  _keyOnSession(ref);
   final ProjectRepository repository = ref.watch(projectRepositoryProvider);
   return _unwrap(await repository.getObject(objectId));
 });
@@ -210,8 +274,36 @@ final FutureProviderFamily<ObjectDetailModel, String> objectDetailProvider =
 final FutureProviderFamily<ObjectHistoryModel, String> objectHistoryProvider =
     FutureProvider.family<ObjectHistoryModel, String>(
         (Ref ref, String objectId) async {
+  _keyOnSession(ref);
   final ProjectRepository repository = ref.watch(projectRepositoryProvider);
   return _unwrap(await repository.getObjectHistory(objectId));
+});
+
+/// Every report that recorded a finding on one piece of equipment.
+///
+/// The device screen's own list, replacing the mixed timeline it used to show. That
+/// timeline folded measurements, audit rows and request events in beside the written
+/// conclusions, which is a change log rather than a set of reports; a technician
+/// standing at the equipment is asking what was concluded about it.
+final FutureProviderFamily<List<ReportRecordModel>, String> objectReportsProvider =
+    FutureProvider.family<List<ReportRecordModel>, String>(
+        (Ref ref, String objectId) async {
+  _keyOnSession(ref);
+  final ProjectRepository repository = ref.watch(projectRepositoryProvider);
+  return _unwrap(await repository.listObjectReports(objectId));
+});
+
+/// One report, with the per-equipment findings the list rows omit.
+///
+/// Fetched only when a report is actually opened: the list endpoint leaves `items` out
+/// so a device with a long history does not drag every narrative of every visit down
+/// the wire to draw a handful of rows.
+final FutureProviderFamily<ReportRecordDetailModel, String> reportRecordProvider =
+    FutureProvider.family<ReportRecordDetailModel, String>(
+        (Ref ref, String reportId) async {
+  _keyOnSession(ref);
+  final ProjectRepository repository = ref.watch(projectRepositoryProvider);
+  return _unwrap(await repository.getReport(reportId));
 });
 
 // -- Device assessment -------------------------------------------------------
@@ -297,6 +389,7 @@ final FutureProviderFamily<List<InspectionListItemModel>, FloorReportQuery>
     floorReportsProvider =
     FutureProvider.family<List<InspectionListItemModel>, FloorReportQuery>(
         (Ref ref, FloorReportQuery query) async {
+  _keyOnSession(ref);
   final ProjectRepository repository = ref.watch(projectRepositoryProvider);
   final PaginatedData<InspectionListItemModel> page = _unwrap(
     await repository.listFloorInspections(query.floorId, riskLevel: query.riskLevel),
@@ -309,6 +402,7 @@ final FutureProviderFamily<List<InspectionListItemModel>, FloorReportQuery>
 final FutureProviderFamily<InspectionSummaryModel, String> floorReportSummaryProvider =
     FutureProvider.family<InspectionSummaryModel, String>(
         (Ref ref, String floorId) async {
+  _keyOnSession(ref);
   final ProjectRepository repository = ref.watch(projectRepositoryProvider);
   return _unwrap(await repository.getFloorInspectionSummary(floorId));
 });
@@ -319,6 +413,7 @@ final FutureProviderFamily<InspectionSummaryModel, String> floorReportSummaryPro
 /// plan or a device photo cannot be rendered with `Image.network`.
 final FutureProviderFamily<Uint8List, String> projectFileBytesProvider =
     FutureProvider.family<Uint8List, String>((Ref ref, String fileId) async {
+  _keyOnSession(ref);
   final ProjectRepository repository = ref.watch(projectRepositoryProvider);
   return _unwrap(await repository.downloadFile(fileId));
 });

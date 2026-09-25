@@ -2,6 +2,7 @@ import { riskLevelFor, type ReportRollupDto, type RiskLevel } from '@monhorus/sh
 import { Types } from 'mongoose';
 
 import { ObjectRecord } from '../object-master/object-master.models';
+import { riskScopeFilter } from '../object-master/risk-scope';
 import { ObjectNode } from '../objects/object.models';
 import { getRiskBands } from '../settings/settings.service';
 
@@ -40,7 +41,17 @@ async function floorFiguresFor(floorIds: readonly Types.ObjectId[]): Promise<Map
     assessedCount: number;
     total: number;
   }>([
-    { $match: { floor: { $in: [...floorIds] } } },
+    /**
+     * Retired equipment is not part of the answer.
+     *
+     * Rule 17.9 retires an object BECAUSE it scored worst, so without this predicate the
+     * retirement guaranteed that the worst score on the floor belonged to something no
+     * longer in service — and, the assessment rows being immutable, the object could never
+     * be deleted to clear it. The floor, its building and its project stayed pinned at that
+     * band forever. `countsTowardRisk` says which statuses speak, and why it is not the
+     * same predicate as `countsTowardLoad`.
+     */
+    { $match: { floor: { $in: [...floorIds] }, ...riskScopeFilter } },
     // Worst first, so the head of each group is the equipment that decides the floor.
     // Unassessed rows sort last rather than being dropped: they are still counted. That
     // needs a computed rank, because ascending Mongo puts a missing score AHEAD of every
@@ -52,8 +63,18 @@ async function floorFiguresFor(floorIds: readonly Types.ObjectId[]): Promise<Map
         _id: '$floor',
         score: { $first: '$latestAssessment.score' },
         worstObject: { $first: '$_id' },
+        /**
+         * Assessed means "has a score", not "has a TRUTHY score".
+         *
+         * `$cond` on `$ifNull(score, false)` folded a score of **0** into the false branch,
+         * so the worst possible assessment counted as no assessment at all: the floor
+         * reported `assessedCount: 0`, stored no rollup, and rendered as «үнэлгээ
+         * хийгээгүй» — never assessed — for a panel that had just been scored zero.
+         */
         assessedCount: {
-          $sum: { $cond: [{ $ifNull: ['$latestAssessment.score', false] }, 1, 0] },
+          $sum: {
+            $cond: [{ $ne: [{ $ifNull: ['$latestAssessment.score', null] }, null] }, 1, 0],
+          },
         },
         total: { $sum: 1 },
       },

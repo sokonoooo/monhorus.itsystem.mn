@@ -18,6 +18,7 @@ function makeRole(overrides: Partial<RoleDto> = {}): RoleDto {
     permissions: [PERMISSIONS.EMPLOYEE_VIEW],
     isSystem: false,
     userCount: 0,
+    createdByName: 'Б. Энхтөр',
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
     ...overrides,
@@ -35,11 +36,13 @@ function makeAccount(overrides: Partial<UserDto> = {}): UserDto {
     email: 'dorj@test.mn',
     phone: null,
     role: 'technician',
+    roleIds: [],
     status: 'active',
     customerId: null,
     customerName: null,
     lastLoginAt: null,
     createdBy: null,
+    createdByName: 'Б. Энхтөр',
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
     ...overrides,
@@ -80,6 +83,33 @@ describe('AccessPage', () => {
     expect(within(table).getByText('Системийн')).toBeInTheDocument();
   });
 
+  /**
+   * A seeded role was created by nobody. Saying "Систем" distinguishes that from a role
+   * whose creator was simply never recorded, which is what the dash means.
+   */
+  it('credits a seeded role to the system rather than to nobody', async () => {
+    vi.spyOn(rbacService, 'roles').mockResolvedValue([
+      makeRole({ name: 'Системийн админ', isSystem: true, createdByName: null }),
+    ]);
+
+    renderWithAuth(<AccessPage />, { permissions: [PERMISSIONS.RBAC_VIEW] });
+
+    const table = await screen.findByRole('table');
+    expect(within(table).getByRole('columnheader', { name: 'Үүсгэсэн' })).toBeInTheDocument();
+    expect(within(table).getByText('Систем')).toBeInTheDocument();
+  });
+
+  it('names the administrator who defined a custom role', async () => {
+    vi.spyOn(rbacService, 'roles').mockResolvedValue([
+      makeRole({ name: 'Санхүү', isSystem: false, createdByName: 'Б. Энхтөр' }),
+    ]);
+
+    renderWithAuth(<AccessPage />, { permissions: [PERMISSIONS.RBAC_VIEW] });
+
+    const table = await screen.findByRole('table');
+    expect(within(table).getByText('Б. Энхтөр')).toBeInTheDocument();
+  });
+
   it('flags a role that grants salary visibility', async () => {
     vi.spyOn(rbacService, 'roles').mockResolvedValue([
       makeRole({ name: 'Санхүү', permissions: [PERMISSIONS.EMPLOYEE_VIEW_SALARY] }),
@@ -112,6 +142,72 @@ describe('AccessPage', () => {
 
     await user.click(within(rows[2]!).getByRole('button', { name: 'Үйлдэл' }));
     expect(screen.getAllByRole('menuitem', { name: 'Устгах' })).toHaveLength(1);
+  });
+
+  /**
+   * The users tab used to ask for a fixed fifty and render whatever came back, so the
+   * fifty-first user was unreachable with nothing on screen saying so.
+   */
+  it('asks for one page of users rather than a fixed fifty', async () => {
+    vi.spyOn(rbacService, 'roles').mockResolvedValue([makeRole()]);
+    const users = vi.spyOn(rbacService, 'users').mockResolvedValue({
+      items: [makeAccount()],
+      page: 1,
+      limit: 20,
+      total: 45,
+      totalPages: 3,
+    });
+    const user = userEvent.setup();
+
+    renderWithAuth(<AccessPage />, { permissions: [PERMISSIONS.RBAC_VIEW] });
+    await user.click(screen.getByRole('tab', { name: 'Хэрэглэгч' }));
+
+    await waitFor(() =>
+      expect(users).toHaveBeenCalledWith(expect.objectContaining({ page: 1, limit: 20 })),
+    );
+  });
+
+  it('numbers the users and continues the numbering onto the next page', async () => {
+    vi.spyOn(rbacService, 'roles').mockResolvedValue([makeRole()]);
+    const users = vi.spyOn(rbacService, 'users').mockResolvedValue({
+      items: [makeAccount()],
+      page: 1,
+      limit: 20,
+      total: 45,
+      totalPages: 3,
+    });
+    const user = userEvent.setup();
+
+    renderWithAuth(<AccessPage />, { permissions: [PERMISSIONS.RBAC_VIEW] });
+    await user.click(screen.getByRole('tab', { name: 'Хэрэглэгч' }));
+    await screen.findByText('Дорж Бат');
+
+    const table = screen.getByRole('table');
+    expect(within(table).getByRole('columnheader', { name: '№' })).toBeInTheDocument();
+    expect(within(table).getAllByRole('row')[1]!.textContent).toMatch(/^1/);
+
+    // Дараах asks the server for the next window, and the numbering follows it.
+    await user.click(screen.getByRole('button', { name: 'Дараах' }));
+    await waitFor(() =>
+      expect(users).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2 })),
+    );
+  });
+
+  /**
+   * Roles are numbered but never paged. A role is a permission set an administrator
+   * defines by hand, so the list is bounded by how many distinct jobs an organisation
+   * has — a pager there would be a control that never appears.
+   */
+  it('numbers the roles without offering a pager', async () => {
+    vi.spyOn(rbacService, 'roles').mockResolvedValue([makeRole()]);
+
+    renderWithAuth(<AccessPage />, { permissions: [PERMISSIONS.RBAC_VIEW] });
+    await screen.findByText('Тусгай role');
+
+    const table = screen.getByRole('table');
+    expect(within(table).getByRole('columnheader', { name: '№' })).toBeInTheDocument();
+    expect(within(table).getAllByRole('row')[1]!.textContent).toMatch(/^1/);
+    expect(screen.queryByRole('button', { name: 'Дараах' })).not.toBeInTheDocument();
   });
 
   it('hides every management action without rbac.manage', async () => {
@@ -173,6 +269,108 @@ describe('AccessPage', () => {
     const assign = screen.getByRole('menuitem', { name: 'Role оноох' });
     expect(assign).toBeDisabled();
     expect(assign).toHaveAttribute('title', 'Эрх хүрэлцэхгүй');
+  });
+
+  /**
+   * The drawer is a REPLACEMENT, not an addition.
+   *
+   * `POST /rbac/users/:userId/roles` sends `kind: 'EXPLICIT'`, so whatever the drawer
+   * posts becomes the account's entire role set. Opening it with an empty selection
+   * therefore showed every box unticked for a user who held roles, and the first save
+   * stripped them — the admin never saw what they were destroying. It seeds from the
+   * row now, so the boxes on screen are the grants that exist.
+   */
+  it('seeds the role drawer with the roles the account already holds', async () => {
+    vi.spyOn(rbacService, 'roles').mockResolvedValue([
+      makeRole({ id: 'r1', name: 'Санхүү' }),
+      makeRole({ id: 'r2', name: 'Диспетчер' }),
+      makeRole({ id: 'r3', name: 'Удирдлага' }),
+    ]);
+    mockUserPage([makeAccount({ roleIds: ['r1', 'r2'] })]);
+    const user = userEvent.setup();
+
+    renderWithAuth(<AccessPage />, {
+      permissions: [PERMISSIONS.RBAC_VIEW, PERMISSIONS.RBAC_MANAGE],
+      route: '/access?tab=users',
+    });
+
+    await screen.findByText('Дорж Бат');
+    const row = within(screen.getByRole('table')).getAllByRole('row')[1]!;
+    await user.click(within(row).getByRole('button', { name: 'Үйлдэл' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Role оноох' }));
+
+    const drawer = await screen.findByRole('dialog');
+    expect(within(drawer).getByRole('checkbox', { name: /Санхүү/ })).toBeChecked();
+    expect(within(drawer).getByRole('checkbox', { name: /Диспетчер/ })).toBeChecked();
+    expect(within(drawer).getByRole('checkbox', { name: /Удирдлага/ })).not.toBeChecked();
+  });
+
+  /**
+   * Adding one role must add one role. The endpoint replaces the set, so a save that
+   * carried only the newly ticked box was a silent revocation of the other two.
+   */
+  it('sends the existing roles alongside the one just ticked', async () => {
+    vi.spyOn(rbacService, 'roles').mockResolvedValue([
+      makeRole({ id: 'r1', name: 'Санхүү' }),
+      makeRole({ id: 'r2', name: 'Диспетчер' }),
+      makeRole({ id: 'r3', name: 'Удирдлага' }),
+    ]);
+    mockUserPage([makeAccount({ roleIds: ['r1', 'r2'] })]);
+    const assign = vi
+      .spyOn(rbacService, 'assignRoles')
+      .mockResolvedValue({ roleIds: ['r1', 'r2', 'r3'] });
+    const user = userEvent.setup();
+
+    renderWithAuth(<AccessPage />, {
+      permissions: [PERMISSIONS.RBAC_VIEW, PERMISSIONS.RBAC_MANAGE],
+      route: '/access?tab=users',
+    });
+
+    await screen.findByText('Дорж Бат');
+    const row = within(screen.getByRole('table')).getAllByRole('row')[1]!;
+    await user.click(within(row).getByRole('button', { name: 'Үйлдэл' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Role оноох' }));
+
+    const drawer = await screen.findByRole('dialog');
+    await user.click(within(drawer).getByRole('checkbox', { name: /Удирдлага/ }));
+    await user.click(within(drawer).getByRole('button', { name: 'Хадгалах' }));
+
+    await waitFor(() => expect(assign).toHaveBeenCalledTimes(1));
+    const [userId, roleIds] = assign.mock.calls[0]!;
+    expect(userId).toBe('u9');
+    // The set, not the order: the drawer holds the seeded ids first and appends the new one.
+    expect([...roleIds].sort()).toEqual(['r1', 'r2', 'r3']);
+  });
+
+  /**
+   * A grant the drawer could not draw is still a grant.
+   *
+   * The checklist renders the role catalogue; an account may hold a role missing from it
+   * (a stale id, or a catalogue that came back short). Unticking every visible box is a
+   * deliberate strip and is allowed — but it may only strip what the admin was actually
+   * shown, so an unrendered id survives the save.
+   */
+  it('keeps a held role the checklist never rendered', async () => {
+    vi.spyOn(rbacService, 'roles').mockResolvedValue([makeRole({ id: 'r1', name: 'Санхүү' })]);
+    mockUserPage([makeAccount({ roleIds: ['r1', 'r-unlisted'] })]);
+    const assign = vi.spyOn(rbacService, 'assignRoles').mockResolvedValue({ roleIds: [] });
+    const user = userEvent.setup();
+
+    renderWithAuth(<AccessPage />, {
+      permissions: [PERMISSIONS.RBAC_VIEW, PERMISSIONS.RBAC_MANAGE],
+      route: '/access?tab=users',
+    });
+
+    await screen.findByText('Дорж Бат');
+    const row = within(screen.getByRole('table')).getAllByRole('row')[1]!;
+    await user.click(within(row).getByRole('button', { name: 'Үйлдэл' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Role оноох' }));
+
+    const drawer = await screen.findByRole('dialog');
+    await user.click(within(drawer).getByRole('checkbox', { name: /Санхүү/ }));
+    await user.click(within(drawer).getByRole('button', { name: 'Хадгалах' }));
+
+    await waitFor(() => expect(assign).toHaveBeenCalledWith('u9', ['r-unlisted']));
   });
 
   it('suspends a user after the confirmation is accepted', async () => {
@@ -381,5 +579,144 @@ describe('AccessPage', () => {
     const assign = screen.getByRole('menuitem', { name: 'Role оноох' });
     expect(assign).toBeDisabled();
     expect(assign).toHaveAttribute('title', 'Эрх хүрэлцэхгүй');
+  });
+});
+
+/**
+ * Filtering the user directory.
+ *
+ * Every filter is applied by the server — `/users` already accepts search, role and status —
+ * so these assert on what was ASKED FOR rather than on what is rendered. A screen that
+ * fetched everything and hid the misses would still show the right rows while reporting a
+ * total that counts users the reader cannot see, and only the request reveals the
+ * difference.
+ */
+describe('AccessPage user filters', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(rbacService, 'permissions').mockResolvedValue(CATALOGUE);
+    vi.spyOn(rbacService, 'roles').mockResolvedValue([makeRole()]);
+  });
+
+  function mockUsers() {
+    return vi.spyOn(rbacService, 'users').mockResolvedValue({
+      items: [makeAccount()],
+      page: 1,
+      limit: 20,
+      total: 45,
+      totalPages: 3,
+    });
+  }
+
+  async function openUsersTab(user: ReturnType<typeof userEvent.setup>) {
+    renderWithAuth(<AccessPage />, { permissions: [PERMISSIONS.RBAC_VIEW] });
+    await user.click(screen.getByRole('tab', { name: 'Хэрэглэгч' }));
+    await screen.findByRole('table');
+  }
+
+  it('asks the server to search rather than filtering what came back', async () => {
+    const user = userEvent.setup();
+    const users = mockUsers();
+
+    await openUsersTab(user);
+    await user.type(screen.getByLabelText('Хайлт'), 'дорж');
+    await user.tab();
+
+    await waitFor(() =>
+      expect(users).toHaveBeenLastCalledWith(expect.objectContaining({ search: 'дорж' })),
+    );
+  });
+
+  it('asks the server to filter by role and by status', async () => {
+    const user = userEvent.setup();
+    const users = mockUsers();
+
+    await openUsersTab(user);
+    await user.selectOptions(screen.getByLabelText('Эрх'), 'admin');
+    await waitFor(() =>
+      expect(users).toHaveBeenLastCalledWith(expect.objectContaining({ role: 'admin' })),
+    );
+
+    await user.selectOptions(screen.getByLabelText('Төлөв'), 'suspended');
+    // Both travel together: narrowing by status must not drop the role already chosen.
+    await waitFor(() =>
+      expect(users).toHaveBeenLastCalledWith(
+        expect.objectContaining({ role: 'admin', status: 'suspended' }),
+      ),
+    );
+  });
+
+  /** The requirement: a filter must survive paging, or page two is a different question. */
+  it('keeps the filters when the reader turns the page', async () => {
+    const user = userEvent.setup();
+    const users = mockUsers();
+
+    await openUsersTab(user);
+    await user.selectOptions(screen.getByLabelText('Эрх'), 'admin');
+    await waitFor(() =>
+      expect(users).toHaveBeenLastCalledWith(expect.objectContaining({ page: 1, role: 'admin' })),
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Дараах' }));
+
+    await waitFor(() =>
+      expect(users).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2, role: 'admin' })),
+    );
+  });
+
+  /** Page four of the whole directory is usually past the end of a filtered one. */
+  it('returns to the first page when a filter changes', async () => {
+    const user = userEvent.setup();
+    const users = mockUsers();
+
+    await openUsersTab(user);
+    await user.click(screen.getByRole('button', { name: 'Дараах' }));
+    await waitFor(() =>
+      expect(users).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2 })),
+    );
+
+    await user.selectOptions(screen.getByLabelText('Төлөв'), 'active');
+
+    await waitFor(() =>
+      expect(users).toHaveBeenLastCalledWith(
+        expect.objectContaining({ page: 1, status: 'active' }),
+      ),
+    );
+  });
+
+  it('sends no filter key at all when a filter is cleared', async () => {
+    const user = userEvent.setup();
+    const users = mockUsers();
+
+    await openUsersTab(user);
+    await user.selectOptions(screen.getByLabelText('Эрх'), 'admin');
+    await waitFor(() =>
+      expect(users).toHaveBeenLastCalledWith(expect.objectContaining({ role: 'admin' })),
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Шүүлтүүр цэвэрлэх' }));
+
+    // Absent, not empty: the query schema types role as an enum, so '' is a 400.
+    await waitFor(() => {
+      const last = users.mock.calls.at(-1)?.[0] ?? {};
+      expect('role' in last).toBe(false);
+    });
+    expect(screen.getByLabelText('Хайлт')).toHaveValue('');
+  });
+
+  it('offers the clear control only while something is filtered', async () => {
+    const user = userEvent.setup();
+    mockUsers();
+
+    await openUsersTab(user);
+    expect(
+      screen.queryByRole('button', { name: 'Шүүлтүүр цэвэрлэх' }),
+    ).not.toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText('Төлөв'), 'active');
+
+    expect(
+      await screen.findByRole('button', { name: 'Шүүлтүүр цэвэрлэх' }),
+    ).toBeInTheDocument();
   });
 });

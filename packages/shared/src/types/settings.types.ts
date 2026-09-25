@@ -5,7 +5,8 @@ export interface SettingEntryDto {
   group: SettingGroup;
   label: string;
   hint: string;
-  type: 'string' | 'integer' | 'ratio' | 'percent';
+  /** `file` carries a stored-file id; see `SettingDefinition` for why. */
+  type: 'string' | 'integer' | 'ratio' | 'percent' | 'file' | 'stages' | 'riskBands';
   value: SettingValue;
   /** The catalogue default, so the screen can offer a reset and show what changed. */
   defaultValue: SettingValue;

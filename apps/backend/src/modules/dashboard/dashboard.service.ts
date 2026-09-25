@@ -7,11 +7,14 @@ import {
   RISK_LEVELS,
   SERVICE_REQUEST_STATUSES,
   SERVICE_REQUEST_STATUS_LABELS,
-  SERVICE_REQUEST_TYPES,
-  SERVICE_REQUEST_TYPE_LABELS,
   SETTING_KEYS,
-  effectivePlannedWorkStatus,
+  aggregateProgress,
+  slaConfigOf,
   reconcileDashboardLayout,
+  PLANNED_WORK_UNCOMMITTED_STATUSES,
+  isDeliveredPlannedWorkStatus,
+  type PlannedWorkEffectiveStatus,
+  type PlannedWorkLifecycleStatus,
   type DashboardLayoutDto,
   type DashboardWidgetPreference,
   type DashboardLayoutInput,
@@ -22,26 +25,32 @@ import {
   type DashboardSummaryDto,
   type DashboardTodayItem,
   type DashboardTodaySummary,
+  type DashboardMonthPoint,
   type DashboardTrendPoint,
   type DashboardWorkloadRow,
   type RiskLevel,
   type ServiceRequestStatus,
 } from '@monhorus/shared';
-import { Types } from 'mongoose';
+import { Types, type FilterQuery } from 'mongoose';
 
 import { AppError } from '../../common/errors/app-error';
 import { ERROR_CODES } from '../../common/errors/error-codes';
 import type { AuthContext } from '../../common/types/express';
 import { dayBounds, dayBoundsAgo, localDateString, monthStart } from '../../common/utils/day-bounds.util';
+import { monthEnd, monthWindow, windowStart } from '../../common/utils/month-window.util';
 import { env } from '../../config/env';
+import { effectiveStatusOf, overdueBoundary } from '../planned-work/planned-work.overdue.service';
 import { listCustomWidgets } from './dashboard-insight.service';
 import { DashboardLayout, type IDashboardWidgetPreference } from './dashboard-layout.model';
 import { Employee } from '../employee/employee.model';
 import { Invoice } from '../invoice/invoice.model';
 import { ObjectRecord } from '../object-master/object-master.models';
+import { riskScopeFilter } from '../object-master/risk-scope';
 import { Customer, ObjectNode } from '../objects/object.models';
-import { PlannedWork } from '../planned-work/planned-work.models';
-import { ServiceRequest } from '../service-request/service-request.model';
+import { PlannedWork, type IPlannedWork } from '../planned-work/planned-work.models';
+import { resolveAssignedWorkFilter } from '../planned-work/planned-work.scope';
+import { ServiceRequest, type IServiceRequest } from '../service-request/service-request.model';
+import { slaBreachFilter } from '../service-request/sla.service';
 import { getSettings } from '../settings/settings.service';
 import { ServiceAgreement } from '../service-agreement/service-agreement.model';
 
@@ -58,8 +67,33 @@ const ACTIVE_REQUEST_STATUSES: readonly ServiceRequestStatus[] = [
 const SETTLED_REQUEST_STATUSES: readonly ServiceRequestStatus[] = ['COMPLETED', 'CANCELLED'];
 
 const TREND_DAYS = 14;
+
+/** How far the long view reaches. Six, matching the span the portal risk history uses. */
+const MONTHLY_TREND_MONTHS = 6;
+/**
+ * How many rows the Today list carries. A cap on the LIST only — never on the counters
+ * beside it, which are queries. See `todayBlock`.
+ */
 const TODAY_ITEM_LIMIT = 40;
 const WORKLOAD_ROW_LIMIT = 8;
+
+/**
+ * Narrows a dashboard query to the records the caller is allowed to be counted against.
+ *
+ * `$and` rather than a spread, which is how every other call site of
+ * `resolveAssignedWorkFilter` combines it. The predicate is an `$or`, and two of the
+ * filters below already occupy `$or` themselves — the near-breach filter and the today
+ * query — so spreading would silently overwrite one of them and widen the result to
+ * every record in the company. That is the precise shape of the leak this scoping
+ * exists to close, so it must not be reintroduced by the merge.
+ *
+ * A `null` scope means the caller holds an oversight key and is not bounded at all. It
+ * is never `{}`: see `resolveAssignedWorkFilter` for why that distinction is load-bearing.
+ */
+function withScope<T>(filter: FilterQuery<T>, scope: FilterQuery<T> | null): FilterQuery<T> {
+  if (!scope) return filter;
+  return { ...filter, $and: [scope] };
+}
 
 function nameOf(value: unknown): string | null {
   if (typeof value !== 'object' || value === null || !('name' in value)) return null;
@@ -148,12 +182,37 @@ async function requestBlock(
   now: Date,
   todayStart: Date,
   todayEnd: Date,
+  scope: FilterQuery<IServiceRequest> | null,
 ): Promise<{
   requests: NonNullable<DashboardSummaryDto['requests']>;
   byStatus: DashboardSlice[];
-  byType: DashboardSlice[];
 }> {
   const open = { status: { $nin: SETTLED_REQUEST_STATUSES } };
+
+  /**
+   * Near breach is the configured share of the SLA window being consumed, exactly as
+   * [evaluateSla] defines it — not "falls due before midnight". The two are different
+   * sets: a standard request raised an hour ago is due today and nowhere near breach,
+   * while an urgent one raised five hours ago on a six-hour window is past the threshold
+   * whatever the clock says. The threshold is read from settings so it moves with the
+   * configuration rather than being fixed here.
+   */
+  const slaConfig = slaConfigOf(await getSettings());
+  const consumedSlaMs = { $subtract: [now, '$slaStartedAt'] };
+  const slaWindowMs = { $subtract: ['$slaDueAt', '$slaStartedAt'] };
+  const nearBreachFilter: FilterQuery<IServiceRequest> = {
+    ...open,
+    // Already past due is BREACHED, which is its own count and not this one.
+    slaDueAt: { $gt: now },
+    $expr: {
+      $and: [
+        // A non-positive window has no ratio to consume; `evaluateSla` treats it as zero
+        // consumed rather than as instantly near breach.
+        { $gt: ['$slaDueAt', '$slaStartedAt'] },
+        { $gte: [consumedSlaMs, { $multiply: [slaConfig.nearBreachRatio, slaWindowMs] }] },
+      ],
+    },
+  };
 
   const [
     newRequests,
@@ -161,42 +220,57 @@ async function requestBlock(
     urgentRequests,
     inProgress,
     dueToday,
+    nearBreach,
     breached,
     completedToday,
     statusGroups,
-    typeGroups,
   ] = await Promise.all([
-    ServiceRequest.countDocuments({ status: 'NEW' }),
-    ServiceRequest.countDocuments({ status: { $in: ['NEW', 'UNASSIGNED'] } }),
-    ServiceRequest.countDocuments({ isUrgent: true, ...open }),
-    ServiceRequest.countDocuments({
-      status: { $in: ['ACCEPTED', 'ON_THE_WAY', 'ON_SITE', 'IN_PROGRESS'] },
-    }),
-    ServiceRequest.countDocuments({ slaDueAt: { $gte: now, $lte: todayEnd }, ...open }),
-    ServiceRequest.countDocuments({ slaDueAt: { $lt: now }, ...open }),
-    ServiceRequest.countDocuments({
-      status: 'COMPLETED',
-      completedAt: { $gte: todayStart, $lte: todayEnd },
-    }),
+    ServiceRequest.countDocuments(withScope<IServiceRequest>({ status: 'NEW' }, scope)),
+    ServiceRequest.countDocuments(
+      withScope<IServiceRequest>({ status: { $in: ['NEW', 'UNASSIGNED'] } }, scope),
+    ),
+    ServiceRequest.countDocuments(withScope<IServiceRequest>({ isUrgent: true, ...open }, scope)),
+    ServiceRequest.countDocuments(
+      withScope<IServiceRequest>(
+        { status: { $in: ['ACCEPTED', 'ON_THE_WAY', 'ON_SITE', 'IN_PROGRESS'] } },
+        scope,
+      ),
+    ),
+    ServiceRequest.countDocuments(
+      withScope<IServiceRequest>({ slaDueAt: { $gte: now, $lte: todayEnd }, ...open }, scope),
+    ),
+    ServiceRequest.countDocuments(withScope<IServiceRequest>(nearBreachFilter, scope)),
+    // "SLA зөрчил" is [slaBreachFilter], the query form of the one definition the KPI
+    // tile and the 15.2 SLA report also count on. This tile used to ask only for work that
+    // is open and past due, so a breach that was later completed vanished from the number
+    // the moment it was closed and the three screens never agreed.
+    ServiceRequest.countDocuments(withScope<IServiceRequest>(slaBreachFilter(now), scope)),
+    ServiceRequest.countDocuments(
+      withScope<IServiceRequest>(
+        { status: 'COMPLETED', completedAt: { $gte: todayStart, $lte: todayEnd } },
+        scope,
+      ),
+    ),
     ServiceRequest.aggregate<{ _id: ServiceRequestStatus; count: number }>([
+      // The scope has to lead the pipeline rather than filter the grouped output: the
+      // `$group` has already collapsed the documents by then and there is nothing left
+      // to match an assignment against.
+      ...(scope ? [{ $match: scope as Record<string, unknown> }] : []),
       { $group: { _id: '$status', count: { $sum: 1 } } },
-    ]),
-    ServiceRequest.aggregate<{ _id: string; count: number }>([
-      { $match: open },
-      { $group: { _id: '$requestType', count: { $sum: 1 } } },
     ]),
   ]);
 
   const statusCounts = new Map(statusGroups.map((row) => [row._id, row.count]));
-  const typeCounts = new Map(typeGroups.map((row) => [row._id, row.count]));
 
   return {
     requests: {
       newRequests,
       unassignedRequests,
       urgentRequests,
-      // Near breach is the SLA falling due before the end of today; breached is past due.
-      slaNearBreach: dueToday,
+      // Near breach is the SLA window being consumed past the configured ratio and not
+      // yet run out; breached is past due. `dueToday` is the calendar figure and stays
+      // its own field.
+      slaNearBreach: nearBreach,
       slaBreached: breached,
       inProgress,
       dueToday,
@@ -209,24 +283,22 @@ async function requestBlock(
       label: SERVICE_REQUEST_STATUS_LABELS[status],
       count: statusCounts.get(status) ?? 0,
     })).filter((slice) => slice.count > 0),
-    byType: SERVICE_REQUEST_TYPES.map((type) => ({
-      key: type,
-      label: SERVICE_REQUEST_TYPE_LABELS[type],
-      count: typeCounts.get(type) ?? 0,
-    })).filter((slice) => slice.count > 0),
   };
 }
 
 /** Fourteen days of created versus completed, for the trend line. */
-async function trendBlock(now: Date): Promise<DashboardTrendPoint[]> {
+async function trendBlock(
+  now: Date,
+  scope: FilterQuery<IServiceRequest> | null,
+): Promise<DashboardTrendPoint[]> {
   const timeZone = env.APP_TIMEZONE;
   const from = dayBoundsAgo(now, timeZone, TREND_DAYS - 1).start;
 
   const [created, completed] = await Promise.all([
-    ServiceRequest.find({ createdAt: { $gte: from } })
+    ServiceRequest.find(withScope<IServiceRequest>({ createdAt: { $gte: from } }, scope))
       .select('createdAt')
       .lean(),
-    ServiceRequest.find({ completedAt: { $gte: from } })
+    ServiceRequest.find(withScope<IServiceRequest>({ completedAt: { $gte: from } }, scope))
       .select('completedAt')
       .lean(),
   ]);
@@ -258,30 +330,123 @@ async function trendBlock(now: Date): Promise<DashboardTrendPoint[]> {
   return points;
 }
 
-async function plannedWorkBlock(now: Date): Promise<DashboardPlannedWorkSummary> {
-  const works = await PlannedWork.find({ status: { $ne: 'ARCHIVED' } })
-    .select('status plannedEndDate progressPercent')
+/**
+ * Six months of raised-request counts.
+ *
+ * The long view beside the fourteen-day one. They answer different questions — "what is
+ * happening this fortnight" and "is the workload growing" — and a reader looking for the
+ * second in a daily line has to do the arithmetic themselves.
+ *
+ * Bucketed in the pipeline with an explicit `timezone`, which `$dateToString` supports and
+ * the day-level trend above cannot use because it needs the same boundary the rest of that
+ * block already computes in JavaScript.
+ *
+ * Every month in the window is returned, including the empty ones: a gap in a series reads
+ * as "no data" and a zero reads as "nothing happened", and those are different answers.
+ */
+async function monthlyTrendBlock(
+  now: Date,
+  scope: FilterQuery<IServiceRequest> | null,
+): Promise<DashboardMonthPoint[]> {
+  const timeZone = env.APP_TIMEZONE;
+  const months = monthWindow(now, timeZone, MONTHLY_TREND_MONTHS);
+
+  const rows = await ServiceRequest.aggregate<{ _id: string; count: number }>([
+    {
+      $match: withScope<IServiceRequest>(
+        {
+          createdAt: {
+            $gte: windowStart(months, timeZone),
+            $lt: monthEnd(months[months.length - 1]!, timeZone),
+          },
+        },
+        scope,
+      ),
+    },
+    {
+      $group: {
+        _id: { $dateToString: { format: '%Y-%m', date: '$createdAt', timezone: timeZone } },
+        count: { $sum: 1 },
+      },
+    },
+  ]);
+
+  const found = new Map(rows.map((row) => [row._id, row.count]));
+  return months.map((month) => ({ month, count: found.get(month) ?? 0 }));
+}
+
+/**
+ * The «Төлөвлөгөөт ажлын гүйцэтгэл» tile.
+ *
+ * Numerator and denominator both come from `packages/shared` — see
+ * `PLANNED_WORK_DELIVERED_STATUSES` and `PLANNED_WORK_UNCOMMITTED_STATUSES`, which carry
+ * the reasoning. They are shared rather than restated here because this tile and the
+ * PLANNED_WORK_COMPLETION_RATE KPI in `report.service.ts` are the same question asked on
+ * two screens, under the identical heading, and they were previously free to disagree.
+ *
+ * What this replaced: `{ status: { $ne: 'ARCHIVED' } }`, which answered neither half. It
+ * dropped the most complete state there is — approving a report archives the work, so
+ * closing paperwork REMOVED work from «Дууссан» — while counting scratch pads and
+ * cancellations as outstanding commitments in «Нийт». `averageProgress` carried the same
+ * bias from both ends at once: every archived work (genuinely 100%) excluded, every DRAFT
+ * (0%) included.
+ */
+async function plannedWorkBlock(
+  now: Date,
+  scope: FilterQuery<IPlannedWork> | null,
+): Promise<DashboardPlannedWorkSummary> {
+  const works = await PlannedWork.find(
+    withScope<IPlannedWork>(
+      { status: { $nin: PLANNED_WORK_UNCOMMITTED_STATUSES } },
+      scope,
+    ),
+  )
+    .select('status plannedEndDate totalQuantity completedQuantity')
     .lean();
 
   let inProgress = 0;
   let overdue = 0;
   let completed = 0;
-  let progressSum = 0;
 
   for (const work of works) {
-    const effective = effectivePlannedWorkStatus(work.status, work.plannedEndDate, now);
+    const effective = effectiveStatusOf(work, now);
     if (effective === 'OVERDUE') overdue += 1;
     else if (effective === 'STARTED') inProgress += 1;
-    else if (effective === 'COMPLETED') completed += 1;
-    progressSum += work.progressPercent;
+    else if (isDeliveredPlannedWorkStatus(effective)) completed += 1;
   }
+
+  /**
+   * Quantity-weighted, through the same aggregation the progress service uses, so the
+   * dashboard figure is the one the planned-work module would compute over the same set.
+   * The mean of the per-work percentages is a different number: it lets a single-task job
+   * outweigh a five-hundred-task one, which is exactly the weighting doctrine this
+   * codebase settled.
+   *
+   * Weighted over the SAME committed set as the counters above, which is what repairs the
+   * second half of this block's bias: the previous set excluded every archived work — the
+   * ones that are genuinely finished — while including every DRAFT at 0%, so the bar was
+   * pushed down from both ends at once.
+   *
+   * NOTE for whoever owns `packages/shared/src/types/dashboard.types.ts`: the doc on
+   * `averageProgress` still says "across non-archived work". That is now stale and should
+   * read "across committed work"; it is out of this module's scope to edit.
+   */
+  const progress = aggregateProgress(
+    works.map((work) => ({
+      totalQuantity: work.totalQuantity,
+      // Clamp as the progress service does: a stored overshoot must not inflate the rollup.
+      completedQuantity: Math.min(work.completedQuantity, work.totalQuantity),
+    })),
+  );
 
   return {
     total: works.length,
     inProgress,
     overdue,
     completed,
-    averageProgress: works.length === 0 ? 0 : Math.round(progressSum / works.length),
+    // Null, not zero, when there is nothing to weigh: no work at all, or no quantity
+    // recorded against any of it. Zero would read as "everything is at 0%".
+    averageProgress: progress.totalQuantity === 0 ? null : progress.progressPercent,
   };
 }
 
@@ -295,6 +460,9 @@ async function plannedWorkBlock(now: Date): Promise<DashboardPlannedWorkSummary>
  */
 async function riskBlock(): Promise<DashboardRiskSummary> {
   const grouped = await ObjectRecord.aggregate<{ _id: RiskLevel | null; count: number }>([
+    // Equipment that has been taken out of service is not a live risk. Same predicate the
+    // rollup, the inspection counters and the project summary use; see `risk-scope.ts`.
+    { $match: { ...riskScopeFilter } },
     { $group: { _id: '$latestAssessment.riskLevel', count: { $sum: 1 } } },
   ]);
 
@@ -372,7 +540,12 @@ async function financeBlock(now: Date): Promise<DashboardFinanceSummary> {
  * "Today" is the Ulaanbaatar day, not the server's day: the two differ for eight hours
  * of every day when the process runs in UTC, which is the normal deployment.
  */
-async function todayBlock(now: Date, permissions: ReadonlySet<string>): Promise<DashboardTodaySummary> {
+async function todayBlock(
+  now: Date,
+  permissions: ReadonlySet<string>,
+  requestScope: FilterQuery<IServiceRequest> | null,
+  workScope: FilterQuery<IPlannedWork> | null,
+): Promise<DashboardTodaySummary> {
   const timeZone = env.APP_TIMEZONE;
   const { start, end, date } = dayBounds(now, timeZone);
 
@@ -381,15 +554,26 @@ async function todayBlock(now: Date, permissions: ReadonlySet<string>): Promise<
 
   const items: DashboardTodayItem[] = [];
 
+  /**
+   * Anything that lands today: due today, already past due and unfinished, or urgent and
+   * still open. An overdue job from last week is today's problem too.
+   *
+   * Named and reused rather than inlined, because the counters below must ask about the
+   * SAME set the list is drawn from. They are separate queries against this filter, not
+   * a second reading of the rows the list happens to have loaded.
+   */
+  const requestBase: FilterQuery<IServiceRequest> = {
+    status: { $nin: SETTLED_REQUEST_STATUSES },
+    $or: [{ slaDueAt: { $lte: end } }, { isUrgent: true }],
+  };
+
+  const workBase: FilterQuery<IPlannedWork> = {
+    status: { $in: ['PLANNED', 'STARTED', 'PAUSED'] },
+    plannedStartDate: { $lte: end },
+  };
+
   if (canSeeRequests) {
-    /**
-     * Anything that lands today: due today, already past due and unfinished, or
-     * urgent and still open. An overdue job from last week is today's problem too.
-     */
-    const requests = await ServiceRequest.find({
-      status: { $nin: SETTLED_REQUEST_STATUSES },
-      $or: [{ slaDueAt: { $lte: end } }, { isUrgent: true }],
-    })
+    const requests = await ServiceRequest.find(withScope<IServiceRequest>(requestBase, requestScope))
       .populate([
         { path: 'customer', select: 'name' },
         { path: 'building', select: 'name' },
@@ -422,10 +606,7 @@ async function todayBlock(now: Date, permissions: ReadonlySet<string>): Promise<
   }
 
   if (canSeePlannedWork) {
-    const works = await PlannedWork.find({
-      status: { $in: ['PLANNED', 'STARTED', 'PAUSED'] },
-      plannedStartDate: { $lte: end },
-    })
+    const works = await PlannedWork.find(withScope<IPlannedWork>(workBase, workScope))
       .populate([
         { path: 'customer', select: 'name' },
         { path: 'building', select: 'name' },
@@ -439,7 +620,7 @@ async function todayBlock(now: Date, permissions: ReadonlySet<string>): Promise<
       const assignees = Array.isArray(work.assignedEmployees)
         ? (work.assignedEmployees as unknown as { firstName: string; lastName: string }[])
         : [];
-      const effective = effectivePlannedWorkStatus(work.status, work.plannedEndDate, now);
+      const effective = effectiveStatusOf(work, now);
       items.push({
         id: String(work._id),
         kind: 'PLANNED_WORK',
@@ -465,20 +646,89 @@ async function todayBlock(now: Date, permissions: ReadonlySet<string>): Promise<
     return (left.dueAt ?? '').localeCompare(right.dueAt ?? '');
   });
 
-  const completedCount = canSeeRequests
-    ? await ServiceRequest.countDocuments({
-        status: 'COMPLETED',
-        completedAt: { $gte: start, $lte: end },
-      })
-    : 0;
+  /**
+   * THE COUNTERS ARE QUERIES, NOT A SECOND READING OF THE LIST.
+   *
+   * They used to be `items.filter(...).length` over the merged array above, which put two
+   * distortions in one payload. The array is two `.limit(40)` fetches, so every counter
+   * saturated at forty per kind — forty-five overdue jobs printed «Хугацаа хэтэрсэн 40»,
+   * and «Яаралтай» counted only the urgent rows the deadline sort happened to admit. And
+   * the array holds up to eighty rows while the list beneath renders forty, so the
+   * counters were computed over a set the reader could not see either.
+   *
+   * `completedCount` was already a real `countDocuments` and was rendered beside them, so
+   * one counter in the row was a total and four were artefacts of a page size. They now
+   * all follow that shape: same base filter, same scope, one predicate each.
+   *
+   * The LIST stays capped. A counter is a total and a list is a page of it; separating
+   * them is the fix, not raising the limit.
+   */
+  const countRequests = (extra: FilterQuery<IServiceRequest>): Promise<number> =>
+    canSeeRequests
+      ? ServiceRequest.countDocuments(
+          withScope<IServiceRequest>({ ...requestBase, ...extra }, requestScope),
+        )
+      : Promise.resolve(0);
+
+  const countWorks = (extra: FilterQuery<IPlannedWork>): Promise<number> =>
+    canSeePlannedWork
+      ? PlannedWork.countDocuments(withScope<IPlannedWork>({ ...workBase, ...extra }, workScope))
+      : Promise.resolve(0);
+
+  /**
+   * The instant a planned work's deadline must fall before to read as OVERDUE: the start
+   * of today in Ulaanbaatar, which is exactly what `effectiveStatusOf` applies to the
+   * rows in the list. Taken from the single funnel rather than restated, so the counter
+   * and the badges on the rows can never drift apart.
+   */
+  const overdueFrom = overdueBoundary(now);
+
+  const [
+    dueRequests,
+    dueWorks,
+    overdueRequests,
+    overdueWorks,
+    urgentRequests,
+    unassignedRequests,
+    unassignedWorks,
+    completedCount,
+  ] = await Promise.all([
+    // Due by the end of today. A request admitted only for being urgent, with a deadline
+    // later in the week, is outside this — the same test the list rows carry.
+    countRequests({ slaDueAt: { $lte: end } }),
+    countWorks({ plannedEndDate: { $lte: end } }),
+
+    countRequests({ slaDueAt: { $lt: now } }),
+    countWorks({ plannedEndDate: { $lt: overdueFrom } }),
+
+    // Only a request can be urgent; a planned work is never flagged, so there is no
+    // second query to add here rather than a zero to hide.
+    countRequests({ isUrgent: true }),
+
+    // Asked of the stored array rather than of the populated names the rows carry. The
+    // two agree unless an assignment points at an employee record that no longer exists,
+    // and then this is the honest answer: nobody was assigned is a different fact from
+    // no assignee resolved.
+    countRequests({ assignedEmployees: { $size: 0 } }),
+    countWorks({ assignedEmployees: { $size: 0 } }),
+
+    canSeeRequests
+      ? ServiceRequest.countDocuments(
+          withScope<IServiceRequest>(
+            { status: 'COMPLETED', completedAt: { $gte: start, $lte: end } },
+            requestScope,
+          ),
+        )
+      : Promise.resolve(0),
+  ]);
 
   return {
     date,
     timezone: timeZone,
-    dueCount: items.filter((item) => item.dueAt !== null && item.dueAt <= end.toISOString()).length,
-    overdueCount: items.filter((item) => item.isOverdue).length,
-    urgentCount: items.filter((item) => item.isUrgent).length,
-    unassignedCount: items.filter((item) => item.assigneeNames.length === 0).length,
+    dueCount: dueRequests + dueWorks,
+    overdueCount: overdueRequests + overdueWorks,
+    urgentCount: urgentRequests,
+    unassignedCount: unassignedRequests + unassignedWorks,
     completedCount,
     items: items.slice(0, TODAY_ITEM_LIMIT),
   };
@@ -486,39 +736,92 @@ async function todayBlock(now: Date, permissions: ReadonlySet<string>): Promise<
 
 // -- Entry point ---------------------------------------------------------------
 
+/**
+ * The dashboard payload for one caller.
+ *
+ * TWO GATES, NOT ONE. Permission decides which blocks exist; assignment scope decides
+ * which records the surviving blocks are allowed to count. They are different questions
+ * and were previously answered by the same check: `service_request.view` is in the
+ * technician default, so a technician's dashboard was reporting every request in the
+ * company under headings that read as their own. Holding the key to see requests is not
+ * the same as being entitled to a company-wide total of them.
+ *
+ * Blocks that cannot be narrowed to an assignment are OMITTED for a scoped caller rather
+ * than sent unscoped: customers, employees, workload, risk and finance count records
+ * that have no assignee to match against, so there is no honest scoped version of them.
+ * Omitting is the security decision as well as the presentational one — a figure the API
+ * withholds cannot be recovered from the response, whereas one merely hidden by the UI
+ * is still sitting in the JSON.
+ */
 export async function buildDashboardSummary(actor: AuthContext): Promise<DashboardSummaryDto> {
   const now = new Date();
   const { start, end } = dayBounds(now, env.APP_TIMEZONE);
   const permissions = actor.permissions as ReadonlySet<string>;
 
-  const summary: DashboardSummaryDto = { generatedAt: now.toISOString() };
+  /**
+   * The same predicate that bounds `GET /service-requests` and `GET /planned-work`, so a
+   * count on this page can never disagree with the list it links to. Reused rather than
+   * restated: a second rule meant to agree with this one would drift the first time
+   * either was amended.
+   *
+   * `includeUnclaimed` differs by collection exactly as it does at those call sites — an
+   * open request is work this caller may pick up and belongs in their figures, while an
+   * unassigned planned work is not theirs until somebody assigns it.
+   */
+  const [requestScope, workScope] = await Promise.all([
+    resolveAssignedWorkFilter<IServiceRequest>(actor, { includeUnclaimed: true }),
+    resolveAssignedWorkFilter<IPlannedWork>(actor, { includeUnclaimed: false }),
+  ]);
 
-  if (permissions.has(PERMISSIONS.CUSTOMER_VIEW)) {
+  /**
+   * Both calls consult the same oversight test, so the two agree by construction and
+   * either one can answer for the payload as a whole. `head_admin` reaches here holding
+   * every permission through `resolveEffectivePermissions`, so it is unscoped without a
+   * role check being written anywhere in this file.
+   */
+  const isScoped = requestScope !== null;
+
+  const summary: DashboardSummaryDto = { isScoped, generatedAt: now.toISOString() };
+
+  if (!isScoped && permissions.has(PERMISSIONS.CUSTOMER_VIEW)) {
     summary.customers = await customerBlock();
   }
 
-  if (permissions.has(PERMISSIONS.EMPLOYEE_VIEW)) {
+  // Headcount and the workload bars are other people's figures by definition: the bar
+  // chart names colleagues one by one and how loaded each is.
+  if (!isScoped && permissions.has(PERMISSIONS.EMPLOYEE_VIEW)) {
     summary.employees = await employeeBlock();
     summary.workload = await workloadBlock(start, end);
   }
 
   if (permissions.has(PERMISSIONS.SERVICE_REQUEST_VIEW)) {
-    const block = await requestBlock(now, start, end);
+    const block = await requestBlock(now, start, end, requestScope);
     summary.requests = block.requests;
     summary.requestsByStatus = block.byStatus;
-    summary.requestsByType = block.byType;
-    summary.trend = await trendBlock(now);
+    summary.trend = await trendBlock(now, requestScope);
+    summary.monthlyTrend = await monthlyTrendBlock(now, requestScope);
   }
 
   if (permissions.has(PERMISSIONS.PLANNED_WORK_VIEW)) {
-    summary.plannedWork = await plannedWorkBlock(now);
+    summary.plannedWork = await plannedWorkBlock(now, workScope);
   }
 
-  if (permissions.has(PERMISSIONS.OBJECT_MASTER_VIEW)) {
+  // Risk is counted over object records, which carry no assignment at all; there is no
+  // predicate that would make this the reader's own risk rather than the estate's.
+  if (!isScoped && permissions.has(PERMISSIONS.OBJECT_MASTER_VIEW)) {
     summary.risk = await riskBlock();
   }
 
-  if (permissions.has(PERMISSIONS.INVOICE_VIEW)) {
+  /**
+   * Revenue and receivables are the company's books.
+   *
+   * The `isScoped` guard is belt and braces rather than the load-bearing check:
+   * `invoice.view` is itself one of the READ_OVERSIGHT_PERMISSIONS, so any caller holding
+   * it is unscoped and no caller reaching this line scoped could have passed the
+   * permission test anyway. It is written out because the guard must survive that key
+   * being moved off the oversight list, which is a one-line change elsewhere.
+   */
+  if (!isScoped && permissions.has(PERMISSIONS.INVOICE_VIEW)) {
     summary.finance = await financeBlock(now);
   }
 
@@ -526,7 +829,7 @@ export async function buildDashboardSummary(actor: AuthContext): Promise<Dashboa
     permissions.has(PERMISSIONS.SERVICE_REQUEST_VIEW) ||
     permissions.has(PERMISSIONS.PLANNED_WORK_VIEW)
   ) {
-    summary.today = await todayBlock(now, permissions);
+    summary.today = await todayBlock(now, permissions, requestScope, workScope);
   }
 
   return summary;

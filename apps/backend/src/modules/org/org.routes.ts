@@ -1,175 +1,274 @@
-import { PERMISSIONS, type CompanyDto, type DepartmentDto, type PositionDto, type TeamDto } from '@monhorus/shared';
+import { PERMISSIONS } from '@monhorus/shared';
 import { Router, type NextFunction, type Request, type Response } from 'express';
-import { Types } from 'mongoose';
-import { z } from 'zod';
 
-import { ok } from '../../common/utils/api-response.util';
-import { authenticate, enforcePasswordChange } from '../../middlewares/authenticate.middleware';
+import { created, ok } from '../../common/utils/api-response.util';
+import { pathParam } from '../../common/utils/path-param.util';
+import { buildRequestMeta as meta } from '../../common/utils/request-meta.util';
+import {
+  authenticate,
+  enforcePasswordChange,
+  requireAuth,
+} from '../../middlewares/authenticate.middleware';
 import { requirePermission } from '../../middlewares/authorize.middleware';
 import { validate } from '../../middlewares/validate.middleware';
-import { Company, Department, Position, Team } from './org.models';
+import * as service from './org.service';
+import {
+  companyIdParamSchema,
+  createCompanySchema,
+  createDepartmentSchema,
+  createPositionSchema,
+  departmentIdParamSchema,
+  orgListQuerySchema,
+  positionIdParamSchema,
+  setOrgActiveSchema,
+  updateCompanySchema,
+  updateDepartmentSchema,
+  updatePositionSchema,
+  type OrgListQuery,
+} from './org.validation';
 
 /**
- * Organisation lookup endpoints backing the dependent selectors on the employee form.
+ * Internal organisation master data — the provider's own companies, departments and
+ * positions — serving both the management screens and the dependent selectors on the
+ * employee form.
  *
- * Each child endpoint requires its parent id, which is what makes it impossible for
- * the client to fetch a department list that is not scoped to the chosen company.
+ * Reading is separated from editing the way every catalogue in this system separates
+ * them: everyone who fills in an employee card picks from these lists, and almost nobody
+ * may rewrite them. There is no delete anywhere below; a record that is no longer used is
+ * deactivated, so the assignments referencing it keep resolving.
  */
-
-const objectId = z.string().regex(/^[a-f\d]{24}$/i, 'ID буруу форматтай байна.');
-
-const lookupQuerySchema = z.object({
-  companyId: objectId.optional(),
-  departmentId: objectId.optional(),
-  includeInactive: z.enum(['true', 'false']).optional(),
-  search: z.string().trim().max(200).optional(),
-});
-
-type LookupQuery = z.infer<typeof lookupQuerySchema>;
-
-function activeFilter(query: LookupQuery): Record<string, unknown> {
-  return query.includeInactive === 'true' ? {} : { isActive: true };
-}
-
-function searchFilter(query: LookupQuery): Record<string, unknown> {
-  if (!query.search) return {};
-  const escaped = query.search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const pattern = new RegExp(escaped, 'i');
-  return { $or: [{ name: pattern }, { code: pattern }] };
-}
-
 export const orgRouter = Router();
 
-orgRouter.use(authenticate, enforcePasswordChange, requirePermission(PERMISSIONS.ORG_VIEW));
+orgRouter.use(authenticate, enforcePasswordChange);
+
+function listQuery(req: Request): OrgListQuery {
+  return req.query as unknown as OrgListQuery;
+}
+
+// -- Companies ----------------------------------------------------------------
 
 orgRouter.get(
   '/companies',
-  validate({ query: lookupQuerySchema }),
+  requirePermission(PERMISSIONS.ORG_VIEW),
+  validate({ query: orgListQuerySchema }),
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const query = req.query as unknown as LookupQuery;
-      const companies = await Company.find({ ...activeFilter(query), ...searchFilter(query) })
-        .sort({ name: 1 })
-        .limit(200);
-
-      const payload: CompanyDto[] = companies.map((company) => ({
-        id: String(company._id),
-        code: company.code,
-        name: company.name,
-        registrationNumber: company.registrationNumber,
-        address: company.address,
-        isActive: company.isActive,
-      }));
-      ok(res, payload);
+      ok(res, await service.listCompanies(listQuery(req)));
     } catch (error) {
       next(error);
     }
   },
 );
+
+orgRouter.post(
+  '/companies',
+  requirePermission(PERMISSIONS.ORG_MANAGE),
+  validate({ body: createCompanySchema }),
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const auth = requireAuth(req);
+      created(res, await service.createCompany(req.body, auth, meta(req)), 'Компани бүртгэгдлээ.');
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+orgRouter.patch(
+  '/companies/:companyId',
+  requirePermission(PERMISSIONS.ORG_MANAGE),
+  validate({ params: companyIdParamSchema, body: updateCompanySchema }),
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const auth = requireAuth(req);
+      ok(
+        res,
+        await service.updateCompany(pathParam(req, 'companyId'), req.body, auth, meta(req)),
+        'Компани шинэчлэгдлээ.',
+      );
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+orgRouter.patch(
+  '/companies/:companyId/status',
+  requirePermission(PERMISSIONS.ORG_MANAGE),
+  validate({ params: companyIdParamSchema, body: setOrgActiveSchema }),
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const auth = requireAuth(req);
+      ok(
+        res,
+        await service.setCompanyActive(
+          pathParam(req, 'companyId'),
+          req.body.isActive,
+          auth,
+          meta(req),
+        ),
+        'Компанийн төлөв шинэчлэгдлээ.',
+      );
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+// -- Departments --------------------------------------------------------------
 
 orgRouter.get(
   '/departments',
-  validate({ query: lookupQuerySchema }),
+  requirePermission(PERMISSIONS.ORG_VIEW),
+  validate({ query: orgListQuerySchema }),
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const query = req.query as unknown as LookupQuery;
-      // Without a company the list is empty by design, so the UI cannot present
-      // departments belonging to a company the user has not chosen.
-      if (!query.companyId) {
-        ok(res, [] as DepartmentDto[]);
-        return;
-      }
-
-      const departments = await Department.find({
-        company: new Types.ObjectId(query.companyId),
-        ...activeFilter(query),
-        ...searchFilter(query),
-      }).sort({ name: 1 });
-
-      const payload: DepartmentDto[] = departments.map((department) => ({
-        id: String(department._id),
-        companyId: String(department.company),
-        code: department.code,
-        name: department.name,
-        isActive: department.isActive,
-      }));
-      ok(res, payload);
+      ok(res, await service.listDepartments(listQuery(req)));
     } catch (error) {
       next(error);
     }
   },
 );
+
+orgRouter.post(
+  '/departments',
+  requirePermission(PERMISSIONS.ORG_MANAGE),
+  validate({ body: createDepartmentSchema }),
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const auth = requireAuth(req);
+      created(res, await service.createDepartment(req.body, auth, meta(req)), 'Алба бүртгэгдлээ.');
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+orgRouter.patch(
+  '/departments/:departmentId',
+  requirePermission(PERMISSIONS.ORG_MANAGE),
+  validate({ params: departmentIdParamSchema, body: updateDepartmentSchema }),
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const auth = requireAuth(req);
+      ok(
+        res,
+        await service.updateDepartment(pathParam(req, 'departmentId'), req.body, auth, meta(req)),
+        'Алба шинэчлэгдлээ.',
+      );
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+orgRouter.patch(
+  '/departments/:departmentId/status',
+  requirePermission(PERMISSIONS.ORG_MANAGE),
+  validate({ params: departmentIdParamSchema, body: setOrgActiveSchema }),
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const auth = requireAuth(req);
+      ok(
+        res,
+        await service.setDepartmentActive(
+          pathParam(req, 'departmentId'),
+          req.body.isActive,
+          auth,
+          meta(req),
+        ),
+        'Албаны төлөв шинэчлэгдлээ.',
+      );
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
+// -- Positions ----------------------------------------------------------------
 
 orgRouter.get(
   '/positions',
-  validate({ query: lookupQuerySchema }),
+  requirePermission(PERMISSIONS.ORG_VIEW),
+  validate({ query: orgListQuerySchema }),
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const query = req.query as unknown as LookupQuery;
-      if (!query.companyId) {
-        ok(res, [] as PositionDto[]);
-        return;
-      }
-
-      // A position with a null department is company-wide and therefore always valid.
-      const departmentClause = query.departmentId
-        ? { $or: [{ department: null }, { department: new Types.ObjectId(query.departmentId) }] }
-        : {};
-
-      const positions = await Position.find({
-        company: new Types.ObjectId(query.companyId),
-        ...departmentClause,
-        ...activeFilter(query),
-        ...searchFilter(query),
-      }).sort({ name: 1 });
-
-      const payload: PositionDto[] = positions.map((position) => ({
-        id: String(position._id),
-        companyId: String(position.company),
-        departmentId: position.department ? String(position.department) : null,
-        code: position.code,
-        name: position.name,
-        isActive: position.isActive,
-      }));
-      ok(res, payload);
+      ok(res, await service.listPositions(listQuery(req)));
     } catch (error) {
       next(error);
     }
   },
 );
 
-orgRouter.get(
-  '/teams',
-  validate({ query: lookupQuerySchema }),
+orgRouter.post(
+  '/positions',
+  requirePermission(PERMISSIONS.ORG_MANAGE),
+  validate({ body: createPositionSchema }),
   async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     try {
-      const query = req.query as unknown as LookupQuery;
-      if (!query.companyId) {
-        ok(res, [] as TeamDto[]);
-        return;
-      }
+      const auth = requireAuth(req);
+      created(
+        res,
+        await service.createPosition(req.body, auth, meta(req)),
+        'Албан тушаал бүртгэгдлээ.',
+      );
+    } catch (error) {
+      next(error);
+    }
+  },
+);
 
-      const departmentClause = query.departmentId
-        ? { $or: [{ department: null }, { department: new Types.ObjectId(query.departmentId) }] }
-        : {};
+orgRouter.patch(
+  '/positions/:positionId',
+  requirePermission(PERMISSIONS.ORG_MANAGE),
+  validate({ params: positionIdParamSchema, body: updatePositionSchema }),
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const auth = requireAuth(req);
+      ok(
+        res,
+        await service.updatePosition(pathParam(req, 'positionId'), req.body, auth, meta(req)),
+        'Албан тушаал шинэчлэгдлээ.',
+      );
+    } catch (error) {
+      next(error);
+    }
+  },
+);
 
-      const teams = await Team.find({
-        company: new Types.ObjectId(query.companyId),
-        ...departmentClause,
-        ...activeFilter(query),
-        ...searchFilter(query),
-      }).sort({ name: 1 });
+orgRouter.patch(
+  '/positions/:positionId/status',
+  requirePermission(PERMISSIONS.ORG_MANAGE),
+  validate({ params: positionIdParamSchema, body: setOrgActiveSchema }),
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      const auth = requireAuth(req);
+      ok(
+        res,
+        await service.setPositionActive(
+          pathParam(req, 'positionId'),
+          req.body.isActive,
+          auth,
+          meta(req),
+        ),
+        'Албан тушаалын төлөв шинэчлэгдлээ.',
+      );
+    } catch (error) {
+      next(error);
+    }
+  },
+);
 
-      const payload: TeamDto[] = teams.map((team) => ({
-        id: String(team._id),
-        companyId: String(team.company),
-        departmentId: team.department ? String(team.department) : null,
-        code: team.code,
-        name: team.name,
-        leaderEmployeeId: team.leaderEmployee ? String(team.leaderEmployee) : null,
-        isActive: team.isActive,
-      }));
-      ok(res, payload);
+// -- Teams --------------------------------------------------------------------
+
+/** Lookup only, and deliberately still a bare array: nothing consumes a page of teams. */
+orgRouter.get(
+  '/teams',
+  requirePermission(PERMISSIONS.ORG_VIEW),
+  validate({ query: orgListQuerySchema }),
+  async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    try {
+      ok(res, await service.listTeams(listQuery(req)));
     } catch (error) {
       next(error);
     }

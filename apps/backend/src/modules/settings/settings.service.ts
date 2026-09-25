@@ -6,10 +6,13 @@ import {
   SETTING_GROUP_DESCRIPTIONS,
   SETTING_GROUP_LABELS,
   defaultSettings,
+  rejectedSettingOverrides,
+  requestStagesOf,
   riskBandsOf,
   slaConfigOf,
   validateSettings,
   type RiskBand,
+  type ServiceRequestStage,
   type SettingEntryDto,
   type SettingKey,
   type SettingValue,
@@ -24,6 +27,7 @@ import { AppError } from '../../common/errors/app-error';
 import { ERROR_CODES } from '../../common/errors/error-codes';
 import type { AuthContext } from '../../common/types/express';
 import type { RequestMeta } from '../../common/utils/request-meta.util';
+import { logger } from '../../config/logger';
 import { hasPermission } from '../../middlewares/authorize.middleware';
 import { recordAudit } from '../audit/audit.service';
 import { Setting } from './setting.model';
@@ -67,7 +71,38 @@ export async function getSettings(): Promise<SettingsMap> {
   }
 
   cached = { map, expiresAt: now + CACHE_TTL_MS };
+  reportRejectedOverrides(map);
   return map;
+}
+
+/**
+ * Says out loud that a stored override was discarded.
+ *
+ * `riskBandsOf` and `requestStagesOf` substitute the shipped defaults when the stored
+ * value does not validate — correctly, because a ladder with a hole in it would mis-band
+ * every score and `decommissions` travels with the band. What was wrong is that it
+ * happened in silence: Тохиргоо went on rendering the administrator's own numbers while
+ * nothing in the system read them, so the operator had no way to learn that equipment was
+ * being banded against cut points they had replaced.
+ *
+ * The surfacing belongs HERE rather than in `packages/shared` for two reasons. The shared
+ * package is imported by the browser bundle as well as the server and has no logger to
+ * call — it reports the rejection as data (`rejectedSettingOverrides`) and leaves the
+ * channel to its host. And this is the one place that knows when the answer actually
+ * CHANGED: the derivations run on every call, so logging inside them would repeat the same
+ * line thousands of times a minute, whereas the cache is filled at most once per TTL.
+ *
+ * A validated write cannot produce this — `validateSettings` refuses a bad ladder at the
+ * API — so it means a value that predates a rule, or one written straight into the
+ * collection. Warn, not error: the system is serving a coherent ladder, just not theirs.
+ */
+function reportRejectedOverrides(map: SettingsMap): void {
+  for (const rejected of rejectedSettingOverrides(map)) {
+    logger.warn(
+      { settingKey: rejected.key, issues: rejected.issues },
+      'Stored setting rejected as invalid; serving the shipped default instead',
+    );
+  }
 }
 
 /** Convenience wrappers so callers do not repeat the derivation. */
@@ -77,6 +112,10 @@ export async function getSlaConfig(): Promise<SlaConfig> {
 
 export async function getRiskBands(): Promise<RiskBand[]> {
   return riskBandsOf(await getSettings());
+}
+
+export async function getRequestStages(): Promise<readonly ServiceRequestStage[]> {
+  return requestStagesOf(await getSettings());
 }
 
 // -- Presentation ------------------------------------------------------------

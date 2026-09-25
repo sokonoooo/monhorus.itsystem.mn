@@ -22,12 +22,12 @@ function makeItem(
     floor: null,
     room: null,
     device: null,
-    requestType: 'URGENT_CALL',
     isUrgent: true,
     status: 'UNASSIGNED',
     assignedEmployees: [],
     assignedTeam: null,
     createdAt: '2026-01-01T00:00:00.000Z',
+    createdByName: 'Б. Энхтөр',
     slaDueAt: '2026-01-01T06:00:00.000Z',
     slaState: 'STARTED',
     slaRemainingMinutes: 300,
@@ -43,6 +43,7 @@ function makeBoard(overrides?: Partial<DispatchBoardDto>): DispatchBoardDto {
         id: 'OPEN',
         statuses: ['NEW', 'UNASSIGNED'],
         label: 'Хуваарилаагүй',
+        colour: 'grey',
         total: 2,
         items: [
           // A NEW request: the status every request is created with. It shares the open
@@ -90,6 +91,26 @@ describe('DispatchBoardPage', () => {
     expect(open).toHaveTextContent('SR-202601-0000');
     expect(open).toHaveTextContent('SR-202601-0001');
     expect(screen.getByText('SR-202601-0002')).toBeInTheDocument();
+  });
+
+  /**
+   * The column wears the stage's own colour, sent with the column rather than derived here.
+   * A board that picked its own would drift from the badge on the same request in the list
+   * the moment an administrator recoloured a stage.
+   *
+   * A column with no colour gets no marker at all: inventing one would state a grouping
+   * the server did not send.
+   */
+  it('marks a column with the stage colour the server sent, and only then', async () => {
+    vi.spyOn(dispatchService, 'board').mockResolvedValue(makeBoard());
+
+    renderWithAuth(<DispatchBoardPage />, { permissions: [PERMISSIONS.DISPATCH_VIEW] });
+
+    const open = await screen.findByRole('region', { name: 'Хуваарилаагүй' });
+    expect(open.querySelector('span[aria-hidden].bg-slate-400')).toBeInTheDocument();
+
+    const assigned = screen.getByRole('region', { name: 'Хуваарилагдсан' });
+    expect(assigned.querySelector('span[aria-hidden]')).not.toBeInTheDocument();
   });
 
   it('offers assignment on a NEW card in the merged open column', async () => {
@@ -142,4 +163,87 @@ describe('DispatchBoardPage', () => {
     expect(await screen.findByText('Сервер алдаа')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Дахин оролдох' })).toBeInTheDocument();
   });
+});
+
+/**
+ * WHO CAN STILL BE HANDED OVER.
+ *
+ * The board used to gate its Assign control on a six-status whitelist that stopped at
+ * ACCEPTED, while `assignServiceRequest` refuses exactly two statuses: COMPLETED and
+ * CANCELLED. Everything between the two — a technician who is on the way, on site, midway
+ * through the work, blocked, or whose write-up is with the office — had no Assign control
+ * on the board and none on the detail page either. A technician calling in sick at eleven
+ * o'clock could not be replaced from anywhere in the product.
+ *
+ * These pin the line where the server draws it, in both directions: an in-flight job is
+ * reassignable, and a settled one is not.
+ */
+describe('DispatchBoardPage - handing work over mid-job', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** One column per status, so each assertion names the status it is about. */
+  function boardOf(statuses: readonly ServiceRequestListItemDto['status'][]): DispatchBoardDto {
+    return {
+      generatedAt: '2026-01-01T00:00:00.000Z',
+      columns: statuses.map((status, index) => ({
+        id: status,
+        statuses: [status],
+        label: status,
+        total: 1,
+        items: [
+          makeItem({
+            id: `r${index}`,
+            requestNumber: `SR-202601-000${index}`,
+            status,
+            // Already crewed: the control on an in-flight job is a HANDOVER, and it has to
+            // say so rather than reading as a first assignment.
+            assignedEmployees: [
+              { id: 'e1', firstName: 'Дорж', lastName: 'Б', employeeCode: 'EMP-001', photoUrl: null },
+            ],
+          }),
+        ],
+      })),
+    } as DispatchBoardDto;
+  }
+
+  const IN_FLIGHT = [
+    'ON_THE_WAY',
+    'ON_SITE',
+    'IN_PROGRESS',
+    'WAITING',
+    'REPORT_SUBMITTED',
+    'VERIFICATION',
+  ] as const;
+
+  it.each(IN_FLIGHT)('offers a handover on a %s card', async (status) => {
+    vi.spyOn(dispatchService, 'board').mockResolvedValue(boardOf([status]));
+
+    renderWithAuth(<DispatchBoardPage />, {
+      permissions: [PERMISSIONS.DISPATCH_VIEW, PERMISSIONS.DISPATCH_ASSIGN],
+    });
+
+    const column = await screen.findByRole('region', { name: status });
+    expect(
+      within(column).getByRole('button', { name: 'Дахин хуваарилах' }),
+    ).toBeInTheDocument();
+  });
+
+  /** The two the server itself refuses. Offering either would be an action that 400s. */
+  it.each(['COMPLETED', 'CANCELLED'] as const)(
+    'offers no assignment on a %s card',
+    async (status) => {
+      vi.spyOn(dispatchService, 'board').mockResolvedValue(boardOf([status]));
+
+      renderWithAuth(<DispatchBoardPage />, {
+        permissions: [PERMISSIONS.DISPATCH_VIEW, PERMISSIONS.DISPATCH_ASSIGN],
+      });
+
+      const column = await screen.findByRole('region', { name: status });
+      expect(
+        within(column).queryByRole('button', { name: /хуваарилах/i }),
+      ).not.toBeInTheDocument();
+    },
+  );
 });

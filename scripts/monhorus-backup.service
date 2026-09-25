@@ -1,0 +1,83 @@
+[Unit]
+Description=Monhorus database and uploads backup
+Documentation=file:///srv/clients/monhorus/docs/DEPLOYMENT_MONHORUS_PROD.md
+# mongod must be up; if it is not, mongodump fails and the unit goes to failed state,
+# which is the correct outcome -- a missing backup should be visible, not silent.
+Requires=mongod.service
+After=mongod.service local-fs.target
+
+# The failed state above is necessary but was never sufficient: nothing read it. Until
+# this line the entire notification design was "a human runs systemctl status", so a
+# failure streak could run for a fortnight with the timer still reporting itself armed.
+# OnFailure= fires the notifier on every failed run, which is also why Persistent=true in
+# the timer is right rather than harmful -- a nightly re-fire of a broken backup now
+# produces a nightly alert instead of nightly silence.
+#
+# This covers runs that FAIL. It cannot cover runs that never happen -- a masked unit, a
+# disabled timer, a host that stayed off. Set HEARTBEAT_URL in /etc/monhorus/backup.env
+# for that: the script pings it on success and an external monitor alarms on its absence.
+OnFailure=monhorus-backup-failure.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+
+# Overrides live here, not in this file, so a package update cannot revert them:
+#   BACKUP_DIR=/mnt/offhost/monhorus
+#   RETENTION_DAYS=21
+#   MIN_FREE_MB=768
+# The leading '-' means the unit still runs when the file is absent.
+EnvironmentFile=-/etc/monhorus/backup.env
+
+# mongosh wants a home directory to keep its history and config in, and ProtectHome below
+# makes root's invisible. Without this it prints
+#   Warning: Could not access file: ENOENT ... mkdir '/root/.mongodb'
+# on STDOUT -- not stderr -- which lands in the middle of the value the pre-flight space
+# check captures from `db.stats()`. The script redirects stderr and so cannot filter it;
+# the reading comes back non-numeric and the disk estimate silently falls back to
+# "uploads only". The dump itself still works, so the only symptom is a weakened space
+# check on a disk that runs 83% full. PrivateTmp gives this its own /tmp, so the
+# directory mongosh creates here is private to the run and disappears with it.
+Environment=HOME=/tmp
+
+ExecStart=/usr/local/sbin/backup-monhorus.sh
+
+# 1.6 GB of RAM shared with four other live sites and a PostgreSQL. gzip and mongodump
+# get the leftovers, never priority -- a backup that degrades a neighbour is a bug.
+Nice=10
+IOSchedulingClass=idle
+CPUSchedulingPolicy=idle
+
+# A dump that hangs must not still be holding the disk when tomorrow's timer fires.
+TimeoutStartSec=3600
+
+# Writes only to the backup destination and reads only what it dumps.
+#
+# ProtectSystem=full is 'full' and not 'strict' deliberately: full makes /usr, /boot and
+# /etc read-only, which is everything this unit has no business writing, while leaving
+# /var, /srv and /mnt writable. strict would make the ENTIRE filesystem read-only, and
+# BACKUP_DIR is operator-configurable -- /var/backups/monhorus by default, an NFS or
+# sshfs mount when the destination is moved off-host -- so strict would break every
+# documented destination. (This comment described that choice for several rounds while no
+# ProtectSystem= directive existed at all; the directive is the half that was missing.)
+#
+# Three of these have teeth if the setup changes:
+#   PrivateTmp    is safe only while MONGODB_URI is a TCP address (127.0.0.1:27017, as it
+#                 is here). Point it at a unix socket under /tmp and the dump cannot see it.
+#   ProtectHome   makes /home and /root invisible. A BACKUP_DIR under either will fail
+#                 with a confusing "No such file or directory" -- drop this line if you
+#                 move the destination there.
+#   ProtectSystem a BACKUP_DIR under /usr or /etc would fail the same way. Nothing sane
+#                 puts it there, but that is the shape of the failure if something does.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=monhorus-backup

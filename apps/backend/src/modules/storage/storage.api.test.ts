@@ -11,6 +11,7 @@ import {
   resetDomainCollections,
   startTestApp,
   stopTestApp,
+  createCallableObjectType,
 } from '../../test/helpers';
 import { hashPassword } from '../../utils/password.util';
 import { Employee } from '../employee/employee.model';
@@ -18,6 +19,7 @@ import { ObjectRecord, ObjectType } from '../object-master/object-master.models'
 import { Customer } from '../objects/object.models';
 import { Role } from '../rbac/role.model';
 import { ServiceRequest } from '../service-request/service-request.model';
+import { WorkReport } from '../service-request/work-report.model';
 import { User } from '../user/user.model';
 import {
   ensureUploadDirectory,
@@ -57,6 +59,7 @@ const PORTAL = [
 
 let app: Express;
 let token: string;
+let callableTypeId: string;
 
 async function login(email: string, password: string): Promise<string> {
   const response = await request(app).post(`${API}/auth/login`).send({ email, password });
@@ -146,6 +149,15 @@ interface Tenant {
   objectPhotoFileId: string;
   /** An attachment claimed by one of this tenant's service requests. */
   requestAttachmentFileId: string;
+  /**
+   * Before/after evidence on an APPROVED conclusion — the photos the customer read hands
+   * out download urls for. Parked on a USER id, never on the request, because that is
+   * exactly what production holds: `POST /files/work-report-photos` owns the file to the
+   * uploading technician and `saveWorkReport` only stores the id in the conclusion.
+   */
+  approvedReportPhotoFileId: string;
+  /** The same shape on a DRAFT conclusion, which no customer may read. */
+  draftReportPhotoFileId: string;
 }
 
 /** One organisation with a floor plan, an object photo and a request attachment. */
@@ -209,17 +221,40 @@ async function seedTenant(code: string): Promise<Tenant> {
     status: 'ACTIVE',
   });
 
-  const serviceRequest = await ServiceRequest.create({
-    requestNumber: `SR-${code}-0001`,
-    customer: customer._id,
-    building: new Types.ObjectId(building.body.data.id as string),
-    floor: new Types.ObjectId(floorId),
-    requestType: 'URGENT_CALL',
-    description: 'Таслуур халж байна.',
-    contactName: 'Тест',
-    contactPhone: '99112233',
-    slaStartedAt: new Date(),
-    slaDueAt: new Date(Date.now() + 6 * 60 * 60 * 1000),
+  const seedRequest = async (suffix: string) =>
+    ServiceRequest.create({
+      requestNumber: `SR-${code}-${suffix}`,
+      customer: customer._id,
+      building: new Types.ObjectId(building.body.data.id as string),
+      floor: new Types.ObjectId(floorId),
+      requestType: 'URGENT_CALL',
+      description: 'Таслуур халж байна.',
+      contactName: 'Тест',
+      contactPhone: '99112233',
+      slaStartedAt: new Date(),
+      slaDueAt: new Date(Date.now() + 6 * 60 * 60 * 1000),
+    });
+
+  const serviceRequest = await seedRequest('0001');
+  const approvedRequest = await seedRequest('0002');
+  const draftRequest = await seedRequest('0003');
+
+  // Parked on a user id, matching what `POST /files/work-report-photos` writes: the
+  // conclusion references the file and nothing ever re-owns it onto the request.
+  const uploaderId = new Types.ObjectId();
+  const approvedPhotoId = await plantFile('SERVICE_REQUEST', uploaderId);
+  const draftPhotoId = await plantFile('SERVICE_REQUEST', uploaderId);
+
+  await WorkReport.create({
+    serviceRequest: approvedRequest._id,
+    status: 'APPROVED',
+    beforePhotos: [new Types.ObjectId(approvedPhotoId)],
+    approvedAt: new Date(),
+  });
+  await WorkReport.create({
+    serviceRequest: draftRequest._id,
+    status: 'DRAFT',
+    afterPhotos: [new Types.ObjectId(draftPhotoId)],
   });
 
   return {
@@ -229,6 +264,8 @@ async function seedTenant(code: string): Promise<Tenant> {
     planFileId: plan.body.data.fileId as string,
     objectPhotoFileId: await plantFile('OBJECT', object._id),
     requestAttachmentFileId: await plantFile('SERVICE_REQUEST', serviceRequest._id),
+    approvedReportPhotoFileId: approvedPhotoId,
+    draftReportPhotoFileId: draftPhotoId,
   };
 }
 
@@ -246,6 +283,8 @@ let customerToken: string;
 
 beforeEach(async () => {
   await resetDomainCollections();
+  // After the reset: object types are domain data and are wiped with everything else.
+  callableTypeId = await createCallableObjectType();
   const staff = await createUserWithPermissions('files-staff@test.mn', OBJECT_STAFF);
   token = await login(staff.email, staff.password);
 
@@ -301,6 +340,68 @@ describe('GET /files/:fileId for a customer', () => {
 
     const foreign = await download(tenantB.requestAttachmentFileId, customerToken);
     expect(foreign.status).toBe(404);
+  });
+
+  /**
+   * Conclusion evidence, which is the case the SERVICE_REQUEST branch could not resolve.
+   *
+   * A conclusion photo is parked on the uploading technician's USER id and never re-owned
+   * onto the request, so `ServiceRequest.findById(ownerId)` matched nothing and every
+   * before/after image on the customer's conclusion screen 404'd — the endpoint handed
+   * out download urls that could not be followed.
+   */
+  it('serves the before/after evidence on the calling customer own approved conclusion', async () => {
+    const response = await download(tenantA.approvedReportPhotoFileId, customerToken);
+
+    expect(response.status).toBe(200);
+    expect(response.headers['content-type']).toContain('image/png');
+  });
+
+  /**
+   * The security half. The widened lookup resolves the file through the conclusion, so it
+   * must resolve to that conclusion's OWN organisation and no other — otherwise it would
+   * have handed every customer every tenant's evidence for the cost of a guessed id.
+   */
+  it('reports another organisation conclusion evidence as not found', async () => {
+    const response = await download(tenantB.approvedReportPhotoFileId, customerToken);
+
+    expect(response.status).toBe(404);
+    expect(response.body.data).toBeNull();
+  });
+
+  /**
+   * The widening stops exactly where `GET /:id/report/customer` does. A customer who could
+   * fetch a draft conclusion's photographs would be reading a verdict nobody has signed
+   * off, one file at a time, while the endpoint that serves it still answered 404.
+   */
+  it('refuses evidence attached to a conclusion that is not approved', async () => {
+    const response = await download(tenantA.draftReportPhotoFileId, customerToken);
+
+    expect(response.status).toBe(404);
+  });
+
+  /** Staff are unaffected by the approval rule: a technician still reads their own draft. */
+  it('still serves an unapproved conclusion evidence to staff', async () => {
+    const staff = await createUserWithPermissions('files-sr-staff@test.mn', [
+      PERMISSIONS.SERVICE_REQUEST_VIEW,
+    ]);
+    const staffToken = await login(staff.email, staff.password);
+
+    const response = await download(tenantA.draftReportPhotoFileId, staffToken);
+
+    expect(response.status).toBe(200);
+  });
+
+  /**
+   * The pre-existing rule the widening had to preserve: an upload still sitting on its
+   * uploader, claimed by nothing, resolves to no organisation and stays unreadable.
+   */
+  it('still refuses an upload no request and no conclusion has claimed', async () => {
+    const parked = await plantFile('SERVICE_REQUEST', new Types.ObjectId());
+
+    const response = await download(parked, customerToken);
+
+    expect(response.status).toBe(404);
   });
 
   /**
@@ -398,6 +499,149 @@ describe('GET /files/:fileId for staff', () => {
  * so the "at whose records" question is asked where the answer exists: when a request
  * claims the file.
  */
+/**
+ * The customer letterhead: uploaded on its own route, claimed by the customer that names it.
+ *
+ * The claim is the whole security question. The upload parks the file on whoever sent it —
+ * a create has no customer id yet — so an id alone proves nothing about whose logo it is,
+ * and the scope check has to walk back through the customer that references it. A file no
+ * customer claims must resolve to no organisation and stay unreadable.
+ */
+describe('POST /files/customer-logo', () => {
+  /** A 1x1 PNG, so `readLogoDimensions` genuinely decodes something. */
+  const PNG = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    'base64',
+  );
+
+  const upload = (bearer: string, bytes: Buffer, filename: string, type: string) =>
+    request(app)
+      .post(`${API}/files/customer-logo`)
+      .set('Authorization', `Bearer ${bearer}`)
+      .attach('file', bytes, { filename, contentType: type });
+
+  /**
+   * A caller who may edit customers, which is what this route demands.
+   *
+   * Deliberately NOT the suite's `token`: that one holds the object keys, and the whole
+   * point of keying this route on `customer.manage` is that managing the object hierarchy
+   * does not carry the right to restamp an organisation's letterhead.
+   */
+  async function customerManagerToken(email: string): Promise<string> {
+    const user = await createUserWithPermissions(email, [
+      PERMISSIONS.CUSTOMER_MANAGE,
+      PERMISSIONS.CUSTOMER_VIEW,
+    ]);
+    return login(user.email, user.password);
+  }
+
+  it('accepts a PNG from staff who may manage customers', async () => {
+    const response = await upload(
+      await customerManagerToken('logo-manager@test.mn'),
+      PNG,
+      'logo.png',
+      'image/png',
+    );
+
+    expect(response.status).toBe(201);
+    expect(response.body.data.mimeType).toBe('image/png');
+    expect(response.body.data.id).toBeTruthy();
+  });
+
+  /**
+   * Decoded rather than trusted. A PDF renamed `.png` uploads cleanly and would then fail
+   * to draw on every report, which is a logo that looks configured and prints nothing.
+   */
+  it('refuses bytes that are not a raster image, whatever they are called', async () => {
+    const response = await upload(
+      await customerManagerToken('logo-manager@test.mn'),
+      Buffer.from('%PDF-1.7'),
+      'logo.png',
+      'image/png',
+    );
+
+    expect(response.status).toBe(400);
+  });
+
+  /**
+   * Managing the object hierarchy is not managing customers. Without this the route would
+   * quietly accept anyone who can create a building.
+   */
+  it('refuses staff who may manage objects but not customers', async () => {
+    const response = await upload(token, PNG, 'logo.png', 'image/png');
+
+    expect(response.status).toBe(403);
+  });
+
+  it('refuses a customer, who may read a logo but never set one', async () => {
+    const response = await upload(customerToken, PNG, 'logo.png', 'image/png');
+
+    expect(response.status).toBe(403);
+  });
+
+  /**
+   * The scope check, exercised through an account that holds the staff read key but is
+   * pinned to one organisation — which is the only way to reach it, since `CUSTOMER_VIEW`
+   * is what the route demands and a portal role does not carry it.
+   */
+  it('refuses a logo that belongs to another organisation, and an unclaimed one', async () => {
+    const uploaded = await upload(
+      await customerManagerToken('logo-manager@test.mn'),
+      PNG,
+      'logo.png',
+      'image/png',
+    );
+    const logoId = uploaded.body.data.id as string;
+
+    const scopedToA = await loginAsCustomer('files-logo-a@test.mn', tenantA.customerId, [
+      PERMISSIONS.CUSTOMER_VIEW,
+    ]);
+
+    // Parked on the uploader and claimed by nobody yet: it resolves to no organisation,
+    // exactly as an unclaimed request attachment does.
+    expect((await download(logoId, scopedToA)).status).toBe(404);
+
+    await Customer.updateOne(
+      { _id: new Types.ObjectId(tenantA.customerId) },
+      { $set: { logo: new Types.ObjectId(logoId) } },
+    );
+
+    const own = await download(logoId, scopedToA);
+    expect(own.status).toBe(200);
+    expect(own.headers['content-type']).toContain('image/png');
+
+    // The same file, claimed by tenant A, read by an account pinned to tenant B.
+    const scopedToB = await loginAsCustomer('files-logo-b@test.mn', tenantB.customerId, [
+      PERMISSIONS.CUSTOMER_VIEW,
+    ]);
+    expect((await download(logoId, scopedToB)).status).toBe(404);
+  });
+
+  it('serves any customer logo to a staff caller', async () => {
+    const uploaded = await upload(
+      await customerManagerToken('logo-manager@test.mn'),
+      PNG,
+      'logo.png',
+      'image/png',
+    );
+    const logoId = uploaded.body.data.id as string;
+
+    await Customer.updateOne(
+      { _id: new Types.ObjectId(tenantB.customerId) },
+      { $set: { logo: new Types.ObjectId(logoId) } },
+    );
+
+    const reader = await createUserWithPermissions('logo-reader@test.mn', [
+      PERMISSIONS.CUSTOMER_VIEW,
+    ]);
+    const staffToken = await login(reader.email, reader.password);
+
+    // A staff caller has no tenant, so the scope check returns early and the permission
+    // above is the whole gate — which is the existing behaviour for every owner kind.
+    expect((await download(logoId, staffToken)).status).toBe(200);
+  });
+});
+
 describe('POST /files/service-request-attachments', () => {
   const uploadAttachment = (bearer: string): request.Test =>
     request(app)
@@ -413,6 +657,7 @@ describe('POST /files/service-request-attachments', () => {
     customerId: tenantA.customerId,
     buildingId: tenantA.buildingId,
     requestType: 'STANDARD_CALL',
+    objectTypeId: callableTypeId,
     isUrgent: false,
     description: 'Коридорын гэрэл анивчиж байна.',
     contactName: 'Д. Оюунчимэг',

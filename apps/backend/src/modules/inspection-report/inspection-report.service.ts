@@ -1,13 +1,15 @@
 import {
   INSPECTION_REPORT_DEFAULT_ACT_NAME,
   INSPECTION_REPORT_STATUS_LABELS,
-  OVERALL_SAFETY_LABELS,
   PLANNED_WORK_TASK_STATUS_LABELS,
   SETTING_KEYS,
-  SEVERITY_ORDER,
   canTransitionInspectionReport,
   isInspectionReportLocked,
+  isRiskFinding,
+  overallSafetyLabelOf,
   overallSafetyLevel,
+  riskBandsOf,
+  severityOrderOf,
   type InspectionReportAttachmentDto,
   type InspectionReportBlocker,
   type InspectionReportDto,
@@ -18,10 +20,11 @@ import {
   type InspectionReportTaskDto,
   type ReturnInspectionReportInput,
   type ReviewInspectionReportInput,
+  type RiskBand,
   type RiskLevel,
   type UpdateInspectionReportInput,
 } from '@monhorus/shared';
-import { Types, type HydratedDocument } from 'mongoose';
+import { Types, type FilterQuery, type HydratedDocument } from 'mongoose';
 
 import { AppError } from '../../common/errors/app-error';
 import { ERROR_CODES } from '../../common/errors/error-codes';
@@ -37,6 +40,7 @@ import {
   type IPlannedWork,
   type IPlannedWorkTask,
 } from '../planned-work/planned-work.models';
+import { resolveAssignedWorkFilter } from '../planned-work/planned-work.scope';
 import { getSettings } from '../settings/settings.service';
 import { StoredFile, type IStoredFile } from '../storage/stored-file.model';
 import { InspectionReport, type IInspectionReport } from './inspection-report.model';
@@ -55,17 +59,58 @@ type Doc<T> = HydratedDocument<T>;
 const UNASSIGNED_FLOOR_LABEL = 'Давхар заагаагүй';
 const UNKNOWN_FLOOR_LABEL = 'Тодорхойгүй давхар';
 
-/** Bands worse than Хэвийн. Read from SEVERITY_ORDER so the two can never diverge. */
-const NORMAL_SEVERITY_INDEX = SEVERITY_ORDER.indexOf('NORMAL');
-
-function isFinding(level: RiskLevel | null): level is RiskLevel {
-  return level !== null && SEVERITY_ORDER.indexOf(level) < NORMAL_SEVERITY_INDEX;
-}
-
 // -- Loading -----------------------------------------------------------------
 
-export async function findPlannedWorkOrThrow(plannedWorkId: string): Promise<Doc<IPlannedWork>> {
-  const work = await PlannedWork.findById(plannedWorkId);
+/**
+ * The one door into a planned work for this whole module, and it is scoped.
+ *
+ * IT USED TO BE A BARE `findById`, and that was the defect. `requirePlannedWorkAssignmentScope`
+ * is mounted above this router in `planned-work.routes.ts` but returns `next()`
+ * unconditionally for GET, HEAD and OPTIONS, on the stated premise that the loader beneath
+ * a read has already applied the same predicate. Beneath the three reads here it had not:
+ * `/inspection-report`, `/inspection-report/pdf` and `/inspection-report/readiness` are all
+ * keyed on `planned_work.view`, which every technician holds, so any technician read any
+ * job's consolidated report — the customer, the project, the building, the floors, the crew
+ * by name, and the id of every attachment, which `GET /files/:fileId` then redeems.
+ *
+ * WHY THE PREDICATE LIVES HERE rather than in a controller helper. Every one of the ten
+ * handlers loads its work through this function and nothing else in this module reaches
+ * `PlannedWork` by id, so putting it here is what stops a route added to this router later
+ * from being unscoped by omission. The actor is required rather than optional for the same
+ * reason: there is no signature that silently skips the check. There are no non-HTTP
+ * callers to accommodate — every caller is a request handler with an `AuthContext`.
+ *
+ * WHICH PREDICATE. `resolveAssignedWorkFilter`, the READ form, identical to what
+ * `getPlannedWorkById`, both list services and `findReadableWorkOrThrow` (the sibling
+ * `/report`, `/report/pdf` and `/report/photo-pdf` reads) apply. It returns null — meaning
+ * "add nothing" — for a caller holding an oversight OR a read-oversight key, so dispatch,
+ * management and finance keep full reach and only a caller bounded by assignment is bounded
+ * here. Null is never `{}`; see that function for why the distinction is load bearing.
+ *
+ * THE WRITES ARE UNAFFECTED. They already pass `assertPlannedWorkAssignmentScope` in the
+ * mounted guard, which runs first and is the stricter of the two: its unscoped set is a
+ * subset of this one, and its assigned case is the same `$or` evaluated per record. A
+ * caller who reaches a write handler at all therefore satisfies this filter too, and the
+ * write refusal stays the 403 it was rather than becoming a 404.
+ *
+ * ANSWERED AS NOT-FOUND, matching `getPlannedWorkById` and the sibling report reads, with
+ * the message this loader already raised for a genuinely absent work: replying "forbidden"
+ * would confirm the id names a real job and turn the endpoint into an oracle for probing
+ * identifiers.
+ */
+export async function findPlannedWorkOrThrow(
+  plannedWorkId: string,
+  actor: AuthContext,
+): Promise<Doc<IPlannedWork>> {
+  const assignmentFilter = await resolveAssignedWorkFilter<IPlannedWork>(actor);
+
+  // `_id` is left as the raw string so mongoose casts it exactly as `findById` did: a
+  // malformed id keeps producing the CastError the error handler already turns into a 400,
+  // rather than throwing out of `new Types.ObjectId` before the filter is built.
+  const filter: FilterQuery<IPlannedWork> = { _id: plannedWorkId };
+  if (assignmentFilter) filter.$and = [assignmentFilter];
+
+  const work = await PlannedWork.findOne(filter);
   if (!work) {
     throw AppError.notFound(ERROR_CODES.NOT_FOUND, 'Төлөвлөгөөт ажил олдсонгүй.');
   }
@@ -130,6 +175,15 @@ interface ReportContext {
   groups: InspectionReportGroupDto[];
   issues: InspectionReportIssueDto[];
   overallLevel: RiskLevel | null;
+  /**
+   * The ladder this report was read against.
+   *
+   * Carried rather than re-fetched because severity, what counts as a зөрчил and the
+   * wording of the verdict all have to come from ONE ladder: resolving it again further
+   * down would let a settings change land mid-report and print a document whose sections
+   * disagree with each other.
+   */
+  bands: RiskBand[];
   customerName: string | null;
   projectName: string | null;
   buildingName: string | null;
@@ -204,6 +258,10 @@ async function loadContext(work: Doc<IPlannedWork>): Promise<ReportContext> {
     getSettings(),
   ]);
 
+  // One ladder for the whole report. `getSettings()` is already awaited above, so the
+  // administrator's bands cost nothing extra here.
+  const bands = riskBandsOf(settings);
+
   const floorNames = new Map(floors.map((floor) => [String(floor._id), floor.name]));
   const fileMap = new Map(files.map((file) => [String(file._id), file]));
   const employeeNames = new Map(employees.map((employee) => [String(employee._id), employeeName(employee)]));
@@ -247,7 +305,7 @@ async function loadContext(work: Doc<IPlannedWork>): Promise<ReportContext> {
     // Requirement 8: a зөрчил is DERIVED from the band, never entered. The performer's
     // Тайлбар is the condition and their Зөвлөмж is the advice, so no third text field
     // is added to the sub-task.
-    if (isFinding(task.riskLevel)) {
+    if (isRiskFinding(task.riskLevel, bands)) {
       issues.push({
         taskId: String(task._id),
         title: task.title,
@@ -271,9 +329,12 @@ async function loadContext(work: Doc<IPlannedWork>): Promise<ReportContext> {
     }))
     .sort((left, right) => left.floorName.localeCompare(right.floorName, 'mn'));
 
+  // Worst зөрчил first, ranked by the configured ladder rather than by the position of a
+  // storage key — the reserved spares sort above `OUT_OF_SERVICE` in that list.
+  const severityOrder = severityOrderOf(bands);
   issues.sort((left, right) => {
     const bySeverity =
-      SEVERITY_ORDER.indexOf(left.riskLevel) - SEVERITY_ORDER.indexOf(right.riskLevel);
+      severityOrder.indexOf(left.riskLevel) - severityOrder.indexOf(right.riskLevel);
     return bySeverity !== 0 ? bySeverity : left.title.localeCompare(right.title, 'mn');
   });
 
@@ -284,7 +345,8 @@ async function loadContext(work: Doc<IPlannedWork>): Promise<ReportContext> {
     groups,
     issues,
     // Requirement 9: worst wins, never an average, null when nothing was scored.
-    overallLevel: overallSafetyLevel(tasks.map((task) => task.riskLevel)),
+    overallLevel: overallSafetyLevel(tasks.map((task) => task.riskLevel), bands),
+    bands,
     customerName: customer?.name ?? null,
     projectName: project?.name ?? null,
     buildingName: building?.name ?? null,
@@ -300,30 +362,37 @@ async function loadContext(work: Doc<IPlannedWork>): Promise<ReportContext> {
 
 // -- Auto composition (requirement 9) ----------------------------------------
 
-function findingLine(issue: InspectionReportIssueDto): string {
+function findingLine(issue: InspectionReportIssueDto, bands: readonly RiskBand[]): string {
   const where = issue.locationLabel ? `${issue.locationLabel} - ` : '';
   const score = issue.score === null ? '' : ` (${issue.score} оноо)`;
   const condition = (issue.condition ?? '').trim();
   const tail = condition.length > 0 ? ` ${condition}` : '';
-  return `- ${where}${issue.title}: ${OVERALL_SAFETY_LABELS[issue.riskLevel]}${score}.${tail}`;
+  return `- ${where}${issue.title}: ${overallSafetyLabelOf(issue.riskLevel, bands)}${score}.${tail}`;
 }
 
-function composeIssueSummary(issues: readonly InspectionReportIssueDto[]): string {
+function composeIssueSummary(
+  issues: readonly InspectionReportIssueDto[],
+  bands: readonly RiskBand[],
+): string {
   if (issues.length === 0) return 'Үзлэгээр зөрчил илрээгүй.';
-  return [`Нийт ${issues.length} зөрчил илэрлээ.`, ...issues.map(findingLine)].join('\n');
+  return [
+    `Нийт ${issues.length} зөрчил илэрлээ.`,
+    ...issues.map((issue) => findingLine(issue, bands)),
+  ].join('\n');
 }
 
 function composeConclusion(
   taskCount: number,
   overallLevel: RiskLevel | null,
   issues: readonly InspectionReportIssueDto[],
+  bands: readonly RiskBand[],
 ): string {
   if (overallLevel === null) {
     return `Үзлэгт ${taskCount} дэд ажил хамрагдсан. Үнэлгээ бүртгэгдээгүй тул ерөнхий түвшин тодорхойлогдоогүй.`;
   }
   const found =
     issues.length === 0 ? 'Зөрчил илрээгүй.' : `Илэрсэн зөрчил: ${issues.length}.`;
-  return `Үзлэгт ${taskCount} дэд ажил хамрагдсан. Ерөнхий түвшин: ${OVERALL_SAFETY_LABELS[overallLevel]}. ${found}`;
+  return `Үзлэгт ${taskCount} дэд ажил хамрагдсан. Ерөнхий түвшин: ${overallSafetyLabelOf(overallLevel, bands)}. ${found}`;
 }
 
 function composeRecommendation(issues: readonly InspectionReportIssueDto[]): string {
@@ -346,18 +415,18 @@ function composeRecommendation(issues: readonly InspectionReportIssueDto[]): str
 }
 
 /**
- * Lines seeded onto the replacement lists.
+ * Lines seeded onto the panel replacement list.
  *
  * "The worst findings" is read as the findings that set the overall level, which is what
- * makes them the worst. Both lists are seeded from the same set because nothing in the
- * sub-task data distinguishes a самбар from a холболт; the administrator edits the lists
- * down, and once they do, generation never touches the text again.
+ * makes them the worst. The administrator edits the list down, and once they do,
+ * generation never touches the text again.
  */
 function seedReplacementLines(
   issues: readonly InspectionReportIssueDto[],
   overallLevel: RiskLevel | null,
+  bands: readonly RiskBand[],
 ): string[] {
-  if (overallLevel === null || !isFinding(overallLevel)) return [];
+  if (!isRiskFinding(overallLevel, bands)) return [];
   return issues
     .filter((issue) => issue.riskLevel === overallLevel)
     .map((issue) => (issue.locationLabel ? `${issue.locationLabel} - ${issue.title}` : issue.title));
@@ -372,13 +441,24 @@ interface ComposedNarrative {
 }
 
 function composeNarrative(context: ReportContext): ComposedNarrative {
-  const lines = seedReplacementLines(context.issues, context.overallLevel);
   return {
-    issueSummary: composeIssueSummary(context.issues),
-    conclusion: composeConclusion(context.tasks.length, context.overallLevel, context.issues),
+    issueSummary: composeIssueSummary(context.issues, context.bands),
+    conclusion: composeConclusion(
+      context.tasks.length,
+      context.overallLevel,
+      context.issues,
+      context.bands,
+    ),
     recommendation: composeRecommendation(context.issues),
-    replacementPanels: lines,
-    replacementConnections: [...lines],
+    replacementPanels: seedReplacementLines(context.issues, context.overallLevel, context.bands),
+    /**
+     * Left empty deliberately. Nothing in the sub-task data distinguishes a самбар from a
+     * холболт, so the panel findings relabelled as connection findings would put a claim
+     * the system cannot support into a printed official act. The administrator fills this
+     * in from what was actually inspected; an empty list renders as an empty field in both
+     * the web editor and the mobile sheet.
+     */
+    replacementConnections: [],
   };
 }
 
@@ -446,7 +526,9 @@ export async function toInspectionReportDto(
     issues: context.issues,
 
     overallLevel: context.overallLevel,
-    overallLabel: context.overallLevel ? OVERALL_SAFETY_LABELS[context.overallLevel] : null,
+    overallLabel: context.overallLevel
+      ? overallSafetyLabelOf(context.overallLevel, context.bands)
+      : null,
     issueSummary: report.issueSummary,
     conclusion: report.conclusion,
     recommendation: report.recommendation,

@@ -8,9 +8,17 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { objectService } from '../../services/object.service';
 
-/** Levels selectable on the request form, below the customer. */
-export const LOCATION_LEVELS: readonly ObjectNodeKind[] = OBJECT_HIERARCHY_ORDER.filter(
-  (kind) => kind !== 'CUSTOMER',
+/**
+ * Levels selectable on the request form, below the customer.
+ *
+ * Stops at FLOOR. The hierarchy runs deeper — ROOM, PANEL, CIRCUIT, DEVICE — but a caller
+ * raising a request locates the fault as building + floor and, if they can, a pin on the
+ * plan; the deeper levels rendered as permanently empty selects. They stay in the schema
+ * and on the record, where the object master and the breadcrumb still use them.
+ */
+export const LOCATION_LEVELS: readonly ObjectNodeKind[] = OBJECT_HIERARCHY_ORDER.slice(
+  OBJECT_HIERARCHY_ORDER.indexOf('PROJECT'),
+  OBJECT_HIERARCHY_ORDER.indexOf('FLOOR') + 1,
 );
 
 export type LocationSelection = Partial<Record<ObjectNodeKind, string>>;

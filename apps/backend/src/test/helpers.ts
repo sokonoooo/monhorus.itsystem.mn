@@ -7,6 +7,7 @@ import { createApp } from '../app';
 import { Customer, ObjectNode } from '../modules/objects/object.models';
 import { Company, Department, Position, Team } from '../modules/org/org.models';
 import { invalidateRecipientCache } from '../modules/notification/notification.service';
+import { ObjectType } from '../modules/object-master/object-master.models';
 import { seedRbac } from '../modules/rbac/rbac.service';
 import { Role } from '../modules/rbac/role.model';
 import { User } from '../modules/user/user.model';
@@ -31,6 +32,9 @@ import { closeSharedServers } from './supertest-shared-server';
 const TEST_DB_NAME = 'monhorus_test';
 
 /** Connects to the shared in-memory MongoDB and returns a fully wired Express app. */
+/** Monotonic, because object types survive resetDomainCollections and code is unique. */
+let callableTypeSequence = 0;
+
 export async function startTestApp(): Promise<Express> {
   const uri = inject('mongoUri');
   await mongoose.connect(uri, {
@@ -282,4 +286,38 @@ export async function createOrgFixture(): Promise<OrgFixture> {
     otherCompanyId: String(other._id),
     otherDepartmentId: String(otherDepartment._id),
   };
+}
+
+/**
+ * An equipment type a call may be raised against, with an SLA window of its own.
+ *
+ * Calls now take their deadline from the equipment type rather than from the urgent flag,
+ * and the create schema requires one, so any test that posts a service request needs a
+ * callable type to name. The default of 24 hours matches the worked example the rule was
+ * specified with (a light gets a day).
+ *
+ * `code` is made unique per call because the collection has a unique index on it and a
+ * suite may seed several types in one case.
+ *
+ * Object types ARE cleared by `resetDomainCollections` - they are domain data, not part of
+ * the RBAC catalogue - so this must be called AFTER the reset, not before it. Seeding first
+ * produces a type that is deleted moments later and a call that 404s on a valid-looking id.
+ */
+export async function createCallableObjectType(
+  overrides: { callSlaHours?: number; canCreateCall?: boolean; name?: string } = {},
+): Promise<string> {
+  callableTypeSequence += 1;
+  const type = await ObjectType.create({
+    code: `CALLTYPE-${callableTypeSequence}`,
+    name: overrides.name ?? 'Гэрэл',
+    category: 'EQUIPMENT',
+    showOnPlan: true,
+    insidePanel: false,
+    generatesConclusion: true,
+    icon: 'LIGHT',
+    canCreateCall: overrides.canCreateCall ?? true,
+    callSlaHours: (overrides.canCreateCall ?? true) ? (overrides.callSlaHours ?? 24) : null,
+    isActive: true,
+  });
+  return String(type._id);
 }

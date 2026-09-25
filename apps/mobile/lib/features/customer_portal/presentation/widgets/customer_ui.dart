@@ -850,7 +850,14 @@ class CustomerEmptyState extends StatelessWidget {
   }
 }
 
-/// The thin progress rail on a request card.
+/// A thin rail drawn at a fraction of its width.
+///
+/// **Only ever fed a fraction something has actually counted.** Its one caller is the
+/// survey sheet, where the figure is "technician 2 of 3" — a position in a queue whose
+/// length the customer can see beside it. It used to sit on every request card too,
+/// filled from a status ordering this app invented; the backend states no completion
+/// figure for a service request, so there was nothing behind that fill. A rail is read
+/// as a measurement, so anything that is not one must not be drawn as this.
 class ProgressRail extends StatelessWidget {
   const ProgressRail({super.key, required this.fraction, required this.color});
 

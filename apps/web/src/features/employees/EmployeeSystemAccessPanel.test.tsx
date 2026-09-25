@@ -1,4 +1,9 @@
-import { PERMISSIONS, type EmployeeSystemAccessDto, type RoleDto } from '@monhorus/shared';
+import {
+  PERMISSIONS,
+  type EmployeeSystemAccessDto,
+  type RoleDto,
+  type UserDto,
+} from '@monhorus/shared';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -35,6 +40,8 @@ function makeRole(overrides: Partial<RoleDto> = {}): RoleDto {
     description: null,
     permissions: [],
     isSystem: true,
+    // A seeded role has no creator, which is the case this fixture stands for.
+    createdByName: null,
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
     ...overrides,
@@ -98,10 +105,11 @@ describe('EmployeeSystemAccessPanel', () => {
   it('refuses to offer any action on the caller own account', async () => {
     renderPanel(makeAccess({ isSelf: true }));
 
-    expect(
-      await screen.findByText('Өөрийн эрхийг энэ дэлгэцээс өөрчлөх боломжгүй.'),
-    ).toBeInTheDocument();
+    // The panel says nothing about the refusal any more - that explanation moved to the
+    // page's help. What has to stay true is that no action is offered at all.
+    await screen.findByText('enkhtur@monhorus.mn');
     expect(screen.queryByRole('button', { name: 'Түр хаах' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Эрх өөрчлөх' })).not.toBeInTheDocument();
   });
 
   it('suspends the account after confirmation', async () => {
@@ -205,11 +213,13 @@ describe('EmployeeSystemAccessPanel', () => {
         email: 'enkhtur@monhorus.mn',
         phone: null,
         role: 'technician',
+        roleIds: [],
         status: 'must_change_password',
         customerId: null,
         customerName: null,
         lastLoginAt: null,
         createdBy: null,
+        createdByName: 'Б. Энхтөр',
         createdAt: '2026-01-01T00:00:00.000Z',
         updatedAt: '2026-08-02T00:00:00.000Z',
       },
@@ -258,9 +268,88 @@ describe('EmployeeSystemAccessPanel', () => {
   it('offers no passcode reset on the caller own account', async () => {
     renderPanel(makeAccess({ isSelf: true }), [...MANAGE, PERMISSIONS.USER_MANAGE]);
 
-    expect(
-      await screen.findByText('Өөрийн эрхийг энэ дэлгэцээс өөрчлөх боломжгүй.'),
-    ).toBeInTheDocument();
+    await screen.findByText('enkhtur@monhorus.mn');
     expect(screen.queryByRole('button', { name: 'Нууц үг шинэчлэх' })).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * What the "link an existing user" picker does not show.
+ *
+ * It asks for one page of accounts. On a deployment with more accounts than that page, an
+ * account simply is not in the list — and a select that silently omits a person reads as
+ * "that person has no account", which is a different and wrong answer. The screen says
+ * what it is showing out of what exists.
+ */
+describe('EmployeeSystemAccessPanel user picker cap', () => {
+  const NO_ACCOUNT: Partial<EmployeeSystemAccessDto> = {
+    hasAccount: false,
+    userId: null,
+    email: null,
+    fullName: null,
+    role: null,
+    roleIds: [],
+    roles: [],
+    accountStatus: null,
+    lastLoginAt: null,
+  };
+
+  function makeUser(id: string): UserDto {
+    return {
+      id,
+      fullName: `Хэрэглэгч ${id}`,
+      email: `${id}@monhorus.mn`,
+      phone: null,
+      role: 'technician',
+      roleIds: [],
+      status: 'active',
+      customerId: null,
+      customerName: null,
+      lastLoginAt: null,
+      createdBy: null,
+      createdByName: null,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    };
+  }
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function openLinkExisting(total: number, returned: number): Promise<void> {
+    vi.spyOn(rbacService, 'users').mockResolvedValue({
+      items: Array.from({ length: returned }, (_, index) => makeUser(`u${index}`)),
+      total,
+      page: 1,
+      limit: 100,
+      totalPages: Math.ceil(total / 100),
+    });
+
+    renderPanel(makeAccess(NO_ACCOUNT), [...MANAGE, PERMISSIONS.USER_VIEW]);
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Нэвтрэх эрх үүсгэх' }));
+    await userEvent.selectOptions(
+      await screen.findByLabelText('Хэлбэр'),
+      'LINK_EXISTING',
+    );
+  }
+
+  it('says how many accounts the page is showing when more exist', async () => {
+    await openLinkExisting(240, 100);
+
+    expect(
+      await screen.findByText('Нийт 240 хэрэглэгчээс эхний 100 нь жагсав.'),
+    ).toBeInTheDocument();
+  });
+
+  it('says nothing when the page holds every account', async () => {
+    await openLinkExisting(12, 12);
+
+    // The picker is populated — this is the notice being withheld, not a failed load.
+    expect(
+      await screen.findByRole('option', { name: 'Хэрэглэгч u0 (u0@monhorus.mn)' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/нь жагсав/)).not.toBeInTheDocument();
   });
 });

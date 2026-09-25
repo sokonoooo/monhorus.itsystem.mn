@@ -46,12 +46,6 @@ class _FloorReportsScreenState extends ConsumerState<FloorReportsScreen> {
   Widget build(BuildContext context) {
     final AsyncValue<InspectionSummaryModel> summary =
         ref.watch(floorReportSummaryProvider(widget.floorId));
-    final InspectionSummaryModel counts =
-        summary.valueOrNull ?? InspectionSummaryModel.empty;
-
-    final List<RiskLevel> bands = RiskLevel.values
-        .where((RiskLevel level) => counts.countOf(level) > 0)
-        .toList(growable: false);
 
     final FloorReportQuery query =
         FloorReportQuery(floorId: widget.floorId, riskLevel: _band);
@@ -78,45 +72,71 @@ class _FloorReportsScreenState extends ConsumerState<FloorReportsScreen> {
                 'Тайлангууд',
               ],
             ),
-            MetricGrid(
-              cards: <Widget>[
-                MetricCard(
-                  label: 'Үнэлгээтэй',
-                  value: '${counts.assessedObjects}',
-                  note: 'Нийт ${counts.totalObjects} төхөөрөмж',
-                ),
-                MetricCard(
-                  label: 'Үнэлгээгүй',
-                  value: '${counts.unassessedObjects}',
-                  note: 'Дүгнэлт бичигдээгүй',
-                ),
-                MetricCard(
-                  label: 'Засвар шаардсан',
-                  value: '${counts.repairRequiredCount}',
-                  note: 'Дүгнэлтээр',
-                  valueColor: counts.repairRequiredCount > 0
-                      ? EmployeeTokens.red
-                      : EmployeeTokens.ink,
-                ),
-                MetricCard(
-                  label: 'Дахин очих',
-                  value: '${counts.revisitRequiredCount}',
-                  note: 'Дүгнэлтээр',
-                  valueColor: counts.revisitRequiredCount > 0
-                      ? EmployeeTokens.yellow
-                      : EmployeeTokens.ink,
-                ),
-              ],
+            // The four figures and the chips are the summary's answer, so they wait
+            // for it. Rendering `InspectionSummaryModel.empty` while the request is
+            // in flight — or after it failed — put "0 · 0 · 0 · 0" and "Нийт 0
+            // төхөөрөмж" on screen in a form indistinguishable from a floor that
+            // genuinely holds nothing, which is the claim this screen cannot make
+            // yet. Same rule the Нүүр hero states: "four zeroes would be a claim the
+            // screen cannot make yet."
+            ProjectAsyncView<InspectionSummaryModel>(
+              value: summary,
+              onRetry: () =>
+                  ref.invalidate(floorReportSummaryProvider(widget.floorId)),
+              loading: const ProjectLoading(height: 132),
+              builder: (BuildContext ctx, InspectionSummaryModel counts) {
+                final List<RiskLevel> bands = riskBandsInUse()
+                    .where((RiskLevel level) => counts.countOf(level) > 0)
+                    .toList(growable: false);
+
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    MetricGrid(
+                      cards: <Widget>[
+                        MetricCard(
+                          label: 'Үнэлгээтэй',
+                          value: '${counts.assessedObjects}',
+                          note: 'Нийт ${counts.totalObjects} төхөөрөмж',
+                        ),
+                        MetricCard(
+                          label: 'Үнэлгээгүй',
+                          value: '${counts.unassessedObjects}',
+                          note: 'Дүгнэлт бичигдээгүй',
+                        ),
+                        MetricCard(
+                          label: 'Засвар шаардсан',
+                          value: '${counts.repairRequiredCount}',
+                          note: 'Дүгнэлтээр',
+                          valueColor: counts.repairRequiredCount > 0
+                              ? EmployeeTokens.red
+                              : EmployeeTokens.ink,
+                        ),
+                        MetricCard(
+                          label: 'Дахин очих',
+                          value: '${counts.revisitRequiredCount}',
+                          note: 'Дүгнэлтээр',
+                          valueColor: counts.revisitRequiredCount > 0
+                              ? EmployeeTokens.yellow
+                              : EmployeeTokens.ink,
+                        ),
+                      ],
+                    ),
+                    if (bands.isNotEmpty) ...<Widget>[
+                      const SectionHeading('Шүүлтүүр', topPadding: 4),
+                      _BandChips(
+                        bands: bands,
+                        counts: counts,
+                        selected: _band,
+                        onSelected: (RiskLevel? level) =>
+                            setState(() => _band = level),
+                      ),
+                    ],
+                  ],
+                );
+              },
             ),
-            if (bands.isNotEmpty) ...<Widget>[
-              const SectionHeading('Шүүлтүүр', topPadding: 4),
-              _BandChips(
-                bands: bands,
-                counts: counts,
-                selected: _band,
-                onSelected: (RiskLevel? level) => setState(() => _band = level),
-              ),
-            ],
             const SectionHeading('Тайлангууд'),
             ProjectAsyncView<List<InspectionListItemModel>>(
               value: ref.watch(floorReportsProvider(query)),

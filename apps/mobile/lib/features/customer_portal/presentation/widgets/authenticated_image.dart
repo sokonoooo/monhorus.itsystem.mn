@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import 'package:flutter/gestures.dart' show DeviceGestureSettings;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -12,6 +13,70 @@ import '../theme/customer_tokens.dart';
 /// screen used before intrinsic sizing existed, so the card does not jump as it loads.
 const double _planPlaceholderHeight = 210;
 const double _planMaxHeight = 460;
+
+/// The floor is drawn at "fits the card" and may not be shrunk below it.
+///
+/// The web canvas takes the same position for the same reason: a plan smaller than its
+/// own frame is a drawing floating in empty space, and there is nothing a reader can do
+/// with it that the fitted view does not already show. Zoom only ever goes up from here.
+const double kPlanMinScale = 1;
+
+/// The ceiling on magnification.
+///
+/// Five is roughly the point at which a phone-width plan stops gaining detail: the
+/// source drawings are a few hundred pixels tall and the image is already being
+/// upscaled well before this, so a higher cap would only let a reader zoom into
+/// interpolation. It is comfortably enough to separate two markers that overlap when
+/// the whole floor is in view, which is the crowding the zoom exists to solve.
+const double kPlanMaxScale = 5;
+
+/// The touch slop the plan runs with WHILE MAGNIFIED, and the whole mechanism by which
+/// a zoomed plan pans up and down.
+///
+/// Nothing in this file arbitrates between panning the drawing and scrolling the page
+/// it sits on; the gesture arena does, and it settles on whichever recogniser claims
+/// the drag first. A [Scrollable]'s vertical drag resolves once the finger passes its
+/// touch slop — 18 by default. [InteractiveViewer]'s scale recogniser resolves at its
+/// PAN slop, which is twice the touch slop, so at the default it needs 36 and the page
+/// has already won by then. That is why a magnified plan would otherwise scroll the
+/// page instead of panning.
+///
+/// Halving the slop inside the plan's own subtree flips it: 8 here means a pan slop of
+/// 16, which trips before the list's 18. It applies to this subtree ONLY — the list
+/// reads its own slop from the [MediaQuery] above, which is untouched — and only while
+/// the plan is actually magnified, so a plan at rest still hands every vertical drag
+/// straight to the page, exactly as it did before any of this existed.
+///
+/// Not smaller than this on purpose. The same number is what a tap is allowed to wander
+/// before it stops counting as a tap, so driving it towards zero would start losing
+/// marker taps to ordinary finger wobble.
+const double kPlanZoomedTouchSlop = 8;
+
+/// The magnification the plan around it is currently drawn at, published to whatever is
+/// laid over that plan.
+///
+/// Exists so an overlay can refuse to grow with the drawing. Everything inside the
+/// viewer is multiplied by the zoom `z`, so anything that must keep one size on screen
+/// has to undo it with `1/z` — and to do that it has to be told what `z` is. That is the
+/// whole job of this widget.
+///
+/// An [InheritedNotifier], so the marker layer re-reads the factor as a pinch happens
+/// rather than a frame behind it, and so only the things that actually asked for the
+/// zoom are rebuilt when it changes.
+class PlanZoom extends InheritedNotifier<ValueNotifier<double>> {
+  const PlanZoom({
+    super.key,
+    required ValueNotifier<double> scale,
+    required super.child,
+  }) : super(notifier: scale);
+
+  /// The current magnification, or 1 where there is no viewer above.
+  ///
+  /// One rather than null: a plan that cannot be zoomed IS drawn at its own size, so
+  /// the caller's `1/zoom` is a no-op there and no caller needs a special case.
+  static double of(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<PlanZoom>()?.notifier?.value ?? 1;
+}
 
 /// Renders a stored file that lives behind `GET /files/:fileId`.
 ///
@@ -28,7 +93,8 @@ class AuthenticatedImage extends ConsumerWidget {
     this.height,
     this.fit = BoxFit.contain,
   })  : sizeToImage = false,
-        overlay = null;
+        overlay = null,
+        zoomable = false;
 
   /// A box that takes the image's own aspect ratio, with [overlay] laid over exactly
   /// the painted picture.
@@ -43,6 +109,7 @@ class AuthenticatedImage extends ConsumerWidget {
     super.key,
     required this.fileId,
     this.overlay,
+    this.zoomable = false,
   })  : sizeToImage = true,
         height = null,
         fit = BoxFit.contain;
@@ -57,13 +124,27 @@ class AuthenticatedImage extends ConsumerWidget {
   /// Stacked over the painted image, given exactly its rectangle. Null draws nothing.
   final Widget? overlay;
 
+  /// Whether the picture and its [overlay] can be pinched and dragged.
+  ///
+  /// Opt-in, and off by default, because a zoom is not free on a surface that also
+  /// takes taps: a pinch and a drag are gestures the surrounding page and any tap
+  /// handler on the overlay have to share. It is turned on for the floor plan a reader
+  /// only looks at, and left OFF for the plan in the request sheet, whose whole overlay
+  /// is a tap target that drops a pin — a pan that ended in a tap there would record
+  /// the fault wherever the reader happened to stop dragging.
+  final bool zoomable;
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final AsyncValue<Uint8List> bytes = ref.watch(fileBytesProvider(fileId));
 
     return bytes.when(
       data: (Uint8List data) => sizeToImage
-          ? _IntrinsicallySizedImage(bytes: data, overlay: overlay)
+          ? _IntrinsicallySizedImage(
+              bytes: data,
+              overlay: overlay,
+              zoomable: zoomable,
+            )
           : SizedBox(
               height: height,
               width: double.infinity,
@@ -96,10 +177,15 @@ class AuthenticatedImage extends ConsumerWidget {
 /// server again, and through the same [MemoryImage] the picture is then painted from,
 /// so the plan is decoded once and not twice.
 class _IntrinsicallySizedImage extends StatefulWidget {
-  const _IntrinsicallySizedImage({required this.bytes, this.overlay});
+  const _IntrinsicallySizedImage({
+    required this.bytes,
+    this.overlay,
+    this.zoomable = false,
+  });
 
   final Uint8List bytes;
   final Widget? overlay;
+  final bool zoomable;
 
   @override
   State<_IntrinsicallySizedImage> createState() => _IntrinsicallySizedImageState();
@@ -112,6 +198,25 @@ class _IntrinsicallySizedImageState extends State<_IntrinsicallySizedImage> {
   Size? _size;
   bool _failed = false;
 
+  /// The pan-and-zoom transform, owned here so a rebuild of the screen above does not
+  /// throw away a magnification the reader chose.
+  final TransformationController _transform = TransformationController();
+
+  /// Whether the plan is currently magnified at all.
+  ///
+  /// Deliberately a separate notifier from [_scale], and coarser. It drives the touch
+  /// slop, which has exactly two settings, so it changes twice per pinch rather than
+  /// sixty times a second — and the [MediaQuery] it rebuilds sits above the entire
+  /// plan, which is not worth rebuilding per frame to re-decide a boolean.
+  final ValueNotifier<bool> _magnified = ValueNotifier<bool>(false);
+
+  /// The live magnification, published to the overlay through [PlanZoom].
+  ///
+  /// This one genuinely does change every frame of a pinch: a marker that is holding
+  /// its size against the zoom needs the zoom as it is now, not as it was when the
+  /// gesture started.
+  final ValueNotifier<double> _scale = ValueNotifier<double>(kPlanMinScale);
+
   /// True while [_listen] is running. The decoded image is often already in the cache,
   /// in which case the listener fires synchronously - inside `initState`, where
   /// `setState` would be a `markNeedsBuild` during a build. The value is simply
@@ -121,7 +226,18 @@ class _IntrinsicallySizedImageState extends State<_IntrinsicallySizedImage> {
   @override
   void initState() {
     super.initState();
+    _transform.addListener(_readMagnification);
     _listen();
+  }
+
+  /// A hair over 1, not `> 1`: the transform is floating-point, and a pinch that lands
+  /// back on the fitted scale can leave a rounding crumb behind. Treating that as
+  /// "magnified" would keep the tighter slop — and so keep the plan eating the page's
+  /// vertical drags — on a plan the reader has already zoomed back out.
+  void _readMagnification() {
+    final double scale = _transform.value.getMaxScaleOnAxis();
+    _scale.value = scale;
+    _magnified.value = scale > kPlanMinScale + 0.001;
   }
 
   @override
@@ -131,6 +247,9 @@ class _IntrinsicallySizedImageState extends State<_IntrinsicallySizedImage> {
       _detach();
       _size = null;
       _failed = false;
+      // A different drawing at a different shape: a transform chosen against the old
+      // one names a place on a picture that is no longer there.
+      _transform.value = Matrix4.identity();
       _listen();
     }
   }
@@ -138,6 +257,10 @@ class _IntrinsicallySizedImageState extends State<_IntrinsicallySizedImage> {
   @override
   void dispose() {
     _detach();
+    _transform.removeListener(_readMagnification);
+    _transform.dispose();
+    _magnified.dispose();
+    _scale.dispose();
     super.dispose();
   }
 
@@ -179,6 +302,50 @@ class _IntrinsicallySizedImageState extends State<_IntrinsicallySizedImage> {
     _listening = false;
   }
 
+  /// [plan] under a pinch, a drag, and the slop rule that decides who gets the drag.
+  ///
+  /// The [MediaQuery] is the load-bearing part and has to sit ABOVE the viewer: the
+  /// gesture recogniser inside reads its slop from the nearest one, so overriding it
+  /// here is what re-orders the arena between this plan and the page around it. See
+  /// [kPlanZoomedTouchSlop] for why the override is conditional rather than permanent.
+  Widget _zoomable(Widget plan) {
+    final Widget viewer = InteractiveViewer(
+      transformationController: _transform,
+      minScale: kPlanMinScale,
+      maxScale: kPlanMaxScale,
+      // Zero, so the drawing can never be dragged off its own frame and parked against
+      // a corner: at rest it exactly fills the box, and at any magnification the clamp
+      // keeps some of it under every edge.
+      boundaryMargin: EdgeInsets.zero,
+      // Without this a magnified plan paints over the caption below it and over the
+      // card's own rounded edge.
+      clipBehavior: Clip.hardEdge,
+      // Rebuilt off the same transform the viewer is driving, so an overlay that undoes
+      // the zoom is undoing the zoom currently painted rather than the previous frame's.
+      child: PlanZoom(scale: _scale, child: plan),
+    );
+
+    return ValueListenableBuilder<bool>(
+      valueListenable: _magnified,
+      // Handed through rather than rebuilt: the viewer does not change when the slop
+      // does. The recogniser inside it still picks the new value up, because a
+      // MediaQuery is inherited and whatever depends on it is rebuilt by that alone.
+      child: viewer,
+      builder: (BuildContext context, bool magnified, Widget? child) {
+        final MediaQueryData media = MediaQuery.of(context);
+        return MediaQuery(
+          data: magnified
+              ? media.copyWith(
+                  gestureSettings:
+                      const DeviceGestureSettings(touchSlop: kPlanZoomedTouchSlop),
+                )
+              : media,
+          child: child!,
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final Size? size = _size;
@@ -199,6 +366,30 @@ class _IntrinsicallySizedImageState extends State<_IntrinsicallySizedImage> {
       );
     }
 
+    // The picture and anything laid over it, as one unit. Everything below zooms this
+    // whole stack rather than the image alone, which is what makes the magnified
+    // markers land on the magnified drawing without a line of arithmetic: the overlay
+    // is still measured against a box that is exactly the picture, and the transform
+    // that grows the picture grows the overlay through the same matrix.
+    final Widget plan = Stack(
+      fit: StackFit.expand,
+      children: <Widget>[
+        Image(
+          image: _provider,
+          // Fill, not contain: the box is already the image's own ratio, and
+          // `contain` would re-letterbox it by whatever the rounding left over.
+          fit: BoxFit.fill,
+          // Magnified pixels rather than a blur. A floor plan is line work, and the
+          // reader zooms in to follow a line to a marker; smoothing it away is worse
+          // than showing the pixels it is actually made of.
+          filterQuality: FilterQuality.medium,
+          errorBuilder: (_, __, ___) =>
+              const _ImageNotice(text: 'Зургийг уншиж чадсангүй.'),
+        ),
+        if (widget.overlay != null) widget.overlay!,
+      ],
+    );
+
     // Centred, and through a loosened constraint: a portrait plan would otherwise be
     // stretched to the full width of a list that hands its children a tight one.
     return Center(
@@ -206,20 +397,7 @@ class _IntrinsicallySizedImageState extends State<_IntrinsicallySizedImage> {
         constraints: const BoxConstraints(maxHeight: _planMaxHeight),
         child: AspectRatio(
           aspectRatio: size.width / size.height,
-          child: Stack(
-            fit: StackFit.expand,
-            children: <Widget>[
-              Image(
-                image: _provider,
-                // Fill, not contain: the box is already the image's own ratio, and
-                // `contain` would re-letterbox it by whatever the rounding left over.
-                fit: BoxFit.fill,
-                errorBuilder: (_, __, ___) =>
-                    const _ImageNotice(text: 'Зургийг уншиж чадсангүй.'),
-              ),
-              if (widget.overlay != null) widget.overlay!,
-            ],
-          ),
+          child: widget.zoomable ? _zoomable(plan) : plan,
         ),
       ),
     );

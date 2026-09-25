@@ -44,11 +44,19 @@ const TECHNICIAN_KEYS = [
   PERMISSIONS.PLANNED_WORK_SUBMIT_REPORT,
 ] as const;
 
-/** A planner: the same doing keys plus one oversight key. */
+/**
+ * A planner: the same doing keys plus the oversight ones.
+ *
+ * `planned_work.approve` is here because every PLANNED work in this file is now reached by
+ * PLAN then APPROVE — see [planAndApprove] — and the supervisor is the fixture that drives
+ * setup. It widens nothing: `planned_work.update` already put this caller outside the
+ * assignment scope, which is the whole reason the supervisor exists here.
+ */
 const SUPERVISOR_KEYS = [
   ...TECHNICIAN_KEYS,
   PERMISSIONS.PLANNED_WORK_CREATE,
   PERMISSIONS.PLANNED_WORK_UPDATE,
+  PERMISSIONS.PLANNED_WORK_APPROVE,
 ] as const;
 
 /** A dispatcher as seeded: no planned-work write key beyond the doing ones. */
@@ -152,11 +160,12 @@ async function transition(
   action: string,
   bearer: string,
   reason?: string,
+  extra: Record<string, unknown> = {},
 ): Promise<request.Response> {
   return request(app)
     .post(`${API}/planned-work/${workId}/transition`)
     .set('Authorization', `Bearer ${bearer}`)
-    .send({ action, ...(reason ? { reason } : {}) });
+    .send({ action, ...(reason ? { reason } : {}), ...extra });
 }
 
 /**
@@ -225,10 +234,33 @@ beforeEach(async () => {
   ]);
 });
 
+/**
+ * Drives a draft to PLANNED, which now takes TWO actions rather than one.
+ *
+ * PLAN submits the work for approval (PENDING_APPROVAL) and APPROVE is what accepts it,
+ * naming the crew in the same call — approval is refused with an empty crew, so a PLANNED
+ * work always has somebody on it. Run as the supervisor, who is unscoped, so getting a work
+ * into position is never the thing under test.
+ *
+ * `crew` defaults to the assignee. A case about TEAM membership passes the same default and
+ * relies on its caller not being in it: being individually named is precisely what those
+ * cases need the admitted technician NOT to be.
+ */
+async function planAndApprove(
+  workId: string,
+  crew: readonly string[] = [assignedEmployeeId],
+): Promise<void> {
+  expect((await transition(workId, 'PLAN', supervisorToken)).status).toBe(200);
+  const approved = await transition(workId, 'APPROVE', supervisorToken, undefined, {
+    assignedEmployeeIds: [...crew],
+  });
+  expect(approved.status).toBe(200);
+}
+
 /** A PLANNED work assigned to `assignedEmployeeId` and to no team. */
 async function plannedWorkForAssignee(): Promise<string> {
   const workId = await createWork({ assignedEmployeeIds: [assignedEmployeeId] });
-  expect((await transition(workId, 'PLAN', supervisorToken)).status).toBe(200);
+  await planAndApprove(workId);
   return workId;
 }
 
@@ -244,7 +276,7 @@ describe('the proven hole: an unassigned technician driving the lifecycle', () =
     expect((await PlannedWork.findById(workId))!.status).toBe('DRAFT');
 
     // Drive it forward with the supervisor so each later action is genuinely available.
-    await transition(workId, 'PLAN', supervisorToken);
+    await planAndApprove(workId);
     expect((await transition(workId, 'START', strangerToken)).status).toBe(403);
 
     await transition(workId, 'START', supervisorToken);
@@ -274,14 +306,14 @@ describe('the proven hole: an unassigned technician driving the lifecycle', () =
 describe('team membership is a server-side fact', () => {
   it('admits a technician on the assigned team who is not named individually', async () => {
     const workId = await createWork({ assignedTeamId: org.teamId });
-    await transition(workId, 'PLAN', supervisorToken);
+    await planAndApprove(workId);
 
     expect((await transition(workId, 'START', teamMateToken)).status).toBe(200);
   });
 
   it('refuses a technician on a different team', async () => {
     const workId = await createWork({ assignedTeamId: org.teamId });
-    await transition(workId, 'PLAN', supervisorToken);
+    await planAndApprove(workId);
 
     expect((await transition(workId, 'START', strangerToken)).status).toBe(403);
   });
@@ -290,14 +322,14 @@ describe('team membership is a server-side fact', () => {
     await Employee.updateOne({ _id: strangerEmployeeId }, { $set: { team: null } });
     // assignedTeam is null and the caller's team is null; that must not read as equal.
     const workId = await createWork({ assignedEmployeeIds: [assignedEmployeeId] });
-    await transition(workId, 'PLAN', supervisorToken);
+    await planAndApprove(workId);
 
     expect((await transition(workId, 'START', strangerToken)).status).toBe(403);
   });
 
   it('follows a team change on the very next request, in both directions', async () => {
     const workId = await createWork({ assignedTeamId: org.teamId });
-    await transition(workId, 'PLAN', supervisorToken);
+    await planAndApprove(workId);
 
     // Moved onto the assigned team: admitted without a new token.
     await Employee.updateOne({ _id: strangerEmployeeId }, { $set: { team: org.teamId } });
@@ -310,7 +342,7 @@ describe('team membership is a server-side fact', () => {
 
   it('ignores a team claimed in the request body', async () => {
     const workId = await createWork({ assignedTeamId: org.teamId });
-    await transition(workId, 'PLAN', supervisorToken);
+    await planAndApprove(workId);
 
     const response = await request(app)
       .post(`${API}/planned-work/${workId}/transition`)
@@ -339,7 +371,7 @@ describe('progress, evidence and report writes', () => {
   async function startedWork(): Promise<{ workId: string; taskId: string }> {
     const workId = await createWork({ assignedEmployeeIds: [assignedEmployeeId] });
     const taskId = await addTask(workId);
-    await transition(workId, 'PLAN', supervisorToken);
+    await planAndApprove(workId);
     await transition(workId, 'START', supervisorToken);
     return { workId, taskId };
   }
@@ -462,16 +494,37 @@ describe('progress, evidence and report writes', () => {
     expect(submit.body.data.report.status).toBe('SUBMITTED');
   });
 
-  it('refuses the nested inspection-report writes to a stranger but not the read', async () => {
+  it('refuses the nested inspection-report reads and writes alike to a stranger', async () => {
     const workId = await completedWork();
 
-    // The guard is mounted for writes only, so the read still answers on
-    // `planned_work.view` alone. Readiness is used because the report itself does not
-    // exist yet and would legitimately 404.
+    /**
+     * THIS ASSERTED 200 UNTIL THE READS WERE SCOPED, and the comment that stood here said
+     * that was fine: "the guard is mounted for writes only, so the read still answers on
+     * `planned_work.view` alone". It was not fine, and this test was what pinned it — the
+     * three nested GETs served any technician the customer, the project, the building, the
+     * floors, the crew by name and the attachment ids of any job in the company, which
+     * `GET /files/:fileId` then redeems.
+     *
+     * The guard above is still mounted for writes only; what changed is beneath it.
+     * `inspection-report.service.findPlannedWorkOrThrow` now intersects the id with
+     * `resolveAssignedWorkFilter`, the same read predicate `getPlannedWorkById` and the
+     * sibling `/report` reads apply, so every handler in that router is scoped rather than
+     * only the three this guard catches.
+     *
+     * 404 and not the 403 the writes below answer: the read path refuses to distinguish
+     * "exists but not yours" from "never existed". Readiness is still the route used
+     * because it is the one of the three that does not need a generated report to exist.
+     */
     const read = await request(app)
       .get(`${API}/planned-work/${workId}/inspection-report/readiness`)
       .set('Authorization', `Bearer ${strangerToken}`);
-    expect(read.status).toBe(200);
+    expect(read.status).toBe(404);
+
+    const invented = await request(app)
+      .get(`${API}/planned-work/${'0'.repeat(24)}/inspection-report/readiness`)
+      .set('Authorization', `Bearer ${strangerToken}`);
+    expect(invented.status).toBe(404);
+    expect(read.body.message).toBe(invented.body.message);
 
     const generate = await request(app)
       .post(`${API}/planned-work/${workId}/inspection-report`)
@@ -484,13 +537,106 @@ describe('progress, evidence and report writes', () => {
       .set('Authorization', `Bearer ${strangerToken}`);
     expect(submit.status).toBe(403);
   });
+
+  /**
+   * THE CONSOLIDATED REPORT READ, AND ITS PDF.
+   *
+   * These two were the exception to "reads are scoped in the loaders": both loaded through
+   * the raw `findPlannedWorkOrThrow`, so `planned_work.view` alone — which every technician
+   * holds — read any job's report and printed its PDF. That is the customer, the site, the
+   * crew and the evidence photographs of work the caller has no claim to, and the PDF is
+   * the worse half because it is a file that leaves the building.
+   *
+   * NOT-FOUND rather than forbidden, matching `getPlannedWorkById` and the detail read
+   * below: answering 403 would confirm the id names a real job.
+   */
+  describe('reading the consolidated report', () => {
+    it('answers a stranger not-found on both the report and its PDF', async () => {
+      const workId = await completedWork();
+
+      const json = await request(app)
+        .get(`${API}/planned-work/${workId}/report`)
+        .set('Authorization', `Bearer ${strangerToken}`);
+      expect(json.status).toBe(404);
+
+      const pdf = await request(app)
+        .get(`${API}/planned-work/${workId}/report/pdf`)
+        .set('Authorization', `Bearer ${strangerToken}`);
+      expect(pdf.status).toBe(404);
+
+      // Indistinguishable from an id that was never real, which is the whole point.
+      const invented = await request(app)
+        .get(`${API}/planned-work/${'0'.repeat(24)}/report`)
+        .set('Authorization', `Bearer ${strangerToken}`);
+      expect(invented.status).toBe(404);
+      expect(json.body.message).toBe(invented.body.message);
+    });
+
+    it('still serves the assignee the report and the PDF', async () => {
+      const workId = await completedWork();
+
+      const json = await request(app)
+        .get(`${API}/planned-work/${workId}/report`)
+        .set('Authorization', `Bearer ${assignedToken}`);
+      expect(json.status).toBe(200);
+      expect(json.body.data.preview).not.toBeNull();
+
+      const pdf = await request(app)
+        .get(`${API}/planned-work/${workId}/report/pdf`)
+        .set('Authorization', `Bearer ${assignedToken}`)
+        .buffer(true)
+        .parse((res, callback) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (chunk: Buffer) => chunks.push(chunk));
+          res.on('end', () => callback(null, Buffer.concat(chunks)));
+        });
+      expect(pdf.status).toBe(200);
+      expect((pdf.body as Buffer).subarray(0, 5).toString('latin1')).toBe('%PDF-');
+    });
+
+    /**
+     * A team mate is admitted by the same predicate through the team branch, so the report
+     * follows the crew rather than only the individually named technician.
+     */
+    it('serves a team mate on the same team as the work', async () => {
+      const workId = await createWork({ assignedEmployeeIds: [assignedEmployeeId] });
+      const taskId = await addTask(workId);
+      await planAndApprove(workId);
+      await PlannedWork.updateOne({ _id: workId }, { $set: { assignedTeam: org.teamId } });
+      expect(taskId).toBeDefined();
+
+      const json = await request(app)
+        .get(`${API}/planned-work/${workId}/report`)
+        .set('Authorization', `Bearer ${teamMateToken}`);
+      expect(json.status).toBe(200);
+    });
+
+    /**
+     * The office half. The dispatcher holds `dispatch.assign` and is unscoped, so this is
+     * scope and not a blanket refusal — which is what would happen if the fix had been to
+     * key the route on a stronger permission instead.
+     */
+    it('leaves an oversight holder unbounded', async () => {
+      const workId = await completedWork();
+
+      const json = await request(app)
+        .get(`${API}/planned-work/${workId}/report`)
+        .set('Authorization', `Bearer ${dispatcherToken}`);
+      expect(json.status).toBe(200);
+
+      const pdf = await request(app)
+        .get(`${API}/planned-work/${workId}/report/pdf`)
+        .set('Authorization', `Bearer ${dispatcherToken}`);
+      expect(pdf.status).toBe(200);
+    });
+  });
 });
 
 describe('a task must belong to the work it is reported against', () => {
   it('refuses progress on another job’s task even from an assigned caller', async () => {
     const mine = await createWork({ assignedEmployeeIds: [assignedEmployeeId] });
     await addTask(mine);
-    await transition(mine, 'PLAN', supervisorToken);
+    await planAndApprove(mine);
     await transition(mine, 'START', supervisorToken);
 
     const theirs = await createWork({ title: 'Өөр ажил' });
@@ -543,7 +689,7 @@ describe('permission and data scope are independent', () => {
     // The stranger genuinely holds planned_work.change_status: prove it by showing the
     // same token succeeds on a work they ARE assigned to, and fails on this one.
     const ownWork = await createWork({ assignedEmployeeIds: [strangerEmployeeId] });
-    await transition(ownWork, 'PLAN', supervisorToken);
+    await planAndApprove(ownWork, [strangerEmployeeId]);
     expect((await transition(ownWork, 'START', strangerToken)).status).toBe(200);
 
     expect((await transition(workId, 'START', strangerToken)).status).toBe(403);

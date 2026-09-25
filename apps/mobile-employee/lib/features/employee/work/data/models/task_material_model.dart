@@ -21,7 +21,7 @@ class MaterialItemModel {
   final String name;
 
   /// What a quantity field starts on, so a metre of cable is not typed as pieces.
-  final MaterialUnit defaultUnit;
+  final MaterialUnitValue defaultUnit;
 
   /// `CBL-3X2.5 · Кабель 3x2.5` — the code first, because that is what is on the reel.
   String get label => code.isEmpty ? name : '$code · $name';
@@ -31,7 +31,7 @@ class MaterialItemModel {
       id: parseString(json['id']) ?? '',
       code: parseString(json['code']) ?? '',
       name: parseString(json['name']) ?? '',
-      defaultUnit: MaterialUnit.fromWire(parseString(json['defaultUnit'])),
+      defaultUnit: MaterialUnitValue.fromWire(parseString(json['defaultUnit'])),
     );
   }
 }

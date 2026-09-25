@@ -147,13 +147,24 @@ class _HomeHero extends StatelessWidget {
           : 'Өнөөдрийн ачааллыг ачаалж байна';
     }
     if (!data.isScoped) return 'Байгууллагын өнөөдрийн ачаалал';
+
+    // «Дор хаяж» — "at least" — when the lists were read only as far as the paging
+    // guard. Both figures are counted from the rows, so a truncated read makes each of
+    // them a floor; the sentence used to print the floor as the fact. The Төсөл tab
+    // already draws this distinction on its own counters («Эхний N» beside «Бүртгэлтэй»).
+    final String atLeast = data.isComplete ? '' : 'Дор хаяж ';
+
     if (data.overdueCount > 0) {
-      return '${data.overdueCount} ажил хугацаа хэтэрсэн';
+      return '$atLeast${data.overdueCount} ажил хугацаа хэтэрсэн';
     }
     if (data.activeCount > 0) {
-      return '${data.activeCount} идэвхтэй ажил хүлээгдэж байна';
+      return '$atLeast${data.activeCount} идэвхтэй ажил хүлээгдэж байна';
     }
-    return 'Хүлээгдэж буй ажил алга байна';
+    // "Nothing outstanding" is a strong claim and a partial read cannot make it: zero
+    // rows in the pages that were read says nothing about the pages that were not.
+    return data.isComplete
+        ? 'Хүлээгдэж буй ажил алга байна'
+        : 'Ачааллыг бүрэн уншиж чадсангүй';
   }
 
   /// The four figures, banded by the risk ramp so urgency is legible before a single
@@ -162,20 +173,27 @@ class _HomeHero extends StatelessWidget {
     if (data == null) return const <SteelStairBand>[];
 
     if (data.isScoped) {
+      // A trailing "+" on a figure the app could only read part of, matching the
+      // «Дор хаяж» in the sentence above it. There is no room for a note beside a stair
+      // figure, and a bare number over a truncated list is the one thing this screen
+      // must not print. The fourth figure carries none: it is the employee record's own
+      // lifetime count and does not depend on how much of a list was read.
+      final String more = data.isComplete ? '' : '+';
+
       return <SteelStairBand>[
         (
           band: EmployeeTokens.accent,
-          count: '${data.activeCount}',
+          count: '${data.activeCount}$more',
           label: 'ИДЭВХТЭЙ',
         ),
         (
           band: EmployeeTokens.orange,
-          count: '${data.inProgressCount}',
+          count: '${data.inProgressCount}$more',
           label: 'ХИЙГДЭЖ БУЙ',
         ),
         (
           band: EmployeeTokens.red,
-          count: '${data.overdueCount}',
+          count: '${data.overdueCount}$more',
           label: 'ХУГАЦАА ХЭТЭРСЭН',
         ),
         (
@@ -301,7 +319,7 @@ class _HomeBody extends StatelessWidget {
   ///
   /// A row with neither id is left untappable — see [HomeUrgentItem.serviceRequestId].
   Widget _urgentRow(BuildContext context, HomeUrgentItem item) {
-    final Route<void>? route = _urgentRoute(item);
+    final Route<void> Function()? open = _urgentRoute(item);
 
     return BlueprintRow(
       band: severityTone(item.band).foreground,
@@ -310,36 +328,44 @@ class _HomeBody extends StatelessWidget {
       stateLabel: item.statusLabel,
       metaLabel: 'ЛАВЛАХ',
       metaValue: item.reference,
-      onTap: route == null ? null : () => Navigator.of(context).push(route),
+      onTap: open == null ? null : () => Navigator.of(context).push(open()),
     );
   }
 
-  /// The detail route a row opens, or null when it carries no id to open one with.
+  /// How to open the row, or null when it carries no id to open anything with.
+  ///
+  /// A FACTORY RATHER THAN A ROUTE, and the distinction is the whole point. A Route is a
+  /// single-use object: it carries its own lifecycle and completes when the screen it
+  /// installed is popped. Returning one from here — called during `build` — meant every
+  /// tap pushed the same spent instance, so the SECOND time a row was opened the
+  /// Navigator asserted `!_debugLocked`. Returning the recipe instead keeps the
+  /// tappability decision in `build`, where the row needs it, while the route itself is
+  /// minted fresh on each tap.
   ///
   /// Every field the row already holds is handed to the screen, so the number, the
   /// subject and the location are on screen in the first frame and the detail read
   /// fills in behind them rather than replacing a spinner.
-  Route<void>? _urgentRoute(HomeUrgentItem item) {
+  Route<void> Function()? _urgentRoute(HomeUrgentItem item) {
     final String? requestId = item.serviceRequestId;
     if (requestId != null) {
-      return ServiceRequestDetailScreen.route(
-        requestId: requestId,
-        requestNumber: item.reference,
-        subject: item.title,
-        location: item.location,
-        buildingId: item.buildingId,
-        buildingName: item.buildingName,
-        statusLabel: item.statusLabel,
-        slaLabel: item.detail,
-      );
+      return () => ServiceRequestDetailScreen.route(
+            requestId: requestId,
+            requestNumber: item.reference,
+            subject: item.title,
+            location: item.location,
+            buildingId: item.buildingId,
+            buildingName: item.buildingName,
+            statusLabel: item.statusLabel,
+            slaLabel: item.detail,
+          );
     }
 
     final String? workId = item.plannedWorkId;
     if (workId != null) {
-      return PlannedWorkDetailScreen.route(
-        plannedWorkId: workId,
-        workNumber: item.reference,
-      );
+      return () => PlannedWorkDetailScreen.route(
+            plannedWorkId: workId,
+            workNumber: item.reference,
+          );
     }
 
     return null;
@@ -446,10 +472,24 @@ class _AgendaSection extends StatelessWidget {
   ///
   /// Null when the entry names no source or carries no id, so the card draws itself as
   /// something that cannot be opened rather than swallowing the tap.
+  ///
+  /// THE ROUTE IS BUILT PER TAP, NEVER HERE. A Route is single-use — it completes when
+  /// the screen it installed is popped — so closing over one built during `build` meant
+  /// the second tap on a row pushed a spent instance and the Navigator asserted
+  /// `!_debugLocked`. Both reasons a row cannot be opened are answerable from the model
+  /// alone, so nothing has to be constructed to decide that.
   VoidCallback? _agendaTap(BuildContext context, CalendarEventModel event) {
     if (event.sourceId.isEmpty) return null;
 
-    final Route<void>? route = switch (event.source) {
+    // A source a newer API adds. Nothing here knows which screen it would be.
+    final CalendarSource? source = event.source;
+    if (source == null) return null;
+
+    return () => Navigator.of(context).push(_agendaRoute(source, event));
+  }
+
+  Route<void> _agendaRoute(CalendarSource source, CalendarEventModel event) {
+    return switch (source) {
       CalendarSource.plannedWork => PlannedWorkDetailScreen.route(
           plannedWorkId: event.sourceId,
           workNumber: event.reference,
@@ -462,11 +502,6 @@ class _AgendaSection extends StatelessWidget {
           buildingName: event.buildingName,
           statusLabel: event.statusLabel,
         ),
-      // A source a newer API adds. Nothing here knows which screen it would be.
-      null => null,
     };
-
-    if (route == null) return null;
-    return () => Navigator.of(context).push(route);
   }
 }

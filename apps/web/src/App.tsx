@@ -1,13 +1,16 @@
 import { PERMISSIONS } from '@monhorus/shared';
 import type { ReactElement, ReactNode } from 'react';
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
+import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 
 import { AppShell } from './components/layout/AppShell';
 import { PermissionGuard } from './components/PermissionGuard';
+import { ForbiddenState } from './components/ui/States';
 import { ToastProvider } from './components/ui/ToastProvider';
-import { AuthProvider } from './contexts/auth-context';
+import { AuthProvider, useAuth } from './contexts/auth-context';
 import { ChangePasswordPage } from './features/auth/ChangePasswordPage';
+import { ForgotPasswordPage } from './features/auth/ForgotPasswordPage';
 import { LoginPage } from './features/auth/LoginPage';
+import { ResetPasswordPage } from './features/auth/ResetPasswordPage';
 import { AccessPage } from './features/access/AccessPage';
 import { AuditLogPage } from './features/audit/AuditLogPage';
 import { CalendarPage } from './features/calendar/CalendarPage';
@@ -29,7 +32,11 @@ import { PlannedWorkDetailPage } from './features/planned-work/PlannedWorkDetail
 import { PlannedWorkFormPage } from './features/planned-work/PlannedWorkFormPage';
 import { PlannedWorkListPage } from './features/planned-work/PlannedWorkListPage';
 import { PlannedWorkReportPage } from './features/planned-work/PlannedWorkReportPage';
+import { MaterialsPage } from './features/materials/MaterialsPage';
 import { ObjectTypesPage } from './features/object-master/ObjectTypesPage';
+import { CompaniesPage } from './features/org/CompaniesPage';
+import { DepartmentsPage } from './features/org/DepartmentsPage';
+import { PositionsPage } from './features/org/PositionsPage';
 import { BuildingDetailPage } from './features/projects/BuildingDetailPage';
 import { FloorDetailPage } from './features/projects/FloorDetailPage';
 import { ObjectDetailPage } from './features/projects/objects/ObjectDetailPage';
@@ -40,11 +47,37 @@ import { ProjectListPage } from './features/projects/ProjectListPage';
 import { ReportsPage } from './features/reports/ReportsPage';
 import { ServiceRequestCreatePage } from './features/service-requests/ServiceRequestCreatePage';
 import { ServiceRequestDetailPage } from './features/service-requests/ServiceRequestDetailPage';
+import { OpenServiceRequestsPage } from './features/service-requests/OpenServiceRequestsPage';
 import { ServiceRequestListPage } from './features/service-requests/ServiceRequestListPage';
 import { SettingsPage } from './features/settings/SettingsPage';
+import { SurveyQuestionsPage } from './features/surveys/SurveyQuestionsPage';
+import { SurveyResultsPage } from './features/surveys/SurveyResultsPage';
+import { PortalFloorPage } from './features/portal/PortalFloorPage';
+import { PortalHomePage } from './features/portal/PortalHomePage';
+import { PortalObjectDetailPage } from './features/portal/PortalObjectDetailPage';
+import { PortalPlannedWorkDetailPage } from './features/portal/PortalPlannedWorkDetailPage';
+import { PortalPlannedWorkListPage } from './features/portal/PortalPlannedWorkListPage';
+import { PortalRequestCreatePage } from './features/portal/PortalRequestCreatePage';
+import { PortalRequestDetailPage } from './features/portal/PortalRequestDetailPage';
+import { PortalRequestListPage } from './features/portal/PortalRequestListPage';
+import { PortalSiteDetailPage } from './features/portal/PortalSiteDetailPage';
+import { PortalSurveyPage } from './features/portal/PortalSurveyPage';
+import { PortalSitesPage } from './features/portal/PortalSitesPage';
+import { isPathHiddenFrom } from './config/navigation';
+import { homePathFor } from './lib/home-path';
 import { ProtectedRoute } from './routes/ProtectedRoute';
 
-/** Authenticated page inside the shell, gated by an any-of permission list. */
+/**
+ * Authenticated page inside the shell, gated by an any-of permission list AND by the
+ * caller's account tier.
+ *
+ * The tier half is not a second copy of the menu rule — it IS the menu rule, read from the
+ * same `hiddenFromTiers` declaration in `navigation.ts` by the same function the sidebar
+ * uses. Hiding an entry is not access control: a technician who types /reports, or follows
+ * a link a colleague pasted, has to meet the refusal rather than the page. Deriving it from
+ * the entry instead of listing routes here is what stops the two surfaces drifting apart —
+ * the property that whole file exists to hold.
+ */
 function Page({
   anyOf,
   children,
@@ -55,10 +88,74 @@ function Page({
   return (
     <ProtectedRoute>
       <AppShell>
-        <PermissionGuard anyOf={anyOf}>{children}</PermissionGuard>
+        <WithinTier>
+          <PermissionGuard anyOf={anyOf}>{children}</PermissionGuard>
+        </WithinTier>
       </AppShell>
     </ProtectedRoute>
   );
+}
+
+/**
+ * Refuses a route that the caller's TIER is not given, whatever permissions they hold.
+ *
+ * Reads the current path rather than taking the restriction as a prop, so a route acquires
+ * its gate by being declared in `navigation.ts` and there is no second list to keep in step.
+ * Wrapping outside `PermissionGuard` means a refused caller never mounts the page, so the
+ * screen's own data fetches never fire.
+ *
+ * Both guards render the same `ForbiddenState`, on purpose: "not for you" is one answer in
+ * this app, and a caller has no business being told which of the two rules stopped them.
+ */
+export function WithinTier({ children }: { children: ReactNode }): ReactElement {
+  const { user } = useAuth();
+  const { pathname } = useLocation();
+
+  if (isPathHiddenFrom(pathname, user?.role)) return <ForbiddenState />;
+  return <>{children}</>;
+}
+
+/**
+ * A portal page: the shell, the permission gate, and the CUSTOMER TIER.
+ *
+ * The tier check is not redundant with the permissions. SYSTEM_ADMIN is resynchronised to
+ * the entire permission catalogue on every boot and `head_admin` is an unconditional
+ * superuser, so both hold every `portal.*` key — the permission gate alone lets them
+ * straight in. That matters beyond tidiness: `resolveCustomerScope` reads the tier, so a
+ * staff caller reaching these screens gets STAFF scope, and the customer-styled request
+ * list would quietly fill with EVERY organisation's records.
+ *
+ * The refusal is the same `ForbiddenState` every other guard renders, so a staff member who
+ * follows an old link sees the app's normal "not for you" rather than a broken screen.
+ */
+function PortalPage({
+  anyOf,
+  children,
+}: {
+  anyOf: readonly (typeof PERMISSIONS)[keyof typeof PERMISSIONS][];
+  children: ReactNode;
+}): ReactElement {
+  return (
+    <ProtectedRoute>
+      <AppShell>
+        <CustomerOnly>
+          <PermissionGuard anyOf={anyOf}>{children}</PermissionGuard>
+        </CustomerOnly>
+      </AppShell>
+    </ProtectedRoute>
+  );
+}
+
+export function CustomerOnly({ children }: { children: ReactNode }): ReactElement {
+  const { user } = useAuth();
+  if (user && user.role !== 'customer') return <ForbiddenState />;
+  return <>{children}</>;
+}
+
+/** Sends a signed-in caller to the home their account actually has. */
+function HomeRedirect(): ReactElement {
+  const { user } = useAuth();
+  return <Navigate to={homePathFor(user?.role)} replace />;
 }
 
 export default function App(): ReactElement {
@@ -68,6 +165,13 @@ export default function App(): ReactElement {
         <ToastProvider>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
+          {/*
+            Password recovery, unauthenticated by necessity — the whole point is that the
+            caller cannot sign in. Both must stay outside ProtectedRoute, or the link in the
+            email bounces the reader to the login screen they cannot get past.
+          */}
+          <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+          <Route path="/reset-password/:token" element={<ResetPasswordPage />} />
 
           <Route
             path="/change-password"
@@ -258,6 +362,15 @@ export default function App(): ReactElement {
           />
 
           <Route
+            path="/materials"
+            element={
+              <Page anyOf={[PERMISSIONS.MATERIAL_VIEW]}>
+                <MaterialsPage />
+              </Page>
+            }
+          />
+
+          <Route
             path="/inspections"
             element={
               <Page anyOf={[PERMISSIONS.OBJECT_MASTER_VIEW]}>
@@ -292,6 +405,30 @@ export default function App(): ReactElement {
             }
           />
 
+          {/*
+            The satisfaction survey, split by what the two screens are for: reading the
+            results is analytics and reaches for `survey.view_results`, while the question
+            catalogue is administration and reaches for `survey.manage_questions`. The
+            questions endpoint is gated on the latter alone, so listing this route under
+            both would put a reader on a screen whose first request 403s.
+          */}
+          <Route
+            path="/surveys"
+            element={
+              <Page anyOf={[PERMISSIONS.SURVEY_VIEW_RESULTS]}>
+                <SurveyResultsPage />
+              </Page>
+            }
+          />
+          <Route
+            path="/surveys/questions"
+            element={
+              <Page anyOf={[PERMISSIONS.SURVEY_MANAGE_QUESTIONS]}>
+                <SurveyQuestionsPage />
+              </Page>
+            }
+          />
+
           <Route
             path="/notifications"
             element={
@@ -314,6 +451,22 @@ export default function App(): ReactElement {
             element={
               <Page anyOf={[PERMISSIONS.SERVICE_REQUEST_CREATE]}>
                 <ServiceRequestCreatePage />
+              </Page>
+            }
+          />
+          {/*
+            Gated on `service_request.claim`, NOT on `service_request.view`.
+            This is the key the claim endpoint itself enforces, so the page and the only
+            action on it agree about who may act: nobody reaches a queue of buttons the
+            server would refuse, and no technician who may claim is kept off the queue.
+            Declared before `/:requestId` so "open" is read as this page rather than as a
+            request id.
+          */}
+          <Route
+            path="/service-requests/open"
+            element={
+              <Page anyOf={[PERMISSIONS.SERVICE_REQUEST_CLAIM]}>
+                <OpenServiceRequestsPage />
               </Page>
             }
           />
@@ -396,6 +549,31 @@ export default function App(): ReactElement {
           />
 
           <Route
+            path="/org/companies"
+            element={
+              <Page anyOf={[PERMISSIONS.ORG_VIEW]}>
+                <CompaniesPage />
+              </Page>
+            }
+          />
+          <Route
+            path="/org/departments"
+            element={
+              <Page anyOf={[PERMISSIONS.ORG_VIEW]}>
+                <DepartmentsPage />
+              </Page>
+            }
+          />
+          <Route
+            path="/org/positions"
+            element={
+              <Page anyOf={[PERMISSIONS.ORG_VIEW]}>
+                <PositionsPage />
+              </Page>
+            }
+          />
+
+          <Route
             path="/access"
             element={
               <Page anyOf={[PERMISSIONS.RBAC_VIEW, PERMISSIONS.USER_VIEW]}>
@@ -420,7 +598,145 @@ export default function App(): ReactElement {
             }
           />
 
-          <Route path="/" element={<Navigate to="/dashboard" replace />} />
+          {/*
+            THE CUSTOMER PORTAL.
+
+            Same three layers as every staff route — ProtectedRoute, AppShell,
+            PermissionGuard — through the same `Page` helper, gated on the `portal.*` keys
+            the backend already accepts. No separate auth path, no second guard component,
+            no role branch: a customer is an ordinary authenticated caller whose permission
+            set happens to be portal keys.
+          */}
+          <Route
+            path="/portal"
+            element={
+              <PortalPage anyOf={[PERMISSIONS.PORTAL_SERVICE_REQUEST_VIEW, PERMISSIONS.PORTAL_BUILDING_VIEW]}>
+                <PortalHomePage />
+              </PortalPage>
+            }
+          />
+          <Route
+            path="/portal/requests"
+            element={
+              <PortalPage anyOf={[PERMISSIONS.PORTAL_SERVICE_REQUEST_VIEW]}>
+                <PortalRequestListPage />
+              </PortalPage>
+            }
+          />
+          <Route
+            path="/portal/requests/new"
+            element={
+              <PortalPage anyOf={[PERMISSIONS.PORTAL_SERVICE_REQUEST_CREATE]}>
+                <PortalRequestCreatePage />
+              </PortalPage>
+            }
+          />
+          <Route
+            path="/portal/requests/:requestId"
+            element={
+              <PortalPage anyOf={[PERMISSIONS.PORTAL_SERVICE_REQUEST_VIEW]}>
+                <PortalRequestDetailPage />
+              </PortalPage>
+            }
+          />
+          {/*
+            The satisfaction survey, at the path the backend already links to.
+
+            `survey.invitation.ts` sends the completion notification with
+            `linkPath: /portal/requests/:requestId/survey`, so this path is fixed by
+            something already shipped rather than chosen here: changing it would land every
+            push and in-app link on the not-found page.
+
+            Gated on `portal.survey.submit` alone. It is the key the three survey endpoints
+            require, and it is the only one that matters — the two staff survey keys
+            configure and read the survey rather than answer it.
+          */}
+          <Route
+            path="/portal/requests/:requestId/survey"
+            element={
+              <PortalPage anyOf={[PERMISSIONS.PORTAL_SURVEY_SUBMIT]}>
+                <PortalSurveyPage />
+              </PortalPage>
+            }
+          />
+          <Route
+            path="/portal/planned-work"
+            element={
+              <PortalPage anyOf={[PERMISSIONS.PORTAL_PLANNED_WORK_VIEW]}>
+                <PortalPlannedWorkListPage />
+              </PortalPage>
+            }
+          />
+          <Route
+            path="/portal/planned-work/new"
+            element={
+              <PortalPage anyOf={[PERMISSIONS.PORTAL_PLANNED_WORK_CREATE]}>
+                <PlannedWorkFormPage variant="portal" />
+              </PortalPage>
+            }
+          />
+          <Route
+            path="/portal/planned-work/:plannedWorkId/edit"
+            element={
+              <PortalPage anyOf={[PERMISSIONS.PORTAL_PLANNED_WORK_CREATE]}>
+                <PlannedWorkFormPage variant="portal" />
+              </PortalPage>
+            }
+          />
+          <Route
+            path="/portal/planned-work/:plannedWorkId"
+            element={
+              <PortalPage anyOf={[PERMISSIONS.PORTAL_PLANNED_WORK_VIEW]}>
+                <PortalPlannedWorkDetailPage />
+              </PortalPage>
+            }
+          />
+          <Route
+            path="/portal/sites"
+            element={
+              <PortalPage anyOf={[PERMISSIONS.PORTAL_BUILDING_VIEW]}>
+                <PortalSitesPage />
+              </PortalPage>
+            }
+          />
+          <Route
+            path="/portal/sites/:buildingId"
+            element={
+              <PortalPage anyOf={[PERMISSIONS.PORTAL_BUILDING_VIEW]}>
+                <PortalSiteDetailPage />
+              </PortalPage>
+            }
+          />
+          <Route
+            path="/portal/sites/:buildingId/floors/:floorId"
+            element={
+              <PortalPage anyOf={[PERMISSIONS.PORTAL_FLOOR_VIEW]}>
+                <PortalFloorPage />
+              </PortalPage>
+            }
+          />
+          <Route
+            path="/portal/sites/:buildingId/floors/:floorId/objects/:objectId"
+            element={
+              <PortalPage anyOf={[PERMISSIONS.PORTAL_OBJECT_VIEW]}>
+                <PortalObjectDetailPage />
+              </PortalPage>
+            }
+          />
+
+          {/*
+            Wrapped in ProtectedRoute so the session has resolved before the destination is
+            chosen: a bare `<Navigate>` would read a null user mid-restore and send every
+            customer to the staff dashboard, which they are forbidden from.
+          */}
+          <Route
+            path="/"
+            element={
+              <ProtectedRoute>
+                <HomeRedirect />
+              </ProtectedRoute>
+            }
+          />
           <Route
             path="*"
             element={

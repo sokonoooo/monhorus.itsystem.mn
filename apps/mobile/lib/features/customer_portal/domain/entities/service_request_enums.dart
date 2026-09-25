@@ -1,11 +1,15 @@
 import '../../presentation/theme/customer_tokens.dart';
+import 'server_vocabulary.dart';
 
 /// Mirrors `ServiceRequestStatus` / `SERVICE_REQUEST_STATUS_LABELS` in
 /// packages/shared/src/constants/service-request.ts. All fourteen values, in the
 /// order the shared constant declares them.
 ///
-/// The tone is a presentation choice made here; the shared package assigns no colour
-/// to a status, so nothing is being mirrored incorrectly by adding one.
+/// The tone was a presentation choice made here, because the shared package assigns no
+/// colour to a status. It still is - as a DEFAULT. An administrator groups the fourteen
+/// statuses into named, coloured stages, and `GET /vocabulary` is where this app reads
+/// them; [label] and [tone] are getters over that answer so a rename reaches the card,
+/// the detail header and the timeline without any of them changing.
 enum ServiceRequestStatus {
   newRequest('NEW', 'Шинэ', AccentTone.blue),
   unassigned('UNASSIGNED', 'Хуваарилагдаагүй', AccentTone.yellow),
@@ -15,18 +19,35 @@ enum ServiceRequestStatus {
   onSite('ON_SITE', 'Очсон', AccentTone.blue),
   inProgress('IN_PROGRESS', 'Гүйцэтгэж байна', AccentTone.green),
   waiting('WAITING', 'Түр хүлээгдсэн', AccentTone.yellow),
-  reportSubmitted('REPORT_SUBMITTED', 'Тайлан илгээсэн', AccentTone.purple),
+  reportSubmitted('REPORT_SUBMITTED', 'Дүгнэлт илгээсэн', AccentTone.purple),
   verification('VERIFICATION', 'Баталгаажуулах', AccentTone.purple),
   completed('COMPLETED', 'Дууссан', AccentTone.green),
   revisitRequired('REVISIT_REQUIRED', 'Дахин очих', AccentTone.orange),
   returned('RETURNED', 'Буцаасан', AccentTone.orange),
   cancelled('CANCELLED', 'Цуцалсан', AccentTone.neutral);
 
-  const ServiceRequestStatus(this.wireValue, this.label, this.tone);
+  const ServiceRequestStatus(this.wireValue, this._bundledLabel, this._bundledTone);
 
   final String wireValue;
-  final String label;
-  final AccentTone tone;
+
+  /// The status name as `SERVICE_REQUEST_STATUS_LABELS` had it at build time.
+  final String _bundledLabel;
+
+  /// The triad this status was drawn in before an administrator could recolour it.
+  final AccentTone _bundledTone;
+
+  /// What this installation calls the step, falling back to the compiled name.
+  ///
+  /// A stage renames a status only when it covers that status alone - see
+  /// `serverStageLabelForStatus`, which explains why a coarser stage name must not be
+  /// substituted here. The timeline lists every status a request passed through, and
+  /// one word repeated three times down it would report three different events as the
+  /// same one.
+  String get label => serverStageLabelForStatus(wireValue) ?? _bundledLabel;
+
+  /// The colour of the stage this status sits in, falling back to the designed one.
+  AccentTone get tone =>
+      AccentTone.named(serverStageColourForStatus(wireValue)) ?? _bundledTone;
 
   static ServiceRequestStatus? fromWire(String? value) {
     if (value == null) return null;
@@ -46,53 +67,22 @@ enum ServiceRequestStatus {
 
   bool get isActive => !isTerminal;
 
-  /// How far along the workflow this status sits, 0 to 1.
-  ///
-  /// Used only for the thin progress rail the prototype draws on a request card. It
-  /// is a display ordering of the statuses as the shared `DISPATCH_BOARD_COLUMNS`
-  /// lists them, not a claim about elapsed work.
-  double get progress {
-    const List<ServiceRequestStatus> order = <ServiceRequestStatus>[
-      ServiceRequestStatus.newRequest,
-      ServiceRequestStatus.unassigned,
-      ServiceRequestStatus.assigned,
-      ServiceRequestStatus.accepted,
-      ServiceRequestStatus.onTheWay,
-      ServiceRequestStatus.onSite,
-      ServiceRequestStatus.inProgress,
-      ServiceRequestStatus.reportSubmitted,
-      ServiceRequestStatus.verification,
-      ServiceRequestStatus.completed,
-    ];
-    final int index = order.indexOf(this);
-    if (index < 0) return 0.35;
-    return (index + 1) / order.length;
-  }
+  /*
+   * THERE IS NO `progress` HERE, AND THERE MUST NOT BE.
+   *
+   * A `progress` getter used to map ten of the fourteen statuses onto (index + 1) / 10
+   * and the card and the detail header drew it as a rail. The ordering was copied from
+   * the superseded `DISPATCH_BOARD_COLUMNS` — a board layout, not a measure of work —
+   * and the backend states no completion figure for a service request at all:
+   * `GET /calendar` sends `progressPercent: null` for one, because a request has no
+   * quantity to be a percentage of. So a customer read a precise-looking figure
+   * («60%» worth of fill on an ON_SITE call) that nothing in the product computes.
+   *
+   * What is left in its place is the step's NAME — [label], and the coarser `stage` the
+   * DTO carries — which is a fact the server sends and an administrator configures.
+   */
 }
 
-/// Mirrors `ServiceRequestType` / `SERVICE_REQUEST_TYPE_LABELS` in
-/// packages/shared/src/constants/service-request.ts.
-enum ServiceRequestType {
-  plannedInspection('PLANNED_INSPECTION', 'Төлөвлөгөөт үзлэг'),
-  repair('REPAIR', 'Засвар үйлчилгээ'),
-  standardCall('STANDARD_CALL', 'Энгийн дуудлага'),
-  urgentCall('URGENT_CALL', 'Яаралтай дуудлага'),
-  installation('INSTALLATION', 'Шинэ угсралт/өргөтгөл'),
-  revisit('REVISIT', 'Давтан үзлэг');
-
-  const ServiceRequestType(this.wireValue, this.label);
-
-  final String wireValue;
-  final String label;
-
-  static ServiceRequestType? fromWire(String? value) {
-    if (value == null) return null;
-    for (final ServiceRequestType type in ServiceRequestType.values) {
-      if (type.wireValue == value) return type;
-    }
-    return null;
-  }
-}
 
 /// Mirrors `SlaState` / `SLA_STATE_LABELS` in
 /// packages/shared/src/constants/service-request.ts.
@@ -119,9 +109,11 @@ enum SlaState {
   }
 }
 
-/// Mirrors `SLA_HOURS_URGENT` and `SLA_HOURS_STANDARD`.
-const int slaHoursUrgent = 6;
-const int slaHoursStandard = 24;
+// No `slaHoursUrgent` / `slaHoursStandard` here.
+//
+// They mirrored two shared defaults and nothing read them. The window in force is per
+// equipment type and configurable, and the portal shows the deadline and the `slaState`
+// the API computed rather than counting hours itself.
 
 /// Mirrors `ObjectNodeKind` / `OBJECT_NODE_KIND_LABELS` in
 /// packages/shared/src/types/object.types.ts.
