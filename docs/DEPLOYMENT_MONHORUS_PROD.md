@@ -421,19 +421,44 @@ shift it onto the wrong block.
 
 ## 8. The Android apps
 
-Rebuilt and republished **2026-09-04** against `https://www.agata.mn`. Downloadable from
-`https://www.agata.mn/apk/`, and still from `https://monhorus.itsystem.mn/apk/` and
-`http://103.87.255.221:3021` — all three serve the same two files from the same directory.
+Rebuilt and republished **2026-09-25** against `https://www.agata.mn`, as **Agata** and
+**Agata Employee**, `1.0.0+3`. Downloadable from `https://www.agata.mn/apk/`, and still from
+`https://monhorus.itsystem.mn/apk/` and `http://103.87.255.221:3021` — all three serve the
+same two files from the same directory.
 
 | | Employee | Customer |
 |---|---|---|
 | File | `monhorus-employee.apk` | `monhorus-customer.apk` |
 | applicationId | `mn.itsystem.monhorusEmployee` | `mn.itsystem.monhorus` |
-| Label (Android) | Monhorus Employee | Monhorus Mobile |
+| Label (Android) | Agata Employee | Agata |
 | Display name (iOS) | Agata Employee | Agata |
-| Size | 55.0 MB | 53.5 MB |
+| version / versionCode | 1.0.0 / 3 | 1.0.0 / 3 |
+| Size | 56.7 MB | 54.8 MB |
 | minSdk / target | 24 (Android 7.0) / 36 | 24 / 36 |
 | API origin | `https://www.agata.mn/api/v1` | same |
+| sha256 (2026-09-25) | `25a194a2a560370e…` | `dfc5aef99e608827…` |
+
+The launcher label is the only thing the rename touched on Android. `applicationId`,
+the Gradle namespace and the signing certificate (`CN=Monhorus`) are all unchanged, which
+is what makes this an update rather than a second app — see below.
+
+**`publish-apk-page.sh` does not rotate `.prev`.** It regenerates `index.html` from
+whatever two APKs are in the directory and nothing else. Rotating is a manual step, and
+worth doing by hash rather than by date: the customer APK came out byte-for-byte the same
+SIZE as the previous release while hashing differently, so `ls` alone cannot tell you
+whether a copy actually landed.
+
+```bash
+cd /srv/clients/monhorus/apk
+mv -f monhorus-employee.apk monhorus-employee.apk.prev   # and the same for customer
+cp /home/its/monhorus-employee.apk monhorus-employee.apk
+chown its:its monhorus-*.apk index.html && chmod a+r monhorus-*.apk index.html
+bash /srv/clients/monhorus/scripts/publish-apk-page.sh
+```
+
+`chown` matters: running the publish under `sudo` leaves root-owned files in a directory
+otherwise owned by `its`, and the next publish run as `its` then cannot overwrite
+`index.html`.
 
 `applicationId` is the identity Android and Firebase match on, and is what
 `adb uninstall` takes. It is **not** the Gradle `namespace`, which both modules keep at
