@@ -258,10 +258,17 @@ npm run build            # apps/web/.env.production supplies VITE_API_BASE_URL
 # the three it has been wrong with before -- localhost, the retired plain-HTTP host, and now
 # the previous domain. Move these lines whenever .env.production moves, together: a grep
 # left naming the old origin is a check that passes precisely when the build is wrong.
-grep -ro "www.agata.mn/api/v1"  apps/web/dist/assets/ | head -1   # must match
-grep -ro "localhost:4000"       apps/web/dist/assets/ | head -1   # must be empty
-grep -ro "103.87.255.221:3020"  apps/web/dist/assets/ | head -1   # must be empty
-grep -ro "monhorus.itsystem.mn" apps/web/dist/assets/ | head -1   # must be empty
+#
+# --include=*.js matters. vite also emits index-*.js.map, 6.2 MB of ORIGINAL SOURCE, and
+# that source contains the localhost fallback as a string whatever the build was configured
+# with. Grepping the whole directory therefore reports localhost on a perfectly good build,
+# every time -- and a check that always fails is a check everybody learns to ignore.
+A=apps/web/dist/assets
+grep -ro --include="*.js" "www.agata.mn/api/v1"  $A | head -1   # must match
+grep -ro --include="*.js" "localhost:4000"       $A | head -1   # must be empty
+grep -ro --include="*.js" "103.87.255.221:3020"  $A | head -1   # must be empty
+grep -ro --include="*.js" "monhorus.itsystem.mn" $A | head -1   # must be empty
+grep -ro --include="*.js" "inspection-report/docx" $A | head -1 # must match (2026-09-25 on)
 
 tar czf monhorus.tar.gz --exclude=node_modules --exclude=.git --exclude='*.pdf' \
   --exclude=apps/mobile --exclude=apps/mobile-employee \
